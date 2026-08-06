@@ -22,14 +22,20 @@ public struct SemanticVersion: Comparable, Equatable, Hashable, CustomStringConv
         for character in trimmed {
             if character.isNumber {
                 current.append(character)
-            } else if character == "." && !current.isEmpty && components.count < 2 {
-                components.append(Int(current) ?? 0)
+            } else if character == "." && components.count < 2 {
+                // Empty component between separators is invalid
+                guard !current.isEmpty else { return nil }
+                guard let n = Int(current) else { return nil }
+                components.append(n)
                 current = ""
             } else {
                 break
             }
         }
-        if !current.isEmpty { components.append(Int(current) ?? 0) }
+        if !current.isEmpty {
+            guard let n = Int(current) else { return nil }
+            components.append(n)
+        }
 
         guard let major = components.first else { return nil }
         self.init(major, components.count > 1 ? components[1] : 0,

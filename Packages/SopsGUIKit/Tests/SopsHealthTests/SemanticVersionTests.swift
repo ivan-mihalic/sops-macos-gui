@@ -39,4 +39,14 @@ struct SemanticVersionTests {
     func rendersBare() throws {
         #expect(SemanticVersion(3, 13, 3).description == "3.13.3")
     }
+
+    @Test("rejects numbers that overflow Int")
+    func rejectsOverflow() throws {
+        #expect(SemanticVersion(parsing: "99999999999999999999.0.0") == nil)
+    }
+
+    @Test("rejects empty components between separators")
+    func rejectsEmptyComponent() throws {
+        #expect(SemanticVersion(parsing: "1..3") == nil)
+    }
 }
