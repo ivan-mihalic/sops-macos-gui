@@ -41,6 +41,42 @@ struct SopsConfigParserRobustnessTests {
         #expect(config.creationRules[0].ageRecipients == [key1, key2])
     }
 
+    @Test("age as a single-line YAML flow sequence parses correctly, not into keys with stray brackets")
+    func ageAsFlowSequence() throws {
+        let text = """
+        creation_rules:
+          - path_regex: secrets/.*\\.yaml$
+            age: [\(key1), \(key2)]
+        """
+        let config = try #require(SopsConfig(parsing: text))
+        #expect(config.creationRules[0].ageRecipients == [key1, key2])
+        // The specific regression: neither recipient carries a stray `[`/`]`.
+        for recipient in config.creationRules[0].ageRecipients {
+            #expect(!recipient.contains("["))
+            #expect(!recipient.contains("]"))
+        }
+    }
+
+    @Test("a flow sequence with internal spacing around commas still parses cleanly")
+    func ageAsFlowSequenceWithSpacing() throws {
+        let text = "creation_rules:\n  - path_regex: secrets/.*\\.yaml$\n    age: [ \(key1) , \(key2) ]\n"
+        let config = try #require(SopsConfig(parsing: text))
+        #expect(config.creationRules[0].ageRecipients == [key1, key2])
+    }
+
+    @Test("an empty flow sequence, age: [], means zero recipients, not a parse failure")
+    func ageAsEmptyFlowSequence() throws {
+        let text = "creation_rules:\n  - path_regex: secrets/.*\\.yaml$\n    age: []\n"
+        let config = try #require(SopsConfig(parsing: text))
+        #expect(config.creationRules[0].ageRecipients.isEmpty)
+    }
+
+    @Test("an unclosed age flow sequence is refused, not half-parsed into a garbage recipient")
+    func unclosedAgeFlowSequenceIsRefused() {
+        let text = "creation_rules:\n  - path_regex: secrets/.*\\.yaml$\n    age: [\(key1), \(key2)\n"
+        #expect(SopsConfig(parsing: text) == nil)
+    }
+
     @Test("of multiple creation rules, the first whose path_regex matches wins, even if it's not the first rule")
     func laterRuleMatches() throws {
         let text = """
