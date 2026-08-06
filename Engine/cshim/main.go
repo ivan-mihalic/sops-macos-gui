@@ -57,3 +57,9 @@ func sops_decrypt_yaml(encrypted *C.char, agePrivateKey *C.char, out **C.char) C
 func sops_free(p *C.char) {
 	C.free(unsafe.Pointer(p))
 }
+
+//export sops_engine_versions
+func sops_engine_versions(outSops **C.char, outAge **C.char) {
+	*outSops = C.CString(gobridge.SopsVersion())
+	*outAge = C.CString(gobridge.AgeVersion())
+}

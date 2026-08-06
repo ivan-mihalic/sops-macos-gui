@@ -7,6 +7,7 @@ package gobridge
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"strings"
 
 	"github.com/getsops/sops/v3"
@@ -209,4 +210,25 @@ func Decrypt(encrypted []byte, format Format, agePrivateKey string) ([]byte, err
 		return nil, fmt.Errorf("emit plain file: %w", err)
 	}
 	return plain, nil
+}
+
+// SopsVersion reports the sops version compiled into this bridge, taken from
+// the linked module rather than a hand-maintained constant.
+func SopsVersion() string {
+	return strings.TrimPrefix(version.Version, "v")
+}
+
+// AgeVersion reports the filippo.io/age version compiled into this bridge.
+// age exposes no version constant, so it is read from the build info.
+func AgeVersion() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "0.0.0"
+	}
+	for _, dep := range info.Deps {
+		if dep.Path == "filippo.io/age" {
+			return strings.TrimPrefix(dep.Version, "v")
+		}
+	}
+	return "0.0.0"
 }
