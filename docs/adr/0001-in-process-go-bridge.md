@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-06
 **Status:** Accepted
-**Milestone:** M0 (spike, PROPOSAL.md §8)
+**Milestone:** M0 (spike, PROPOSAL.md §9)
 
 ## Context
 
@@ -72,7 +72,7 @@ C string into an out-parameter that the caller releases with `sops_free`. Swift'
 `build-xcframework.sh` passes `-mmacosx-version-min` to cgo explicitly; without it Go
 takes the SDK default (26.0) and the linker warns on every object file. The value must
 stay in sync with `platforms:` in `Package.swift`. It is currently 14.0, which does not
-prejudge PROPOSAL.md §9 question 4 — raising it is a one-variable change.
+prejudge PROPOSAL.md §10 question 3 — raising it is a one-variable change.
 
 ### Architecture
 

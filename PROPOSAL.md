@@ -21,6 +21,8 @@ producing files 100% compatible with the standard `sops` CLI (CI, servers, colle
 - Own private key: reveal in plaintext after Touch ID unlock, copy out (e.g. manual save into 1Password — no integration)
 - Configurable unlock session TTL so Touch ID isn't required for every action
 - Built-in help with copy-paste snippets (docker-compose workflows, key generation on all platforms)
+- Re-runnable onboarding that verifies the machine's tooling, the embedded engine's freshness,
+  the app's own security posture, and per-project health — and guides the user to fix what it finds (§6)
 
 ### Non-Goals (v1)
 - Team sync server / hosted anything — `.sops.yaml` in the repo is the source of truth
@@ -68,8 +70,14 @@ partial encryption / `encrypted_regex`). We **never reimplement** the SOPS forma
 | Updates | Sparkle 2 (EdDSA-signed appcast) |
 | i18n | String Catalogs (`.xcstrings`), English default and only language for now |
 
-**First implementation step is a spike of the Go bridge** — encrypt/decrypt round-trip
-verified byte-compatible with the `sops` CLI. If the spike fails, fall back to subprocess.
+**M0 spike done — verdict GO.** The in-process bridge is proven byte-compatible with the
+`sops` CLI in both directions, including MAC and `encrypted_regex`; the subprocess fallback
+is not needed. Reasoning, constraints and consequences: [ADR 0001](docs/adr/0001-in-process-go-bridge.md).
+Two constraints from that ADR bind everything downstream:
+
+- Key material is passed as function arguments through a custom `keyservice.KeyServiceServer`.
+  Never switch to upstream's env-based key discovery (`SOPS_AGE_KEY`, `decrypt.File`).
+- arm64-only for v1; the deployment target lives in one variable in the bridge build script.
 
 ### Project & worktree handling
 - Add project by path (NSOpenPanel or drag & drop); no sandbox → free disk access
@@ -113,7 +121,69 @@ A dedicated Help section with runnable snippets:
 
 ---
 
-## 6. Build, Signing & Release
+## 6. Onboarding & Health Check
+
+A **re-runnable** wizard that answers one question: *is this machine set up to work with
+encrypted secrets safely, and is everything current?* It runs as a modal wizard on first
+launch and is available afterwards as a **Health** panel in Settings.
+
+### Principle: the app never mutates the system
+
+Every finding that needs a system change is presented as an **explanation plus a copyable
+command** (`brew upgrade sops`). The app does not run installers, does not escalate
+privileges, and does not touch anything outside its own data. A security tool that silently
+runs `brew install` is a security tool nobody can audit.
+
+The exception is actions *inside the app's own domain* — generating an age key, adding a
+line to `.gitignore`, running `updatekeys` — which the app already owns and may offer as a
+one-click fix.
+
+### What it checks
+
+**A — External CLI tools** (none are required for the app to work; the engine is in-process).
+They matter because the Help snippets in §5 run in the user's terminal and CI.
+
+| Tool | Why | Rule |
+|---|---|---|
+| `sops` | terminal/CI decryption of files this app writes | warn if older than the embedded engine |
+| `age` / `age-keygen` | key generation outside the app | warn if outdated |
+| `git` | worktree detection, commit hygiene | warn below 2.30 |
+| `yq` | the `.env` generation snippet uses **v4** syntax (`-o=props`) | fail on v3, which would silently produce wrong output |
+| `docker` | compose snippets only | informational; absence is not a problem |
+
+Tool discovery must **not** rely on the process `PATH` — a GUI app launched from Finder does
+not inherit the login shell's `PATH`, so Homebrew tools appear missing. Discovery reads the
+login shell's `PATH` and probes known locations.
+
+**B — Embedded engine vs upstream.** The version of `sops`/`age` compiled into the bridge,
+compared against the latest upstream release, with a link to the release notes and the
+project's security advisories. This is a **version comparison, not CVE matching** — the app
+must not claim to know whether a given version is vulnerable. Requires network; gated behind
+the same user consent as app update checks, and fully functional offline (reports "unknown").
+
+**C — App security posture.** macOS version; Touch ID available and enrolled; own age key
+present in the Keychain; a plaintext `~/.config/sops/age/keys.txt` still lying on disk
+(offer import, then explain why deleting it is an improvement); session TTL sanity; app
+itself up to date.
+
+**D — Project health** (per project; this absorbs the "Health check per project" item
+formerly listed in §8). `.sops.yaml` parses; every encrypted file's recipient list matches
+the creation rule that governs it; files still encrypted to recipients that were removed
+from `.sops.yaml`; plaintext secret files inside the repo that are not gitignored.
+
+> Honesty constraint: the app can verify *structurally* that a recipient's public key is in
+> a file's key list. It cannot verify that the holder of that key can actually decrypt —
+> that would require their private key. The wording in the UI must say so.
+
+### Behaviour
+
+- Nothing blocks. A failed check never prevents using the app; it shows a badge and an explanation.
+- Every check is independently re-runnable, and the whole report re-runs on demand.
+- Results are categorised **OK / Warning / Problem / Skipped**, and "Skipped" always states why.
+
+---
+
+## 7. Build, Signing & Release
 
 Built **locally on the Mac Studio** (no CI build infra), released by uploading finished
 artifacts to GitHub Releases — same process as the `engram` and `ui-tester` projects
@@ -139,12 +209,12 @@ Local credentials: `~/Development/_apple-developer-id/mac_studio/`
 
 ---
 
-## 7. DX Extras (proposed — beyond agreed scope)
+## 8. DX Extras (proposed — beyond agreed scope)
 
 Ranked by value/effort; ✦ = recommended for v1:
 
 - ✦ **Encrypted-file diff view** — human-readable diff of two versions of an encrypted file (git HEAD vs working copy); solves the worst sops papercut
-- ✦ **Health check per project** — MAC valid, every declared recipient can decrypt every file, `.sops.yaml` rules match actual files, warn on files encrypted to stale keys
+- ~~**Health check per project**~~ — promoted into agreed scope, see §6 D
 - ✦ **`.env` import wizard** — take an existing plaintext `.env`, convert to encrypted sops YAML, offer to shred the original and add it to `.gitignore`
 - ✦ **Plaintext-leak guard** — warn when a decrypted/temp file is inside the repo and not gitignored; optional pre-commit hook installer blocking accidental plaintext secret commits
 - ✦ **Copy in target format** — copy a key as `KEY=value`, `export KEY=value`, `-e KEY=value` (docker), or YAML fragment
@@ -157,22 +227,35 @@ Ranked by value/effort; ✦ = recommended for v1:
 
 ---
 
-## 8. Milestones
+## 9. Milestones
 
 | # | Milestone | Content |
 |---|---|---|
-| M0 | **Spike** | Go xcframework bridge; CLI-compatibility round-trip proof. Go/no-go for in-process vs subprocess |
-| M1 | Core editing | Project add (incl. worktrees), file list, form editor, encrypt/decrypt, atomic save |
-| M2 | Keys & security | Keychain + Touch ID, session TTL, key generate/import/reveal, clipboard hygiene |
-| M3 | Recipients & help | `.sops.yaml` editing, updatekeys, recipient add/remove + rotate reminder, Help section with snippets |
-| M4 | Polish & release | Sidebar/About/Settings final, Liquid Glass pass, Sparkle, notarized release pipeline, first public release → **repo goes public** |
-| M5 | DX extras | Items from §7 by priority |
+| M0 | **Spike** ✅ | Go xcframework bridge; CLI-compatibility round-trip proof. Verdict: in-process, [ADR 0001](docs/adr/0001-in-process-go-bridge.md) |
+| M1 | **Shell & onboarding** | App scaffold (sidebar, About, Settings, String Catalogs), engine integration, the whole of §6 |
+| M2 | Core editing | Project add (incl. worktrees), file list, form editor, encrypt/decrypt, atomic save |
+| M3 | Keys & security | Keychain + Touch ID, session TTL, key generate/import/reveal, clipboard hygiene |
+| M4 | Recipients & help | `.sops.yaml` editing, updatekeys, recipient add/remove + rotate reminder, Help section with snippets |
+| M5 | Polish & release | Liquid Glass pass, Sparkle, notarized release pipeline, first public release → **repo goes public** |
+| M6 | DX extras | Items from §8 by priority |
+
+Onboarding comes first because several of its checks (§6 D, §6 C) are the natural consumers of
+the project model and the key store, and writing them first pins down those interfaces before
+the editing UI is built on top of them. The checks that depend on features not yet built
+(Keychain, Sparkle, projects) are written against injected protocols and report *Skipped*
+with a reason until their milestone lands.
 
 ---
 
-## 9. Open Questions
+## 10. Open Questions
 
 1. App name (working title "SOPS GUI" — trademark-safe final name before going public)
 2. v1 file formats: YAML only, or YAML + dotenv + JSON from the start?
-3. Universal binary (arm64 + x86_64) or arm64-only for v1?
-4. Minimum deployment target strictly macOS 26, or 15+ with graceful degradation of Liquid Glass?
+3. Minimum deployment target strictly macOS 26, or 15+ with graceful degradation of Liquid Glass?
+   Currently 14.0 in the build, chosen only to avoid linker warnings — not a decision.
+
+### Answered
+
+- **Universal binary?** No — arm64-only for v1 (2026-08-06). Adding x86_64 later is a second
+  `go build` plus `lipo` in `build-xcframework.sh`.
+- **In-process engine or subprocess?** In-process (2026-08-06, [ADR 0001](docs/adr/0001-in-process-go-bridge.md)).
