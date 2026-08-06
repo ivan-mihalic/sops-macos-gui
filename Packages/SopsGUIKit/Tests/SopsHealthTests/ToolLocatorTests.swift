@@ -67,4 +67,76 @@ struct ToolLocatorTests {
         // which a minimal process PATH would not contain.
         #expect(paths.contains("/opt/homebrew/bin") || paths.contains("/usr/local/bin"))
     }
+
+    @Test("the login-shell probe's own output is what populates the result, not just the fallback list")
+    func loginShellProbeOutputIsActuallyUsed() throws {
+        // The hardcoded fallback list already contains /opt/homebrew/bin,
+        // /usr/local/bin, /usr/bin and /bin, so a test that only checks for
+        // those cannot tell "the shell probe works" apart from "the shell
+        // probe was deleted and only the fallback ran". Point SHELL at a
+        // fake shell that prints a sentinel directory found nowhere in the
+        // fallback list, and require that sentinel to show up in the result.
+        // If the probe is deleted, or broken, the sentinel is absent and
+        // this fails -- unlike loginShellPathIsRicherThanProcessPath above.
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shellprobe-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let sentinelDir = dir.appendingPathComponent("sentinel-\(UUID().uuidString)").path
+        let fakeShell = dir.appendingPathComponent("fakeshell")
+        // Ignores its arguments entirely and always reports the sentinel PATH --
+        // this is a stand-in for "$SHELL -lc 'echo $PATH'", not a real shell.
+        try "#!/bin/sh\necho \"\(sentinelDir):/usr/bin:/bin\"\n".write(
+            to: fakeShell, atomically: true, encoding: .utf8
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeShell.path)
+
+        let originalShell = ProcessInfo.processInfo.environment["SHELL"]
+        setenv("SHELL", fakeShell.path, 1)
+        defer {
+            if let originalShell {
+                setenv("SHELL", originalShell, 1)
+            } else {
+                unsetenv("SHELL")
+            }
+        }
+
+        let paths = ToolLocator.loginShellSearchPaths()
+
+        #expect(paths.contains(sentinelDir))
+    }
+
+    @Test("drains output far larger than the pipe buffer without truncating or stalling until the timeout")
+    func handlesOutputLargerThanPipeBuffer() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bigoutput-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let script = dir.appendingPathComponent("bigtool")
+        // macOS pipe buffers are ~64 KB. A naive "wait for exit, then read"
+        // capture deadlocks against this: the child blocks on write() once the
+        // buffer fills and never exits, so the poll loop burns the full
+        // timeout and the eventual read is truncated. Generated at runtime --
+        // never commit a fixture this size.
+        let scriptBody = """
+        #!/bin/sh
+        head -c 1048576 /dev/zero | tr '\\0' 'x'
+        printf '\\nbigtool version 9.9.9\\n'
+        """
+        try scriptBody.write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+
+        let locator = ToolLocator(searchPaths: [dir.path])
+
+        let start = ContinuousClock.now
+        let found = await locator.locate("bigtool", versionArguments: ["--version"])
+        let elapsed = start.duration(to: .now)
+
+        #expect(found?.version == SemanticVersion(9, 9, 9))
+        #expect((found?.rawVersionOutput.utf8.count ?? 0) > 1_000_000)
+        // This is the assertion that actually distinguishes a concurrent
+        // drain from the broken read-after-wait shape: the fixed capture()
+        // returns as soon as the child exits (well under a second for 1 MB);
+        // the broken shape would only return once the production 5s timeout
+        // elapsed, holding truncated output.
+        #expect(elapsed < .seconds(2))
+    }
 }
