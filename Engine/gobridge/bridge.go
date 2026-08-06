@@ -213,9 +213,21 @@ func Decrypt(encrypted []byte, format Format, agePrivateKey string) ([]byte, err
 }
 
 // SopsVersion reports the sops version compiled into this bridge, taken from
-// the linked module rather than a hand-maintained constant.
+// the linked module (github.com/getsops/sops/v3) via build info rather than
+// sops's own version.Version — that package variable is a hand-maintained
+// literal in upstream sops, not derived from the module system, so reading it
+// would let this drift from what was actually linked silently.
 func SopsVersion() string {
-	return strings.TrimPrefix(version.Version, "v")
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "0.0.0"
+	}
+	for _, dep := range info.Deps {
+		if dep.Path == "github.com/getsops/sops/v3" {
+			return strings.TrimPrefix(dep.Version, "v")
+		}
+	}
+	return "0.0.0"
 }
 
 // AgeVersion reports the filippo.io/age version compiled into this bridge.
