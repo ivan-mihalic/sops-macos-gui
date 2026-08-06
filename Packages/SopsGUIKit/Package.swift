@@ -28,6 +28,6 @@ let package = Package(
         ),
         .testTarget(name: "SopsEngineTests", dependencies: ["SopsEngine"]),
         .target(name: "SopsHealth", dependencies: ["SopsEngine"]),
-        .testTarget(name: "SopsHealthTests", dependencies: ["SopsHealth"]),
+        .testTarget(name: "SopsHealthTests", dependencies: ["SopsHealth", "SopsEngine"]),
     ]
 )
