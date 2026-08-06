@@ -28,3 +28,5 @@ targets:
     dependencies:
       - package: SopsGUIKit
         product: SopsUI
+      - package: SopsGUIKit
+        product: SopsEngine

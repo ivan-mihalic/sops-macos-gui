@@ -1,4 +1,4 @@
-module github.com/ivan-mihalic/sops-macos-gui/spike
+module github.com/ivan-mihalic/sops-macos-gui/engine
 
 go 1.26.5
 

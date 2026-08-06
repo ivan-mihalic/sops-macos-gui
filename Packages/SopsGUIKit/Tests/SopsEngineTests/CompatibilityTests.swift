@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-@testable import SopsBridge
+@testable import SopsEngine
 
 let plainYAML = """
 db:

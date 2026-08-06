@@ -15,7 +15,7 @@ import "C"
 import (
 	"unsafe"
 
-	"github.com/ivan-mihalic/sops-macos-gui/spike/gobridge"
+	"github.com/ivan-mihalic/sops-macos-gui/engine/gobridge"
 )
 
 func main() {}

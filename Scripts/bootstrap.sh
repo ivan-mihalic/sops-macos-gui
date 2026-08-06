@@ -5,6 +5,9 @@ cd "$(dirname "$0")/.."
 
 command -v xcodegen >/dev/null || { echo "need: brew install xcodegen"; exit 1; }
 
+echo "==> building the SOPS bridge"
+Engine/build-xcframework.sh
+
 echo "==> generating SopsGUI.xcodeproj"
 xcodegen generate
 
