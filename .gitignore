@@ -1,0 +1,18 @@
+# Build artifacts
+spike/build/
+.build/
+DerivedData/
+*.xcframework
+
+# Release credentials — never commit
+release.local.env
+*.p8
+*.p12
+*.cer
+*.certSigningRequest
+
+# Key material — tests generate throwaway keys at runtime, none belong in git
+*.age
+keys.txt
+
+.DS_Store
