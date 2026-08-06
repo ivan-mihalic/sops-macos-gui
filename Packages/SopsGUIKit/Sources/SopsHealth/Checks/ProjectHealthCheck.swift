@@ -146,12 +146,12 @@ public struct ProjectHealthCheck: HealthCheck {
             unverifiable.append("The rule matching \(pattern) also allows \(backends), which this app cannot read — it only understands age recipients.")
         }
 
-        for file in encryptedFiles(under: root) {
-            let relative = file.path.hasPrefix(root.path + "/")
-                ? String(file.path.dropFirst(root.path.count + 1))
-                : file.path
+        for sniffed in encryptedFiles(under: root) {
+            let relative = sniffed.url.path.hasPrefix(root.path + "/")
+                ? String(sniffed.url.path.dropFirst(root.path.count + 1))
+                : sniffed.url.path
             guard let rule = config.rule(matching: relative) else { continue }
-            guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
+            let text = sniffed.tail
 
             // Ground truth from the file itself: what actually protects it
             // right now, regardless of what the rule declares.
@@ -240,49 +240,88 @@ public struct ProjectHealthCheck: HealthCheck {
                 command: exposed.map { "echo '\($0)' >> .gitignore" }.joined(separator: "\n")))
     }
 
-    /// Files above this size are not read at all when sniffing for sops
-    /// metadata. A real sops-encrypted file is structured text — a handful
-    /// of `ENC[...]` values plus, per recipient, a ~200-400 byte age/pgp
-    /// block — so even a file with hundreds of recipients and hundreds of
-    /// secret values comfortably fits well under 1 MiB. 8 MiB is deliberately
-    /// generous above that, while still refusing to read the exact kind of
-    /// file this scan exists to notice, not open: an accidentally-committed
-    /// database dump, model checkpoint, or other large binary asset. Without
-    /// this cap, a single such file dominates the whole check — measured at
-    /// 6.6s to materialise one 300 MB file as a `String` — which is minutes
-    /// on a multi-GB one, in a check that runs inside a UI panel.
+    /// The number of bytes read from the *end* of every candidate file, via
+    /// `FileHandle` seek — never more, regardless of the file's total size.
     ///
-    /// This is not a "read the first N bytes" shortcut: sops always appends
-    /// its `sops:` metadata block as the *last* top-level key (see
-    /// `stores.SerializeMetadata` in getsops/sops v3.13.3, which appends the
-    /// metadata `TreeItem`s after the branch's existing ones), so a prefix
-    /// read could never find it. The only options were "read the whole file"
-    /// or "skip it"; a bounded skip was chosen.
+    /// This works because sops always appends its `sops:` metadata block as
+    /// the file's *last* top-level key. Verified directly against the pinned
+    /// getsops/sops v3.13.3 source this app embeds: `SerializeMetadata` in
+    /// `stores/metadata.go` builds the metadata `TreeItem`s (`md`) and then,
+    /// for every branch, appends the branch's *existing* items first and
+    /// `md` after —
+    /// ```go
+    /// for _, item := range branch { newBranch = append(newBranch, item) }
+    /// for _, item := range md     { newBranch = append(newBranch, item) }
+    /// ```
+    /// — so `sops:` is unconditionally last. A bounded tail read therefore
+    /// finds it regardless of how large the file's own plaintext-derived
+    /// `ENC[...]` values are before it, at a *constant* cost per file: a
+    /// 300 MB file and an 8 KB one cost the same. (An earlier version of
+    /// this check skipped files above this size entirely instead of tail
+    /// reading them, which silently excluded any legitimately oversized sops
+    /// file from the recipient check — closed by reading the tail instead of
+    /// documenting the gap.)
     ///
-    /// Trade-off, stated plainly: a legitimate sops-encrypted file that
-    /// somehow exceeds this cap would be silently excluded from the
-    /// recipient check below, the same direction of failure this cap exists
-    /// to prevent for oversized *non*-sops files. Real sops files are not
-    /// expected to approach 8 MiB; if that changes, this constant is the
-    /// place to revisit.
+    /// 8 MiB is generous for what actually needs to fit in the tail: a real
+    /// sops metadata block is a handful of small per-key entries (~200-400
+    /// bytes each for age/pgp/kms), so even hundreds of recipients stay well
+    /// under 1 MiB. The one residual edge case — a `sops:` block itself
+    /// exceeding 8 MiB, which would need many thousands of recipients on a
+    /// single file — falls back to being invisible to this check the same
+    /// way the old whole-file cap did, just at a threshold that should never
+    /// occur in practice.
     static let maxSniffedFileBytes = 8 * 1024 * 1024
+
+    /// A candidate file paired with the tail bytes already read from it, so
+    /// callers that need the content (`recipientFinding`) don't re-open and
+    /// re-read the file a second time after `encryptedFiles(under:)` already
+    /// paid that cost once.
+    private struct SniffedFile {
+        let url: URL
+        let tail: String
+    }
 
     /// Files carrying sops metadata, found by sniffing content rather than by
     /// extension — a project can encrypt .json, .env, or plain .yaml alike.
-    private func encryptedFiles(under root: URL) -> [URL] {
+    /// Every file's *tail* is read (see `maxSniffedFileBytes`), never its
+    /// full contents, so this scales with file count, not file size.
+    private func encryptedFiles(under root: URL) -> [SniffedFile] {
         guard let enumerator = FileManager.default.enumerator(
-            at: root, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            at: root, includingPropertiesForKeys: [.isRegularFileKey],
             options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return [] }
 
-        return enumerator.compactMap { $0 as? URL }.filter { url in
-            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
-                  values.isRegularFile == true,
-                  let size = values.fileSize,
-                  size <= Self.maxSniffedFileBytes
-            else { return false }
-            guard let text = try? String(contentsOf: url, encoding: .utf8) else { return false }
-            return text.contains("\nsops:") || text.hasPrefix("sops:")
+        return enumerator.compactMap { $0 as? URL }.compactMap { url -> SniffedFile? in
+            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey]),
+                  values.isRegularFile == true
+            else { return nil }
+            guard let tail = Self.tailText(of: url, maxBytes: Self.maxSniffedFileBytes) else { return nil }
+            guard tail.contains("\nsops:") || tail.hasPrefix("sops:") else { return nil }
+            return SniffedFile(url: url, tail: tail)
         }
+    }
+
+    /// Reads at most the last `maxBytes` bytes of `url` via `FileHandle`
+    /// seek — see `maxSniffedFileBytes` for why the tail is always where
+    /// the `sops:` block lives, regardless of the file's total size.
+    private static func tailText(of url: URL, maxBytes: Int) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd(), size > 0 else { return nil }
+
+        let readSize = min(UInt64(maxBytes), size)
+        guard (try? handle.seek(toOffset: size - readSize)) != nil,
+              var bytes = try? handle.read(upToCount: Int(readSize))
+        else { return nil }
+
+        // A byte-offset tail slice can start mid-UTF-8-codepoint. Drop
+        // leading continuation bytes (0b10xxxxxx) rather than fail the
+        // whole decode over a boundary nowhere near the sops: block this
+        // exists to find, which sits well inside the tail, not at its very
+        // first byte.
+        while let first = bytes.first, first & 0b1100_0000 == 0b1000_0000 {
+            bytes.removeFirst()
+        }
+        return String(data: bytes, encoding: .utf8)
     }
 }
 
@@ -292,19 +331,21 @@ public struct ProjectHealthCheck: HealthCheck {
 ///
 /// This is a hand-rolled, indentation-aware line scanner, not a general YAML
 /// parser. It was checked against inputs a real user is likely to produce:
-/// full-line and trailing comments, `age:` written as a block YAML list *or*
-/// a single-line flow sequence (`age: [k1, k2]`) rather than only a
-/// comma-joined string, multiple creation rules where an earlier one does
-/// not match and a later one does, quoted scalar values, and CRLF line
-/// endings — all of those parse correctly. What it does *not* attempt is
-/// full YAML (flow mappings, anchors, multi-document files, multi-line flow
-/// sequences). Rather than silently mis-parse those and report confident
-/// nonsense about a project's recipients, `init?` returns `nil` — surfaced
-/// by the caller as "could not be parsed" — whenever the input contains
-/// unbalanced `[]`/`{}` (a sign of flow-YAML syntax this parser does not
-/// follow, and the same signal that catches an unclosed `age: [k1, k2`) or
-/// no usable creation rule at all. A parser that admits it could not read a
-/// file is safer than one that guesses.
+/// full-line and trailing comments, `age:` written as a block YAML list, a
+/// single-line flow sequence (`age: [k1, k2]`), *or* a flow sequence split
+/// across lines (`age: [k1,\n      k2]` — a real shape once a recipient
+/// list gets long) rather than only a comma-joined string, multiple
+/// creation rules where an earlier one does not match and a later one does,
+/// quoted scalar values, and CRLF line endings — all of those parse
+/// correctly. What it does *not* attempt is full YAML (flow mappings,
+/// anchors, multi-document files). Rather than silently mis-parse those and
+/// report confident nonsense about a project's recipients, `init?` returns
+/// `nil` — surfaced by the caller as "could not be parsed" — whenever the
+/// input contains unbalanced `[]`/`{}` (a sign of flow-YAML syntax this
+/// parser does not follow, and the same signal that catches an unclosed
+/// `age: [k1, k2`, single-line or split across lines) or no usable creation
+/// rule at all. A parser that admits it could not read a file is safer than
+/// one that guesses.
 ///
 /// A rule's `age:` list is not the only way sops can protect a file: `pgp`,
 /// `kms`, `gcp_kms`, `hckms`, `azure_keyvault`, `hc_vault_transit_uri`, and
@@ -340,9 +381,18 @@ struct SopsConfig {
         // guess at what the unparsed region contained.
         guard Self.bracketsAreBalanced(normalized) else { return nil }
 
-        let lines = normalized
+        let strippedLines = normalized
             .split(separator: "\n", omittingEmptySubsequences: false)
             .map { Self.stripComment(from: String($0)) }
+
+        // A flow sequence a user splits across lines when it gets long
+        // (`age: [k1,\n      k2]`) must be one logical line before the
+        // per-line parser ever sees it — otherwise the first physical line
+        // parses as `age: [k1` with a stray `[` and the rest is dropped
+        // silently. `bracketsAreBalanced` only proves the *document* is
+        // balanced overall, not that any single line is; this rejoins
+        // exactly the spans that need it.
+        let lines = Self.joinMultiLineFlowSequences(strippedLines)
 
         guard let rules = Self.parseCreationRules(lines), !rules.isEmpty else { return nil }
         self.creationRules = rules
@@ -428,6 +478,47 @@ struct SopsConfig {
             if square < 0 || curly < 0 { return false }
         }
         return square == 0 && curly == 0
+    }
+
+    /// Merges any run of physical lines that together form one YAML flow
+    /// sequence (`[...]`) split across line breaks into a single logical
+    /// line, so the rest of the parser — which is line-oriented — sees one
+    /// coherent `key: [a, b, c]` instead of a truncated first fragment.
+    ///
+    /// Tracks only `[`/`]` depth (not `{`/`}`  — this parser never reads
+    /// flow *mappings*). A line is joined to the next whenever it ends with
+    /// unclosed square-bracket depth; continuation lines are trimmed before
+    /// joining with a single space, since YAML flow syntax treats line
+    /// breaks inside `[...]` as ordinary whitespace. Because
+    /// `bracketsAreBalanced` (called first, in `init?`) already guarantees
+    /// the document's square-bracket depth never goes negative and ends at
+    /// exactly 0, every span opened here is guaranteed to close by EOF —
+    /// there is no unterminated case left to handle.
+    private static func joinMultiLineFlowSequences(_ lines: [String]) -> [String] {
+        var result: [String] = []
+        var buffer: String?
+        var depth = 0
+
+        for line in lines {
+            if let current = buffer {
+                buffer = current + " " + line.trimmingCharacters(in: .whitespaces)
+            } else {
+                buffer = line
+            }
+            for ch in line {
+                if ch == "[" { depth += 1 }
+                if ch == "]" { depth -= 1 }
+            }
+            if depth <= 0 {
+                result.append(buffer!)
+                buffer = nil
+                depth = 0
+            }
+        }
+        // Reached only if bracketsAreBalanced's guarantee were somehow
+        // violated; flush whatever was pending rather than drop it.
+        if let buffer { result.append(buffer) }
+        return result
     }
 
     /// Strips a trailing `# comment`. Only a `#` preceded by whitespace (or

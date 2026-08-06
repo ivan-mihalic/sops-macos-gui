@@ -77,6 +77,71 @@ struct SopsConfigParserRobustnessTests {
         #expect(SopsConfig(parsing: text) == nil)
     }
 
+    // Regression: a flow sequence split across lines — a real shape once a
+    // recipient list gets long enough that a user wraps it — used to parse
+    // the first physical line alone (`age: [k1`) into a single recipient
+    // carrying a stray `[`, silently dropping every recipient after the
+    // line break. See ProjectHealthCheckMultiLineFlowTests.swift for the
+    // end-to-end case against a genuinely healthy project.
+    @Test("a flow sequence split across two lines parses both recipients, with no stray bracket")
+    func ageAsFlowSequenceSplitAcrossTwoLines() throws {
+        let text = """
+        creation_rules:
+          - path_regex: secrets/.*\\.yaml$
+            age: [\(key1),
+                  \(key2)]
+        """
+        let config = try #require(SopsConfig(parsing: text))
+        #expect(config.creationRules[0].ageRecipients == [key1, key2])
+        for recipient in config.creationRules[0].ageRecipients {
+            #expect(!recipient.contains("["))
+            #expect(!recipient.contains("]"))
+        }
+    }
+
+    @Test("a flow sequence split across three lines, one recipient per line, still parses completely")
+    func ageAsFlowSequenceSplitAcrossThreeLines() throws {
+        let key3 = "age17ryv6xxlm8ky97f75zfk4h3lz3f5hnwwt3qz6hkr8ss5fyshp2rst56dvz"
+        let text = """
+        creation_rules:
+          - path_regex: secrets/.*\\.yaml$
+            age: [
+              \(key1),
+              \(key2),
+              \(key3)
+            ]
+        """
+        let config = try #require(SopsConfig(parsing: text))
+        #expect(config.creationRules[0].ageRecipients == [key1, key2, key3])
+    }
+
+    @Test("a multi-line flow sequence that never closes is still refused, not half-parsed")
+    func unclosedMultiLineAgeFlowSequenceIsRefused() {
+        let text = """
+        creation_rules:
+          - path_regex: secrets/.*\\.yaml$
+            age: [\(key1),
+                  \(key2)
+        """
+        #expect(SopsConfig(parsing: text) == nil)
+    }
+
+    @Test("a path_regex character class on its own line, e.g. secrets/[a-z]+, is not mistaken for an unclosed flow sequence")
+    func singleLineCharacterClassIsNotJoinedWithFollowingLines() throws {
+        let text = """
+        creation_rules:
+          - path_regex: secrets/[a-z]+\\.yaml$
+            age: \(key1)
+          - path_regex: other/.*\\.yaml$
+            age: \(key2)
+        """
+        let config = try #require(SopsConfig(parsing: text))
+        #expect(config.creationRules.count == 2)
+        #expect(config.creationRules[0].pathRegex == "secrets/[a-z]+\\.yaml$")
+        #expect(config.creationRules[0].ageRecipients == [key1])
+        #expect(config.creationRules[1].ageRecipients == [key2])
+    }
+
     @Test("of multiple creation rules, the first whose path_regex matches wins, even if it's not the first rule")
     func laterRuleMatches() throws {
         let text = """
