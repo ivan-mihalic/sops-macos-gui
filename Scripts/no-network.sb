@@ -1,0 +1,14 @@
+; sandbox-exec profile that denies all networking (outbound, inbound, and
+; loopback bind) while allowing everything else a normal process needs
+; (filesystem, process spawn, etc).
+;
+; Used to prove that GitHubReleaseSource (Packages/SopsGUIKit/Sources/SopsHealth/
+; UpstreamVersionSource.swift) — the app's only network call — never reaches the
+; network in any test path except the one test that deliberately needs loopback
+; to read genuine wire bytes (UpstreamVersionSourceTests.headersOnTheWireAreFixed,
+; which is gated to skip rather than fail here — see .enabled(if:) on that test).
+;
+; Usage: Scripts/test-network-denied.sh
+(version 1)
+(allow default)
+(deny network*)

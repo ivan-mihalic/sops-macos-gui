@@ -179,6 +179,29 @@ final class LoopbackHTTPCapture: @unchecked Sendable {
     func stop() {
         close(listenSocket)
     }
+
+    /// Cheap capability probe: true if this process can actually bind a
+    /// loopback TCP socket right now. Some environments — a hardened CI
+    /// runner, a network-denied sandbox — refuse even loopback binding; in
+    /// those, the wire-capture test should skip, not fail, since a bind
+    /// refusal there says nothing about whether `GitHubReleaseSource` sets
+    /// its headers correctly.
+    static func canBindLoopback() -> Bool {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+        addr.sin_port = 0
+
+        return withUnsafePointer(to: &addr) { ptr -> Bool in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                bind(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
+            }
+        }
+    }
 }
 
 @Suite("GitHubReleaseSource", .serialized)
@@ -303,7 +326,13 @@ struct UpstreamVersionSourceTests {
                 "must not cache responses to disk")
     }
 
-    @Test("the request on the wire carries a fixed User-Agent and Accept-Language, not CFNetwork's own")
+    @Test(
+        "the request on the wire carries a fixed User-Agent and Accept-Language, not CFNetwork's own",
+        .enabled(
+            if: LoopbackHTTPCapture.canBindLoopback(),
+            "loopback networking unavailable in this environment"
+        )
+    )
     func headersOnTheWireAreFixed() async throws {
         // RecordingURLProtocol intercepts above CFNetwork's own header injection, so it
         // cannot see (or prove an override of) headers CFNetwork adds itself — this test
