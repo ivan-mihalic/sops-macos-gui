@@ -17,6 +17,10 @@
     "detail.no-selection" : {
       "extractionState" : "manual",
       "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "No project selected" } } }
+    },
+    "settings.window-placeholder" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Settings" } } }
     }
   }
 }

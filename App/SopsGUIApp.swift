@@ -9,7 +9,7 @@ struct SopsGUIApp: App {
         }
         // ⌘, is wired automatically by the Settings scene (PROPOSAL.md §4).
         Settings {
-            Text("Settings")
+            Text(.settingsWindowPlaceholder)
                 .frame(width: 480, height: 320)
         }
     }

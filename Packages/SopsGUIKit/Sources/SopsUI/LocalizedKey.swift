@@ -10,6 +10,7 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case sidebarAbout = "sidebar.about"
     case sidebarSettings = "sidebar.settings"
     case detailNoSelection = "detail.no-selection"
+    case settingsWindowPlaceholder = "settings.window-placeholder"
 
     /// The resolved English text. Used in views and asserted in tests.
     public var text: String {
@@ -17,13 +18,13 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     }
 }
 
-extension Text {
+public extension Text {
     init(_ key: LocalizedKey) {
         self.init(key.text)
     }
 }
 
-extension Label where Title == Text, Icon == Image {
+public extension Label where Title == Text, Icon == Image {
     init(_ key: LocalizedKey, systemImage: String) {
         self.init(key.text, systemImage: systemImage)
     }
