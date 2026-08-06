@@ -68,6 +68,119 @@ final class RecordingURLProtocol: URLProtocol, @unchecked Sendable {
     override func stopLoading() {}
 }
 
+/// Captures the raw plaintext bytes of exactly one incoming loopback TCP
+/// connection and answers with a canned HTTP response.
+///
+/// `URLProtocol` intercepts requests *above* CFNetwork's own header injection
+/// (see the reviewer's finding that `User-Agent`/`Accept-Language` get added
+/// below that layer), so it cannot see what actually leaves the process. This
+/// listens on `127.0.0.1` only — never a real network interface — and reads
+/// what genuinely went out on the wire, byte for byte.
+///
+/// Built on raw BSD sockets rather than `Network.framework`: `NWListener`
+/// consistently failed with `POSIXErrorCode(rawValue: 22)` ("Invalid
+/// argument") in this environment even with no sandbox restriction in play,
+/// while a plain `socket()`/`bind()`/`listen()` on `127.0.0.1` works
+/// normally. Verified with a standalone repro before writing this class.
+final class LoopbackHTTPCapture: @unchecked Sendable {
+    struct CaptureFailure: Error, CustomStringConvertible {
+        let description: String
+    }
+
+    let port: UInt16
+    private let responseBody: Data
+    private let listenSocket: Int32
+    private let semaphore = DispatchSemaphore(value: 0)
+    private var capturedRequestText = ""
+
+    init(responseBody: Data) throws {
+        self.responseBody = responseBody
+
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else {
+            throw CaptureFailure(description: "socket() failed: errno \(errno)")
+        }
+
+        var reuse: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
+
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+        addr.sin_port = 0 // ask the OS for an ephemeral port
+
+        let bindResult = withUnsafePointer(to: &addr) { ptr -> Int32 in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                bind(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bindResult == 0 else {
+            close(fd)
+            throw CaptureFailure(description: "bind() on 127.0.0.1 failed: errno \(errno)")
+        }
+
+        var boundAddr = sockaddr_in()
+        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        withUnsafeMutablePointer(to: &boundAddr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                _ = getsockname(fd, sa, &len)
+            }
+        }
+
+        guard listen(fd, 1) == 0 else {
+            close(fd)
+            throw CaptureFailure(description: "listen() failed: errno \(errno)")
+        }
+
+        // Only assign stored properties above this point; `self` is not fully
+        // initialized until they're all set, and beginAccepting() below
+        // escapes `self` into a background thread.
+        self.port = UInt16(bigEndian: boundAddr.sin_port)
+        self.listenSocket = fd
+
+        beginAccepting()
+    }
+
+    private func beginAccepting() {
+        Thread.detachNewThread { [self] in
+            let client = accept(listenSocket, nil, nil)
+            guard client >= 0 else {
+                semaphore.signal()
+                return
+            }
+            defer { close(client) }
+
+            var buffer = [UInt8](repeating: 0, count: 65536)
+            var received = Data()
+            while !String(decoding: received, as: UTF8.self).contains("\r\n\r\n") {
+                let n = read(client, &buffer, buffer.count)
+                guard n > 0 else { break }
+                received.append(contentsOf: buffer[0..<n])
+            }
+            capturedRequestText = String(decoding: received, as: UTF8.self)
+
+            let header = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(responseBody.count)\r\nConnection: close\r\n\r\n"
+            var full = Data(header.utf8)
+            full.append(responseBody)
+            full.withUnsafeBytes { raw in
+                _ = write(client, raw.baseAddress, raw.count)
+            }
+            semaphore.signal()
+        }
+    }
+
+    /// Blocks the calling (background) thread until one request has been
+    /// captured and answered, or the timeout elapses.
+    func waitForRequest(timeout: TimeInterval = 5) -> String? {
+        guard semaphore.wait(timeout: .now() + timeout) == .success else { return nil }
+        return capturedRequestText
+    }
+
+    func stop() {
+        close(listenSocket)
+    }
+}
+
 @Suite("GitHubReleaseSource", .serialized)
 struct UpstreamVersionSourceTests {
 
@@ -91,6 +204,28 @@ struct UpstreamVersionSourceTests {
     func toleratesGarbage() {
         #expect(GitHubReleaseSource.parseRelease(from: Data("not json".utf8)) == nil)
         #expect(GitHubReleaseSource.parseRelease(from: Data("{}".utf8)) == nil)
+    }
+
+    @Test("rejects a non-https release URL, e.g. javascript:, rather than passing it through")
+    func rejectsJavascriptScheme() {
+        let payload = Data("""
+        {
+          "tag_name": "v3.13.3",
+          "html_url": "javascript:alert(1)"
+        }
+        """.utf8)
+        #expect(GitHubReleaseSource.parseRelease(from: payload) == nil)
+    }
+
+    @Test("rejects a plain http release URL, not just non-URL schemes")
+    func rejectsHTTPScheme() {
+        let payload = Data("""
+        {
+          "tag_name": "v3.13.3",
+          "html_url": "http://github.com/getsops/sops/releases/tag/v3.13.3"
+        }
+        """.utf8)
+        #expect(GitHubReleaseSource.parseRelease(from: payload) == nil)
     }
 
     @Test("makes no network request at all when the user has not consented")
@@ -125,6 +260,8 @@ struct UpstreamVersionSourceTests {
         #expect(request.url == expectedURL)
         #expect(request.httpMethod == "GET")
         #expect(request.value(forHTTPHeaderField: "Accept") == "application/vnd.github+json")
+        #expect(request.value(forHTTPHeaderField: "User-Agent") == "SOPS-GUI-HealthCheck/1.0")
+        #expect(request.value(forHTTPHeaderField: "Accept-Language") == "en")
         #expect(request.httpBody == nil)
         #expect(request.httpBodyStream == nil)
         #expect(request.value(forHTTPHeaderField: "Cookie") == nil)
@@ -153,5 +290,53 @@ struct UpstreamVersionSourceTests {
         let source = GitHubReleaseSource(session: session, isEnabled: { true })
 
         #expect(await source.latestRelease(repository: "FiloSottile/age") == nil)
+    }
+
+    @Test("the default session (no session argument) persists nothing: no shared disk cookie jar, no disk cache")
+    func defaultSessionDoesNotPersist() {
+        let source = GitHubReleaseSource(isEnabled: { true })
+        let configuration = source.sessionForTesting.configuration
+
+        #expect(configuration.httpCookieStorage !== HTTPCookieStorage.shared,
+                "must not use the disk-backed shared cookie jar that other app networking might populate")
+        #expect(configuration.urlCache?.diskCapacity == 0,
+                "must not cache responses to disk")
+    }
+
+    @Test("the request on the wire carries a fixed User-Agent and Accept-Language, not CFNetwork's own")
+    func headersOnTheWireAreFixed() async throws {
+        // RecordingURLProtocol intercepts above CFNetwork's own header injection, so it
+        // cannot see (or prove an override of) headers CFNetwork adds itself — this test
+        // reads genuine bytes off a loopback socket instead. Loopback only, never a real
+        // network interface.
+        let capture = try LoopbackHTTPCapture(responseBody: realPayload)
+        defer { capture.stop() }
+
+        let baseURL = URL(string: "http://127.0.0.1:\(capture.port)")!
+        let session = URLSession(configuration: .ephemeral)
+        let source = GitHubReleaseSource(session: session, baseURL: baseURL, isEnabled: { true })
+
+        let releaseTask = Task { await source.latestRelease(repository: "getsops/sops") }
+
+        // Block a dedicated background thread, not the Swift concurrency pool,
+        // while waiting for the raw bytes to arrive.
+        let requestText: String? = await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(returning: capture.waitForRequest(timeout: 5))
+            }
+        }
+
+        let release = await releaseTask.value
+        let request = try #require(requestText, "no request reached the loopback listener")
+
+        #expect(release?.version == SemanticVersion(3, 13, 3))
+        #expect(request.hasPrefix("GET /repos/getsops/sops/releases/latest HTTP/1.1"))
+        #expect(request.contains("User-Agent: SOPS-GUI-HealthCheck/1.0\r\n"))
+        #expect(request.contains("Accept-Language: en\r\n"))
+        // The property this whole test exists to prove: CFNetwork's own defaults,
+        // which would leak the OS build and the user's real system language, must
+        // not appear anywhere in what actually left the process.
+        #expect(!request.contains("CFNetwork"))
+        #expect(!request.contains("Darwin/"))
     }
 }
