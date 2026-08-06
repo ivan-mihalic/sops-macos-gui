@@ -1,0 +1,30 @@
+name: SopsGUI
+options:
+  bundleIdPrefix: cz.mihalic
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: YES
+    ENABLE_HARDENED_RUNTIME: YES
+packages:
+  SopsGUIKit:
+    path: Packages/SopsGUIKit
+targets:
+  SopsGUI:
+    type: application
+    platform: macOS
+    sources:
+      - App
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleName: SOPS GUI
+        LSApplicationCategoryType: public.app-category.developer-tools
+        LSMinimumSystemVersion: "14.0"
+    dependencies:
+      - package: SopsGUIKit
+        product: SopsUI
