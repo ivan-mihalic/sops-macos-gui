@@ -1,0 +1,133 @@
+import Foundation
+
+public enum KeyStoreState: Equatable, Sendable {
+    case configured
+    case empty
+    /// The store itself is not available yet — e.g. the feature has not shipped.
+    case unavailable(reason: String)
+}
+
+public protocol KeyStoreStatusProviding: Sendable {
+    var state: KeyStoreState { get }
+}
+
+public enum BiometryState: Equatable, Sendable {
+    case available
+    case notEnrolled
+    case unavailable(reason: String)
+}
+
+public protocol BiometryStatusProviding: Sendable {
+    var state: BiometryState { get }
+}
+
+public protocol AppUpdateStatusProviding: Sendable {
+    var state: HealthStatus { get }
+    var detail: String { get }
+}
+
+/// PROPOSAL.md §6 C. Everything here is read-only inspection of the local
+/// machine and the app's own configuration.
+///
+/// The single most valuable thing this check does is flag a plaintext age key
+/// file left behind by `age-keygen`/`sops` conventions at
+/// `~/.config/sops/age/keys.txt` — the app's whole security model is that the
+/// key lives in the Keychain behind Touch ID instead. That finding reports
+/// only the file's *existence* (via `FileManager.fileExists`, a `stat`, not a
+/// read). It never opens, parses, or logs the file's contents, and it never
+/// deletes it — the app never mutates the system; it explains, and the user
+/// acts.
+public struct SecurityPostureCheck: HealthCheck {
+    public let id = "security-posture"
+    public let category = HealthCategory.security
+
+    private let osVersion: SemanticVersion
+    private let minimumOSVersion: SemanticVersion
+    private let keyStore: any KeyStoreStatusProviding
+    private let biometry: any BiometryStatusProviding
+    private let appUpdates: any AppUpdateStatusProviding
+    private let legacyKeyFilePath: String
+
+    public init(osVersion: SemanticVersion,
+                minimumOSVersion: SemanticVersion,
+                keyStore: any KeyStoreStatusProviding,
+                biometry: any BiometryStatusProviding,
+                appUpdates: any AppUpdateStatusProviding,
+                legacyKeyFilePath: String) {
+        self.osVersion = osVersion
+        self.minimumOSVersion = minimumOSVersion
+        self.keyStore = keyStore
+        self.biometry = biometry
+        self.appUpdates = appUpdates
+        self.legacyKeyFilePath = legacyKeyFilePath
+    }
+
+    public func run() async -> [HealthFinding] {
+        [osFinding, biometryFinding, keyStoreFinding, legacyKeyFileFinding, appUpdateFinding]
+    }
+
+    private var osFinding: HealthFinding {
+        osVersion >= minimumOSVersion
+            ? HealthFinding(id: "security.os", title: "macOS version", status: .ok,
+                            detail: "macOS \(osVersion).")
+            : HealthFinding(id: "security.os", title: "macOS version", status: .problem,
+                            detail: "macOS \(osVersion) is below the minimum \(minimumOSVersion) this app supports.",
+                            remediation: Remediation(
+                                explanation: "Update macOS in System Settings › General › Software Update."))
+    }
+
+    private var biometryFinding: HealthFinding {
+        switch biometry.state {
+        case .available:
+            HealthFinding(id: "security.biometry", title: "Touch ID", status: .ok,
+                          detail: "Touch ID is available for unlocking your key.")
+        case .notEnrolled:
+            HealthFinding(id: "security.biometry", title: "Touch ID", status: .warning,
+                          detail: "No fingerprint is enrolled, so unlocking will fall back to your password.",
+                          remediation: Remediation(
+                              explanation: "Add a fingerprint in System Settings › Touch ID & Password."))
+        case .unavailable(let reason):
+            HealthFinding(id: "security.biometry", title: "Touch ID",
+                          status: .skipped(reason: reason),
+                          detail: "Unlocking will use your password instead.")
+        }
+    }
+
+    private var keyStoreFinding: HealthFinding {
+        switch keyStore.state {
+        case .configured:
+            HealthFinding(id: "security.keystore", title: "Your age key", status: .ok,
+                          detail: "An age key is stored in your Keychain.")
+        case .empty:
+            HealthFinding(id: "security.keystore", title: "Your age key", status: .problem,
+                          detail: "No age key is configured, so nothing can be decrypted.",
+                          remediation: Remediation(
+                              explanation: "Generate a new key, or import an existing one, from the Keys section of this app."))
+        case .unavailable(let reason):
+            HealthFinding(id: "security.keystore", title: "Your age key",
+                          status: .skipped(reason: reason), detail: reason)
+        }
+    }
+
+    /// A plaintext key file on disk defeats the point of Keychain storage.
+    /// Only its existence is checked — via `fileExists`, which stats the path
+    /// and needs no read permission on the file itself. The contents are
+    /// never opened, read, or logged.
+    private var legacyKeyFileFinding: HealthFinding {
+        guard FileManager.default.fileExists(atPath: legacyKeyFilePath) else {
+            return HealthFinding(id: "security.legacy-key-file", title: "Plaintext key file",
+                                 status: .ok,
+                                 detail: "No unprotected age key file was found.")
+        }
+        return HealthFinding(
+            id: "security.legacy-key-file", title: "Plaintext key file", status: .warning,
+            detail: "An age key file sits unencrypted at \(legacyKeyFilePath). Anything that can read your home directory — including any process you run — can read that key.",
+            remediation: Remediation(
+                explanation: "Import it into the Keychain from the Keys section of this app. Once the import is verified, delete the file yourself; this app will not delete it for you."))
+    }
+
+    private var appUpdateFinding: HealthFinding {
+        HealthFinding(id: "security.app-updates", title: "App updates",
+                      status: appUpdates.state, detail: appUpdates.detail)
+    }
+}
