@@ -8,6 +8,7 @@ let package = Package(
     products: [
         .library(name: "SopsUI", targets: ["SopsUI"]),
         .library(name: "SopsEngine", targets: ["SopsEngine"]),
+        .library(name: "SopsHealth", targets: ["SopsHealth"]),
     ],
     targets: [
         .target(name: "SopsUI", resources: [.process("Resources")]),
@@ -26,5 +27,7 @@ let package = Package(
             ]
         ),
         .testTarget(name: "SopsEngineTests", dependencies: ["SopsEngine"]),
+        .target(name: "SopsHealth", dependencies: ["SopsEngine"]),
+        .testTarget(name: "SopsHealthTests", dependencies: ["SopsHealth"]),
     ]
 )
