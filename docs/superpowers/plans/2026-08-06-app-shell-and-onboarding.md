@@ -49,6 +49,7 @@
 | `Sources/SopsUI/Health/HealthFindingRow.swift` | One finding: status glyph, title, detail, remediation. |
 | `Sources/SopsUI/Health/OnboardingWizard.swift` | First-launch modal; steps through categories. |
 | `Sources/SopsUI/Resources/Localizable.xcstrings` | All user-facing strings. |
+| `Sources/SopsUI/Resources/LocalizedKey.swift` | Typed keys into the catalog; a missing entry becomes a test failure. |
 
 ---
 
@@ -87,6 +88,45 @@ func pinnedSections() {
 }
 ```
 
+`Packages/SopsGUIKit/Tests/SopsUITests/LocalizationTests.swift`:
+
+```swift
+import Foundation
+import Testing
+@testable import SopsUI
+
+@Suite("localization")
+struct LocalizationTests {
+
+    @Test("the string catalog ships in the module bundle")
+    func catalogIsBundled() throws {
+        #expect(Bundle.module.url(forResource: "Localizable", withExtension: "xcstrings") != nil,
+                "Localizable.xcstrings is missing from the SopsUI bundle")
+    }
+
+    // Every view added in any task must add its keys here. A key that resolves
+    // to itself means the catalog entry was forgotten.
+    @Test("every key this module uses resolves to English text, not to the key",
+          arguments: LocalizedKey.allCases)
+    func everyKeyResolves(key: LocalizedKey) {
+        #expect(key.text != key.rawValue, "missing catalog entry for \(key.rawValue)")
+    }
+}
+```
+
+- [ ] **Step 1b: Extend the failing test to cover the sidebar's own keys**
+
+Append to `AppShellTests.swift`:
+
+```swift
+@Test("the sidebar labels come from the string catalog")
+func sidebarLabelsAreLocalized() {
+    #expect(LocalizedKey.sidebarProjects.text == "Projects")
+    #expect(LocalizedKey.sidebarAbout.text == "About")
+    #expect(LocalizedKey.sidebarSettings.text == "Settings")
+}
+```
+
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
@@ -111,10 +151,79 @@ let package = Package(
         .library(name: "SopsUI", targets: ["SopsUI"])
     ],
     targets: [
-        .target(name: "SopsUI"),
+        .target(name: "SopsUI", resources: [.process("Resources")]),
         .testTarget(name: "SopsUITests", dependencies: ["SopsUI"]),
     ]
 )
+```
+
+- [ ] **Step 3b: Create the string catalog and its key type**
+
+Every user-facing string in this module goes through here, from the first view
+onward — that is a Global Constraint, not a later cleanup. `LocalizedKey` makes
+a forgotten entry a test failure instead of a string that silently renders as
+its own key.
+
+`Packages/SopsGUIKit/Sources/SopsUI/Resources/Localizable.xcstrings`:
+
+```json
+{
+  "sourceLanguage" : "en",
+  "version" : "1.0",
+  "strings" : {
+    "sidebar.projects" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Projects" } } }
+    },
+    "sidebar.about" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "About" } } }
+    },
+    "sidebar.settings" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Settings" } } }
+    },
+    "detail.no-selection" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "No project selected" } } }
+    }
+  }
+}
+```
+
+`Packages/SopsGUIKit/Sources/SopsUI/Resources/LocalizedKey.swift`:
+
+```swift
+import Foundation
+import SwiftUI
+
+/// Every user-facing string this module can render.
+///
+/// Views never take a string literal. Adding a case without adding the matching
+/// entry to Localizable.xcstrings fails `everyKeyResolves`.
+public enum LocalizedKey: String, CaseIterable, Sendable {
+    case sidebarProjects = "sidebar.projects"
+    case sidebarAbout = "sidebar.about"
+    case sidebarSettings = "sidebar.settings"
+    case detailNoSelection = "detail.no-selection"
+
+    /// The resolved English text. Used in views and asserted in tests.
+    public var text: String {
+        String(localized: String.LocalizationValue(rawValue), bundle: .module)
+    }
+}
+
+extension Text {
+    init(_ key: LocalizedKey) {
+        self.init(key.text)
+    }
+}
+
+extension Label where Title == Text, Icon == Image {
+    init(_ key: LocalizedKey, systemImage: String) {
+        self.init(key.text, systemImage: systemImage)
+    }
+}
 ```
 
 - [ ] **Step 4: Write the minimal shell**
@@ -139,17 +248,17 @@ public struct AppShell: View {
     public var body: some View {
         NavigationSplitView {
             List(selection: $selection) {
-                Label("Projects", systemImage: "folder")
+                Label(.sidebarProjects, systemImage: "folder")
                     .tag(Section.projects)
                 Spacer()
-                Label("About", systemImage: "info.circle")
+                Label(.sidebarAbout, systemImage: "info.circle")
                     .tag(Section.about)
-                Label("Settings", systemImage: "gearshape")
+                Label(.sidebarSettings, systemImage: "gearshape")
                     .tag(Section.settings)
             }
             .navigationSplitViewColumnWidth(min: 200, ideal: 220)
         } detail: {
-            Text("No project selected")
+            Text(.detailNoSelection)
                 .foregroundStyle(.secondary)
         }
     }
@@ -162,7 +271,8 @@ public struct AppShell: View {
 cd Packages/SopsGUIKit && swift test
 ```
 
-Expected: PASS, 2 tests.
+Expected: PASS — 2 shell tests, 1 sidebar-label test, and the localization suite
+(1 bundle test plus one case per `LocalizedKey`).
 
 - [ ] **Step 6: Write the app entry point**
 
@@ -2739,6 +2849,32 @@ cd Packages/SopsGUIKit && swift test --filter HealthViewModel
 
 Expected: PASS, 5 tests.
 
+- [ ] **Step 5b: Add this task's catalog entries**
+
+Add these cases to `LocalizedKey` (Task 1) and a matching entry to
+`Localizable.xcstrings` for each. `everyKeyResolves` fails until both sides exist.
+
+```swift
+    case statusOK = "status.ok"                              // "OK"
+    case statusWarning = "status.warning"                    // "Warning"
+    case statusProblem = "status.problem"                    // "Problem"
+    case statusSkipped = "status.skipped"                    // "Skipped"
+    case statusUnknown = "status.unknown"                    // "Unknown"
+    case actionCopy = "action.copy"                          // "Copy"
+    case actionCopied = "action.copied"                      // "Copied"
+    case actionLearnMore = "action.learn-more"               // "Learn more"
+    case actionRerunChecks = "action.rerun-checks"           // "Re-run checks"
+    case healthChecking = "health.checking"                  // "Checking…"
+    case healthCategoryTools = "health.category.tools"       // "Command-line tools"
+    case healthCategoryEngine = "health.category.engine"     // "Encryption engine"
+    case healthCategorySecurity = "health.category.security" // "Security"
+    case healthCategoryProjects = "health.category.projects" // "Projects"
+```
+
+Findings produced by `SopsHealth` carry their own English text and stay as they
+are — they are diagnostic output, not chrome. Localizing them is a separate job
+for whenever a second language is added.
+
 - [ ] **Step 6: Implement the row view**
 
 `Packages/SopsGUIKit/Sources/SopsUI/Health/HealthFindingRow.swift`:
@@ -2788,7 +2924,7 @@ struct HealthFindingRow: View {
                             .padding(6)
                             .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
                         // The app shows the command; the user runs it. PROPOSAL.md §6.
-                        Button(didCopy ? "Copied" : "Copy") {
+                        Button(didCopy ? LocalizedKey.actionCopied.text : LocalizedKey.actionCopy.text) {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(command, forType: .string)
                             didCopy = true
@@ -2796,7 +2932,7 @@ struct HealthFindingRow: View {
                     }
                 }
                 if let url = remediation.documentationURL {
-                    Link("Learn more", destination: url).font(.callout)
+                    Link(LocalizedKey.actionLearnMore.text, destination: url).font(.callout)
                 }
             }
         }
@@ -2824,11 +2960,11 @@ struct HealthFindingRow: View {
 
     private var statusDescription: String {
         switch finding.status {
-        case .ok: "OK"
-        case .warning: "Warning"
-        case .problem: "Problem"
-        case .skipped: "Skipped"
-        case .unknown: "Unknown"
+        case .ok: LocalizedKey.statusOK.text
+        case .warning: LocalizedKey.statusWarning.text
+        case .problem: LocalizedKey.statusProblem.text
+        case .skipped: LocalizedKey.statusSkipped.text
+        case .unknown: LocalizedKey.statusUnknown.text
         }
     }
 }
@@ -2868,10 +3004,10 @@ public struct HealthPanel: View {
             HStack {
                 if model.isRunning {
                     ProgressView().controlSize(.small)
-                    Text("Checking…").foregroundStyle(.secondary)
+                    Text(.healthChecking).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Re-run checks") {
+                Button(LocalizedKey.actionRerunChecks.text) {
                     Task { await model.refresh() }
                 }
                 .disabled(model.isRunning)
@@ -2885,10 +3021,10 @@ public struct HealthPanel: View {
 
     private func title(for category: HealthCategory) -> String {
         switch category {
-        case .tools: "Command-line tools"
-        case .engine: "Encryption engine"
-        case .security: "Security"
-        case .projects: "Projects"
+        case .tools: LocalizedKey.healthCategoryTools.text
+        case .engine: LocalizedKey.healthCategoryEngine.text
+        case .security: LocalizedKey.healthCategorySecurity.text
+        case .projects: LocalizedKey.healthCategoryProjects.text
         }
     }
 }
@@ -2902,7 +3038,7 @@ Add the panel as a Settings tab in `App/SopsGUIApp.swift`:
         Settings {
             TabView {
                 HealthPanel(model: HealthViewModel(report: .standard()))
-                    .tabItem { Label("Health", systemImage: "stethoscope") }
+                    .tabItem { Label(.settingsTabHealth, systemImage: "stethoscope") }
             }
             .frame(width: 620, height: 480)
         }
@@ -3256,6 +3392,35 @@ cd Packages/SopsGUIKit && swift test --filter OnboardingState
 
 Expected: PASS, 6 tests.
 
+- [ ] **Step 4b: Add this task's catalog entries**
+
+Add these cases to `LocalizedKey` (Task 1) and a matching `Localizable.xcstrings`
+entry for each — `everyKeyResolves` fails until both sides exist. The English
+values are the exact copy to use:
+
+```swift
+    case actionBack = "action.back"                                  // "Back"
+    case actionContinue = "action.continue"                          // "Continue"
+    case actionDone = "action.done"                                  // "Done"
+    case actionRunSetupCheck = "action.run-setup-check"              // "Run Setup Check…"
+    case settingsTabHealth = "settings.tab.health"                   // "Health"
+    case onboardingWelcomeTitle = "onboarding.welcome.title"         // "Welcome"
+    case onboardingSummaryTitle = "onboarding.summary.title"         // "Summary"
+    case onboardingWelcomeSubtitle = "onboarding.welcome.subtitle"   // "A quick look at how this machine is set up."
+    case onboardingToolsSubtitle = "onboarding.tools.subtitle"       // "Optional, but the Help snippets rely on them."
+    case onboardingEngineSubtitle = "onboarding.engine.subtitle"     // "The sops and age versions built into this app."
+    case onboardingSecuritySubtitle = "onboarding.security.subtitle" // "How your key is protected on this Mac."
+    case onboardingProjectsSubtitle = "onboarding.projects.subtitle" // "Your .sops.yaml files and encrypted secrets."
+    case onboardingSummarySubtitle = "onboarding.summary.subtitle"   // "That's everything."
+    case onboardingWelcomeBody1 = "onboarding.welcome.body1"         // "This app encrypts and decrypts your secrets itself — no command-line tools required."
+    case onboardingWelcomeBody2 = "onboarding.welcome.body2"         // "The next few screens check your machine anyway, because the snippets in Help run in your terminal and in CI, against the same files."
+    case onboardingWelcomeBody3 = "onboarding.welcome.body3"         // "Nothing here is installed or changed for you. Where something needs fixing, you get the command and run it yourself."
+    case onboardingSummaryOK = "onboarding.summary.ok"               // "Everything checks out."
+    case onboardingSummaryWarning = "onboarding.summary.warning"     // "Some things are worth a look."
+    case onboardingSummaryProblem = "onboarding.summary.problem"     // "Some things need fixing."
+    case onboardingSummaryFooter = "onboarding.summary.footer"       // "You can re-run these checks any time from Settings › Health. Nothing here blocks you from using the app."
+```
+
 - [ ] **Step 5: Implement the wizard view**
 
 `Packages/SopsGUIKit/Sources/SopsUI/Health/OnboardingWizard.swift`:
@@ -3295,17 +3460,17 @@ public struct OnboardingWizard: View {
             Divider()
 
             HStack {
-                Button("Back") { state.back() }
+                Button(LocalizedKey.actionBack.text) { state.back() }
                     .disabled(state.step == .welcome)
                 Spacer()
                 if state.step == .summary {
-                    Button("Done") {
+                    Button(LocalizedKey.actionDone.text) {
                         state.finish()
                         dismiss()
                     }
                     .keyboardShortcut(.defaultAction)
                 } else {
-                    Button("Continue") { state.advance() }
+                    Button(LocalizedKey.actionContinue.text) { state.advance() }
                         .keyboardShortcut(.defaultAction)
                 }
             }
@@ -3317,9 +3482,9 @@ public struct OnboardingWizard: View {
 
     private var welcome: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("This app encrypts and decrypts your secrets itself — no command-line tools required.")
-            Text("The next few screens check your machine anyway, because the snippets in Help run in your terminal and in CI, against the same files.")
-            Text("Nothing here is installed or changed for you. Where something needs fixing, you get the command and run it yourself.")
+            Text(.onboardingWelcomeBody1)
+            Text(.onboardingWelcomeBody2)
+            Text(.onboardingWelcomeBody3)
                 .foregroundStyle(.secondary)
         }
     }
@@ -3328,39 +3493,39 @@ public struct OnboardingWizard: View {
         VStack(alignment: .leading, spacing: 12) {
             switch health.headlineStatus {
             case .ok:
-                Label("Everything checks out.", systemImage: "checkmark.circle.fill")
+                Label(.onboardingSummaryOK, systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green).font(.title3)
             case .warning, .unknown, .skipped:
-                Label("Some things are worth a look.", systemImage: "exclamationmark.triangle.fill")
+                Label(.onboardingSummaryWarning, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange).font(.title3)
             case .problem:
-                Label("Some things need fixing.", systemImage: "xmark.octagon.fill")
+                Label(.onboardingSummaryProblem, systemImage: "xmark.octagon.fill")
                     .foregroundStyle(.red).font(.title3)
             }
-            Text("You can re-run these checks any time from Settings › Health. Nothing here blocks you from using the app.")
+            Text(.onboardingSummaryFooter)
                 .foregroundStyle(.secondary)
         }
     }
 
     private var title: String {
         switch state.step {
-        case .welcome: "Welcome"
-        case .tools: "Command-line tools"
-        case .engine: "Encryption engine"
-        case .security: "Security"
-        case .projects: "Projects"
-        case .summary: "Summary"
+        case .welcome: LocalizedKey.onboardingWelcomeTitle.text
+        case .tools: LocalizedKey.healthCategoryTools.text
+        case .engine: LocalizedKey.healthCategoryEngine.text
+        case .security: LocalizedKey.healthCategorySecurity.text
+        case .projects: LocalizedKey.healthCategoryProjects.text
+        case .summary: LocalizedKey.onboardingSummaryTitle.text
         }
     }
 
     private var subtitle: String {
         switch state.step {
-        case .welcome: "A quick look at how this machine is set up."
-        case .tools: "Optional, but the Help snippets rely on them."
-        case .engine: "The sops and age versions built into this app."
-        case .security: "How your key is protected on this Mac."
-        case .projects: "Your .sops.yaml files and encrypted secrets."
-        case .summary: "That's everything."
+        case .welcome: LocalizedKey.onboardingWelcomeSubtitle.text
+        case .tools: LocalizedKey.onboardingToolsSubtitle.text
+        case .engine: LocalizedKey.onboardingEngineSubtitle.text
+        case .security: LocalizedKey.onboardingSecuritySubtitle.text
+        case .projects: LocalizedKey.onboardingProjectsSubtitle.text
+        case .summary: LocalizedKey.onboardingSummarySubtitle.text
         }
     }
 }
@@ -3389,7 +3554,7 @@ struct SopsGUIApp: App {
         }
         .commands {
             CommandGroup(after: .appInfo) {
-                Button("Run Setup Check…") {
+                Button(LocalizedKey.actionRunSetupCheck.text) {
                     onboarding.restart()
                     isShowingOnboarding = true
                 }
@@ -3399,7 +3564,7 @@ struct SopsGUIApp: App {
         Settings {
             TabView {
                 HealthPanel(model: health)
-                    .tabItem { Label("Health", systemImage: "stethoscope") }
+                    .tabItem { Label(.settingsTabHealth, systemImage: "stethoscope") }
             }
             .frame(width: 620, height: 480)
         }
@@ -3426,127 +3591,7 @@ git commit -m "M1: re-runnable onboarding wizard"
 
 ---
 
-### Task 15: Localize every string
-
-**Files:**
-- Create: `Packages/SopsGUIKit/Sources/SopsUI/Resources/Localizable.xcstrings`
-- Modify: every file under `Packages/SopsGUIKit/Sources/SopsUI/`
-- Modify: `Packages/SopsGUIKit/Package.swift`
-
-**Interfaces:**
-- Consumes: everything built so far.
-- Produces: no new API. All user-facing text resolves through the `SopsUI` bundle.
-
-- [ ] **Step 1: Declare the resource**
-
-In `Packages/SopsGUIKit/Package.swift`, change the SopsUI target:
-
-```swift
-        .target(
-            name: "SopsUI",
-            dependencies: ["SopsHealth"],
-            resources: [.process("Resources")]
-        ),
-```
-
-- [ ] **Step 2: Write the failing test**
-
-`Packages/SopsGUIKit/Tests/SopsUITests/LocalizationTests.swift`:
-
-```swift
-import Foundation
-import Testing
-@testable import SopsUI
-
-@Suite("localization")
-struct LocalizationTests {
-
-    @Test("the string catalog ships in the module bundle")
-    func catalogIsBundled() throws {
-        let url = Bundle.module.url(forResource: "Localizable", withExtension: "xcstrings")
-        #expect(url != nil, "Localizable.xcstrings is missing from the SopsUI bundle")
-    }
-
-    @Test("a known key resolves to English rather than echoing the key")
-    func resolvesKnownKey() {
-        let value = String(localized: "onboarding.welcome.title", bundle: .module)
-        #expect(value != "onboarding.welcome.title")
-    }
-}
-```
-
-- [ ] **Step 3: Run it to verify it fails**
-
-```bash
-cd Packages/SopsGUIKit && swift test --filter localization
-```
-
-Expected: FAIL — the catalog does not exist.
-
-- [ ] **Step 4: Create the catalog**
-
-`Packages/SopsGUIKit/Sources/SopsUI/Resources/Localizable.xcstrings`:
-
-```json
-{
-  "sourceLanguage" : "en",
-  "version" : "1.0",
-  "strings" : {
-    "onboarding.welcome.title" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : { "state" : "translated", "value" : "Welcome" }
-        }
-      }
-    }
-  }
-}
-```
-
-- [ ] **Step 5: Run it to verify it passes**
-
-```bash
-cd Packages/SopsGUIKit && swift test --filter localization
-```
-
-Expected: PASS, 2 tests.
-
-- [ ] **Step 6: Route every literal through the catalog**
-
-Work through `AppShell.swift`, `HealthPanel.swift`, `HealthFindingRow.swift`, `OnboardingWizard.swift`. Replace each user-facing literal, e.g. in `OnboardingWizard.title`:
-
-```swift
-        case .welcome: String(localized: "onboarding.welcome.title", bundle: .module)
-        case .tools: String(localized: "onboarding.tools.title", bundle: .module)
-```
-
-Add the matching entry to `Localizable.xcstrings` for each key as you go. Findings produced by `SopsHealth` carry their own English text and stay as they are — they are diagnostic output, not chrome, and localizing them is a separate job when a second language is added.
-
-- [ ] **Step 7: Verify nothing is left behind**
-
-```bash
-cd Packages/SopsGUIKit && grep -rnE 'Text\("|Button\("|Label\("' Sources/SopsUI --include='*.swift'
-```
-
-Expected: no matches outside the string-catalog lookups. Then:
-
-```bash
-swift test
-```
-
-Expected: the whole suite passes.
-
-- [ ] **Step 8: Commit**
-
-```bash
-git add Packages/SopsGUIKit
-git commit -m "M1: route all UI strings through the String Catalog"
-```
-
----
-
-### Task 16: Final verification
+### Task 15: Final verification
 
 **Files:**
 - Modify: `README.md` (create if absent)
@@ -3583,6 +3628,15 @@ grep -rniE 'AGE-SECRET-KEY|print\(.*key' Packages/SopsGUIKit/Sources App
 
 Expected: no matches outside test files.
 
+- [ ] **Step 3b: Confirm no UI string escaped the catalog**
+
+```bash
+grep -rnE 'Text\("|Button\("|Label\("|Link\("' Packages/SopsGUIKit/Sources/SopsUI --include='*.swift'
+```
+
+Expected: no matches — every view takes a `LocalizedKey`, never a literal. The
+`everyKeyResolves` test already proves each key has an English value.
+
 - [ ] **Step 4: Write the README**
 
 Cover: what the app is, the arm64-only + macOS 14 constraints, `./Scripts/bootstrap.sh` as the one-command setup, where the Go engine lives, how to run each suite, and a pointer to `PROPOSAL.md` and `docs/adr/`.
@@ -3614,7 +3668,7 @@ git commit -m "M1: README and final verification pass"
 | D — honest wording about what was verified | 11 (`wordingIsHonestAboutWhatWasVerified`) |
 | OK / Warning / Problem / Skipped with reasons | 5 |
 | Nothing blocks | 14 (summary copy), 5 (no throwing path) |
-| String Catalogs from day one | 15 |
+| String Catalogs from day one | 1, 12, 14 (keys added by the task that renders them) |
 | Engine integration (§3) | 2, 3 |
 | Sidebar with About/Settings pinned (§4) | 1 |
 

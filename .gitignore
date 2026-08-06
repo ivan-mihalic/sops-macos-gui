@@ -16,3 +16,6 @@ release.local.env
 keys.txt
 
 .DS_Store
+
+# Worktrees live here (see CLAUDE.md)
+.worktrees/
