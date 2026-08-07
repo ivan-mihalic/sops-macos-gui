@@ -200,6 +200,71 @@ git add -A && git commit -m "M2: bound the project scan and disclose when it is 
 
 ---
 
+### Task 1b: Make the bounded scan affordable
+
+Added after Task 1 measured the result. Task 1 brought a 272,802-file repository from 170s to
+**8.6s** — but a reviewer instrumented where that time goes, and the answer changes what to do
+about it: the directory walk is only ~1.0–1.3s. The remaining **85–88%** is the per-file tail
+read across the 20,000-file budget.
+
+**The obvious fix is closed.** Reading fewer files by filtering on extension — only tail-reading
+`.yaml`, `.json`, `.env` — reopens exactly the blind spot that removing the hidden-file exclusion
+was meant to close, keyed on extension instead of a leading dot. PROPOSAL §3 requires discovery
+"by sops metadata sniffing" precisely so an encrypted file is found regardless of what it is
+called. So coverage does not shrink; throughput has to improve.
+
+Task 5 puts this behind a project picker, and §6 requires the report to be re-runnable on
+demand, so the cost is paid again on every re-run and multiplies across projects.
+
+**Files:**
+- Modify: `Sources/SopsHealth/ProjectScanner.swift` (after Task 2 extracts it)
+- Test: `Tests/SopsHealthTests/ProjectScanPerformanceTests.swift`
+
+**Interfaces:** unchanged. `ProjectScanner.scan(root:)` keeps its signature and its results; only
+how it reads changes. If it must become `async` to parallelise, update both call sites and say so.
+
+- [ ] **Step 1: Pin the current behaviour before changing it**
+
+Write a test that scans a fixture tree containing an encrypted file, a plaintext candidate, a
+file inside an excluded directory, and enough files to truncate — and asserts the exact
+`ScannedTree` contents. This is the safety net: a throughput change that alters *what* is found
+is a correctness regression, and this test is what catches it. Run it and see it pass against
+the current implementation.
+
+- [ ] **Step 2: Measure, with a number in the report**
+
+Time `scan(root:)` against a large real checkout. Record files visited and wall clock. Report it.
+
+- [ ] **Step 3: Parallelise the tail reads**
+
+They are I/O-bound and mutually independent. Use a `TaskGroup` with a bounded width — unbounded
+concurrency over 20,000 files will exhaust file descriptors, so pick a width, justify it, and
+prove the bound holds. Keep the result deterministic: the returned arrays must not depend on
+completion order, or every downstream test becomes flaky.
+
+- [ ] **Step 4: Re-run Step 1's test and the full suite**
+
+Same results, faster. If anything found differs, stop — you changed behaviour, not throughput.
+
+- [ ] **Step 5: Measure again and decide whether to continue**
+
+If parallelisation alone lands the large-repo scan comfortably under about two seconds, stop
+there and say so. Only if it does not, take the next lever: replace `FileHandle`
+(open + seekToEnd + seek + read + close, ObjC-bridged, five syscalls a file) with a `pread`-based
+read. Measure again.
+
+An mtime-keyed cache so a re-run does not re-pay the full cost is a third lever. **Do not build
+it unless the first two leave the number unacceptable** — it adds invalidation state, and a stale
+cache entry would make the app report on a file as it used to be, which is this project's
+defining failure mode wearing a different hat.
+
+- [ ] **Step 6: Report the final numbers and commit**
+
+State plainly what the large-repo scan now costs and whether you consider it acceptable behind a
+project picker. If it is still not, say what you would do next rather than declaring victory.
+
+---
+
 ### Task 2: Extract the scanner out of ProjectHealthCheck
 
 853 lines, four concerns, and the most reproduced Criticals of any file on the M1 branch. M2's file list needs the same discovery logic; duplicating it would be the worst available outcome.
