@@ -22,11 +22,11 @@ struct ProjectScanBoundsTests {
     @Test("dependency directories are not walked", arguments: [
         "node_modules", ".build", ".worktrees", "target", "vendor", "Pods", ".venv", "dist",
     ])
-    func skipsDependencyDirectories(dirName: String) throws {
+    func skipsDependencyDirectories(dirName: String) async throws {
         let root = try makeTree(dirName: dirName, count: 200)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let scanned = ProjectScanner.scan(root: root)
+        let scanned = await ProjectScanner.scan(root: root)
 
         #expect(scanned.plaintextCandidates.contains { $0.path.hasSuffix(".env") },
                 "the root .env must still be found")
@@ -37,11 +37,11 @@ struct ProjectScanBoundsTests {
     // A budget that is silently hit is the same defect class as a check that
     // reports OK about something it never looked at.
     @Test("hitting the file budget is reported, not swallowed")
-    func truncationIsDisclosed() throws {
+    func truncationIsDisclosed() async throws {
         let root = try makeTree(dirName: "src", count: ProjectScanner.maxScannedFiles + 50)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let scanned = ProjectScanner.scan(root: root)
+        let scanned = await ProjectScanner.scan(root: root)
 
         #expect(scanned.wasTruncated)
     }

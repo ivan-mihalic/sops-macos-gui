@@ -158,14 +158,25 @@ struct ProjectHealthCheckLargeFileTests {
     // hundred bytes to a few KB), so this isolates the per-file *count*
     // cost from the per-file *size* cost the other tests in this file
     // cover.
+    // Ceiling widened from 500ms to 3s (Task 1b): this suite now runs
+    // alongside `ProjectScanPerformanceTests`' own multi-tens-of-thousands
+    // -file fixtures in the same Swift Testing concurrent task pool, and
+    // 500ms was measured to be sensitive to that legitimate parallel I/O
+    // and CPU contention — this exact test observed 2.046s in a full-suite
+    // run while completing in ~0.1s in isolation, with no change to the
+    // production code path it exercises. 3s matches the ceiling already
+    // used by the other two tests in this file (see their own "Generous
+    // ceiling" comments) and still catches the regression this test
+    // exists for by a wide margin: that regression cost ~7.7s at 15 files
+    // and ~10.3s at 20.
     @Test("a tree of 15 real-sized encrypted files does not accumulate meaningful per-file cost")
     func fifteenRealSizedFilesStayFast() async throws {
-        try await assertTreeOfFilesStaysFast(fileCount: 15, ceiling: .milliseconds(500))
+        try await assertTreeOfFilesStaysFast(fileCount: 15, ceiling: .seconds(3))
     }
 
     @Test("a tree of 20 real-sized encrypted files does not accumulate meaningful per-file cost")
     func twentyRealSizedFilesStayFast() async throws {
-        try await assertTreeOfFilesStaysFast(fileCount: 20, ceiling: .milliseconds(500))
+        try await assertTreeOfFilesStaysFast(fileCount: 20, ceiling: .seconds(3))
     }
 
     private func assertTreeOfFilesStaysFast(fileCount: Int, ceiling: Duration) async throws {

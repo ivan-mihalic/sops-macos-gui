@@ -89,18 +89,29 @@ public struct ProjectHealthCheck: HealthCheck {
         // An index cannot collide with another index. Deriving identity from
         // anything the user types is the bug; the fix is to stop. The user's
         // own name is unaffected — it is shown in `title`, verbatim.
-        return projects.enumerated().flatMap { index, project in
-            findings(for: project, idScope: String(index), gitPath: gitPath)
+        //
+        // Sequential across projects, not a `TaskGroup` fan-out: each
+        // project's own scan already parallelises its tail reads
+        // (`ProjectScanner.tailReadConcurrencyWidth`), and running multiple
+        // projects' scans concurrently on top of that would multiply file
+        // descriptor pressure rather than wall clock — out of scope for what
+        // this task measured. A `for` loop replaces the previous `flatMap`
+        // only because `findings(for:)` must now `await` the scan; ordering
+        // and result shape are otherwise unchanged.
+        var allFindings: [HealthFinding] = []
+        for (index, project) in projects.enumerated() {
+            allFindings.append(contentsOf: await findings(for: project, idScope: String(index), gitPath: gitPath))
         }
+        return allFindings
     }
 
     private func findings(for project: InspectedProject, idScope: String,
-                          gitPath: String?) -> [HealthFinding] {
+                          gitPath: String?) async -> [HealthFinding] {
         let root = URL(fileURLWithPath: project.rootPath)
         let configURL = root.appendingPathComponent(".sops.yaml")
 
         // One walk of the tree feeds both findings below.
-        let tree = ProjectScanner.scan(root: root)
+        let tree = await ProjectScanner.scan(root: root)
         let leak = gitignoreFinding(for: project, idScope: idScope, root: root,
                                     candidates: tree.plaintextCandidates, gitPath: gitPath)
 
