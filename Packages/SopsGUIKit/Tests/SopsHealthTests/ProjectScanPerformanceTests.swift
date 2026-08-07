@@ -185,30 +185,51 @@ struct ProjectScanPerformanceTests {
         print("SCAN_TIMING_ROOT=\(path): elapsed=\(elapsed) wasTruncated=\(tree.wasTruncated) classifiedFiles=\(visited) skipped=\(tree.skippedDirectoryNames.sorted())")
     }
 
-    /// An actor-based watermark: tracks how many units of work are
+    /// A lock-protected watermark: tracks how many units of work are
     /// concurrently "in flight" between `enter()` and `leave()`, and the
     /// peak ever observed. Used below to *prove* `concurrentMap`'s width
     /// bound holds, rather than trust the seed/replenish construction by
     /// reading the code.
-    private actor Watermark {
+    ///
+    /// A plain `NSLock`-guarded class, not an actor: `concurrentMap`'s
+    /// `transform` is a synchronous `@Sendable (Item) -> Output` closure —
+    /// deliberately not `async`, per Finding 3 of the Task 1b review — so
+    /// this has to be something callable without `await` from inside it.
+    /// `@unchecked Sendable` is the same "the lock, not the type system,
+    /// is what makes this safe" pattern `ProjectScanner.ResultsBox` uses.
+    private final class Watermark: @unchecked Sendable {
+        private let lock = NSLock()
         private var current = 0
         private var peak = 0
-        func enter() { current += 1; peak = max(peak, current) }
-        func leave() { current -= 1 }
-        func peakObserved() -> Int { peak }
+        func enter() {
+            lock.lock(); current += 1; peak = max(peak, current); lock.unlock()
+        }
+        func leave() {
+            lock.lock(); current -= 1; lock.unlock()
+        }
+        func peakObserved() -> Int {
+            lock.lock(); defer { lock.unlock() }; return peak
+        }
     }
 
     /// Step 3's "prove the bound holds, don't assume it": instruments
     /// `ProjectScanner.concurrentMap` — the exact function `scan` fans the
     /// tail-read-and-classify work out over — with a `Watermark` and a
     /// transform whose delay is *inversely* keyed to item index within each
-    /// width-sized batch, so tasks seeded later in a batch finish before
-    /// tasks seeded earlier. If the implementation were, say, secretly
-    /// unbounded (all tasks fired at once) the watermark would exceed
+    /// width-sized batch, so work started later in a batch finishes before
+    /// work started earlier. If the implementation were, say, secretly
+    /// unbounded (all iterations fired at once) the watermark would exceed
     /// `width`; if it were accidentally serial (one at a time) the
     /// watermark would never exceed 1 and the result order would still look
     /// right by coincidence — this also checks the peak is reached, not
     /// just bounded, so a serial implementation fails this test too.
+    ///
+    /// Synchronous `Thread.sleep`, not `Task.sleep`: the transform under
+    /// test runs on a GCD worker thread via `DispatchQueue.concurrentPerform`,
+    /// not inside a `Task`, so there is no cooperative-pool suspension point
+    /// for `Task.sleep` to yield at — blocking the thread with `Thread.sleep`
+    /// is the correct simulation of what a real blocking read looks like
+    /// here, and is exactly the shape of work `concurrentMap` exists to run.
     @Test("concurrentMap never runs more than `width` transforms at once, and preserves input order under scrambled completion order")
     func tailReadConcurrencyIsBounded() async throws {
         let width = 8
@@ -216,15 +237,15 @@ struct ProjectScanPerformanceTests {
         let watermark = Watermark()
 
         let results = await ProjectScanner.concurrentMap(Array(0..<itemCount), width: width) { item -> Int in
-            await watermark.enter()
-            // Every batch of `width` seeded together sleeps longer for a
-            // *lower* index than a higher one, so within a batch the later
-            // task finishes first — deliberately scrambling completion
-            // order relative to input order.
+            watermark.enter()
+            // Every batch of `width` items sleeps longer for a *lower* index
+            // than a higher one, so within a batch the later item finishes
+            // first — deliberately scrambling completion order relative to
+            // input order.
             let positionInBatch = item % width
-            let millis = UInt64(width - positionInBatch) * 5
-            try? await Task.sleep(for: .milliseconds(millis))
-            await watermark.leave()
+            let millis = UInt32(width - positionInBatch) * 5
+            usleep(millis * 1000)
+            watermark.leave()
             return item * 2
         }
 
@@ -232,11 +253,11 @@ struct ProjectScanPerformanceTests {
         // order, despite completion order being deliberately scrambled above.
         #expect(results == (0..<itemCount).map { $0 * 2 })
 
-        let peak = await watermark.peakObserved()
+        let peak = watermark.peakObserved()
         // Hard bound: never more than `width` concurrently in flight.
         #expect(peak <= width, "concurrentMap ran \(peak) transforms at once, exceeding width \(width)")
-        // Not just bounded but actually concurrent: with `width` tasks
-        // seeded up front and a sleep long enough to guarantee overlap, the
+        // Not just bounded but actually concurrent: with `width` items
+        // batched together and a sleep long enough to guarantee overlap, the
         // watermark must reach `width` exactly, or this "bound" would be
         // satisfied just as well by an accidentally-serial implementation.
         #expect(peak == width, "expected concurrentMap to reach full width \(width) of overlap, only reached \(peak)")

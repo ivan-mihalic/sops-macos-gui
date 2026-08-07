@@ -158,6 +158,32 @@ public struct ProjectScanner {
     /// order.
     static let tailReadConcurrencyWidth = 64
 
+    /// Process-wide gate on how many files this scanner has open at once,
+    /// sized to `tailReadConcurrencyWidth`.
+    ///
+    /// `concurrentMap`'s own batching bounds concurrency *per call*, which
+    /// is not the same guarantee as bounding the process's actual file
+    /// descriptor usage: `tailReadConcurrencyWidth`'s own doc comment names
+    /// "a user with more than one project window scanning at once" as part
+    /// of the width's justification, and two concurrent `scan(root:)` calls
+    /// each independently allowed up to `width` in flight can together open
+    /// up to `2 * width` files at once — the FD-table concern the width
+    /// exists to bound, quietly reopened one layer up. This `static let`
+    /// `DispatchSemaphore` is shared by every call, in-process, so the
+    /// combined total across every concurrent scan is capped at `width`,
+    /// which is the guarantee actually wanted.
+    ///
+    /// This also matters for a reason specific to how this code is tested:
+    /// Swift Testing runs multiple `@Test` functions concurrently by
+    /// default, and several of this package's own tests build and scan
+    /// tens-of-thousands-of-files fixtures. Without a process-wide gate,
+    /// those tests' scans could collectively demand several times `width`
+    /// of simultaneous blocking I/O, which is real contention no amount of
+    /// picking the "right" queue or thread type can hide — see the task-1b
+    /// report's account of Finding 3 for the diagnostic numbers this was
+    /// measured against.
+    private static let ioGate = DispatchSemaphore(value: tailReadConcurrencyWidth)
+
     /// Walks the project tree once, classifying every regular file.
     ///
     /// Hidden files are **not** skipped, which is the change that closes one
@@ -188,12 +214,26 @@ public struct ProjectScanner {
     /// regardless of which read happened to finish first — the result never
     /// depends on completion order.
     public static func scan(root: URL) async -> ScannedTree {
-        // The walk itself is a plain synchronous call (no `await` on it) —
-        // `FileManager`'s `NSEnumerator`-backed iteration is unavailable
-        // directly inside an `async` function body, and it does not need to
-        // run concurrently anyway: it is already the fast ~15% of the
-        // budget. Only the per-file work it hands off below is parallelised.
-        var (tree, candidates) = Self.walk(root: root)
+        // The walk is synchronous, blocking work — `FileManager` directory
+        // enumeration plus a `resourceValues` call per entry — and, like the
+        // tail-read-and-classify phase below, it must not run directly on
+        // Swift's cooperative thread pool. An earlier version called
+        // `Self.walk(root: root)` inline here, reasoning that the walk was
+        // "already the fast ~15% of the budget" so it didn't need
+        // parallelising — true, but beside the point: the problem was never
+        // the walk's own duration, it was that a synchronous ~1s of blocking
+        // syscalls sitting directly in an `async` function's body pins a
+        // cooperative-pool thread idle for that whole second. On a real
+        // project the walk visits at most `maxScannedFiles` (20,000) entries
+        // and is genuinely fast, so this rarely matters in isolation — but
+        // under Swift Testing's parallel test execution, several such scans
+        // running at once (one per test, this suite's own heavy fixtures
+        // included) can pin several cooperative-pool threads simultaneously,
+        // starving unrelated tiny tasks queued behind them. See
+        // `runOffCooperativePool` and the task-1b report's account of
+        // Finding 3, which first fixed the classify phase alone and then
+        // found the walk phase was still doing this.
+        var (tree, candidates) = await Self.runOffCooperativePool { Self.walk(root: root) }
 
         // Both the tail read *and* classifying what it found run inside the
         // same concurrent unit of work per file. An earlier version of this
@@ -207,7 +247,14 @@ public struct ProjectScanner {
         // `ProjectScanPerformanceTests` for the before/after this reordering
         // was measured against.
         let classifications = await Self.concurrentMap(candidates, width: Self.tailReadConcurrencyWidth) { url in
-            Self.classify(url: url, maxBytes: Self.maxSniffedFileBytes)
+            // Gated by the process-wide `ioGate`, not just `concurrentMap`'s
+            // own per-call batching — see `ioGate`'s doc comment for why a
+            // per-call-only bound does not actually bound the process's
+            // aggregate open-file-descriptor count when more than one
+            // `scan(root:)` runs at once.
+            Self.ioGate.wait()
+            defer { Self.ioGate.signal() }
+            return Self.classify(url: url, maxBytes: Self.maxSniffedFileBytes)
         }
 
         // Assembling the tree from already-classified results is index work
@@ -253,11 +300,28 @@ public struct ProjectScanner {
     /// UTF-8 decode this needs (only for `SniffedFile.tail`, consumed later
     /// as text by `EncryptedFileMetadata`) is paid on a handful of files,
     /// not all of them.
+    ///
+    /// A leading UTF-8 BOM (`EF BB BF`) is stripped from `tail` before any
+    /// pattern match runs — see `stripLeadingUTF8BOM(_:)`. This is not
+    /// optional: `String(data:encoding:.utf8)` silently strips a leading BOM
+    /// as part of decoding, so the pre-parallelisation implementation's
+    /// `tail.hasPrefix("sops:")` (a `String` operation, decoded via that same
+    /// call) was always matching an already-debommed string. `sops -e` on an
+    /// empty document produces a file whose *entire* content is the `sops:`
+    /// block starting at byte 0 — no `\nsops:` substring exists anywhere in
+    /// it, which is exactly why the prefix check exists alongside the
+    /// substring one. A BOM-prefixed copy of such a file (an editor
+    /// round-trip is enough to add one) still decrypts under the real `sops`
+    /// binary, but without this strip its raw bytes start with the BOM, not
+    /// `sops:`, and `tail.starts(with: sopsBlockPrefix)` — a byte comparison
+    /// with no BOM-awareness of its own — would silently stop matching it.
+    /// Regression test: `ProjectScanBOMTests`.
     private static func classify(url: URL, maxBytes: Int) -> Classification {
-        guard let tail = Self.tailBytes(of: url, maxBytes: maxBytes) else {
+        guard let rawTail = Self.tailBytes(of: url, maxBytes: maxBytes) else {
             return Self.isPlaintextSecretCandidate(url.lastPathComponent)
                 ? .plaintextCandidate(url) : .none
         }
+        let tail = Self.stripLeadingUTF8BOM(rawTail)
         if tail.range(of: Self.sopsBlockMarker) != nil || tail.starts(with: Self.sopsBlockPrefix),
            let text = Self.decodeTailText(tail) {
             // The byte-level marker matched *and* the tail decoded as valid
@@ -317,57 +381,151 @@ public struct ProjectScanner {
         return (tree, candidates)
     }
 
+    /// Reference-type box around the results array so `concurrentMap` can
+    /// share it, by reference, across the GCD worker threads
+    /// `DispatchQueue.concurrentPerform` below actually runs on.
+    ///
+    /// `@unchecked Sendable`: the compiler cannot see that every write below
+    /// targets a distinct array index (`box.values[index] = ...`, one
+    /// `index` per GCD iteration, never reused), so two threads never touch
+    /// the same element — safe by construction, not by locking, which is
+    /// exactly why this needs the escape hatch rather than a real lock. If
+    /// this invariant is ever broken by a future edit, this is where a data
+    /// race would reappear.
+    private final class ResultsBox<Output>: @unchecked Sendable {
+        var values: [Output?]
+        init(count: Int) { values = [Output?](repeating: nil, count: count) }
+    }
+
     /// Runs `transform` over `items` with at most `width` running
     /// concurrently, returning results **in `items`' original order**
     /// regardless of which finished first.
     ///
-    /// Bounded by construction, not by a semaphore that could be gotten
-    /// wrong: at most `width` child tasks are ever alive in the group at
-    /// once, because a replacement task is only added when a running one
-    /// finishes (`group.next()` yields exactly one completion, and exactly
-    /// one new task is added in response). Seeding starts at
-    /// `min(width, items.count)` tasks, so a short `items` never
-    /// over-allocates. See `ProjectScanPerformanceTests.tailReadConcurrencyIsBounded`
+    /// Backed by `DispatchQueue.concurrentPerform`, not `withTaskGroup`.
+    /// `transform` here wraps blocking syscalls (`open`/`fstat`/`pread`/`close`
+    /// in `tailBytes`), and Swift's own concurrency documentation is explicit
+    /// that blocking work must never run on the cooperative thread pool a
+    /// `Task`'s body executes on — that pool is sized for the machine's core
+    /// count on the assumption that every thread is always making progress,
+    /// and a syscall that blocks pins one of those threads idle. An earlier
+    /// version of this function used `withTaskGroup`, spawning one child
+    /// `Task` per file; that put every file's blocking read directly on the
+    /// cooperative pool. Measured effect: a 15-file scan running *concurrently
+    /// alongside* this task's own multi-thousand-file fixtures (the normal
+    /// case under Swift Testing's parallel test execution) went from ~0.1s in
+    /// isolation to ~2.0s — roughly 15× slower — because those 15 tiny reads
+    /// were queued behind the cooperative pool's fixed thread count, which
+    /// the large fixtures' own blocking reads had saturated. The identical
+    /// experiment against the pre-parallelisation code (no cooperative pool
+    /// involved at all) showed no such effect. `DispatchQueue.concurrentPerform`
+    /// runs its iterations on GCD's own elastic worker-thread pool, which is
+    /// designed to grow when threads block — exactly the shape blocking I/O
+    /// needs and the cooperative pool exists specifically to not provide. See
+    /// the task-1b report for both experiments' numbers.
+    ///
+    /// Bounded by construction: `items` is sliced into batches of at most
+    /// `width`, and the next batch is not dispatched until
+    /// `concurrentPerform` returns from the previous one (a synchronous,
+    /// blocking call — it does not return until every iteration in that
+    /// batch has completed). So at most `width` units of work are ever
+    /// in flight at once, full stop — not "usually", not "unless GCD decides
+    /// otherwise". See `ProjectScanPerformanceTests.tailReadConcurrencyIsBounded`
     /// for a test that instruments this exact function and proves the
     /// in-flight count never exceeds `width`, under artificially scrambled
     /// completion order — not merely a test that it produces the right
     /// answer, which a correct-but-unbounded implementation would also pass.
     ///
-    /// Determinism: each task carries its own index and writes into a
-    /// pre-sized results array at that index, never appends — so the output
-    /// order is the input order, not the completion order. Internal (no
-    /// access modifier is needed by any caller outside this file) — it is
-    /// general-purpose only in shape, not in intended use.
+    /// Determinism: each GCD iteration carries its own absolute index and
+    /// writes into a pre-sized results array (`ResultsBox`) at that index,
+    /// never appends — so the output order is the input order, not the
+    /// completion order, exactly as before.
+    ///
+    /// `transform` is a plain synchronous closure, not `async`, on purpose:
+    /// an `async` closure invites exactly the "just `await` something inside
+    /// it" pattern that put blocking work back on the cooperative pool in
+    /// the first version. If a future caller genuinely needs `await` inside
+    /// `transform`, that is a sign `concurrentMap` is the wrong tool for that
+    /// call, not a reason to add `async` back here.
     static func concurrentMap<Item: Sendable, Output: Sendable>(
-        _ items: [Item], width: Int, _ transform: @escaping @Sendable (Item) async -> Output
+        _ items: [Item], width: Int, _ transform: @escaping @Sendable (Item) -> Output
     ) async -> [Output] {
         guard !items.isEmpty else { return [] }
         let width = max(1, width)
 
-        var results = [Output?](repeating: nil, count: items.count)
-        await withTaskGroup(of: (Int, Output).self) { group in
-            var nextIndex = 0
-            let seedCount = min(width, items.count)
-            for _ in 0..<seedCount {
-                let i = nextIndex
-                group.addTask { (i, await transform(items[i])) }
-                nextIndex += 1
-            }
-            while let (i, value) = await group.next() {
-                results[i] = value
-                if nextIndex < items.count {
-                    let j = nextIndex
-                    group.addTask { (j, await transform(items[j])) }
-                    nextIndex += 1
+        return await Self.runOffCooperativePool {
+            let box = ResultsBox<Output>(count: items.count)
+            var start = 0
+            while start < items.count {
+                let end = min(start + width, items.count)
+                let batchCount = end - start
+                // A local, immutable copy: `start` is a `var` mutated by
+                // this same loop after `concurrentPerform` returns, but the
+                // closure below runs (and finishes — `concurrentPerform`
+                // blocks until every iteration completes) entirely within
+                // this iteration, before `start` is ever reassigned. The
+                // compiler cannot see that ordering guarantee, so it is
+                // captured here as a `let` instead of asking for a
+                // suppressed-warning `var` capture.
+                let batchStart = start
+                DispatchQueue.concurrentPerform(iterations: batchCount) { offset in
+                    let index = batchStart + offset
+                    box.values[index] = transform(items[index])
                 }
+                start = end
             }
+            // Every index from 0..<items.count was written by exactly one
+            // iteration above (each batch covers a disjoint, contiguous
+            // index range, and every batch runs). Force-unwrap documents
+            // that invariant rather than silently coalescing a would-be bug
+            // into a dropped result.
+            return box.values.map { $0! }
         }
-        // Every index from 0..<items.count was seeded exactly once above
-        // (seed loop + exactly one replacement per completion, until
-        // nextIndex reaches items.count), so every slot was written before
-        // the group finished. Force-unwrap documents that invariant rather
-        // than silently coalescing a would-be bug into a dropped result.
-        return results.map { $0! }
+    }
+
+    /// Runs a synchronous, blocking `body` on a dedicated OS thread instead
+    /// of wherever the caller happens to be executing, and bridges the
+    /// result back into `async` — the shared mechanism behind both the
+    /// directory walk and `concurrentMap`'s outer coordination not blocking
+    /// Swift's cooperative thread pool.
+    ///
+    /// A genuinely new `Thread`, not `DispatchQueue.global().async`. The
+    /// first version of this function used the latter, and it measurably
+    /// did not solve the problem it was written for: `DispatchQueue.global()`
+    /// is a *shared* elastic pool, and this function's caller holds
+    /// whichever worker thread it gets for as long as `body` runs — for
+    /// `scan`'s two uses of this, that is the walk's full duration or an
+    /// entire `concurrentMap` batch's duration, i.e. seconds, not
+    /// milliseconds. Under Swift Testing's parallel test execution, several
+    /// scans' worth of these long-held submissions compete for the same
+    /// shared pool's finite worker supply and libdispatch's own
+    /// rate-limited thread-injection pacing, so a *tiny* scan's walk could
+    /// still be measured queued for over a second behind unrelated large
+    /// scans' outer dispatches — reproduced directly: see the task-1b
+    /// report's account of Finding 3's second round for the diagnostic
+    /// numbers (a 1–3 file walk taking over a second, purely queueing delay
+    /// before `Self.walk` ever started). A dedicated `Thread` is created and
+    /// started immediately, with no shared queue to wait behind — the
+    /// tradeoff (a new OS thread has more setup cost than reusing a pooled
+    /// one) is the right one here precisely because this function is called
+    /// a small, fixed number of times per scan (once for the walk, once per
+    /// `concurrentMap` call), never once per file — the per-file fan-out
+    /// inside a `concurrentMap` batch still goes through
+    /// `DispatchQueue.concurrentPerform`, whose iterations are individually
+    /// short-lived and recycle pool threads quickly, which is a materially
+    /// different contention profile than a single thread pinned for a
+    /// whole batch's duration.
+    ///
+    /// `body` is `@escaping @Sendable` because it runs on a different thread
+    /// than the caller, asynchronously with respect to this function's own
+    /// call site — the same reason `concurrentMap`'s `transform` is.
+    private static func runOffCooperativePool<T: Sendable>(_ body: @escaping @Sendable () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            let thread = Thread {
+                continuation.resume(returning: body())
+            }
+            thread.qualityOfService = .userInitiated
+            thread.start()
+        }
     }
 
     /// sops metadata as written by its non-YAML stores. Only used to keep an
@@ -389,6 +547,17 @@ public struct ProjectScanner {
     private static let dotenvVersionMarker = Data("sops_version=".utf8)
     private static let jsonMarker = Data("\"sops\":".utf8)
     private static let iniMarker = Data("\n[sops]".utf8)
+    private static let utf8BOM = Data([0xEF, 0xBB, 0xBF])
+
+    /// Drops a leading UTF-8 byte-order mark, if present, from a tail read.
+    /// See `classify`'s doc comment for why this has to happen before any
+    /// byte-level pattern match — `String(data:encoding:.utf8)` did this
+    /// silently as part of decoding in the pre-parallelisation
+    /// implementation, so matching that behaviour here is what keeps a
+    /// BOM-prefixed sops file visible to the byte-level prefix check.
+    private static func stripLeadingUTF8BOM(_ data: Data) -> Data {
+        data.starts(with: Self.utf8BOM) ? data.dropFirst(Self.utf8BOM.count) : data
+    }
 
     /// Whether a *filename* is one that conventionally holds plaintext
     /// secrets. Names only — nothing here reads a file.
