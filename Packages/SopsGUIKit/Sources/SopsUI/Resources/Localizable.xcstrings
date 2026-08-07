@@ -85,6 +85,86 @@
     "health.category.other" : {
       "extractionState" : "manual",
       "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Other" } } }
+    },
+    "action.back" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Back" } } }
+    },
+    "action.continue" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Continue" } } }
+    },
+    "action.done" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Done" } } }
+    },
+    "action.run-setup-check" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Run Setup Check…" } } }
+    },
+    "onboarding.welcome.title" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Welcome" } } }
+    },
+    "onboarding.summary.title" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Summary" } } }
+    },
+    "onboarding.welcome.subtitle" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "A quick look at how this machine is set up." } } }
+    },
+    "onboarding.tools.subtitle" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Optional, but the Help snippets rely on them." } } }
+    },
+    "onboarding.engine.subtitle" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "The sops and age versions built into this app." } } }
+    },
+    "onboarding.security.subtitle" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "How your key is protected on this Mac." } } }
+    },
+    "onboarding.projects.subtitle" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Your .sops.yaml files and encrypted secrets." } } }
+    },
+    "onboarding.summary.subtitle" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "That's everything." } } }
+    },
+    "onboarding.welcome.body1" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "This app encrypts and decrypts your secrets itself — no command-line tools required." } } }
+    },
+    "onboarding.welcome.body2" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "The next few screens check your machine anyway, because the snippets in Help run in your terminal and in CI, against the same files." } } }
+    },
+    "onboarding.welcome.body3" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Nothing here is installed or changed for you. Where something needs fixing, you get the command and run it yourself." } } }
+    },
+    "onboarding.summary.ok" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Everything checks out." } } }
+    },
+    "onboarding.summary.warning" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Some things are worth a look." } } }
+    },
+    "onboarding.summary.problem" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Some things need fixing." } } }
+    },
+    "onboarding.summary.footer" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "You can re-run these checks any time from Settings › Health. Nothing here blocks you from using the app." } } }
+    },
+    "onboarding.summary.incomplete" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Some checks could not run." } } }
     }
   }
 }

@@ -29,6 +29,30 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case healthCategoryOther = "health.category.other"
     case settingsTabHealth = "settings.tab.health"
 
+    case actionBack = "action.back"
+    case actionContinue = "action.continue"
+    case actionDone = "action.done"
+    case actionRunSetupCheck = "action.run-setup-check"
+    case onboardingWelcomeTitle = "onboarding.welcome.title"
+    case onboardingSummaryTitle = "onboarding.summary.title"
+    case onboardingWelcomeSubtitle = "onboarding.welcome.subtitle"
+    case onboardingToolsSubtitle = "onboarding.tools.subtitle"
+    case onboardingEngineSubtitle = "onboarding.engine.subtitle"
+    case onboardingSecuritySubtitle = "onboarding.security.subtitle"
+    case onboardingProjectsSubtitle = "onboarding.projects.subtitle"
+    case onboardingSummarySubtitle = "onboarding.summary.subtitle"
+    case onboardingWelcomeBody1 = "onboarding.welcome.body1"
+    case onboardingWelcomeBody2 = "onboarding.welcome.body2"
+    case onboardingWelcomeBody3 = "onboarding.welcome.body3"
+    case onboardingSummaryOK = "onboarding.summary.ok"
+    case onboardingSummaryWarning = "onboarding.summary.warning"
+    case onboardingSummaryProblem = "onboarding.summary.problem"
+    case onboardingSummaryFooter = "onboarding.summary.footer"
+    // Deliberately distinct from `.warning`: `.skipped`/`.unknown` mean a check
+    // didn't run to a verdict (no subject yet, offline, feature not shipped),
+    // not that something was found worth looking at. See OnboardingWizard.
+    case onboardingSummaryIncomplete = "onboarding.summary.incomplete"
+
     /// The resolved English text. Used in views and asserted in tests.
     public var text: String {
         String(localized: String.LocalizationValue(rawValue), bundle: .module)
