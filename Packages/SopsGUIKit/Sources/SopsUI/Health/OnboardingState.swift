@@ -71,15 +71,27 @@ public final class OnboardingState {
 /// out": a user who clicks Continue through the wizard faster than the scan
 /// completes (measured ~400ms/13 findings on a real machine — comfortably
 /// reachable by key-repeat alone) would otherwise land on the summary while
-/// `findings` is still empty and read an all-clear the app never verified.
+/// no run has completed yet and read an all-clear the app never verified.
+///
+/// The "has it finished" signal is `HealthViewModel.hasCompletedRefresh`, not
+/// `findings.isEmpty`. An empty finding list is a legitimate completed result
+/// — `HealthReport(checks: [])` is a supported construction — so treating
+/// emptiness as "still running" would get stuck on `.checking` forever for
+/// any report that genuinely completes with zero findings. Nothing in
+/// `HealthReport.standard` produces that today (every check it assembles
+/// emits at least one finding), but `compute` is general-purpose API other
+/// callers can reuse, and that shape of report is a legitimate future case
+/// this must not silently mishandle.
 public enum OnboardingSummaryState: Equatable, Sendable {
-    /// The scan is still running, or has not produced any findings yet.
+    /// The scan is still running, or has never completed a run.
     /// Never assert a verdict in this state.
     case checking
     case verdict(HealthStatus)
 
-    public static func compute(isRunning: Bool, findings: [HealthFinding]) -> OnboardingSummaryState {
-        guard !isRunning, !findings.isEmpty else { return .checking }
+    public static func compute(
+        isRunning: Bool, hasCompletedRefresh: Bool, findings: [HealthFinding]
+    ) -> OnboardingSummaryState {
+        guard !isRunning, hasCompletedRefresh else { return .checking }
         return .verdict(HealthReport.worstStatus(in: findings))
     }
 }

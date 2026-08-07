@@ -7,6 +7,12 @@ import SopsHealth
 public final class HealthViewModel {
     public private(set) var findings: [HealthFinding] = []
     public private(set) var isRunning = false
+    /// Set once `refresh()` has completed at least one full run. Distinct from
+    /// `findings.isEmpty`: an empty finding list is a legitimate completed
+    /// result (e.g. `HealthReport(checks: [])`), not evidence the scan hasn't
+    /// run yet — callers that need "has this ever settled" must read this
+    /// flag rather than infer it from `findings` being non-empty.
+    public private(set) var hasCompletedRefresh = false
 
     private let report: HealthReport
 
@@ -72,6 +78,7 @@ public final class HealthViewModel {
         let task = Task {
             let results = await self.report.run()
             self.findings = results
+            self.hasCompletedRefresh = true
             self.isRunning = false
             self.inFlightRefresh = nil
         }

@@ -68,7 +68,11 @@ public struct OnboardingWizard: View {
             // `.ok` to HealthReport.worstStatus(in:), so without this gate a
             // user who reaches this step before the scan settles would see an
             // all-clear the app never actually verified.
-            switch OnboardingSummaryState.compute(isRunning: health.isRunning, findings: health.findings) {
+            switch OnboardingSummaryState.compute(
+                isRunning: health.isRunning,
+                hasCompletedRefresh: health.hasCompletedRefresh,
+                findings: health.findings
+            ) {
             case .checking:
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)

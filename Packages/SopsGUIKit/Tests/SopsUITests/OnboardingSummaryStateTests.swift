@@ -12,27 +12,70 @@ struct OnboardingSummaryStateComputeTests {
 
     @Test("an in-flight scan never reports a verdict, even with stale findings still sitting around")
     func inFlightNeverAsserts() {
-        #expect(OnboardingSummaryState.compute(isRunning: true, findings: []) == .checking)
-        #expect(OnboardingSummaryState.compute(isRunning: true, findings: [finding("a", .ok)]) == .checking)
+        #expect(OnboardingSummaryState.compute(isRunning: true, hasCompletedRefresh: false, findings: []) == .checking)
+        #expect(OnboardingSummaryState.compute(
+            isRunning: true, hasCompletedRefresh: true, findings: [finding("a", .ok)]) == .checking)
     }
 
-    // This is the trap: HealthReport.worstStatus(in: []) == .ok, so handing an
-    // empty array straight to the user would read as "everything checks out."
-    @Test("an empty finding set never reports an all-clear, even when isRunning is already false")
-    func emptyFindingsNeverAssertsOK() {
-        #expect(OnboardingSummaryState.compute(isRunning: false, findings: []) == .checking)
+    // This is the trap the *previous* fix round left open: gating on
+    // `findings.isEmpty` instead of a real "has this ever settled" signal
+    // meant a report that genuinely completes with zero findings — a
+    // supported construction (`HealthReport(checks: [])`) — got stuck on
+    // `.checking` forever. `hasCompletedRefresh` is the real signal; a
+    // completed run with no findings must report `.ok`, not spin forever.
+    @Test("a completed run with zero findings reports .ok, not a stuck checking state")
+    func emptyCompletedReportReportsOK() {
+        #expect(OnboardingSummaryState.compute(isRunning: false, hasCompletedRefresh: true, findings: []) == .verdict(.ok))
+    }
+
+    // Belt and suspenders: before a run has ever completed, an empty finding
+    // list must not be read as a verdict either.
+    @Test("no completed run yet never reports a verdict, even when isRunning is already false")
+    func neverCompletedNeverAssertsOK() {
+        #expect(OnboardingSummaryState.compute(isRunning: false, hasCompletedRefresh: false, findings: []) == .checking)
     }
 
     @Test("a settled scan reports the worst finding, once findings actually exist")
     func settledReportsWorst() {
-        #expect(OnboardingSummaryState.compute(isRunning: false, findings: [finding("a", .ok)]) == .verdict(.ok))
         #expect(OnboardingSummaryState.compute(
-            isRunning: false, findings: [finding("a", .ok), finding("b", .warning)]) == .verdict(.warning))
-        #expect(OnboardingSummaryState.compute(isRunning: false, findings: [finding("a", .problem)]) == .verdict(.problem))
+            isRunning: false, hasCompletedRefresh: true, findings: [finding("a", .ok)]) == .verdict(.ok))
         #expect(OnboardingSummaryState.compute(
-            isRunning: false, findings: [finding("a", .skipped(reason: "x"))]) == .verdict(.skipped(reason: "x")))
+            isRunning: false, hasCompletedRefresh: true,
+            findings: [finding("a", .ok), finding("b", .warning)]) == .verdict(.warning))
         #expect(OnboardingSummaryState.compute(
-            isRunning: false, findings: [finding("a", .unknown(reason: "y"))]) == .verdict(.unknown(reason: "y")))
+            isRunning: false, hasCompletedRefresh: true, findings: [finding("a", .problem)]) == .verdict(.problem))
+        #expect(OnboardingSummaryState.compute(
+            isRunning: false, hasCompletedRefresh: true,
+            findings: [finding("a", .skipped(reason: "x"))]) == .verdict(.skipped(reason: "x")))
+        #expect(OnboardingSummaryState.compute(
+            isRunning: false, hasCompletedRefresh: true,
+            findings: [finding("a", .unknown(reason: "y"))]) == .verdict(.unknown(reason: "y")))
+    }
+}
+
+@Suite("HealthViewModel.hasCompletedRefresh, via the real refresh() path")
+@MainActor
+struct HealthViewModelHasCompletedRefreshTests {
+
+    // Reproduces the reviewer's exact construction: an empty report, refreshed
+    // through the real HealthViewModel — not a hand-built compute() call —
+    // to prove the flag genuinely reflects refresh() having run, not just
+    // that the test asserted it directly.
+    @Test("an empty report reports .ok after refresh, never a stuck checking state")
+    func emptyReportSettlesToOK() async {
+        let health = HealthViewModel(report: HealthReport(checks: []))
+        #expect(health.hasCompletedRefresh == false)
+        #expect(health.isRunning == false)
+        #expect(health.findings.isEmpty)
+
+        await health.refresh()
+
+        #expect(health.hasCompletedRefresh == true)
+        #expect(health.isRunning == false)
+        #expect(health.findings.isEmpty)
+        #expect(OnboardingSummaryState.compute(
+            isRunning: health.isRunning, hasCompletedRefresh: health.hasCompletedRefresh,
+            findings: health.findings) == .verdict(.ok))
     }
 }
 
@@ -103,14 +146,16 @@ struct OnboardingSummaryMidScanTests {
         #expect(health.isRunning == true)
         #expect(health.findings.isEmpty)
 
-        let midRun = OnboardingSummaryState.compute(isRunning: health.isRunning, findings: health.findings)
+        let midRun = OnboardingSummaryState.compute(
+            isRunning: health.isRunning, hasCompletedRefresh: health.hasCompletedRefresh, findings: health.findings)
         #expect(midRun == .checking)
         #expect(midRun != .verdict(.ok), "the summary must never assert an all-clear before the scan has a result")
 
         await gate.open()
         await refresh
 
-        let settled = OnboardingSummaryState.compute(isRunning: health.isRunning, findings: health.findings)
+        let settled = OnboardingSummaryState.compute(
+            isRunning: health.isRunning, hasCompletedRefresh: health.hasCompletedRefresh, findings: health.findings)
         #expect(settled == .verdict(.ok))
     }
 }
