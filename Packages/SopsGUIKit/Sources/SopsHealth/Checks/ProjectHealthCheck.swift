@@ -50,13 +50,16 @@ public struct ProjectHealthCheck: HealthCheck {
     public let id = "project-health"
     public let category = HealthCategory.projects
 
-    /// Plaintext files that commonly hold secrets and must not be committed.
-    private static let plaintextSecretNames = [".env", ".env.local", ".env.production"]
-
     private let source: any ProjectSourceProviding
+    /// Used for one thing: finding `git`, which answers the gitignore
+    /// question. Injected rather than hardcoded to `/usr/bin/git` for the same
+    /// reason `ExternalToolCheck` uses it — a GUI app launched from Finder has
+    /// no useful process `PATH`.
+    private let locator: any ToolLocating
 
-    public init(source: any ProjectSourceProviding) {
+    public init(source: any ProjectSourceProviding, locator: any ToolLocating = ToolLocator()) {
         self.source = source
+        self.locator = locator
     }
 
     public func run() async -> [HealthFinding] {
@@ -68,31 +71,50 @@ public struct ProjectHealthCheck: HealthCheck {
                 detail: "Add a project to have its .sops.yaml and encrypted files checked.")]
         }
 
-        // Finding ids are derived from the project name (`project.<name>.*`).
-        // Two projects sharing a display name would otherwise collide and
-        // silently overwrite each other's findings in the report, so later
-        // duplicates get a numeric suffix baked into the *id* only — the
-        // title the user sees still shows their own name unchanged.
-        var seenNames: [String: Int] = [:]
-        return projects.flatMap { project -> [HealthFinding] in
-            let occurrence = seenNames[project.name, default: 0]
-            seenNames[project.name] = occurrence + 1
-            let slug = occurrence == 0 ? project.name : "\(project.name)-\(occurrence + 1)"
-            return findings(for: project, idSlug: slug)
+        // Located once for the whole run, not once per project.
+        let gitPath = await locator.locate("git", versionArguments: ["--version"])?.path
+
+        // Finding ids are scoped by the project's *position*, never by its
+        // display name.
+        //
+        // The previous scheme built ids from the name and disambiguated
+        // duplicates by appending "-2", "-3" — which manufactures exactly the
+        // collision it was written to prevent: `[acme, acme, acme-2]` yields
+        // `project.acme-2.…` twice, once for the disambiguated second "acme"
+        // and once for the project actually named "acme-2". `HealthFinding` is
+        // `Identifiable` and every surface renders findings in a `ForEach`, so
+        // that makes row identity undefined. Names containing dots break it
+        // further, the id's own separator being part of the value.
+        //
+        // An index cannot collide with another index. Deriving identity from
+        // anything the user types is the bug; the fix is to stop. The user's
+        // own name is unaffected — it is shown in `title`, verbatim.
+        return projects.enumerated().flatMap { index, project in
+            findings(for: project, idScope: String(index), gitPath: gitPath)
         }
     }
 
-    private func findings(for project: InspectedProject, idSlug: String) -> [HealthFinding] {
+    private func findings(for project: InspectedProject, idScope: String,
+                          gitPath: String?) -> [HealthFinding] {
         let root = URL(fileURLWithPath: project.rootPath)
         let configURL = root.appendingPathComponent(".sops.yaml")
 
+        // One walk of the tree feeds both findings below.
+        let tree = Self.scanTree(under: root)
+        let leak = gitignoreFinding(for: project, idScope: idScope, root: root,
+                                    candidates: tree.plaintextCandidates, gitPath: gitPath)
+
         guard FileManager.default.fileExists(atPath: configURL.path) else {
+            // The plaintext-leak finding is emitted even here. A project with
+            // no .sops.yaml is the *most* likely one to have secrets sitting
+            // in plaintext, so suppressing that finding until a config exists
+            // would hide it exactly when it matters most.
             return [HealthFinding(
-                id: "project.\(idSlug).sops-yaml", title: "\(project.name): .sops.yaml",
+                id: "project.\(idScope).sops-yaml", title: "\(project.name): .sops.yaml",
                 status: .warning,
                 detail: "No .sops.yaml in \(project.rootPath). Without it, sops has no rules for which keys to encrypt new files to.",
                 remediation: Remediation(
-                    explanation: "Create one from the .sops.yaml wizard in this app."))]
+                    explanation: "Create one from the .sops.yaml wizard in this app.")), leak]
         }
 
         // Probe that the config itself loads under sops's own parser,
@@ -105,19 +127,20 @@ public struct ProjectHealthCheck: HealthCheck {
             _ = try SopsBridge.lookupCreationRule(configPath: configURL.path, targetFilePath: probeTarget)
         } catch {
             return [HealthFinding(
-                id: "project.\(idSlug).sops-yaml", title: "\(project.name): .sops.yaml",
+                id: "project.\(idScope).sops-yaml", title: "\(project.name): .sops.yaml",
                 status: .problem,
                 detail: "The .sops.yaml in \(project.rootPath) could not be parsed: \(error).",
                 remediation: Remediation(
-                    explanation: "Fix the YAML syntax, then re-run this check."))]
+                    explanation: "Fix the YAML syntax, then re-run this check.")), leak]
         }
 
         return [
-            HealthFinding(id: "project.\(idSlug).sops-yaml",
+            HealthFinding(id: "project.\(idScope).sops-yaml",
                           title: "\(project.name): .sops.yaml", status: .ok,
                           detail: "The .sops.yaml in \(project.rootPath) parses successfully."),
-            recipientFinding(for: project, idSlug: idSlug, root: root, configPath: configURL.path),
-            gitignoreFinding(for: project, idSlug: idSlug, root: root),
+            recipientFinding(for: project, idScope: idScope, root: root,
+                             configPath: configURL.path, tree: tree),
+            leak,
         ]
     }
 
@@ -207,8 +230,8 @@ public struct ProjectHealthCheck: HealthCheck {
     /// ranking above `.skipped` in `HealthStatus.severity`, so a caveat
     /// cannot be hidden behind an informational status. It also keeps one
     /// vocabulary for all three signals above, which already used `.unknown`.
-    private func recipientFinding(for project: InspectedProject, idSlug: String, root: URL,
-                                  configPath: String) -> HealthFinding {
+    private func recipientFinding(for project: InspectedProject, idScope: String, root: URL,
+                                  configPath: String, tree: ScannedTree) -> HealthFinding {
         var mismatches: [String] = []
         var sawStaleRecipient = false
         var unverifiable: [String] = []
@@ -227,12 +250,23 @@ public struct ProjectHealthCheck: HealthCheck {
         }
 
         let rootPrefix = Self.canonicalPath(root.path) + "/"
+        func relativeName(_ url: URL) -> String {
+            let path = Self.canonicalPath(url.path)
+            return path.hasPrefix(rootPrefix) ? String(path.dropFirst(rootPrefix.count)) : path
+        }
 
-        for sniffed in encryptedFiles(under: root) {
-            let path = Self.canonicalPath(sniffed.url.path)
-            let relative = path.hasPrefix(rootPrefix)
-                ? String(path.dropFirst(rootPrefix.count))
-                : path
+        // Encrypted files this build cannot read at all. The bridge is
+        // YAML-only in M1 (`gobridge.Format`), so a sops-encrypted .env, .json
+        // or .ini carries metadata in a shape `EncryptedFileMetadata` does not
+        // parse. Saying so is the point: silently omitting them from the count
+        // and then reporting OK is the same vacuous verdict this whole
+        // finding was rewritten to stop producing.
+        for url in tree.encryptedInOtherFormats {
+            unverifiable.append("\(relativeName(url)) is sops-encrypted in a format this app does not read yet — this build handles YAML only — so its recipient list was not checked.")
+        }
+
+        for sniffed in tree.encrypted {
+            let relative = relativeName(sniffed.url)
 
             let lookup: CreationRuleLookup
             do {
@@ -241,7 +275,16 @@ public struct ProjectHealthCheck: HealthCheck {
                 unverifiable.append("\(relative): could not determine which rule governs it (\(error)).")
                 continue
             }
-            guard lookup.matched else { continue }
+            // No rule governs this file. Previously a bare `continue`, which
+            // dropped the file from the report entirely and let the `.ok`
+            // branch below announce that every encrypted file had been
+            // checked. An encrypted file with no creation rule is precisely
+            // the case where this app has nothing to compare against and must
+            // say so.
+            guard lookup.matched else {
+                unverifiable.append("\(relative) is encrypted, but no creation rule in .sops.yaml governs it, so there is no declared key list to compare its recipients against.")
+                continue
+            }
 
             // Ground truth from the file itself: what actually protects it
             // right now, regardless of what the rule declares. The two can
@@ -296,7 +339,7 @@ public struct ProjectHealthCheck: HealthCheck {
                 detail += "\n\nThis app also could not fully check:\n" + unverifiable.joined(separator: "\n")
             }
             return HealthFinding(
-                id: "project.\(idSlug).stale-recipients",
+                id: "project.\(idScope).stale-recipients",
                 title: "\(project.name): recipients", status: .problem,
                 detail: detail,
                 remediation: Remediation(
@@ -321,7 +364,7 @@ public struct ProjectHealthCheck: HealthCheck {
                 ? "Part of this project's recipients could not be checked. This is not a verdict on them."
                 : "This project uses \(Self.backendList(unreadableBackends)), which this app cannot read — it only understands age keys."
             return HealthFinding(
-                id: "project.\(idSlug).stale-recipients",
+                id: "project.\(idScope).stale-recipients",
                 title: "\(project.name): recipients",
                 status: .unknown(reason: reason),
                 detail: verified + "\n\nDeliberately not checked:\n"
@@ -330,38 +373,125 @@ public struct ProjectHealthCheck: HealthCheck {
                     explanation: "Nothing here needs fixing on this app's account — it reports only what it read. To check the rest, use the tooling for that backend: `gpg --list-keys` for PGP, or your cloud provider's console for KMS, Key Vault or Vault. This app only manages age keys."))
         }
 
+        // Nothing was unreadable, and nothing disagreed. That is only an
+        // affirmative OK if something was actually compared.
+        //
+        // `verifiedFileCount` has always been the right number — it is
+        // incremented only when at least one age key sits on one side of the
+        // comparison, precisely so that "two empty sets are equal" is not
+        // mistaken for a verified file. It just was never read here. The old
+        // sentence, "Checked every encrypted file's recipient key list against
+        // the rule that governs it — every file's key list matches", was
+        // printed verbatim over zero files in three separate reproduced
+        // situations: a project with no encrypted files at all, a project
+        // whose only encrypted files were hidden, and a project whose
+        // encrypted file matched no creation rule.
+        guard verifiedFileCount > 0 else {
+            // The subject does not exist yet: no encrypted file was found
+            // anywhere under the project root. `.skipped` per
+            // `HealthStatus`'s own vocabulary, and it names the fact rather
+            // than implying a verdict.
+            guard !tree.encrypted.isEmpty || !tree.encryptedInOtherFormats.isEmpty else {
+                return HealthFinding(
+                    id: "project.\(idScope).stale-recipients",
+                    title: "\(project.name): recipients",
+                    status: .skipped(reason: "No sops-encrypted files were found anywhere under \(project.rootPath)."),
+                    detail: "The .sops.yaml here parses and uses age keys only, but there are no encrypted files yet, so no recipient list was compared against it. This app is not vouching for this project's recipients either way.")
+            }
+            // Files exist, every one of them resolved to a rule, and not one
+            // comparison had an age key on either side. The check ran and
+            // reached no verdict.
+            return HealthFinding(
+                id: "project.\(idScope).stale-recipients",
+                title: "\(project.name): recipients",
+                status: .unknown(reason: "No encrypted file here declares an age recipient, and neither does the rule governing it, so there was nothing to compare."),
+                detail: "Encrypted files were found under \(project.rootPath), but none of them — and none of the rules governing them — names a single age recipient. This app reads age recipients, so it has not verified anything about how these files are protected.")
+        }
+
+        let checked = verifiedFileCount == 1
+            ? "Checked 1 encrypted file's recipient key list against the rule that governs it — it matches."
+            : "Checked \(verifiedFileCount) encrypted files' recipient key lists against the rules that govern them — they all match."
         return HealthFinding(
-            id: "project.\(idSlug).stale-recipients",
+            id: "project.\(idScope).stale-recipients",
             title: "\(project.name): recipients", status: .ok,
-            detail: "Checked every encrypted file's recipient key list against the rule that governs it — every file's key list matches. Every rule in .sops.yaml uses age keys only, so there is nothing here this app could not read.")
+            detail: checked + " Every rule in .sops.yaml uses age keys only, so there is nothing here this app could not read.")
     }
 
     /// Reports only that a plaintext secret file exists and is not
     /// gitignored — never its contents. See the type-level doc comment.
-    private func gitignoreFinding(for project: InspectedProject, idSlug: String,
-                                  root: URL) -> HealthFinding {
-        let ignored = (try? String(contentsOf: root.appendingPathComponent(".gitignore"), encoding: .utf8))
-            .map { $0.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) } } ?? []
+    ///
+    /// Two things changed here after the whole-branch review, both because the
+    /// old version was verified wrong against `git check-ignore`:
+    ///
+    /// 1. **Scope.** PROPOSAL.md §6 D says "inside the repo"; the old scan
+    ///    looked only at the project root, so `services/api/.env` holding a
+    ///    live `sk_live_…` was invisible and the finding said "No unignored
+    ///    plaintext secret files found." The scan is now the whole tree.
+    /// 2. **The oracle.** Ignore status is decided by `git check-ignore`, not
+    ///    by comparing `.gitignore` lines to filenames. See `GitIgnoreOracle`.
+    ///
+    /// When git cannot answer — no repository, no git binary — the finding is
+    /// `.unknown` and still names the files it found. Guessing is what
+    /// produced the false OK; a named file with an honest "could not
+    /// determine" is strictly more useful than a confident wrong answer.
+    private func gitignoreFinding(for project: InspectedProject, idScope: String, root: URL,
+                                  candidates: [URL], gitPath: String?) -> HealthFinding {
+        let findingID = "project.\(idScope).gitignore"
+        let title = "\(project.name): plaintext files"
 
-        let exposed = Self.plaintextSecretNames.filter { name in
-            FileManager.default.fileExists(atPath: root.appendingPathComponent(name).path)
-                && !ignored.contains(name)
+        let rootPrefix = Self.canonicalPath(root.path) + "/"
+        func relativeName(_ url: URL) -> String {
+            let path = Self.canonicalPath(url.path)
+            return path.hasPrefix(rootPrefix) ? String(path.dropFirst(rootPrefix.count)) : path
         }
 
-        guard !exposed.isEmpty else {
+        // No candidate file at all is a definite answer that needs no git:
+        // it is a fact about the filesystem, not about ignore rules.
+        guard !candidates.isEmpty else {
             return HealthFinding(
-                id: "project.\(idSlug).gitignore",
-                title: "\(project.name): plaintext files", status: .ok,
-                detail: "No unignored plaintext secret files found.")
+                id: findingID, title: title, status: .ok,
+                detail: "Looked through \(project.rootPath) for plaintext files whose names conventionally hold secrets (.env and its variants) and found none.")
         }
 
-        return HealthFinding(
-            id: "project.\(idSlug).gitignore",
-            title: "\(project.name): plaintext files", status: .problem,
-            detail: "These plaintext files exist in \(project.rootPath) and are not gitignored: \(exposed.joined(separator: ", ")). Committing one publishes its contents to everyone with access to the repository's history, permanently.",
-            remediation: Remediation(
-                explanation: "Add them to .gitignore, then move their secrets into a file this app encrypts. If one has already been committed, rotating the values is the only real fix — removing the file from a future commit does not remove it from history.",
-                command: exposed.map { "echo '\($0)' >> .gitignore" }.joined(separator: "\n")))
+        let names = candidates.map(relativeName).sorted()
+
+        switch GitIgnoreOracle.classify(candidates: candidates, root: root, gitPath: gitPath) {
+        case .undetermined(let reason):
+            return HealthFinding(
+                id: findingID, title: title, status: .unknown(reason: reason),
+                detail: "These files under \(project.rootPath) have names that conventionally hold plaintext secrets: \(names.joined(separator: ", ")). Whether they are ignored could not be established, so this app is not telling you either way.",
+                remediation: Remediation(
+                    explanation: "Check them yourself with the command below, and make sure anything holding a real secret is either ignored or moved into a file this app encrypts.",
+                    command: "git check-ignore -v " + names.map { "'\($0)'" }.joined(separator: " ")))
+
+        case .answered(let exposed, let tracked):
+            guard !exposed.isEmpty else {
+                let count = candidates.count == 1
+                    ? "1 plaintext file whose name conventionally holds secrets"
+                    : "\(candidates.count) plaintext files whose names conventionally hold secrets"
+                return HealthFinding(
+                    id: findingID, title: title, status: .ok,
+                    detail: "Found \(count) under \(project.rootPath) (\(names.joined(separator: ", "))). git ignores all of them, so none can be committed by accident.")
+            }
+
+            let exposedNames = exposed.map(relativeName).sorted()
+            let trackedNames = exposed.filter { tracked.contains($0.path) }.map(relativeName).sorted()
+
+            var detail = "These plaintext files under \(project.rootPath) are not gitignored: \(exposedNames.joined(separator: ", ")). Committing one publishes its contents to everyone with access to the repository's history, permanently."
+            if !trackedNames.isEmpty {
+                detail += "\n\nAlready tracked by git, so they are in the repository now: \(trackedNames.joined(separator: ", ")). Adding a .gitignore line does not remove a file that is already tracked."
+            }
+
+            let rotationNote = trackedNames.isEmpty
+                ? " If one has already been committed, rotating the values is the only real fix — removing the file from a future commit does not remove it from history."
+                : " For the files already tracked, rotating the values is the only real fix: they are in the history, and neither a .gitignore line nor a future deletion removes them from it. `git rm --cached <file>` stops tracking it going forward."
+            return HealthFinding(
+                id: findingID, title: title, status: .problem,
+                detail: detail,
+                remediation: Remediation(
+                    explanation: "Add them to .gitignore, then move their secrets into a file this app encrypts." + rotationNote,
+                    command: exposedNames.map { "echo '\($0)' >> .gitignore" }.joined(separator: "\n")))
+        }
     }
 
     /// The number of bytes read from the *end* of every candidate file, via
@@ -402,28 +532,115 @@ public struct ProjectHealthCheck: HealthCheck {
     /// callers that need the content (`recipientFinding`) don't re-open and
     /// re-read the file a second time after `encryptedFiles(under:)` already
     /// paid that cost once.
-    private struct SniffedFile {
+    struct SniffedFile {
         let url: URL
         let tail: String
     }
 
-    /// Files carrying sops metadata, found by sniffing content rather than by
-    /// extension — a project can encrypt .json, .env, or plain .yaml alike.
-    /// Every file's *tail* is read (see `maxSniffedFileBytes`), never its
-    /// full contents, so this scales with file count, not file size.
-    private func encryptedFiles(under root: URL) -> [SniffedFile] {
-        guard let enumerator = FileManager.default.enumerator(
-            at: root, includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return [] }
+    /// What one walk of a project tree found.
+    struct ScannedTree {
+        /// Files carrying a YAML `sops:` metadata block — the shape this
+        /// build can read recipients out of.
+        var encrypted: [SniffedFile] = []
+        /// Files carrying sops metadata in some other serialization
+        /// (dotenv, JSON, INI). Recorded, not ignored: they are reported as
+        /// unverifiable rather than quietly left out of the count.
+        var encryptedInOtherFormats: [URL] = []
+        /// Files whose *names* conventionally hold plaintext secrets and
+        /// which carry no sops metadata at all.
+        var plaintextCandidates: [URL] = []
+    }
 
-        return enumerator.compactMap { $0 as? URL }.compactMap { url -> SniffedFile? in
-            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey]),
-                  values.isRegularFile == true
-            else { return nil }
-            guard let tail = Self.tailText(of: url, maxBytes: Self.maxSniffedFileBytes) else { return nil }
-            guard tail.contains("\nsops:") || tail.hasPrefix("sops:") else { return nil }
-            return SniffedFile(url: url, tail: tail)
+    /// Directories that hold a tool's own storage rather than the user's
+    /// content. `.git` is the one that matters: it is large, it is walked on
+    /// every refresh, and nothing a user would call a secret lives there as a
+    /// loose file. Deliberately short — every entry here is a place this app
+    /// promises not to look, and the longer that list gets the more likely it
+    /// is to hide something real. Build and dependency directories
+    /// (`node_modules`, `.build`) are *not* on it: a secret can genuinely end
+    /// up in one, and being slow is better than being silent.
+    private static let skippedDirectoryNames: Set<String> = [".git", ".hg", ".svn"]
+
+    /// Walks the project tree once, classifying every regular file.
+    ///
+    /// Hidden files are **not** skipped, which is the change that closes one
+    /// of the three reproduced false-OK paths. The previous
+    /// `.skipsHiddenFiles` meant a genuinely sops-encrypted `.hidden-secrets.yaml`
+    /// or `.config/secrets.yaml` was permanently invisible — including one
+    /// encrypted to a key the config no longer declared, i.e. a real
+    /// `.problem` the report rendered as "every file's key list matches". A
+    /// sops-encrypted `.env` is a completely ordinary thing for a user to
+    /// have, and so is a `secrets/` directory under a dotfile path. An
+    /// exclusion the user cannot see and the copy does not admit is the same
+    /// failure class as the vacuous OK itself, so the exclusion is gone rather
+    /// than documented.
+    ///
+    /// Every file's *tail* is read (see `maxSniffedFileBytes`), never its full
+    /// contents, so this scales with file count, not file size. Nothing is
+    /// read from a plaintext candidate beyond that tail, and nothing read from
+    /// any file ever reaches a finding.
+    static func scanTree(under root: URL) -> ScannedTree {
+        guard let enumerator = FileManager.default.enumerator(
+            at: root, includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
+            options: [.skipsPackageDescendants]) else { return ScannedTree() }
+
+        var tree = ScannedTree()
+        for case let url as URL in enumerator {
+            let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey])
+            if values?.isDirectory == true {
+                if Self.skippedDirectoryNames.contains(url.lastPathComponent) {
+                    enumerator.skipDescendants()
+                }
+                continue
+            }
+            guard values?.isRegularFile == true else { continue }
+
+            let tail = Self.tailText(of: url, maxBytes: Self.maxSniffedFileBytes)
+            if let tail, tail.contains("\nsops:") || tail.hasPrefix("sops:") {
+                tree.encrypted.append(SniffedFile(url: url, tail: tail))
+            } else if let tail, Self.looksSopsEncryptedInAnotherFormat(tail) {
+                tree.encryptedInOtherFormats.append(url)
+            } else if Self.isPlaintextSecretCandidate(url.lastPathComponent) {
+                tree.plaintextCandidates.append(url)
+            }
         }
+        return tree
+    }
+
+    /// sops metadata as written by its non-YAML stores. Only used to keep an
+    /// encrypted file from being mistaken for a plaintext one — an encrypted
+    /// `.env` reported as a leaking secret is a false alarm, and false alarms
+    /// are how a user learns to skip this finding.
+    private static func looksSopsEncryptedInAnotherFormat(_ tail: String) -> Bool {
+        tail.contains("sops_mac=") || tail.contains("sops_version=")   // dotenv
+            || tail.contains("\"sops\":")                              // json
+            || tail.contains("\n[sops]")                               // ini
+    }
+
+    /// Whether a *filename* is one that conventionally holds plaintext
+    /// secrets. Names only — nothing here reads a file.
+    ///
+    /// The old list was three hardcoded strings (`.env`, `.env.local`,
+    /// `.env.production`), so `.env.staging`, `.env.development` and
+    /// `production.env` all went unreported. This covers the whole `.env`
+    /// family in both spellings instead.
+    ///
+    /// Deliberately still narrow. Widening it to things like `credentials`,
+    /// `id_rsa` or `.npmrc` would produce false alarms on files that are
+    /// routinely committed on purpose, and a finding that cries wolf is one
+    /// the user stops reading — which costs more than the names it would
+    /// catch. The `.env` family is the case PROPOSAL.md §6 D names and the one
+    /// with an unambiguous convention behind it.
+    static func isPlaintextSecretCandidate(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        // Placeholders documenting which variables exist. Committing one is
+        // the point of it, so flagging it is pure noise.
+        let placeholderSuffixes = [".example", ".sample", ".template", ".dist", ".defaults"]
+        if placeholderSuffixes.contains(where: { lower.hasSuffix($0) }) { return false }
+        if lower == ".env" || lower.hasPrefix(".env.") { return true }
+        // "production.env", "local.env" — the same convention written the
+        // other way round. Excludes ".env" itself, already matched above.
+        return lower.hasSuffix(".env") && lower != ".env"
     }
 
     /// Reads at most the last `maxBytes` bytes of `url` via `FileHandle`

@@ -7,6 +7,11 @@ private struct FakeProjects: ProjectSourceProviding {
 }
 
 /// Builds a throwaway project directory. Returns its root path.
+///
+/// Always a real `git init` repository: the plaintext-leak finding now asks
+/// `git check-ignore` for its verdict rather than reading `.gitignore` lines
+/// itself (see `GitIgnoreOracle`), so a fixture that is not a repository
+/// legitimately produces "could not be determined" instead of an answer.
 private func makeProject(
     sopsYAML: String?,
     files: [String: String] = [:],
@@ -15,6 +20,7 @@ private func makeProject(
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("project-" + UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try ProjectFixture.gitInit(root)
     if let sopsYAML {
         try sopsYAML.write(to: root.appendingPathComponent(".sops.yaml"),
                            atomically: true, encoding: .utf8)

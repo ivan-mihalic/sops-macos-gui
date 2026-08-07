@@ -51,10 +51,93 @@ func newAgeKeyService(privateKeys ...string) (*ageKeyService, error) {
 	return &ageKeyService{identities: ids}, nil
 }
 
+// agePrivateKeyPrefix is the Bech32 HRP of a native X25519 age secret key.
+// Deliberately the only shape this bridge accepts as a decryption identity.
+const agePrivateKeyPrefix = "AGE-SECRET-KEY-1"
+
+// errNoAgeIdentity is what every caller-facing refusal in
+// parseDecryptionIdentities is built from, so a caller can match on a stable
+// phrase. It never carries any part of the supplied key.
+const errNoAgeIdentity = "no age identity was supplied to decrypt with"
+
+// parseDecryptionIdentities turns the caller's key argument into a non-empty
+// set of native age identities, or fails.
+//
+// This exists because upstream sops treats "zero identities" as an invitation
+// to go looking. age/keysource.go's MasterKey.Decrypt does:
+//
+//	if len(key.parsedIdentities) == 0 { ids, _, errs = key.loadIdentities() ... }
+//
+// and loadIdentities() reads SOPS_AGE_KEY, SOPS_AGE_KEY_FILE,
+// $XDG_CONFIG_HOME/sops/age/keys.txt, the SSH key locations — and
+// SOPS_AGE_KEY_CMD, which it *executes as a command line*. Meanwhile
+// ParsedIdentities.Import("") returns nil identities and a nil error, so an
+// empty, whitespace-only or comment-only key argument used to slide straight
+// into that branch. Verified by running it: with SOPS_AGE_KEY_CMD set to
+// "/usr/bin/touch marker", Decrypt(enc, FormatYAML, "") created the marker.
+//
+// ADR 0001 makes "identities are passed as function arguments only" binding
+// for M1+, and CLAUDE.md says the app never mutates the system. Both are
+// violated by a decrypt path that can be steered from the environment, so the
+// guard is: parse the argument ourselves, require at least one identity, and
+// accept only the AGE-SECRET-KEY-1 shape.
+//
+// Restricting to AGE-SECRET-KEY-1 is what closes the second execution vector.
+// sops's own parseIdentity routes an AGE-PLUGIN-… string to plugin.NewIdentity,
+// which execs an `age-plugin-*` binary found on PATH — the same "run whatever
+// the environment points at" hazard, reached through the key argument instead
+// of an environment variable. AGE-SECRET-KEY-PQ-1 (hybrid post-quantum) is
+// refused too: this app only ever generates X25519 keys, so accepting a shape
+// it cannot produce would widen the parser surface for nothing.
+//
+// No part of the supplied key appears in any error returned here. An error
+// string is exactly the kind of text that reaches a log, a crash report or a
+// screenshot.
+func parseDecryptionIdentities(agePrivateKey string) (sopsage.ParsedIdentities, error) {
+	var accepted []string
+	for _, raw := range strings.Split(agePrivateKey, "\n") {
+		line := strings.TrimSpace(raw)
+		// Blank and #-comment lines are ordinary in an exported key file.
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if !strings.HasPrefix(line, agePrivateKeyPrefix) {
+			return nil, fmt.Errorf("%s: this build accepts a native age secret key (%s…) only, and the value given is not one. Nothing was read from the environment", errNoAgeIdentity, agePrivateKeyPrefix)
+		}
+		accepted = append(accepted, line)
+	}
+	if len(accepted) == 0 {
+		return nil, fmt.Errorf("%s: the key argument contained no key. This build never falls back to SOPS_AGE_KEY, SOPS_AGE_KEY_FILE, SOPS_AGE_KEY_CMD or ~/.config/sops/age/keys.txt", errNoAgeIdentity)
+	}
+
+	var ids sopsage.ParsedIdentities
+	if err := ids.Import(accepted...); err != nil {
+		// sops's parse error can quote the offending line, so it is
+		// deliberately not wrapped into the message.
+		return nil, fmt.Errorf("%s: the value given is not a usable age secret key", errNoAgeIdentity)
+	}
+	// Belt and braces: Import returning nil identities with a nil error is
+	// precisely the upstream behaviour this guard exists to contain, so the
+	// post-condition is asserted rather than assumed.
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("%s: the key argument parsed to no identities", errNoAgeIdentity)
+	}
+	return ids, nil
+}
+
 func (s *ageKeyService) Decrypt(ctx context.Context, req *keyservice.DecryptRequest) (*keyservice.DecryptResponse, error) {
 	k, ok := req.Key.KeyType.(*keyservice.Key_AgeKey)
 	if !ok {
 		return nil, fmt.Errorf("unsupported key type %T: this build handles age keys only", req.Key.KeyType)
+	}
+	// Second line of defence behind parseDecryptionIdentities. A MasterKey
+	// handed zero identities does not fail — sops's MasterKey.Decrypt reads
+	// the environment instead (see parseDecryptionIdentities for the detail).
+	// The encryption path legitimately builds this service with no identities
+	// at all, so refusing here keeps that construction from ever being able to
+	// unwrap anything.
+	if len(s.identities) == 0 {
+		return nil, fmt.Errorf("%s: this key service holds no identities", errNoAgeIdentity)
 	}
 	mk := sopsage.MasterKey{Recipient: k.AgeKey.Recipient}
 	mk.EncryptedKey = string(req.Ciphertext)
@@ -180,7 +263,18 @@ func Encrypt(plain []byte, format Format, opts EncryptOpts) ([]byte, error) {
 
 // Decrypt returns the plaintext of a SOPS-encrypted document, using the given
 // age private key (AGE-SECRET-KEY-1...) as the decryption identity.
+//
+// The identity is validated up front — see parseDecryptionIdentities. A key
+// argument that yields no identity is an error, never a signal to look at the
+// environment.
 func Decrypt(encrypted []byte, format Format, agePrivateKey string) ([]byte, error) {
+	// Validated before anything else is done, so the refusal cannot depend on
+	// the document's contents or on how far parsing got.
+	identities, err := parseDecryptionIdentities(agePrivateKey)
+	if err != nil {
+		return nil, err
+	}
+
 	sf, err := format.toSopsFormat()
 	if err != nil {
 		return nil, err
@@ -192,10 +286,7 @@ func Decrypt(encrypted []byte, format Format, agePrivateKey string) ([]byte, err
 		return nil, fmt.Errorf("load encrypted file: %w", err)
 	}
 
-	ks, err := newAgeKeyService(agePrivateKey)
-	if err != nil {
-		return nil, err
-	}
+	ks := &ageKeyService{identities: identities}
 
 	if _, err := common.DecryptTree(common.DecryptTreeOpts{
 		Tree:        &tree,
@@ -212,35 +303,51 @@ func Decrypt(encrypted []byte, format Format, agePrivateKey string) ([]byte, err
 	return plain, nil
 }
 
-// SopsVersion reports the sops version compiled into this bridge, taken from
-// the linked module (github.com/getsops/sops/v3) via build info rather than
-// sops's own version.Version — that package variable is a hand-maintained
-// literal in upstream sops, not derived from the module system, so reading it
-// would let this drift from what was actually linked silently.
-func SopsVersion() string {
+// UnknownVersion is what SopsVersion and AgeVersion report when the linked
+// module version cannot be determined at all.
+//
+// Deliberately not a version number. Every consumer of these strings performs
+// a *comparison* — ExternalToolCheck warns when the installed sops CLI is
+// older than the embedded engine, EngineFreshnessCheck warns when the embedded
+// engine is older than the latest upstream release. The previous sentinel,
+// "0.0.0", is the single worst value for that: it parses cleanly as semver and
+// then loses every comparison, so an engine whose version was never actually
+// read turned "warn if the CLI is behind" into a permanent OK (an installed
+// sops 3.0.0 reported [OK] against an embedded 0.0.0), and turned the
+// freshness check into a confident warning about a version nobody established.
+//
+// A value that cannot parse as semver forces the Swift side to handle the
+// unknown case explicitly instead of silently comparing against a fiction.
+const UnknownVersion = "unknown"
+
+// moduleVersion reports the version of the named module linked into this
+// binary, or UnknownVersion.
+//
+// Build info rather than a package constant: sops's own version.Version is a
+// hand-maintained literal in upstream sops, not derived from the module
+// system, so reading it would let this drift silently from what was actually
+// linked.
+func moduleVersion(modulePath string) string {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
-		return "0.0.0"
+		return UnknownVersion
 	}
 	for _, dep := range info.Deps {
-		if dep.Path == "github.com/getsops/sops/v3" {
-			return strings.TrimPrefix(dep.Version, "v")
+		if dep.Path == modulePath {
+			if v := strings.TrimPrefix(dep.Version, "v"); v != "" {
+				return v
+			}
+			return UnknownVersion
 		}
 	}
-	return "0.0.0"
+	return UnknownVersion
 }
 
-// AgeVersion reports the filippo.io/age version compiled into this bridge.
-// age exposes no version constant, so it is read from the build info.
-func AgeVersion() string {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return "0.0.0"
-	}
-	for _, dep := range info.Deps {
-		if dep.Path == "filippo.io/age" {
-			return strings.TrimPrefix(dep.Version, "v")
-		}
-	}
-	return "0.0.0"
-}
+// SopsVersion reports the sops version compiled into this bridge, taken from
+// the linked module (github.com/getsops/sops/v3), or UnknownVersion.
+func SopsVersion() string { return moduleVersion("github.com/getsops/sops/v3") }
+
+// AgeVersion reports the filippo.io/age version compiled into this bridge, or
+// UnknownVersion. age exposes no version constant, so it is read from the
+// build info.
+func AgeVersion() string { return moduleVersion("filippo.io/age") }
