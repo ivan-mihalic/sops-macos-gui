@@ -73,6 +73,24 @@ struct SecurityPostureCheckTests {
         #expect(finding(await makeCheck().run(), "security.legacy-key-file").status == .ok)
     }
 
+    // A directory at the legacy key file's path (e.g. an empty
+    // ~/.config/sops/age/keys.txt someone `mkdir -p`'d) is not a plaintext key
+    // file. `FileManager.fileExists(atPath:)` alone can't distinguish a
+    // directory from a regular file, so a naive check would report the false
+    // "An age key file sits unencrypted at …" about a path holding no file at
+    // all.
+    @Test("a directory at the legacy key file path is not mistaken for a key file")
+    func legacyKeyFilePathAsDirectoryIsOK() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("posture-dir-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let legacy = finding(await makeCheck(legacyKeyFilePath: dir.path).run(),
+                             "security.legacy-key-file")
+        #expect(legacy.status == .ok)
+    }
+
     @Test("an unsupported macOS version is a problem")
     func oldOSIsAProblem() async {
         let os = finding(await makeCheck(os: SemanticVersion(13, 0, 0)).run(), "security.os")

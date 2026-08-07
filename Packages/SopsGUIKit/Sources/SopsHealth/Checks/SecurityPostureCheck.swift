@@ -113,8 +113,18 @@ public struct SecurityPostureCheck: HealthCheck {
     /// Only its existence is checked — via `fileExists`, which stats the path
     /// and needs no read permission on the file itself. The contents are
     /// never opened, read, or logged.
+    ///
+    /// `fileExists(atPath:isDirectory:)` — not the plain overload — because a
+    /// directory happening to sit at this path (e.g. an empty
+    /// `~/.config/sops/age/keys.txt` someone `mkdir -p`'d by mistake) is not a
+    /// key file. The plain overload can't tell the two apart, so it would
+    /// produce a false "An age key file sits unencrypted at …" about a path
+    /// that holds no file at all. This still costs only a `stat`, so it keeps
+    /// the never-opened guarantee the type doc comment promises.
     private var legacyKeyFileFinding: HealthFinding {
-        guard FileManager.default.fileExists(atPath: legacyKeyFilePath) else {
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: legacyKeyFilePath, isDirectory: &isDirectory)
+        guard exists, !isDirectory.boolValue else {
             return HealthFinding(id: "security.legacy-key-file", title: "Plaintext key file",
                                  status: .ok,
                                  detail: "No unprotected age key file was found.")
