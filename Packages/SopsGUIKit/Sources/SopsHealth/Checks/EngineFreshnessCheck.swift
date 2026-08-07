@@ -102,7 +102,7 @@ public struct EngineFreshnessCheck: HealthCheck {
                 detail: "This app has \(component.title) \(embedded) built in. "
                     + "Nothing was sent anywhere, so there is no comparison to show.",
                 remediation: Remediation(
-                    explanation: "Turn on \"Check for engine updates\" in Settings › Updates to let this app ask GitHub for the latest release. It is off until you say otherwise: it is the only network request this app ever makes. You can also read the project's public security advisories yourself instead.",
+                    explanation: "Turn on \"Check for engine updates\" in Settings › Updates to let this app ask GitHub for the latest release. It is off until you say otherwise, and it is the only network request this app makes on its own. You can also read the project's public security advisories yourself instead.",
                     command: nil,
                     documentationURL: component.advisoriesURL))
 

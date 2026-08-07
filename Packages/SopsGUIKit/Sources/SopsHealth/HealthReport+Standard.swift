@@ -13,7 +13,16 @@ import SopsEngine
 /// which: it was its own constant.
 ///
 /// Default off, and it stays off until the user says otherwise: this gates the
-/// only network request the app makes at all. `UserDefaults.bool(forKey:)`
+/// only network request the app makes on its own.
+///
+/// "On its own" is load-bearing, and it was not always true. The app also runs
+/// external binaries, and `sops --version` contacts `api.github.com` by default
+/// from sops 3.8 onward — so `ExternalToolCheck` used to cause a GitHub request
+/// on first launch, before this consent flag had been shown to anyone, while
+/// the copy below it said "Nothing was sent anywhere". The probe now passes
+/// `--disable-version-check`; see `ExternalToolCheck.requirements` and
+/// `ExternalToolNetworkTests`. Anything added to that check in future has to
+/// clear the same bar. `UserDefaults.bool(forKey:)`
 /// returns `false` for a key that was never written, so "unset" and "declined"
 /// are the same thing, which is the safe direction for a consent flag.
 public enum UpdateCheckConsent {

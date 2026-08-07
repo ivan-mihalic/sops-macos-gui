@@ -34,9 +34,16 @@ public protocol UpstreamVersionProviding: Sendable {
 
 /// Looks up the latest release of a GitHub repository.
 ///
-/// This is the only network call in the app. It is gated behind explicit user
-/// consent (`isEnabled`) and returns nil — never an error — when consent is off,
-/// the network is down, or the response is unexpected. PROPOSAL.md §6 B.
+/// This is the only network call the app makes on its own. It is gated behind
+/// explicit user consent (`isEnabled`) and returns nil — never an error — when
+/// consent is off, the network is down, or the response is unexpected.
+/// PROPOSAL.md §6 B.
+///
+/// The app does also run external binaries, and one of them used to reach the
+/// network on the app's behalf: `sops --version` contacts `api.github.com`
+/// unless told not to. `ExternalToolCheck` now passes
+/// `--disable-version-check`, which is what keeps the sentence above true of
+/// the shipping build rather than only of this file.
 ///
 /// What actually goes out, once consent is on: a single GET to
 /// `https://api.github.com/repos/<repository>/releases/latest`, with a fixed

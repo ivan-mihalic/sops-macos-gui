@@ -426,7 +426,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This is the only network request this app ever makes. It sends no identifier for you or this Mac, and it is off until you turn it on."
+            "value": "This is the only network request this app makes on its own. It sends no identifier for you or this Mac, and it is off until you turn it on. The health check separately runs your login shell to find your command-line tools, then each tool to read its version — including sops, which it explicitly tells not to check GitHub for a newer sops."
           }
         }
       }
