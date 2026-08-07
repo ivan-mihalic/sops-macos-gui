@@ -271,7 +271,7 @@ Ranked by value/effort; ✦ = recommended for v1:
 | # | Milestone | Content |
 |---|---|---|
 | M0 | **Spike** ✅ | Go xcframework bridge; CLI-compatibility round-trip proof. Verdict: in-process, [ADR 0001](docs/adr/0001-in-process-go-bridge.md) |
-| M1 | **Shell & onboarding** | App scaffold (sidebar, About, Settings, String Catalogs), engine integration, the whole of §6 |
+| M1 | **Shell & onboarding** ✅ | App scaffold (sidebar, About, Settings, String Catalogs), engine integration, the whole of §6 |
 | M2 | Core editing | Project add (incl. worktrees), file list, form editor, encrypt/decrypt, atomic save. **Blocked on the §6 D tree-walk cost constraint** — adding a real project source makes that scan user-visible |
 | M3 | Keys & security | Keychain + Touch ID, session TTL, key generate/import/reveal, clipboard hygiene |
 | M4 | Recipients & help | `.sops.yaml` editing, updatekeys, recipient add/remove + rotate reminder, Help section with snippets |
