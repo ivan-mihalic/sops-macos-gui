@@ -1,0 +1,833 @@
+# M2 — Core Editing Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Let the user add a project, see its encrypted files, read their decrypted contents in a form, edit them, and save — producing files the standard `sops` CLI reads identically.
+
+**Architecture:** Projects are persisted as a small JSON store in Application Support and exposed through the `ProjectSourceProviding` protocol M1 already defined, which lights up the project half of the health check as a side effect. File discovery is extracted out of `ProjectHealthCheck` into a shared scanner both the health check and the file list use. The age key lives in memory for the session only, behind a protocol shaped so M3's Keychain drops in without touching callers. **Document editing happens inside Go, using sops's own stores** — Swift never re-emits YAML, exactly as ADR 0002 established for `.sops.yaml`.
+
+**Tech Stack:** Swift 6, SwiftUI, swift-testing, SwiftPM, XcodeGen, Go 1.26 (cgo `c-archive`), upstream `getsops/sops` v3.13.3.
+
+## Global Constraints
+
+- **arm64-only.** One slice, everywhere.
+- **Deployment target is macOS 26.0**, declared in `Engine/build-xcframework.sh` (`MACOSX_DEPLOYMENT_TARGET`), `Packages/SopsGUIKit/Package.swift` (`platforms:`, string form `.macOS("26.0")` — the `.v26` enum case is unavailable at `swift-tools-version: 6.0`), `project.yml` (`deploymentTarget:` and `LSMinimumSystemVersion`). A mismatch produces a linker warning on every object file.
+- **YAML only for v1.** Do not add dotenv or JSON handling anywhere, including "just in case" enum cases.
+- **Key material never goes through the environment.** The bridge requires a caller-supplied identity and validates its `AGE-SECRET-KEY-1` prefix; it never falls back to `SOPS_AGE_KEY*` or `~/.config/sops/age/keys.txt`. (ADR 0001, and the C1 finding that proved the fallback executed `$SOPS_AGE_KEY_CMD`.)
+- **We never reimplement a sops format** — neither the file format nor the configuration format. Where sops's own code can do the job, call it through the bridge. (ADR 0002.)
+- **The app never mutates the system.** It writes only inside the user's chosen project directories and its own Application Support container.
+- **No secret value in any log, error, crash report, or health finding.** Naming a file or a key name is fine; a value is not. This now extends to the editor: an error about a failed save may name the file, never its contents.
+- **Nothing blocks.** A failed check or an unreadable file never prevents using the rest of the app.
+- **Every user-facing string in `SopsUI` goes through `LocalizedKey`** with a matching `Localizable.xcstrings` entry. A SwiftUI view never takes a string literal. Findings produced by `SopsHealth` carry their own English text.
+- Build artifacts are never committed.
+
+## What M1 Learned That This Plan Is Built Around
+
+Read these before starting. Every one cost multiple review rounds.
+
+1. **A check that cannot prove something must say so.** M1's worst defects were all the app claiming more than it had established — "every file's key list matches" over zero files checked, a green all-clear over a live `sk_live_…`, an all-clear before the scan finished. The editor inherits this: a file it could not fully parse must not render as an empty-but-editable form.
+2. **A test that cannot fail is worse than no test.** M1 shipped a tautological version test, a lexical copy guard defeated by ten paraphrases, and a PATH test satisfied by its own fallback constant. For every test in this plan, name the production change that breaks it — and for the critical ones, break it and watch it go red.
+3. **Fixtures your own code accepts prove nothing.** Two M1 defects survived five review rounds because the fixtures were hand-written to match what the implementer believed sops emitted. Build fixtures with the real `sops` and `age` binaries, which are installed.
+4. **`ProjectHealthCheck` is 853 lines and produced the most Criticals on the branch.** That is not a coincidence. Task 2 splits it before anything new is built on it.
+
+---
+
+## File Structure
+
+| Path | Responsibility |
+|---|---|
+| `Engine/gobridge/document.go` | Decrypt to an ordered row list, and apply edits + re-encrypt, using sops's own stores. |
+| `Engine/cshim/main.go` | Two new C entry points for the above. |
+| `Packages/SopsGUIKit/Sources/SopsEngine/SopsDocument.swift` | Swift side of the document API. |
+| `Sources/SopsHealth/ProjectScanner.swift` | File discovery, extracted from `ProjectHealthCheck`. Bounded, with disclosure. |
+| `Sources/SopsHealth/EncryptedFileMetadata.swift` | Extracted from `ProjectHealthCheck`. |
+| `Sources/SopsProjects/ProjectStore.swift` | Persisted project list; conforms to `ProjectSourceProviding`. |
+| `Sources/SopsProjects/WorktreeResolver.swift` | `.git` file/dir detection and worktree grouping. |
+| `Sources/SopsProjects/SessionKeyStore.swift` | In-memory age key; conforms to `KeyStoreStatusProviding`. |
+| `Sources/SopsUI/Projects/ProjectSidebar.swift` | Project and worktree list, add/remove. |
+| `Sources/SopsUI/Projects/FileListView.swift` | Encrypted files in the selected project. |
+| `Sources/SopsUI/Editor/SecretDocumentViewModel.swift` | Load, edit, save; unsaved-changes state. |
+| `Sources/SopsUI/Editor/SecretEditorView.swift` | Form rows, masking, reveal, copy. |
+| `Sources/SopsUI/Editor/KeyImportView.swift` | Paste or import the session key. |
+
+A new `SopsProjects` target keeps the project model out of both `SopsHealth` (which only consumes it through a protocol) and `SopsUI`.
+
+---
+
+### Task 1: Bound the project scan
+
+The blocker named in PROPOSAL §6 D. Today `scanTree` walks everything except `.git`; on a real repository that is 272,802 files and **170 seconds**, because `node_modules/.bun` and `.worktrees` dominate. Nobody sees it yet only because `NoProjects()` is injected — Task 5 changes that.
+
+**Files:**
+- Modify: `Packages/SopsGUIKit/Sources/SopsHealth/Checks/ProjectHealthCheck.swift` (`scanTree`, around line 656)
+- Test: `Packages/SopsGUIKit/Tests/SopsHealthTests/ProjectScanBoundsTests.swift`
+
+**Interfaces:**
+- Consumes: `ProjectHealthCheck.ScannedTree`.
+- Produces: `ScannedTree` gains `wasTruncated: Bool` and `skippedDirectoryNames: [String]`.
+
+- [ ] **Step 1: Write the failing test**
+
+```swift
+import Foundation
+import Testing
+@testable import SopsHealth
+
+@Suite("project scan bounds")
+struct ProjectScanBoundsTests {
+
+    /// Builds a tree with `count` files inside `dirName`, plus one real file at the root.
+    private func makeTree(dirName: String, count: Int) throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("scan-" + UUID().uuidString)
+        let noise = root.appendingPathComponent(dirName)
+        try FileManager.default.createDirectory(at: noise, withIntermediateDirectories: true)
+        for i in 0..<count {
+            try "x".write(to: noise.appendingPathComponent("f\(i).txt"), atomically: true, encoding: .utf8)
+        }
+        try "API_KEY=live".write(to: root.appendingPathComponent(".env"), atomically: true, encoding: .utf8)
+        return root
+    }
+
+    @Test("dependency directories are not walked", arguments: [
+        "node_modules", ".build", ".worktrees", "target", "vendor", "Pods", ".venv", "dist",
+    ])
+    func skipsDependencyDirectories(dirName: String) throws {
+        let root = try makeTree(dirName: dirName, count: 200)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let scanned = ProjectHealthCheck.scanTree(under: root)
+
+        #expect(scanned.plaintextCandidates.contains { $0.hasSuffix(".env") },
+                "the root .env must still be found")
+        #expect(!scanned.wasTruncated, "200 files is nowhere near the budget")
+        #expect(scanned.skippedDirectoryNames.contains(dirName))
+    }
+
+    // A budget that is silently hit is the same defect class as a check that
+    // reports OK about something it never looked at.
+    @Test("hitting the file budget is reported, not swallowed")
+    func truncationIsDisclosed() throws {
+        let root = try makeTree(dirName: "src", count: ProjectHealthCheck.maxScannedFiles + 50)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let scanned = ProjectHealthCheck.scanTree(under: root)
+
+        #expect(scanned.wasTruncated)
+    }
+
+    @Test("a truncated scan never lets the recipients finding report OK")
+    func truncationBlocksOK() async throws {
+        let root = try makeTree(dirName: "src", count: ProjectHealthCheck.maxScannedFiles + 50)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try """
+        creation_rules:
+          - age: age1ykd0u99qxpdl4yr57lwqv5rt9e473p6hhdps2a5q5ddmt0x6ryaqkjpx4f
+        """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+
+        let check = ProjectHealthCheck(source: FixedProjects(projects: [
+            InspectedProject(name: "big", rootPath: root.path)
+        ]))
+        let findings = await check.run()
+        let recipients = findings.first { $0.id.hasSuffix("stale-recipients") }!
+
+        #expect(recipients.status != .ok, "a partial scan cannot vouch for the whole project")
+    }
+}
+
+private struct FixedProjects: ProjectSourceProviding {
+    let projects: [InspectedProject]
+}
+```
+
+- [ ] **Step 2: Run it and watch it fail**
+
+```bash
+cd Packages/SopsGUIKit && swift test --filter ProjectScanBounds
+```
+
+Expected: FAIL — `value of type 'ScannedTree' has no member 'wasTruncated'`.
+
+- [ ] **Step 3: Implement the bounds**
+
+In `ProjectHealthCheck`, add above `scanTree`:
+
+```swift
+    /// Directories that hold dependencies or build output rather than the user's
+    /// own files. Walking them is what turned a project scan into 170 seconds on
+    /// a real repository — 272,802 files where 13,899 were the user's.
+    static let skippedDirectoryNames: Set<String> = [
+        ".git", ".hg", ".svn",
+        "node_modules", ".build", ".swiftpm", ".worktrees",
+        "target", "vendor", "Pods", "Carthage", "DerivedData",
+        ".venv", "venv", "__pycache__", ".tox",
+        "dist", "build", ".next", ".nuxt", ".gradle", ".terraform",
+    ]
+
+    /// A ceiling so an unknown huge directory cannot stall the UI. When it is
+    /// hit the scan says so — see `ScannedTree.wasTruncated`. A budget that is
+    /// silently exceeded would let the app report on a project it only partly read.
+    static let maxScannedFiles = 20_000
+```
+
+Extend `ScannedTree` with `var wasTruncated: Bool` and `var skippedDirectoryNames: [String]`, both populated during the walk. In the enumerator loop, call `enumerator.skipDescendants()` when a directory's `lastPathComponent` is in `skippedDirectoryNames`, recording the name; stop and set `wasTruncated` once the file count reaches `maxScannedFiles`.
+
+- [ ] **Step 4: Make a truncated scan unable to report OK**
+
+In `recipientFinding`, the `.ok` branch already guards on `verifiedFileCount > 0`. Add the truncation condition so a partial scan produces `.unknown` naming what was skipped, in the same shape as the existing non-age-backend hedge. Reuse that wording style — the user needs to know the app looked at part of the tree, and which part.
+
+- [ ] **Step 5: Run the tests and watch them pass**
+
+```bash
+cd Packages/SopsGUIKit && swift test --filter ProjectScanBounds
+```
+
+Expected: PASS, 10 tests (8 from the parameterised case plus 2).
+
+- [ ] **Step 6: Measure it on a real repository**
+
+```bash
+cd Packages/SopsGUIKit && swift test --filter ProjectHealthCheck 2>&1 | tail -3
+```
+
+Then write a throwaway timing test pointing `scanTree` at a large real checkout — this repository itself has `.worktrees` and `Packages/SopsGUIKit/.build`. Paste before/after wall-clock into your report. The prior measurement was 170s; anything above a second on a normal repo means the exclusion list is not doing its job. Delete the throwaway test afterwards.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add -A && git commit -m "M2: bound the project scan and disclose when it is truncated"
+```
+
+---
+
+### Task 2: Extract the scanner out of ProjectHealthCheck
+
+853 lines, four concerns, and the most reproduced Criticals of any file on the M1 branch. M2's file list needs the same discovery logic; duplicating it would be the worst available outcome.
+
+**Files:**
+- Create: `Sources/SopsHealth/ProjectScanner.swift`
+- Create: `Sources/SopsHealth/EncryptedFileMetadata.swift`
+- Modify: `Sources/SopsHealth/Checks/ProjectHealthCheck.swift`
+- Modify/Create: the corresponding test files
+
+**Interfaces:**
+- Produces: `public struct ProjectScanner` with `public static func scan(root: URL) -> ScannedTree`, and `public struct ScannedTree { public let encryptedFiles: [URL]; public let plaintextCandidates: [URL]; public let wasTruncated: Bool; public let skippedDirectoryNames: [String] }`. `EncryptedFileMetadata` moves verbatim with its existing API.
+
+- [ ] **Step 1: Move, do not rewrite**
+
+`git mv` is not available for a partial file, so move the code by cut-and-paste and verify with `git diff` that the moved bodies are unchanged. Make `ProjectScanner` and `ScannedTree` `public` — `SopsUI` needs them for the file list. Everything else stays internal.
+
+- [ ] **Step 2: Point `ProjectHealthCheck` at the new type**
+
+It should now call `ProjectScanner.scan(root:)` and own none of the walking code.
+
+- [ ] **Step 3: Run the whole suite**
+
+```bash
+cd Packages/SopsGUIKit && swift test
+```
+
+Expected: the same count as before this task, all passing. **A behavioural change here is a bug, not an improvement** — if a test fails, you changed something while moving it.
+
+- [ ] **Step 4: Confirm the split actually happened**
+
+```bash
+wc -l Packages/SopsGUIKit/Sources/SopsHealth/Checks/ProjectHealthCheck.swift
+```
+
+Expected: substantially under 853. Report the number.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A && git commit -m "M2: extract ProjectScanner and EncryptedFileMetadata from ProjectHealthCheck"
+```
+
+---
+
+### Task 3: The project store
+
+**Files:**
+- Modify: `Packages/SopsGUIKit/Package.swift` (new `SopsProjects` target)
+- Create: `Sources/SopsProjects/ProjectStore.swift`
+- Create: `Tests/SopsProjectsTests/ProjectStoreTests.swift`
+
+**Interfaces:**
+- Produces: `public struct StoredProject: Codable, Identifiable, Equatable, Sendable { public let id: UUID; public var displayName: String; public var rootPath: String; public var addedAt: Date }`; `@MainActor @Observable public final class ProjectStore` with `init(fileURL: URL)`, `projects: [StoredProject]`, `func add(path: String) throws -> StoredProject`, `func remove(id: UUID)`, and a nested `ProjectStore.HealthSource: ProjectSourceProviding` adapter.
+- `ProjectStore.Error` cases: `.notADirectory`, `.alreadyAdded(existing: StoredProject)`, `.unreadable`.
+
+- [ ] **Step 1: Write the failing test**
+
+```swift
+import Foundation
+import Testing
+@testable import SopsProjects
+
+@Suite("ProjectStore")
+@MainActor
+struct ProjectStoreTests {
+
+    private func makeStore() -> (ProjectStore, URL) {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("projects-\(UUID().uuidString).json")
+        return (ProjectStore(fileURL: url), url)
+    }
+
+    private func makeDirectory() throws -> String {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("proj-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url.path
+    }
+
+    @Test("adding a directory persists it across instances")
+    func addPersists() throws {
+        let (store, url) = makeStore()
+        let path = try makeDirectory()
+
+        _ = try store.add(path: path)
+
+        let reloaded = ProjectStore(fileURL: url)
+        #expect(reloaded.projects.map(\.rootPath) == [path])
+    }
+
+    @Test("adding the same path twice reports the existing entry instead of duplicating")
+    func rejectsDuplicates() throws {
+        let (store, _) = makeStore()
+        let path = try makeDirectory()
+        let first = try store.add(path: path)
+
+        #expect(throws: ProjectStore.Error.self) { try store.add(path: path) }
+        #expect(store.projects.count == 1)
+        #expect(store.projects.first?.id == first.id)
+    }
+
+    @Test("a file, not a directory, is refused")
+    func rejectsFiles() throws {
+        let (store, _) = makeStore()
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("f-\(UUID().uuidString).txt")
+        try "x".write(to: file, atomically: true, encoding: .utf8)
+
+        #expect(throws: ProjectStore.Error.self) { try store.add(path: file.path) }
+    }
+
+    // A project directory the user deleted or unmounted must not crash the app
+    // or vanish silently — the user needs to be told which one is gone.
+    @Test("a project whose directory disappeared is kept and marked, not dropped")
+    func survivesMissingDirectory() throws {
+        let (store, url) = makeStore()
+        let path = try makeDirectory()
+        _ = try store.add(path: path)
+        try FileManager.default.removeItem(atPath: path)
+
+        let reloaded = ProjectStore(fileURL: url)
+        #expect(reloaded.projects.count == 1)
+        #expect(reloaded.isMissing(reloaded.projects[0]))
+    }
+
+    @Test("a corrupt store file yields an empty list rather than throwing at launch")
+    func toleratesCorruptFile() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("projects-\(UUID().uuidString).json")
+        try "not json at all".write(to: url, atomically: true, encoding: .utf8)
+
+        #expect(ProjectStore(fileURL: url).projects.isEmpty)
+    }
+
+    @Test("removing leaves the rest intact and persists")
+    func removePersists() throws {
+        let (store, url) = makeStore()
+        let a = try store.add(path: try makeDirectory())
+        _ = try store.add(path: try makeDirectory())
+
+        store.remove(id: a.id)
+
+        #expect(ProjectStore(fileURL: url).projects.count == 1)
+    }
+
+    @Test("the health-source adapter exposes exactly the stored projects")
+    func healthSourceMatches() throws {
+        let (store, _) = makeStore()
+        let p = try store.add(path: try makeDirectory())
+
+        let source = store.healthSource
+        #expect(source.projects.map(\.rootPath) == [p.rootPath])
+    }
+}
+```
+
+- [ ] **Step 2: Run it and watch it fail**
+
+```bash
+cd Packages/SopsGUIKit && swift test --filter ProjectStore
+```
+
+Expected: FAIL — `no such module 'SopsProjects'`.
+
+- [ ] **Step 3: Add the target**
+
+In `Package.swift`, add the library product and:
+
+```swift
+        .target(name: "SopsProjects", dependencies: ["SopsHealth"]),
+        .testTarget(name: "SopsProjectsTests", dependencies: ["SopsProjects"]),
+```
+
+- [ ] **Step 4: Implement**
+
+Persist as JSON. Writes go through a temp file plus `replaceItemAt` so a crash mid-write cannot leave a truncated store. `isMissing(_:)` stats the path rather than caching, so an unmounted volume reappearing fixes itself. The default location is `~/Library/Application Support/cz.mihalic.SopsGUI/projects.json`, but the initialiser takes the URL so tests never touch it.
+
+- [ ] **Step 5: Run the tests and watch them pass**
+
+```bash
+cd Packages/SopsGUIKit && swift test --filter ProjectStore
+```
+
+Expected: PASS, 7 tests.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add -A && git commit -m "M2: persisted project store"
+```
+
+---
+
+### Task 4: Worktree detection and grouping
+
+PROPOSAL §3: a worktree's `.git` is a **file** containing a `gitdir:` pointer, not a directory. Worktrees group under their main repository, and editing is allowed in any of them.
+
+**Files:**
+- Create: `Sources/SopsProjects/WorktreeResolver.swift`
+- Create: `Tests/SopsProjectsTests/WorktreeResolverTests.swift`
+
+**Interfaces:**
+- Produces: `public enum RepositoryKind: Equatable, Sendable { case mainRepository(root: String); case worktree(root: String, mainRepository: String); case notAGitRepository }` and `public enum WorktreeResolver { public static func kind(of path: String) -> RepositoryKind }`.
+
+- [ ] **Step 1: Write the failing test, using real git**
+
+Build the fixtures with the real `git` binary — a hand-written `.git` file is exactly the kind of fixture that proves nothing.
+
+```swift
+import Foundation
+import Testing
+@testable import SopsProjects
+
+@Suite("WorktreeResolver")
+struct WorktreeResolverTests {
+
+    /// Creates a real repository with one real linked worktree.
+    private func makeRepoWithWorktree() throws -> (main: String, worktree: String) {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("repo-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        let main = base.appendingPathComponent("main")
+        try FileManager.default.createDirectory(at: main, withIntermediateDirectories: true)
+
+        try git(["init", "-q"], in: main)
+        try "x".write(to: main.appendingPathComponent("f.txt"), atomically: true, encoding: .utf8)
+        try git(["add", "."], in: main)
+        try git(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"], in: main)
+
+        let wt = base.appendingPathComponent("wt")
+        try git(["worktree", "add", "-q", wt.path, "-b", "feature"], in: main)
+        return (main.path, wt.path)
+    }
+
+    @Test("a main repository is recognised")
+    func mainRepository() throws {
+        let (main, _) = try makeRepoWithWorktree()
+        #expect(WorktreeResolver.kind(of: main) == .mainRepository(root: main))
+    }
+
+    @Test("a linked worktree resolves to its main repository")
+    func worktreeResolvesToMain() throws {
+        let (main, wt) = try makeRepoWithWorktree()
+        guard case .worktree(let root, let mainRepo) = WorktreeResolver.kind(of: wt) else {
+            Issue.record("expected .worktree, got \(WorktreeResolver.kind(of: wt))")
+            return
+        }
+        #expect(root == wt)
+        #expect(mainRepo == main)
+    }
+
+    @Test("a plain directory is not a repository")
+    func plainDirectory() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("plain-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        #expect(WorktreeResolver.kind(of: dir.path) == .notAGitRepository)
+    }
+
+    // A .git file whose gitdir: pointer is dangling must not be reported as a
+    // healthy worktree — that would group it under a repository that isn't there.
+    @Test("a dangling gitdir pointer is not reported as a worktree")
+    func danglingPointer() throws {
+        let (_, wt) = try makeRepoWithWorktree()
+        try "gitdir: /nonexistent/path/.git/worktrees/gone"
+            .write(toFile: wt + "/.git", atomically: true, encoding: .utf8)
+        #expect(WorktreeResolver.kind(of: wt) == .notAGitRepository)
+    }
+}
+
+private func git(_ args: [String], in dir: URL) throws {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+    p.arguments = args
+    p.currentDirectoryURL = dir
+    p.standardOutput = FileHandle.nullDevice
+    p.standardError = FileHandle.nullDevice
+    try p.run()
+    p.waitUntilExit()
+}
+```
+
+- [ ] **Step 2: Run it and watch it fail**
+
+```bash
+cd Packages/SopsGUIKit && swift test --filter WorktreeResolver
+```
+
+Expected: FAIL — `cannot find 'WorktreeResolver' in scope`.
+
+- [ ] **Step 3: Implement**
+
+Read `<path>/.git`. If it is a directory, this is a main repository. If it is a file, parse the `gitdir: ` prefix, resolve the pointed-at path, and walk up from `…/.git/worktrees/<name>` to the main repository root. Verify the resolved directory actually exists before reporting `.worktree` — a dangling pointer is `.notAGitRepository`, not a worktree of nowhere. Do not shell out to `git`; the file format is stable and documented, and reading it is cheaper than a process spawn per project.
+
+- [ ] **Step 4: Run the tests and watch them pass**
+
+```bash
+cd Packages/SopsGUIKit && swift test --filter WorktreeResolver
+```
+
+Expected: PASS, 4 tests.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A && git commit -m "M2: worktree detection via the .git pointer file"
+```
+
+---
+
+### Task 5: Project sidebar, and the health check finally sees projects
+
+**Files:**
+- Create: `Sources/SopsUI/Projects/ProjectSidebar.swift`
+- Modify: `Sources/SopsUI/AppShell.swift`
+- Modify: `App/SopsGUIApp.swift`
+- Modify: `Sources/SopsUI/LocalizedKey.swift` and `Resources/Localizable.xcstrings`
+- Create: `Tests/SopsUITests/ProjectSidebarModelTests.swift`
+
+**Interfaces:**
+- Produces: `@MainActor @Observable public final class ProjectSidebarModel` with `groups: [ProjectGroup]`, `selection: StoredProject.ID?`, `func addProject(path: String)`, `func remove(_:)`, `var lastError: String?`; and `public struct ProjectGroup: Identifiable { let mainRepositoryPath: String; let members: [StoredProject] }`.
+
+- [ ] **Step 1: Write the failing test**
+
+Cover grouping and error surfacing at model level — the view is not unit-testable here.
+
+```swift
+@Test("worktrees are grouped under their main repository")
+@Test("a project that is not a git repository forms its own group")
+@Test("adding a duplicate surfaces an error instead of throwing into the view")
+@Test("removing the selected project clears the selection")
+```
+
+Write these out fully in the style of Task 3's suite, using real git fixtures as in Task 4.
+
+- [ ] **Step 2: Run and watch fail, then implement**
+
+The sidebar lists groups with worktree members indented under their main repository. Add via `NSOpenPanel` (directories only) and drag-and-drop of folder URLs. Removal asks for confirmation and never touches the directory on disk — removal means "stop tracking this", and the copy must say so.
+
+- [ ] **Step 3: Wire the store into the health report**
+
+In `App/SopsGUIApp.swift`, pass `projectStore.healthSource` to `HealthReport.standard(projects:)`. The `project.none` finding will stop appearing and real per-project findings will take its place — that is the whole point of M1's protocol seam.
+
+- [ ] **Step 4: Verify the health check lights up**
+
+Add a project, open Settings › Health, and confirm the projects section now reports on it. Capture a screenshot and read it. If a project with no `.sops.yaml` produces something confusing, fix the copy — this is the first time these findings are seen with a real project behind them.
+
+- [ ] **Step 5: Confirm the scan is fast with a real project**
+
+Add this repository itself as a project and time the health refresh. Task 1's bounds should keep it under a second. If it does not, stop and report — Task 1 did not do its job.
+
+- [ ] **Step 6: Commit**
+
+---
+
+### Task 6: The session key store
+
+Per the decision recorded for this milestone: the key lives in memory for the session only. M3 replaces the storage without touching callers.
+
+**Files:**
+- Create: `Sources/SopsProjects/SessionKeyStore.swift`
+- Create: `Sources/SopsUI/Editor/KeyImportView.swift`
+- Create: `Tests/SopsProjectsTests/SessionKeyStoreTests.swift`
+
+**Interfaces:**
+- Produces: `@MainActor @Observable public final class SessionKeyStore` with `var state: KeyStoreState { get }`, `func importKey(_ text: String) throws`, `func forget()`, and `func withKey<R>(_ body: (String) throws -> R) rethrows -> R?`. Conforms to `KeyStoreStatusProviding`.
+- `SessionKeyStore.Error`: `.notAnAgeKey`, `.empty`.
+
+- [ ] **Step 1: Write the failing test**
+
+The properties that matter:
+
+```swift
+@Test("a valid AGE-SECRET-KEY-1 key is accepted and reports configured")
+@Test("anything without the AGE-SECRET-KEY-1 prefix is refused")   // incl. AGE-PLUGIN-…
+@Test("an empty or whitespace-only string is refused")
+@Test("forget() returns the store to empty")
+@Test("the key is never written to disk")   // scan the app support dir after import
+@Test("no error message contains any part of the supplied key")
+```
+
+That last one matters: M1's rule is that no secret value reaches a log or an error, and a key-import error is the most tempting place to echo the input. Assert it with a distinctive key body.
+
+- [ ] **Step 2: Implement**
+
+Validate the prefix — the bridge does too, but failing here gives a better message and keeps a bad key from ever reaching Go. Hold the key in a single `private var`. `withKey` exists so callers borrow it for the duration of a call rather than copying it around; document that Swift `String` cannot be reliably zeroed and that M3's Keychain path is what actually fixes that.
+
+- [ ] **Step 3: Wire it into the health report**
+
+Pass the store as `keyStore:` to `HealthReport.standard`. `security.keystore` stops being `.skipped` and starts reporting `.configured` or `.empty` for real.
+
+- [ ] **Step 4: Build the import view**
+
+Paste field, plus an "Import from `~/.config/sops/age/keys.txt`" button that is **explicit user action, not automatic**. After a successful import from that file, point the user at the existing `security.legacy-key-file` finding — the app has been telling them that file is a risk, and now it can offer the next step.
+
+- [ ] **Step 5: Commit**
+
+---
+
+### Task 7: The document API in Go
+
+**The most important design decision in M2.** Swift must never parse and re-emit the user's YAML: doing so would silently drop comments, reorder keys, and change scalar quoting. sops's own stores round-trip what sops preserves, and ADR 0002 already established the rule — where we link the authoritative implementation, we use it.
+
+So the document lives in Go: decrypt to an ordered row list, apply edits, re-encrypt. Swift holds values only to display them.
+
+**Files:**
+- Create: `Engine/gobridge/document.go`
+- Create: `Engine/gobridge/document_test.go`
+- Modify: `Engine/cshim/main.go`
+- Create: `Packages/SopsGUIKit/Sources/SopsEngine/SopsDocument.swift`
+- Create: `Packages/SopsGUIKit/Tests/SopsEngineTests/SopsDocumentTests.swift`
+
+**Interfaces:**
+- Go: `DecryptToRows(encrypted []byte, ageKey string) ([]Row, error)` where `Row{Path []string; Value string; Kind string}`, and `ApplyEditsAndEncrypt(encrypted []byte, edits []Edit, ageKey string) ([]byte, error)`.
+- Swift: `public struct SecretRow: Identifiable, Equatable, Sendable { public let path: [String]; public var value: String; public let kind: SecretRow.Kind }`, `SopsBridge.decryptToRows(_:agePrivateKey:) throws -> [SecretRow]`, `SopsBridge.applyEdits(_:edits:agePrivateKey:) throws -> String`.
+
+**The rule that governs re-encryption:** when saving an existing file, preserve **that file's own metadata** — its recipients, `encrypted_regex`, MAC settings, `shamir_threshold`. Do **not** re-derive them from `.sops.yaml`. A file whose rules have drifted from the config must not be silently rewritten to match the config; that is a different operation (`updatekeys`, which is M4) and doing it invisibly during a save would change who can read the file without telling anyone.
+
+- [ ] **Step 1: Write the failing Go test, with fixtures from the real binary**
+
+```go
+// Round-tripping a file through decrypt→edit→encrypt must leave everything
+// the user did not touch byte-identical after the CLI decrypts it — comments,
+// key order, and scalar style included. A YAML re-emitter that "cleans up" the
+// file is silently rewriting the user's document.
+func TestEditPreservesCommentsAndOrder(t *testing.T) { /* … */ }
+
+func TestEditedFileDecryptsWithTheSopsCLI(t *testing.T) { /* … */ }
+
+func TestSavePreservesTheFilesOwnRecipientsNotTheConfigs(t *testing.T) { /* … */ }
+
+func TestDecryptToRowsRejectsAnEmptyKey(t *testing.T) { /* … */ }
+```
+
+Build every fixture by running the real `sops` and `age` binaries, as the existing `gobridge` tests already do — reuse their helpers.
+
+- [ ] **Step 2: Run and watch fail, then implement**
+
+Use `common.LoadEncryptedFileWithBugFixes` / `common.DecryptTree` to get the tree, walk `sops.TreeBranches` to produce rows, apply edits to the tree in place, then `common.EncryptTree` and `store.EmitEncryptedFile` — the same path `Encrypt` already uses. The metadata comes from the loaded tree, which is what makes the preservation rule fall out naturally rather than needing to be enforced.
+
+- [ ] **Step 3: Cross the C boundary**
+
+Two entry points following the existing convention exactly: 0 on success, out-parameter carries the result or the error, freed with `sops_free`. JSON for the row list. Rebuild the xcframework.
+
+- [ ] **Step 4: Swift side and its tests**
+
+The Swift tests must include a full round trip through the real CLI: edit via the bridge, then `sops --decrypt` the result and compare.
+
+- [ ] **Step 5: Commit**
+
+---
+
+### Task 8: The document view model
+
+**Files:**
+- Create: `Sources/SopsUI/Editor/SecretDocumentViewModel.swift`
+- Create: `Tests/SopsUITests/SecretDocumentViewModelTests.swift`
+
+**Interfaces:**
+- Produces: `@MainActor @Observable public final class SecretDocumentViewModel` with `rows: [SecretRow]`, `isDirty: Bool`, `loadState: LoadState`, `func load() async`, `func update(rowID:to:)`, `func addRow(path:)`, `func removeRow(id:)`, `func save() async -> SaveOutcome`.
+- `LoadState`: `.idle`, `.loading`, `.loaded`, `.needsKey`, `.failed(String)`.
+
+- [ ] **Step 1: Write the failing test**
+
+The properties that matter, each with a named regression:
+
+```swift
+@Test("loading without a key reports needsKey rather than an empty editable form")
+@Test("a file that fails to decrypt reports failed and renders nothing editable")
+@Test("editing a value sets isDirty; setting it back to the original clears it")
+@Test("save writes and clears isDirty")
+@Test("a failed save leaves isDirty set and the rows untouched")
+@Test("no error string contains any row value")
+```
+
+The first is the M1 lesson applied to the editor: a document the app could not decrypt must not present as an empty form the user might "save" over their file.
+
+- [ ] **Step 2: Implement, run, commit**
+
+---
+
+### Task 9: The editor view
+
+**Files:**
+- Create: `Sources/SopsUI/Editor/SecretEditorView.swift`
+- Create: `Sources/SopsUI/Projects/FileListView.swift`
+- Modify: `AppShell.swift`, `LocalizedKey.swift`, `Localizable.xcstrings`
+
+Per PROPOSAL §4: form rows (key / value / type), value masking with per-field reveal, readonly mode with one-click copy, add/remove rows, unsaved-changes indicator.
+
+- [ ] **Step 1: File list**
+
+Encrypted files for the selected project, from `ProjectScanner`. Show the path relative to the project root. If the scan was truncated, say so here too — the file list is where the user would otherwise assume they are seeing everything.
+
+- [ ] **Step 2: The editor, with masking on by default**
+
+Values are masked until revealed per field. Reveal is per row and does not persist across file switches. Copy puts the value on the pasteboard and clears it after the interval PROPOSAL §2 specifies — reuse whatever the Settings panel exposes, or add it there.
+
+- [ ] **Step 3: Unsaved changes must be impossible to lose silently**
+
+Switching files or quitting with `isDirty` prompts. This is the one place in the app where a mistake destroys the user's data.
+
+- [ ] **Step 4: Every string through `LocalizedKey`**
+
+- [ ] **Step 5: Commit**
+
+---
+
+### Task 10: Atomic save
+
+**Files:**
+- Create: `Sources/SopsProjects/AtomicFileWriter.swift`
+- Create: `Tests/SopsProjectsTests/AtomicFileWriterTests.swift`
+
+- [ ] **Step 1: Write the failing test**
+
+```swift
+@Test("the file is replaced atomically — no partial content is ever observable")
+@Test("the original file's POSIX permissions are preserved")
+@Test("a symlinked path writes through to the target, not over the link")
+@Test("a failed write leaves the original file byte-identical")
+@Test("the temp file is created in the same directory so the rename is atomic")
+```
+
+The last one matters: a temp file in `/tmp` and a cross-device rename is a copy, not an atomic replace, and can leave a half-written secrets file.
+
+- [ ] **Step 2: Implement, run, commit**
+
+Encrypt to a temp file beside the target, `fsync`, then `replaceItemAt`. Preserve permissions explicitly.
+
+---
+
+### Task 11: CLI compatibility of everything the editor writes
+
+The hard requirement from PROPOSAL §2, applied to the new write path. This task exists as its own gate because it is what makes the app safe to use on a real repository.
+
+**Files:**
+- Create: `Tests/SopsEngineTests/EditorCompatibilityTests.swift`
+
+- [ ] **Step 1: Write the round-trip matrix**
+
+For each of: a plain file; a file with `encrypted_regex`; a file with multiple recipients; a file with comments and nested maps; a file with a list value —
+
+1. encrypt with the real `sops` CLI
+2. edit one value through the bridge
+3. `sops --decrypt` the result and confirm the edit landed and nothing else changed
+4. re-encrypt with the CLI and confirm our bridge still reads it
+
+Every fixture built with the real binaries. Assert the MAC verifies at every step.
+
+- [ ] **Step 2: Assert what must not change**
+
+Comments preserved. Key order preserved. Recipients unchanged. `encrypted_regex` unchanged. Values the user did not touch decrypt to exactly what they were.
+
+- [ ] **Step 3: Commit**
+
+---
+
+### Task 12: Final verification
+
+- [ ] **Step 1: Clean-state build and every suite**
+
+```bash
+rm -rf Engine/build Packages/SopsGUIKit/.build SopsGUI.xcodeproj
+./Scripts/bootstrap.sh
+cd Engine && go vet ./... && go test ./...
+cd ../Packages/SopsGUIKit && swift test
+cd ../.. && xcodebuild -project SopsGUI.xcodeproj -scheme SopsGUI -configuration Release build
+```
+
+Grep for `was built for newer`; expect nothing.
+
+- [ ] **Step 2: The GUI pass M1 could not do**
+
+M1 shipped with the UI never visually verified beyond a few static screens, because there was no project to populate it. Now there is. With the screen unlocked and Accessibility granted:
+
+- Add this repository as a project. Confirm the scan is fast and the health check reports on it.
+- **Open a secrets file with a long recipients finding and confirm the text does not clip or overflow** — `HealthFindingRow` has no `.lineLimit` inside a fixed 640×520 sheet, and this was M1's top unverified risk.
+- Walk the wizard's six steps at speed and confirm no premature all-clear.
+- Compare the wizard's category steps against Settings › Health for parity.
+- Confirm the Copy button's label resets between rows.
+- Edit a value, switch files without saving, and confirm the prompt appears.
+- VoiceOver over one row of each status.
+
+Screenshot each and read the images. Report honestly what you could not reach.
+
+- [ ] **Step 3: Leak greps**
+
+```bash
+grep -rniE 'AGE-SECRET-KEY|print\(.*value|print\(.*secret' Packages/SopsGUIKit/Sources App Engine --include='*.swift' --include='*.go'
+git ls-files | grep -iE '\.xcodeproj|\.xcframework|\.a$|keys\.txt'
+```
+
+Both must come back empty apart from test fixtures.
+
+- [ ] **Step 4: Update the docs**
+
+Mark M2 done in PROPOSAL §9. Update the README's current-state paragraph — it currently says the app does not open or edit any encrypted files, which will no longer be true. Add an ADR for the in-Go document editing decision if Task 7 turned up anything worth recording.
+
+- [ ] **Step 5: Commit**
+
+---
+
+## Self-Review
+
+**Spec coverage against PROPOSAL §9 M2 and §3/§4:**
+
+| Requirement | Task |
+|---|---|
+| Tree-walk cost constraint (§6 D, the stated M2 blocker) | 1 |
+| Project add by path, NSOpenPanel and drag & drop (§3) | 5 |
+| Worktree detection via the `.git` pointer file, grouped (§3) | 4, 5 |
+| Encrypted-file discovery by metadata sniffing (§3) | 2, 9 |
+| Form editor: key / value / type rows (§4) | 8, 9 |
+| Value masking with per-field reveal (§4) | 9 |
+| Readonly mode with one-click copy (§4) | 9 |
+| Add/remove rows, unsaved-changes indicator (§4) | 8, 9 |
+| Atomic save, encrypt to temp then rename (§4) | 10 |
+| CLI byte-compatibility (§2, hard requirement) | 7, 11 |
+| Key available to decrypt (milestone decision) | 6 |
+| String Catalogs from day one (§4) | 5, 6, 9 |
+
+**Deliberate deferrals:**
+
+- Keychain, Touch ID and session TTL remain M3. Task 6's `SessionKeyStore` is shaped so M3 replaces the storage behind the same protocol.
+- `.sops.yaml` editing, `updatekeys` and recipient management remain M4. Task 7's preservation rule exists precisely so a save never does M4's job by accident.
+- Localizing `SopsHealth`'s finding strings is still open from M1 and out of scope here.
+- The durable fix for tool probes phoning home — running them under the deny-network profile — remains M5.
+
+**Known risk this plan does not eliminate:** Task 7 assumes sops's stores round-trip a YAML document losslessly for the fields we do not touch. That is the same assumption the M0 spike validated for whole-file encrypt/decrypt, but not for the edit path. Task 7 Step 1 tests it directly, and if it turns out sops's YAML store normalises something, **that finding changes the design** — say so and stop rather than shipping an editor that quietly reformats the user's file.

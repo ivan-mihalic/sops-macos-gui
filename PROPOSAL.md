@@ -272,7 +272,7 @@ Ranked by value/effort; ✦ = recommended for v1:
 |---|---|---|
 | M0 | **Spike** ✅ | Go xcframework bridge; CLI-compatibility round-trip proof. Verdict: in-process, [ADR 0001](docs/adr/0001-in-process-go-bridge.md) |
 | M1 | **Shell & onboarding** ✅ | App scaffold (sidebar, About, Settings, String Catalogs), engine integration, the whole of §6 |
-| M2 | Core editing | Project add (incl. worktrees), file list, form editor, encrypt/decrypt, atomic save. **Blocked on the §6 D tree-walk cost constraint** — adding a real project source makes that scan user-visible |
+| M2 | Core editing | Project add (incl. worktrees), file list, form editor, encrypt/decrypt, atomic save. Plan: [2026-08-07](docs/superpowers/plans/2026-08-07-m2-core-editing.md). Its Task 1 is the §6 D tree-walk constraint; Task 6 holds the age key in memory for the session only, which M3 replaces with the Keychain behind the same protocol |
 | M3 | Keys & security | Keychain + Touch ID, session TTL, key generate/import/reveal, clipboard hygiene |
 | M4 | Recipients & help | `.sops.yaml` editing, updatekeys, recipient add/remove + rotate reminder, Help section with snippets |
 | M5 | Polish & release | Liquid Glass pass, Sparkle, notarized release pipeline, first public release → **repo goes public** |
