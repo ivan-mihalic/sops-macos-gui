@@ -26,6 +26,7 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case healthCategoryEngine = "health.category.engine"
     case healthCategorySecurity = "health.category.security"
     case healthCategoryProjects = "health.category.projects"
+    case healthCategoryOther = "health.category.other"
     case settingsTabHealth = "settings.tab.health"
 
     /// The resolved English text. Used in views and asserted in tests.

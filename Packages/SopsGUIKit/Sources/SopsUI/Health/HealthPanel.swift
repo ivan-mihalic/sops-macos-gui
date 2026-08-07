@@ -20,6 +20,15 @@ public struct HealthPanel: View {
                         }
                     }
                 }
+
+                // A finding whose id prefix matches no known category must still
+                // render somewhere — never silently dropped from the panel.
+                let orphaned = model.uncategorizedFindings
+                if !orphaned.isEmpty {
+                    Section(LocalizedKey.healthCategoryOther.text) {
+                        ForEach(orphaned) { HealthFindingRow(finding: $0) }
+                    }
+                }
             }
 
             Divider()

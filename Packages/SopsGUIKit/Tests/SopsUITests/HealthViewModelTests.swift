@@ -13,6 +13,48 @@ private func finding(_ id: String, _ status: HealthStatus, _ category: HealthCat
     HealthFinding(id: id, title: id, status: status, detail: "")
 }
 
+/// Blocks a check's `run()` until the test opens it, and counts how many
+/// times `run()` actually executed — used to prove overlapping `refresh()`
+/// calls share a single run rather than each triggering their own.
+private actor Gate {
+    private var isOpen = false
+    private var openContinuation: CheckedContinuation<Void, Never>?
+    private var hasArrived = false
+    private var arrivedContinuation: CheckedContinuation<Void, Never>?
+    private(set) var runCount = 0
+
+    func waitUntilOpen() async {
+        runCount += 1
+        hasArrived = true
+        arrivedContinuation?.resume()
+        arrivedContinuation = nil
+        if isOpen { return }
+        await withCheckedContinuation { openContinuation = $0 }
+    }
+
+    func waitUntilArrived() async {
+        if hasArrived { return }
+        await withCheckedContinuation { arrivedContinuation = $0 }
+    }
+
+    func open() {
+        isOpen = true
+        openContinuation?.resume()
+        openContinuation = nil
+    }
+}
+
+private struct GatedCheck: HealthCheck {
+    let id: String
+    let category: HealthCategory
+    let gate: Gate
+    let findings: [HealthFinding]
+    func run() async -> [HealthFinding] {
+        await gate.waitUntilOpen()
+        return findings
+    }
+}
+
 @Suite("HealthViewModel")
 @MainActor
 struct HealthViewModelTests {
@@ -64,5 +106,72 @@ struct HealthViewModelTests {
         let model = HealthViewModel(report: HealthReport(checks: []))
         await model.refresh()
         #expect(model.isRunning == false)
+    }
+
+    @Test("overlapping refreshes share one run: isRunning stays true until it finishes, and findings are deterministic")
+    func concurrentRefreshesAreCoalesced() async {
+        let gate = Gate()
+        let model = HealthViewModel(report: HealthReport(checks: [
+            GatedCheck(id: "t", category: .tools, gate: gate, findings: [finding("tool.sops", .ok, .tools)])
+        ]))
+
+        // Two callers race to refresh at once — e.g. a double-click on
+        // "Re-run checks", or a click landing while the panel's initial
+        // .task-triggered refresh is still in flight.
+        async let first: Void = model.refresh()
+        async let second: Void = model.refresh()
+
+        // Wait for the underlying check to actually be reached (not merely
+        // for the two async lets to be scheduled) before asserting mid-flight
+        // state, then release it.
+        await gate.waitUntilArrived()
+        #expect(model.isRunning == true)
+
+        await gate.open()
+        _ = await (first, second)
+
+        #expect(model.isRunning == false)
+        #expect(model.findings.map(\.id) == ["tool.sops"])
+        // The check itself only ever ran once: the second caller awaited the
+        // first's in-flight run instead of starting a redundant one.
+        #expect(await gate.runCount == 1)
+    }
+
+    @Test("a finding whose id matches no category prefix is reachable via uncategorizedFindings, not silently dropped")
+    func uncategorizedFindingsSurfaceOrphans() async {
+        let model = HealthViewModel(report: HealthReport(checks: [
+            StubCheck(id: "m", category: .tools, findings: [finding("mystery.orphan", .problem, .tools)])
+        ]))
+        await model.refresh()
+        #expect(model.uncategorizedFindings.map(\.id) == ["mystery.orphan"])
+        // It still drives the headline even though no category prefix matches.
+        #expect(model.headlineStatus == .problem)
+        // And it is absent from every category bucket — proving it would
+        // vanish from HealthPanel's per-category sections without the fallback.
+        for category in HealthCategory.allCases {
+            #expect(model.findings(in: category).isEmpty)
+        }
+    }
+
+    @Test("every finding is reachable through exactly one category bucket or the uncategorized fallback")
+    func everyFindingIsAccountedFor() async {
+        let model = HealthViewModel(report: HealthReport(checks: [
+            StubCheck(id: "m", category: .tools, findings: [
+                finding("tool.sops", .ok, .tools),
+                finding("engine.sops", .ok, .engine),
+                finding("security.plaintext", .warning, .security),
+                finding("project.demo", .ok, .projects),
+                finding("mystery.orphan", .problem, .tools),
+            ])
+        ]))
+        await model.refresh()
+
+        // This is exactly what HealthPanel renders: one section per category
+        // plus the uncategorized fallback section. If this union ever drops or
+        // duplicates a finding relative to the flat `findings` array, the
+        // panel would too.
+        let rendered = HealthCategory.allCases.flatMap(model.findings(in:)) + model.uncategorizedFindings
+        #expect(rendered.count == model.findings.count)
+        #expect(Set(rendered.map(\.id)) == Set(model.findings.map(\.id)))
     }
 }

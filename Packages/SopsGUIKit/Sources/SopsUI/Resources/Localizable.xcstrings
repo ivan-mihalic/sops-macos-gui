@@ -81,6 +81,10 @@
     "settings.tab.health" : {
       "extractionState" : "manual",
       "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Health" } } }
+    },
+    "health.category.other" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Other" } } }
     }
   }
 }
