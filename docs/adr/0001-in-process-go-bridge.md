@@ -74,6 +74,9 @@ takes the SDK default (26.0) and the linker warns on every object file. The valu
 stay in sync with `platforms:` in `Package.swift`. It is currently 14.0, which does not
 prejudge PROPOSAL.md §10 question 3 — raising it is a one-variable change.
 
+> Update 2026-08-07: raised to 26.0 when that question was answered. `Package.swift` needs the
+> string form `.macOS("26.0")` — the `.v26` enum case is unavailable at `swift-tools-version: 6.0`.
+
 ### Architecture
 
 arm64-only, per the decision recorded alongside this spike. `build-xcframework.sh` builds

@@ -2,7 +2,7 @@ name: SopsGUI
 options:
   bundleIdPrefix: cz.mihalic
   deploymentTarget:
-    macOS: "14.0"
+    macOS: "26.0"
   createIntermediateGroups: true
 settings:
   base:
@@ -24,7 +24,7 @@ targets:
       properties:
         CFBundleName: SOPS GUI
         LSApplicationCategoryType: public.app-category.developer-tools
-        LSMinimumSystemVersion: "14.0"
+        LSMinimumSystemVersion: "26.0"
     dependencies:
       - package: SopsGUIKit
         product: SopsUI

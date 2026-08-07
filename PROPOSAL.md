@@ -289,12 +289,16 @@ with a reason until their milestone lands.
 ## 10. Open Questions
 
 1. App name (working title "SOPS GUI" — trademark-safe final name before going public)
-2. v1 file formats: YAML only, or YAML + dotenv + JSON from the start?
-3. Minimum deployment target strictly macOS 26, or 15+ with graceful degradation of Liquid Glass?
-   Currently 14.0 in the build, chosen only to avoid linker warnings — not a decision.
 
 ### Answered
 
 - **Universal binary?** No — arm64-only for v1 (2026-08-06). Adding x86_64 later is a second
   `go build` plus `lipo` in `build-xcframework.sh`.
 - **In-process engine or subprocess?** In-process (2026-08-06, [ADR 0001](docs/adr/0001-in-process-go-bridge.md)).
+- **v1 file formats?** YAML only (2026-08-07). The bridge's YAML path is the one verified
+  byte-compatible against the CLI in both directions. Adding dotenv or JSON later is a new
+  `Format` case — sops ships a store for each — not a rewrite, but each needs its own
+  round-trip tests against the real CLI, which is what took the longest in M0.
+- **Minimum macOS?** 26.0 (2026-08-07), matching §3 and §4's "HIG for macOS 26+ including
+  Liquid Glass". The build had sat at 14.0, which was chosen only to silence linker warnings
+  and contradicted the spec.

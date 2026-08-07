@@ -11,7 +11,7 @@ OUT="$BUILD/SopsBridge.xcframework"
 
 # Must match `platforms:` in Package.swift, otherwise ld warns on every object
 # file. Raise this in one place once the minimum macOS version is settled.
-DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
+DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-26.0}"
 export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET"
 # Go picks the SDK default unless cgo is told explicitly.
 export CGO_CFLAGS="-mmacosx-version-min=$DEPLOYMENT_TARGET"

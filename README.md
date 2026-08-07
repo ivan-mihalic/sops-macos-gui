@@ -17,7 +17,7 @@ encrypted files.
 ## Constraints
 
 - **arm64-only.** No x86_64 slice, in the app or the embedded engine.
-- **Deployment target macOS 14.0**, defined once in `Engine/build-xcframework.sh`
+- **Deployment target macOS 26.0**, defined once in `Engine/build-xcframework.sh`
   and mirrored in `Packages/SopsGUIKit/Package.swift` and `project.yml`. A
   mismatch between the three shows up as a linker warning on every object file.
 - **The app never mutates the system.** No installers, no package managers, no

@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "SopsGUIKit",
     defaultLocalization: "en",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS("26.0")],
     products: [
         .library(name: "SopsUI", targets: ["SopsUI"]),
         .library(name: "SopsEngine", targets: ["SopsEngine"]),
