@@ -11,7 +11,7 @@ let package = Package(
         .library(name: "SopsHealth", targets: ["SopsHealth"]),
     ],
     targets: [
-        .target(name: "SopsUI", resources: [.process("Resources")]),
+        .target(name: "SopsUI", dependencies: ["SopsHealth"], resources: [.process("Resources")]),
         .testTarget(name: "SopsUITests", dependencies: ["SopsUI"]),
         .binaryTarget(
             name: "CSopsBridge",

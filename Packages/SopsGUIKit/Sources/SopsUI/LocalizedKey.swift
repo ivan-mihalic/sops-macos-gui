@@ -12,6 +12,22 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case detailNoSelection = "detail.no-selection"
     case settingsWindowPlaceholder = "settings.window-placeholder"
 
+    case statusOK = "status.ok"
+    case statusWarning = "status.warning"
+    case statusProblem = "status.problem"
+    case statusSkipped = "status.skipped"
+    case statusUnknown = "status.unknown"
+    case actionCopy = "action.copy"
+    case actionCopied = "action.copied"
+    case actionLearnMore = "action.learn-more"
+    case actionRerunChecks = "action.rerun-checks"
+    case healthChecking = "health.checking"
+    case healthCategoryTools = "health.category.tools"
+    case healthCategoryEngine = "health.category.engine"
+    case healthCategorySecurity = "health.category.security"
+    case healthCategoryProjects = "health.category.projects"
+    case settingsTabHealth = "settings.tab.health"
+
     /// The resolved English text. Used in views and asserted in tests.
     public var text: String {
         String(localized: String.LocalizationValue(rawValue), bundle: .module)

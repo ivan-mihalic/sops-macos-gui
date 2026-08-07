@@ -30,3 +30,5 @@ targets:
         product: SopsUI
       - package: SopsGUIKit
         product: SopsEngine
+      - package: SopsGUIKit
+        product: SopsHealth
