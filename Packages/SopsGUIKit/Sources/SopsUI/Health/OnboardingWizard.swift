@@ -63,23 +63,39 @@ public struct OnboardingWizard: View {
 
     private var summary: some View {
         VStack(alignment: .leading, spacing: 12) {
-            switch health.headlineStatus {
-            case .ok:
+            // Gated through OnboardingSummaryState.compute rather than reading
+            // health.headlineStatus directly: an empty findings array reads as
+            // `.ok` to HealthReport.worstStatus(in:), so without this gate a
+            // user who reaches this step before the scan settles would see an
+            // all-clear the app never actually verified.
+            switch OnboardingSummaryState.compute(isRunning: health.isRunning, findings: health.findings) {
+            case .checking:
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(.healthChecking)
+                }
+                .foregroundStyle(.secondary).font(.title3)
+            case .verdict(.ok):
                 Label(.onboardingSummaryOK, systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green).font(.title3)
-            case .warning:
+            case .verdict(.warning):
                 Label(.onboardingSummaryWarning, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange).font(.title3)
-            case .unknown, .skipped:
-                // Deliberately not grouped with `.warning`: nothing was found
-                // "worth a look" here — the check just didn't reach a verdict
-                // (no subject yet, offline, or a feature that hasn't shipped).
-                // Claiming otherwise would tell the user to go looking for a
-                // problem that isn't there. Neutral glyph and tint to match:
-                // this is information, not something that needs attention.
-                Label(.onboardingSummaryIncomplete, systemImage: "info.circle.fill")
+            case .verdict(.skipped):
+                // Deliberately not grouped with `.warning`: the check's
+                // subject doesn't exist yet (no projects added, a feature not
+                // shipped) — there is nothing to look at. Neutral glyph and
+                // tint: this is information, not something needing attention.
+                Label(.onboardingSummarySkipped, systemImage: "info.circle.fill")
                     .foregroundStyle(.secondary).font(.title3)
-            case .problem:
+            case .verdict(.unknown):
+                // Also deliberately not grouped with `.warning`, and not the
+                // same wording as `.skipped`: this check genuinely ran, it
+                // just couldn't reach a verdict (offline, checks disabled) —
+                // "could not run" would misdescribe what actually happened.
+                Label(.onboardingSummaryUnknown, systemImage: "info.circle.fill")
+                    .foregroundStyle(.secondary).font(.title3)
+            case .verdict(.problem):
                 Label(.onboardingSummaryProblem, systemImage: "xmark.octagon.fill")
                     .foregroundStyle(.red).font(.title3)
             }

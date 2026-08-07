@@ -48,10 +48,14 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case onboardingSummaryWarning = "onboarding.summary.warning"
     case onboardingSummaryProblem = "onboarding.summary.problem"
     case onboardingSummaryFooter = "onboarding.summary.footer"
-    // Deliberately distinct from `.warning`: `.skipped`/`.unknown` mean a check
-    // didn't run to a verdict (no subject yet, offline, feature not shipped),
-    // not that something was found worth looking at. See OnboardingWizard.
-    case onboardingSummaryIncomplete = "onboarding.summary.incomplete"
+    // Deliberately distinct from `.warning`: `.skipped` means a check's subject
+    // doesn't exist yet (no projects added, a feature not shipped) — there is
+    // nothing to look at, so "worth a look" would be false. See OnboardingWizard.
+    case onboardingSummarySkipped = "onboarding.summary.skipped"
+    // Deliberately distinct from both `.warning` and `.skipped`: `.unknown`
+    // means the check ran but could not reach a verdict (offline, disabled) —
+    // "could not run" would misdescribe checks that genuinely did run.
+    case onboardingSummaryUnknown = "onboarding.summary.unknown"
 
     /// The resolved English text. Used in views and asserted in tests.
     public var text: String {

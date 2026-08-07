@@ -162,9 +162,13 @@
       "extractionState" : "manual",
       "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "You can re-run these checks any time from Settings › Health. Nothing here blocks you from using the app." } } }
     },
-    "onboarding.summary.incomplete" : {
+    "onboarding.summary.skipped" : {
       "extractionState" : "manual",
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Some checks could not run." } } }
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Some checks don't apply yet." } } }
+    },
+    "onboarding.summary.unknown" : {
+      "extractionState" : "manual",
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Some checks couldn't reach a verdict." } } }
     }
   }
 }
