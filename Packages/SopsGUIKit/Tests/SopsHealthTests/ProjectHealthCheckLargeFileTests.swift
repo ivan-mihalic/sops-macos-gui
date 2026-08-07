@@ -107,7 +107,7 @@ struct ProjectHealthCheckLargeFileTests {
                                    trailer: sopsBlock(recipient: wrongKey))
 
         let size = try FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int ?? 0
-        #expect(size > ProjectHealthCheck.maxSniffedFileBytes * 2,
+        #expect(size > ProjectScanner.maxSniffedFileBytes * 2,
                 "test setup bug: fixture must genuinely exceed the tail-read window to prove anything")
 
         let check = ProjectHealthCheck(source: FakeProjects(

@@ -26,7 +26,7 @@ struct ProjectScanBoundsTests {
         let root = try makeTree(dirName: dirName, count: 200)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let scanned = ProjectHealthCheck.scanTree(under: root)
+        let scanned = ProjectScanner.scan(root: root)
 
         #expect(scanned.plaintextCandidates.contains { $0.path.hasSuffix(".env") },
                 "the root .env must still be found")
@@ -38,10 +38,10 @@ struct ProjectScanBoundsTests {
     // reports OK about something it never looked at.
     @Test("hitting the file budget is reported, not swallowed")
     func truncationIsDisclosed() throws {
-        let root = try makeTree(dirName: "src", count: ProjectHealthCheck.maxScannedFiles + 50)
+        let root = try makeTree(dirName: "src", count: ProjectScanner.maxScannedFiles + 50)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let scanned = ProjectHealthCheck.scanTree(under: root)
+        let scanned = ProjectScanner.scan(root: root)
 
         #expect(scanned.wasTruncated)
     }
@@ -97,14 +97,14 @@ struct ProjectScanBoundsTests {
         // Enough filler, alongside the matching files above, to push the
         // total past the budget by 50 — the same margin `truncationIsDisclosed`
         // uses.
-        let total = ProjectHealthCheck.maxScannedFiles + 50
+        let total = ProjectScanner.maxScannedFiles + 50
         for i in 0..<(total - matchingCount) {
             try "x".write(to: noise.appendingPathComponent("f\(i).txt"), atomically: true, encoding: .utf8)
         }
         // dropped = total + 1 (.sops.yaml) - maxScannedFiles = 51; floor of
         // surviving matching files = matchingCount - 51 = 249, regardless of
         // enumeration order. Sanity-checked, not just asserted, below.
-        #expect(matchingCount > total + 1 - ProjectHealthCheck.maxScannedFiles,
+        #expect(matchingCount > total + 1 - ProjectScanner.maxScannedFiles,
                 "the combinatorial guarantee this test relies on requires more matching files than can possibly be dropped")
 
         let check = ProjectHealthCheck(source: FixedProjects(projects: [
@@ -124,7 +124,7 @@ struct ProjectScanBoundsTests {
             return
         }
         #expect(reason.contains("scan budget"))
-        #expect(recipients.detail.contains("scan budget of \(ProjectHealthCheck.maxScannedFiles)"))
+        #expect(recipients.detail.contains("scan budget of \(ProjectScanner.maxScannedFiles)"))
         // Proof that files were genuinely verified as matching — the run
         // would be an affirmative OK on their account alone if truncation
         // did not intervene.
