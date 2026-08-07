@@ -32,8 +32,16 @@ private func makeProject(
     return root.path
 }
 
+// Both real, valid Bech32 age public keys (from `age-keygen`), not
+// placeholders — `.sops.yaml` content now parses through sops's own config
+// parser (see ProjectHealthCheck.swift), which validates the Bech32
+// checksum of every `age:` value at config-load time. A syntactically
+// key-shaped but checksum-invalid placeholder (e.g. repeated "age1qqqq...")
+// used to be accepted by the old hand-rolled parser as an opaque string; the
+// real parser correctly rejects it, which made every fixture using one fail
+// to parse at all until they were replaced with real keys here.
 private let devKey = "age1ykd0u99qxpdl4yr57lwqv5rt9e473p6hhdps2a5q5ddmt0x6ryaqkjpx4f"
-private let serverKey = "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+private let serverKey = "age1f7ekyrshavjztvv5zfuvstkjqjhcry9cwk8lprwaxp49cz0cvsdssdfax0"
 
 // The real sops CLI/bridge writes `enc:` before `recipient:` within each age
 // entry (verified against a genuine SopsBridge.encryptYAML output — see

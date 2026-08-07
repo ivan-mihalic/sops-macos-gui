@@ -53,6 +53,18 @@ func sops_decrypt_yaml(encrypted *C.char, agePrivateKey *C.char, out **C.char) C
 	return result(out, plain, err)
 }
 
+// sops_lookup_creation_rule resolves which .sops.yaml creation rule governs
+// targetFile, using sops's own config parser (github.com/getsops/sops/v3/config)
+// rather than any bespoke parsing on either side of the boundary. On success
+// *out carries the JSON encoding of a CreationRuleLookup (see gobridge/config.go)
+// — including the case where no rule matched, which is not a failure.
+//
+//export sops_lookup_creation_rule
+func sops_lookup_creation_rule(confPath *C.char, targetFile *C.char, out **C.char) C.int {
+	payload, err := gobridge.LookupCreationRuleJSON(C.GoString(confPath), C.GoString(targetFile))
+	return result(out, payload, err)
+}
+
 //export sops_free
 func sops_free(p *C.char) {
 	C.free(unsafe.Pointer(p))

@@ -149,4 +149,52 @@ struct ProjectHealthCheckLargeFileTests {
 
         #expect(stale.status == .ok)
     }
+
+    // Regression for the tail-read *count* problem the 8 MiB window had:
+    // at ~0.5s per matched file, a tree with several real-sized encrypted
+    // files (not one huge one) still added up — 7.7s at 15 files, 10.3s at
+    // 20, measured against the 8 MiB tail. Each file here is realistically
+    // small (no bulk padding at all — genuine sops files are just a few
+    // hundred bytes to a few KB), so this isolates the per-file *count*
+    // cost from the per-file *size* cost the other tests in this file
+    // cover.
+    @Test("a tree of 15 real-sized encrypted files does not accumulate meaningful per-file cost")
+    func fifteenRealSizedFilesStayFast() async throws {
+        try await assertTreeOfFilesStaysFast(fileCount: 15, ceiling: .milliseconds(500))
+    }
+
+    @Test("a tree of 20 real-sized encrypted files does not accumulate meaningful per-file cost")
+    func twentyRealSizedFilesStayFast() async throws {
+        try await assertTreeOfFilesStaysFast(fileCount: 20, ceiling: .milliseconds(500))
+    }
+
+    private func assertTreeOfFilesStaysFast(fileCount: Int, ceiling: Duration) async throws {
+        let root = try makeProjectRoot()
+        try """
+        creation_rules:
+          - path_regex: secrets/.*\\.yaml$
+            age: \(devKey)
+        """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+
+        let secretsDir = root.appendingPathComponent("secrets")
+        try FileManager.default.createDirectory(at: secretsDir, withIntermediateDirectories: true)
+        for i in 0..<fileCount {
+            try sopsBlock(recipient: devKey).write(
+                to: secretsDir.appendingPathComponent("secret-\(i).yaml"), atomically: true, encoding: .utf8)
+        }
+
+        let check = ProjectHealthCheck(source: FakeProjects(
+            projects: [InspectedProject(name: "demo", rootPath: root.path)]))
+
+        let clock = ContinuousClock()
+        let start = clock.now
+        let findings = await check.run()
+        let elapsed = clock.now - start
+        print("ProjectHealthCheck.run() against \(fileCount) real-sized sops files: \(elapsed)")
+
+        let stale = findings.first { $0.id.hasSuffix("stale-recipients") }!
+        #expect(stale.status == .ok)
+        #expect(elapsed < ceiling,
+                "\(fileCount) files took \(elapsed), want under \(ceiling) — per-file cost is accumulating again")
+    }
 }

@@ -11,7 +11,12 @@ import SopsEngine
 ///
 /// This file closes that gap: it encrypts with the real, in-process
 /// `SopsBridge` (the same bridge the shipping app calls) and feeds the
-/// genuine output straight to `SopsConfig.recipients(inEncryptedFile:)`.
+/// genuine output straight to
+/// `EncryptedFileMetadata.recipients(inEncryptedFile:)`. This is a separate
+/// concern from `.sops.yaml` parsing (which is now delegated to
+/// `SopsBridge.lookupCreationRule` — see `ProjectHealthCheck`'s doc comment)
+/// — this reads an *encrypted file's own* metadata, a format sops itself
+/// generates, not one a user hand-writes.
 ///
 /// What this caught: the real output orders each age entry's fields as
 /// `enc:` then `recipient:`; the hand-written fixture had them the other way
@@ -24,7 +29,7 @@ import SopsEngine
 @Suite("ProjectHealthCheck against genuine sops output")
 struct ProjectHealthCheckRealBridgeTests {
 
-    @Test("SopsConfig.recipients(inEncryptedFile:) reads the real recipients back out of a genuinely encrypted file")
+    @Test("EncryptedFileMetadata.recipients(inEncryptedFile:) reads the real recipients back out of a genuinely encrypted file")
     func recipientsRoundTripThroughTheRealBridge() throws {
         let key1 = try realAgePublicKey()
         let key2 = try realAgePublicKey()
@@ -33,7 +38,7 @@ struct ProjectHealthCheckRealBridgeTests {
             "password: hunter2\napi_key: sk-live-abc123\n",
             recipients: [key1, key2])
 
-        let recipients = SopsConfig.recipients(inEncryptedFile: encrypted)
+        let recipients = EncryptedFileMetadata.recipients(inEncryptedFile: encrypted)
 
         #expect(Set(recipients) == Set([key1, key2]))
         // The parser must never surface the plaintext it was never given
