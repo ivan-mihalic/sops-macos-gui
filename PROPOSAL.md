@@ -183,6 +183,33 @@ from `.sops.yaml`; plaintext secret files inside the repo that are not gitignore
 > cannot vouch for the rest. The invariant that matters: **it must never report OK about a
 > configuration it cannot read**, including a rule no file matches yet.
 
+> **Constraint on the milestone that ships the project picker (M2).** This check walks the
+> whole project tree, and as of M1 it excludes only `.git`, `.hg` and `.svn`. The hidden-file
+> exclusion was deliberately removed — a sops-encrypted `.env` is ordinary, and an exclusion
+> the user cannot see and the copy does not admit is the same failure class as a vacuous OK.
+> That decision is right and stands; its cost has not been paid yet. Measured on a real
+> repository: **272,802 files walked against 13,899 before, a 19.6× blowup costing ~170
+> seconds**, driven by `node_modules/.bun` and `.worktrees`, to find one additional `.env`.
+> On this repository the same count is 5,347 against 30, because `CLAUDE.md` mandates
+> `.worktrees/<branch>` at the repository root — so the app would be slow on its own repo.
+>
+> This is invisible today only because `HealthReport.standard` injects `NoProjects()`. It
+> goes live the moment a real project source exists, as a multi-minute freeze on first
+> launch. **A project picker may not ship until this is solved**, and neither of the two
+> honest solutions is free:
+>
+> - a dependency/build-directory exclusion (`node_modules`, `.build`, `target`, `vendor`,
+>   `.worktrees`, …) — which reintroduces "places this app promises not to look", so it must
+>   be *stated in the finding*, not buried in a constant; or
+> - a file-count or wall-clock budget, with the finding degrading to *Unknown* and naming
+>   what it did not reach when the budget is hit.
+>
+> "Being slow is better than being silent" is the rule the current code follows, and it is
+> the right rule — but it stops holding when slow means a three-minute modal on first launch.
+> A user who force-quits the wizard learns nothing at all, which is strictly worse than a
+> disclosed exclusion. Whichever route is taken, the honesty invariant above is unchanged:
+> the check may not report OK about files it did not look at.
+
 ### Behaviour
 
 - Nothing blocks. A failed check never prevents using the app; it shows a badge and an explanation.
@@ -245,7 +272,7 @@ Ranked by value/effort; ✦ = recommended for v1:
 |---|---|---|
 | M0 | **Spike** ✅ | Go xcframework bridge; CLI-compatibility round-trip proof. Verdict: in-process, [ADR 0001](docs/adr/0001-in-process-go-bridge.md) |
 | M1 | **Shell & onboarding** | App scaffold (sidebar, About, Settings, String Catalogs), engine integration, the whole of §6 |
-| M2 | Core editing | Project add (incl. worktrees), file list, form editor, encrypt/decrypt, atomic save |
+| M2 | Core editing | Project add (incl. worktrees), file list, form editor, encrypt/decrypt, atomic save. **Blocked on the §6 D tree-walk cost constraint** — adding a real project source makes that scan user-visible |
 | M3 | Keys & security | Keychain + Touch ID, session TTL, key generate/import/reveal, clipboard hygiene |
 | M4 | Recipients & help | `.sops.yaml` editing, updatekeys, recipient add/remove + rotate reminder, Help section with snippets |
 | M5 | Polish & release | Liquid Glass pass, Sparkle, notarized release pipeline, first public release → **repo goes public** |
