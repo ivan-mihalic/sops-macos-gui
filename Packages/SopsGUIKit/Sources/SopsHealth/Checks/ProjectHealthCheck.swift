@@ -133,8 +133,36 @@ public struct ProjectHealthCheck: HealthCheck {
         case "hckms": return "HC Vault KMS"
         case "azure_kv": return "Azure Key Vault"
         case "hc_vault": return "HashiCorp Vault"
+        case "key_groups": return "key groups"
         default: return key
         }
+    }
+
+    /// Backend identifiers as a sentence fragment: "PGP", "AWS KMS and
+    /// HashiCorp Vault", "AWS KMS, PGP and HashiCorp Vault". Sorted by the
+    /// label a reader sees, not by the identifier behind it — sorting by
+    /// identifier puts "HashiCorp Vault" (hc_vault) before "AWS KMS" (kms),
+    /// which reads like a mistake.
+    private static func backendList(_ keys: some Collection<String>) -> String {
+        let labels = keys.map(backendLabel).sorted()
+        guard let last = labels.last else { return "" }
+        guard labels.count > 1 else { return last }
+        return labels.dropLast().joined(separator: ", ") + " and " + last
+    }
+
+    /// One spelling for a path, so a file found by directory enumeration can
+    /// be reported relative to the project root the user gave us.
+    ///
+    /// Two things get in the way. Symlinked roots: a root under `/var` (a
+    /// symlink to `/private/var`) enumerates its contents as `/private/var/…`,
+    /// so stripping the root's own spelling as a prefix fails and the whole
+    /// absolute path lands in the finding. And Foundation's own asymmetry:
+    /// `resolvingSymlinksInPath()` *removes* a leading `/private`, it does not
+    /// add one, so it alone does not reconcile the two. Normalizing both sides
+    /// the same way — resolve, then drop a leading `/private` — does.
+    private static func canonicalPath(_ path: String) -> String {
+        let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        return resolved.hasPrefix("/private/") ? String(resolved.dropFirst("/private".count)) : resolved
     }
 
     /// Compares each encrypted file's actual key list against the rule that
@@ -142,27 +170,69 @@ public struct ProjectHealthCheck: HealthCheck {
     /// disk — see the type-level doc comment for what it does and does not
     /// prove about decryption.
     ///
-    /// Age is not the only backend sops supports. A rule can declare `pgp`,
-    /// `kms`, and the rest alongside or instead of `age`, and a file's own
-    /// metadata is the ground truth for what actually protects it, which can
-    /// drift from what the rule declares. This app only ever holds age keys,
-    /// so neither signal can be turned into a recipient comparison — surfacing
-    /// them as a silent `.ok` (matching two empty sets, as if nothing were
-    /// there to check) would be confidently telling the user this is fine
-    /// when it was never evaluated. Both signals are tracked separately and
-    /// downgrade the result to `.unknown` — never left to fall through to
-    /// `.ok` — unless a genuine age-recipient mismatch is also found, which
-    /// remains `.problem` regardless.
+    /// Age is not the only backend sops supports, and this app only ever holds
+    /// age keys. Three independent signals say "part of this project is
+    /// something this app cannot evaluate", and all three must reach the user
+    /// rather than falling through to `.ok`:
+    ///
+    /// 1. **The config as a whole** (`SopsBridge.inspectConfigBackends`) —
+    ///    which backends `.sops.yaml` names anywhere, files or no files. This
+    ///    is the only signal that can see a rule declaring pgp/KMS/Vault that
+    ///    *no file currently matches*. Without it, such a rule was invisible:
+    ///    the per-file lookup below never resolves it, nothing lands in the
+    ///    unverifiable bucket, and the finding folded that silence into a
+    ///    confident "every file's key list matches" — an OK about a
+    ///    configuration this app cannot read at all, which PROPOSAL.md §6 D
+    ///    forbids in as many words.
+    /// 2. **The rule governing a specific file** (`CreationRuleLookup`).
+    /// 3. **The file's own metadata** (`EncryptedFileMetadata`) — ground truth
+    ///    for what actually protects it right now, which can drift from what
+    ///    its rule declares.
+    ///
+    /// Status precedence, deliberate: a genuine age-recipient mismatch is
+    /// still `.problem` even when something else was unreadable — a real,
+    /// actionable finding must never be buried under a caveat. Otherwise any
+    /// unreadable signal makes the finding `.unknown`, never `.ok`, and the
+    /// detail leads with what *was* verified so a user with one healthy age
+    /// rule still learns that part is fine.
+    ///
+    /// `.unknown` rather than `.skipped`, though PROPOSAL.md §6 D says
+    /// "Skipped": in this codebase `.skipped` means the check's subject does
+    /// not exist yet (`HealthStatus`'s own doc comment; it is what "no
+    /// projects have been added" reports), and `.unknown` means the check ran
+    /// but could not reach a verdict. This check did run — it read the config
+    /// and every encrypted file, and reached a verdict on the age part. The
+    /// proposal's substantive requirement is "must never report OK about a
+    /// configuration it cannot read", and `.unknown` satisfies it while
+    /// ranking above `.skipped` in `HealthStatus.severity`, so a caveat
+    /// cannot be hidden behind an informational status. It also keeps one
+    /// vocabulary for all three signals above, which already used `.unknown`.
     private func recipientFinding(for project: InspectedProject, idSlug: String, root: URL,
                                   configPath: String) -> HealthFinding {
         var mismatches: [String] = []
         var sawStaleRecipient = false
         var unverifiable: [String] = []
+        var unreadableBackends: Set<String> = []
+        var verifiedFileCount = 0
+
+        // Signal 1: the whole config, independent of which files exist.
+        do {
+            let declared = try SopsBridge.inspectConfigBackends(configPath: configPath).backends
+            if !declared.isEmpty {
+                unreadableBackends.formUnion(declared)
+                unverifiable.append("This project's .sops.yaml declares \(Self.backendList(declared)) somewhere in its creation rules. This app reads age recipients only, so it did not check any rule that uses those keys — including a rule no file matches yet, which nothing else here would mention. That is a limit of this app, not a problem with those keys.")
+            }
+        } catch {
+            unverifiable.append("This project's .sops.yaml could not be read for the list of key backends it declares (\(error)), so this app cannot tell whether every rule in it is one it is able to check.")
+        }
+
+        let rootPrefix = Self.canonicalPath(root.path) + "/"
 
         for sniffed in encryptedFiles(under: root) {
-            let relative = sniffed.url.path.hasPrefix(root.path + "/")
-                ? String(sniffed.url.path.dropFirst(root.path.count + 1))
-                : sniffed.url.path
+            let path = Self.canonicalPath(sniffed.url.path)
+            let relative = path.hasPrefix(rootPrefix)
+                ? String(path.dropFirst(rootPrefix.count))
+                : path
 
             let lookup: CreationRuleLookup
             do {
@@ -173,21 +243,35 @@ public struct ProjectHealthCheck: HealthCheck {
             }
             guard lookup.matched else { continue }
 
-            if !lookup.nonAgeBackends.isEmpty {
-                let backends = lookup.nonAgeBackends.map(Self.backendLabel).joined(separator: ", ")
-                unverifiable.append("The rule governing \(relative) also allows \(backends), which this app cannot read — it only understands age recipients.")
-            }
-
             // Ground truth from the file itself: what actually protects it
-            // right now, regardless of what the rule declares.
-            let fileBackends = EncryptedFileMetadata.nonAgeBackends(inEncryptedFile: sniffed.tail)
-            if !fileBackends.isEmpty {
-                let backends = fileBackends.map(Self.backendLabel).joined(separator: ", ")
-                unverifiable.append("\(relative) is protected, at least in part, by \(backends), which this app cannot read — it only understands age recipients.")
+            // right now, regardless of what the rule declares. The two can
+            // disagree — a file encrypted before its rule changed — so both
+            // are reported, except when they say exactly the same thing,
+            // where two sentences saying it would just be noise.
+            let ruleBackends = Set(lookup.nonAgeBackends)
+            let fileBackends = Set(EncryptedFileMetadata.nonAgeBackends(inEncryptedFile: sniffed.tail))
+            unreadableBackends.formUnion(ruleBackends)
+            unreadableBackends.formUnion(fileBackends)
+
+            if !ruleBackends.isEmpty, ruleBackends == fileBackends {
+                unverifiable.append("\(relative) is protected by \(Self.backendList(ruleBackends)), which the rule governing it also declares. This app reads age recipients only, so its key list was not checked.")
+            } else {
+                if !ruleBackends.isEmpty {
+                    unverifiable.append("The rule governing \(relative) also allows \(Self.backendList(ruleBackends)), which this app cannot read — it only understands age recipients.")
+                }
+                if !fileBackends.isEmpty {
+                    unverifiable.append("\(relative) is protected, at least in part, by \(Self.backendList(fileBackends)), which this app cannot read — it only understands age recipients.")
+                }
             }
 
             let actual = Set(EncryptedFileMetadata.recipients(inEncryptedFile: sniffed.tail))
             let expected = Set(lookup.ageRecipients)
+
+            // Only a comparison with at least one age key on one side is a
+            // real comparison. Two empty sets matching is exactly the vacuous
+            // "check" that produced the original false OK, so it must never
+            // be counted as a file this app verified.
+            if !(actual.isEmpty && expected.isEmpty) { verifiedFileCount += 1 }
 
             for extra in actual.subtracting(expected).sorted() {
                 mismatches.append("\(relative) is encrypted to \(extra), which is not in the key list .sops.yaml declares for it.")
@@ -221,20 +305,35 @@ public struct ProjectHealthCheck: HealthCheck {
         }
 
         guard unverifiable.isEmpty else {
+            // Lead with what was actually verified. A user whose age rule is
+            // healthy deserves to know that part is fine; they must simply
+            // not read it as a verdict on the whole project.
+            let verified: String
+            switch verifiedFileCount {
+            case 0:
+                verified = "No encrypted file's age recipient list could be checked here, so this app is not vouching for this project's recipients either way."
+            case 1:
+                verified = "Checked 1 encrypted file's age recipient list against the rule that governs it — it matches."
+            default:
+                verified = "Checked \(verifiedFileCount) encrypted files' age recipient lists against the rules that govern them — they all match."
+            }
+            let reason = unreadableBackends.isEmpty
+                ? "Part of this project's recipients could not be checked. This is not a verdict on them."
+                : "This project uses \(Self.backendList(unreadableBackends)), which this app cannot read — it only understands age keys."
             return HealthFinding(
                 id: "project.\(idSlug).stale-recipients",
                 title: "\(project.name): recipients",
-                status: .unknown(reason: "Some rules or files use a key backend other than age, which this app cannot read."),
-                detail: "This app checked every age recipient it could read and found no mismatch there, but could not fully verify:\n"
-                    + unverifiable.joined(separator: "\n"),
+                status: .unknown(reason: reason),
+                detail: verified + "\n\nDeliberately not checked:\n"
+                    + unverifiable.map { "• " + $0 }.joined(separator: "\n"),
                 remediation: Remediation(
-                    explanation: "Verify these recipients with the tooling for that backend — for example `gpg --list-keys` for PGP, or your cloud provider's console for KMS/Key Vault/Vault. This app only manages age keys."))
+                    explanation: "Nothing here needs fixing on this app's account — it reports only what it read. To check the rest, use the tooling for that backend: `gpg --list-keys` for PGP, or your cloud provider's console for KMS, Key Vault or Vault. This app only manages age keys."))
         }
 
         return HealthFinding(
             id: "project.\(idSlug).stale-recipients",
             title: "\(project.name): recipients", status: .ok,
-            detail: "Checked every encrypted file's recipient key list against the rule that governs it — every file's key list matches.")
+            detail: "Checked every encrypted file's recipient key list against the rule that governs it — every file's key list matches. Every rule in .sops.yaml uses age keys only, so there is nothing here this app could not read.")
     }
 
     /// Reports only that a plaintext secret file exists and is not

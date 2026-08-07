@@ -23,6 +23,20 @@ public struct CreationRuleLookup: Decodable, Equatable, Sendable {
     public let nonAgeBackends: [String]
 }
 
+/// Which key backends a whole `.sops.yaml` declares, anywhere in it —
+/// independent of which files exist. The companion to `CreationRuleLookup`,
+/// which can only ever speak about a rule that governs a specific file. See
+/// `SopsBridge.inspectConfigBackends(configPath:)`.
+public struct ConfigBackends: Decodable, Equatable, Sendable {
+    /// sops master-key type identifiers ("pgp", "kms", "gcp_kms", "hckms",
+    /// "azure_kv", "hc_vault") named anywhere across the config's creation
+    /// rules, sorted and deduplicated. The same vocabulary
+    /// `CreationRuleLookup.nonAgeBackends` uses. Age is deliberately absent:
+    /// it is the one backend this app reads in full, so it is never a caveat.
+    /// Empty when the config is age-only.
+    public let backends: [String]
+}
+
 /// In-process SOPS engine. Every call crosses into the Go runtime linked from
 /// the static bridge; no `sops` binary is ever spawned.
 public enum SopsBridge {
@@ -83,6 +97,37 @@ public enum SopsBridge {
             return try JSONDecoder().decode(CreationRuleLookup.self, from: data)
         } catch {
             throw SopsBridgeError(description: "could not decode creation rule lookup JSON: \(error)")
+        }
+    }
+
+    /// Reports which key backends the `.sops.yaml` at `configPath` declares
+    /// across all of its creation rules, whether or not any file currently
+    /// matches the rule declaring them.
+    ///
+    /// `lookupCreationRule` is per-file by construction — sops's own config
+    /// API resolves a rule *for a target path* and exposes no
+    /// enumerate-every-rule call. A rule declaring pgp/KMS/Vault with no
+    /// matching file was therefore invisible, and a check that says nothing
+    /// about it ends up implying everything is fine. This call closes that
+    /// gap: it is the only way to know that a config contains something this
+    /// app cannot evaluate before any file is even looked at.
+    ///
+    /// Throws when the config cannot be read or is not valid YAML. Parsing is
+    /// done by the same real YAML parser sops's own config loader uses, never
+    /// by hand — ADR 0002.
+    public static func inspectConfigBackends(configPath: String) throws -> ConfigBackends {
+        let json = try call { out in
+            configPath.withGoString { confPtr in
+                sops_inspect_config_backends(confPtr, out)
+            }
+        }
+        guard let data = json.data(using: .utf8) else {
+            throw SopsBridgeError(description: "bridge returned non-UTF8 JSON for config backend inspection")
+        }
+        do {
+            return try JSONDecoder().decode(ConfigBackends.self, from: data)
+        } catch {
+            throw SopsBridgeError(description: "could not decode config backend JSON: \(error)")
         }
     }
 

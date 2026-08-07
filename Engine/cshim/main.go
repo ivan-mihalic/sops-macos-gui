@@ -65,6 +65,18 @@ func sops_lookup_creation_rule(confPath *C.char, targetFile *C.char, out **C.cha
 	return result(out, payload, err)
 }
 
+// sops_inspect_config_backends reports which key backends the whole .sops.yaml
+// at confPath declares, across every creation rule — including a rule that has
+// no matching encrypted file today, which sops's own per-file rule lookup
+// cannot surface. On success *out carries the JSON encoding of a
+// ConfigBackends (see gobridge/configbackends.go).
+//
+//export sops_inspect_config_backends
+func sops_inspect_config_backends(confPath *C.char, out **C.char) C.int {
+	payload, err := gobridge.InspectConfigBackendsJSON(C.GoString(confPath))
+	return result(out, payload, err)
+}
+
 //export sops_free
 func sops_free(p *C.char) {
 	C.free(unsafe.Pointer(p))

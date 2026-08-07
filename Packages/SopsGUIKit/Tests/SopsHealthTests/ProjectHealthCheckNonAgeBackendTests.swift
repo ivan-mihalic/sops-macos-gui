@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import SopsEngine
 @testable import SopsHealth
 
 // MARK: - Fixture plumbing
@@ -375,6 +376,11 @@ struct ProjectHealthCheckNonAgeBackendTests {
     // actually exists, not a rule that might never be used. This is a
     // deliberate scope change, not an oversight — see the fix report.
 
+    // The blanket sentence the .ok branch produces. No finding about a config
+    // this app cannot fully read may ever contain it — that claim is the whole
+    // defect this suite guards against.
+    static let blanketOK = "every file's key list matches"
+
     @Test("a mixed age+pgp file still gets its age recipients checked, and a genuine age mismatch still wins as .problem")
     func mixedBackendFileStillChecksItsAgePart() async throws {
         // key_groups fixture has a real, readable age recipient (devKey) that
@@ -400,5 +406,169 @@ struct ProjectHealthCheckNonAgeBackendTests {
 
         #expect(stale.status == .problem)
         #expect(stale.detail.contains(devKey))
+    }
+}
+
+// MARK: - A rule the app cannot evaluate is invisible to a per-file lookup
+
+/// `SopsBridge.lookupCreationRule` answers "which rule governs *this file*".
+/// A creation rule declaring pgp/KMS/Vault that no file currently matches is
+/// therefore invisible to it, and the recipients finding used to fold that
+/// silence into `.ok`: *"Checked every encrypted file's recipient key list
+/// against the rule that governs it — every file's key list matches."* Said
+/// about a configuration the app cannot evaluate at all, that is the exact
+/// failure PROPOSAL.md §6 D forbids:
+///
+/// > A rule using a backend the app cannot evaluate (pgp, KMS, Vault) reports
+/// > *Skipped* naming that backend; it must never report OK about a
+/// > configuration it cannot read.
+///
+/// `SopsBridge.inspectConfigBackends` is the whole-config counterpart that
+/// closes it. These are the reviewer's own three reproductions.
+@Suite("ProjectHealthCheck against a backend declared but not yet used by any file")
+struct ProjectHealthCheckDeclaredBackendTests {
+
+    /// A real, freshly generated age public key — a `.sops.yaml` is now parsed
+    /// by sops's own config parser, which validates every `age:` value's
+    /// Bech32 checksum at load time, so a placeholder would fail the whole
+    /// config to load.
+    static func realAgePublicKey() throws -> String {
+        let output = try run("/opt/homebrew/bin/age-keygen", [])
+        for line in output.split(separator: "\n") where line.hasPrefix("# public key: ") {
+            return String(line.dropFirst("# public key: ".count))
+        }
+        throw NSError(domain: "test", code: 4,
+                      userInfo: [NSLocalizedDescriptionKey: "age-keygen produced no public key line"])
+    }
+
+    @Test("a pgp-only config with no encrypted files at all is never a confident .ok")
+    func pgpOnlyConfigWithNoFiles() async throws {
+        let root = try makeProject(
+            sopsYAML: """
+            creation_rules:
+              - path_regex: secrets/.*\\.yaml$
+                pgp: 0000000000000000000000000000000000AAAA
+            """,
+            files: [:])
+
+        let check = ProjectHealthCheck(source: FakeProjects(
+            projects: [InspectedProject(name: "demo", rootPath: root)]))
+        let stale = finding(await check.run(), suffix: "stale-recipients")
+
+        guard case .unknown = stale.status else {
+            Issue.record("expected .unknown, got \(stale.status) — detail: \(stale.detail)")
+            return
+        }
+        #expect(stale.detail.contains("PGP"))
+        #expect(!stale.detail.contains(ProjectHealthCheckNonAgeBackendTests.blanketOK))
+    }
+
+    @Test("a healthy age rule alongside a pgp rule with no files reports what was checked, and does not vouch for the rest")
+    func mixedHealthyAgeRuleAndUnusedPGPRule() async throws {
+        let key = try Self.realAgePublicKey()
+        // Genuinely and correctly encrypted to that same real recipient.
+        let encrypted = try SopsBridge.encryptYAML("password: hunter2\n", recipients: [key])
+
+        let root = try makeProject(
+            sopsYAML: """
+            creation_rules:
+              - path_regex: secrets/.*\\.yaml$
+                age: \(key)
+              - path_regex: legacy/.*\\.yaml$
+                pgp: 0000000000000000000000000000000000AAAA
+            """,
+            files: ["secrets/prod.yaml": encrypted])
+
+        let check = ProjectHealthCheck(source: FakeProjects(
+            projects: [InspectedProject(name: "demo", rootPath: root)]))
+        let stale = finding(await check.run(), suffix: "stale-recipients")
+
+        guard case .unknown = stale.status else {
+            Issue.record("expected .unknown, got \(stale.status) — detail: \(stale.detail)")
+            return
+        }
+        // The user's healthy age rule genuinely was checked, and the finding
+        // says so — withholding the verdict must not erase the part that was
+        // verified.
+        #expect(stale.detail.contains("Checked 1 encrypted file"))
+        #expect(stale.detail.contains("PGP"))
+        #expect(!stale.detail.contains(ProjectHealthCheckNonAgeBackendTests.blanketOK))
+        // Nothing about a backend the app cannot read may read as an accusation.
+        #expect(!stale.detail.contains("updatekeys"))
+        #expect(!stale.detail.lowercased().contains("stale"))
+    }
+
+    @Test("a KMS/Vault-only config with no encrypted files names both backends and stays .unknown")
+    func cloudBackendsOnlyWithNoFiles() async throws {
+        let root = try makeProject(
+            sopsYAML: """
+            creation_rules:
+              - path_regex: secrets/.*\\.yaml$
+                kms: arn:aws:kms:us-east-1:000000000000:key/test
+                hc_vault_transit_uri: https://vault.example.invalid:8200/v1/transit/keys/test
+            """,
+            files: [:])
+
+        let check = ProjectHealthCheck(source: FakeProjects(
+            projects: [InspectedProject(name: "demo", rootPath: root)]))
+        let stale = finding(await check.run(), suffix: "stale-recipients")
+
+        guard case .unknown = stale.status else {
+            Issue.record("expected .unknown, got \(stale.status) — detail: \(stale.detail)")
+            return
+        }
+        #expect(stale.detail.contains("AWS KMS"))
+        #expect(stale.detail.contains("HashiCorp Vault"))
+        #expect(!stale.detail.contains(ProjectHealthCheckNonAgeBackendTests.blanketOK))
+    }
+
+    /// The other half of the contract: withholding `.ok` must stay narrow. A
+    /// project that really is age-only, with a real encrypted file matching
+    /// its rule, must still get a confident, unqualified OK — a check that
+    /// hedges about everything is as useless as one that vouches for
+    /// everything.
+    @Test("an age-only project with a genuinely matching file still reports a confident .ok")
+    func ageOnlyProjectIsStillOK() async throws {
+        let key = try Self.realAgePublicKey()
+        let encrypted = try SopsBridge.encryptYAML("password: hunter2\n", recipients: [key])
+        let root = try makeProject(
+            sopsYAML: """
+            creation_rules:
+              - path_regex: secrets/.*\\.yaml$
+                age: \(key)
+            """,
+            files: ["secrets/prod.yaml": encrypted])
+
+        let check = ProjectHealthCheck(source: FakeProjects(
+            projects: [InspectedProject(name: "demo", rootPath: root)]))
+        let stale = finding(await check.run(), suffix: "stale-recipients")
+
+        #expect(stale.status == .ok, "detail: \(stale.detail)")
+    }
+
+    /// Decision, encoded as a test: a `key_groups:` block holding only age
+    /// recipients is NOT treated as unevaluable. sops normalizes key groups
+    /// into the same key-group list a flat rule produces, so those recipients
+    /// are read and compared like any others — raising a caveat about them
+    /// would withhold a verdict this app is fully able to reach.
+    @Test("a key group holding only age recipients does not withhold the verdict")
+    func ageOnlyKeyGroupStillReportsOK() async throws {
+        let key = try Self.realAgePublicKey()
+        let encrypted = try SopsBridge.encryptYAML("password: hunter2\n", recipients: [key])
+        let root = try makeProject(
+            sopsYAML: """
+            creation_rules:
+              - path_regex: secrets/.*\\.yaml$
+                key_groups:
+                  - age:
+                      - \(key)
+            """,
+            files: ["secrets/prod.yaml": encrypted])
+
+        let check = ProjectHealthCheck(source: FakeProjects(
+            projects: [InspectedProject(name: "demo", rootPath: root)]))
+        let stale = finding(await check.run(), suffix: "stale-recipients")
+
+        #expect(stale.status == .ok, "detail: \(stale.detail)")
     }
 }
