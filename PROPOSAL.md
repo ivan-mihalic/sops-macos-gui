@@ -178,14 +178,20 @@ from `.sops.yaml`; plaintext secret files inside the repo that are not gitignore
 > `.sops.yaml` is parsed by sops's own `config` package through the bridge, never by our own
 > YAML code — [ADR 0002](docs/adr/0002-parse-sops-yaml-with-sops-own-parser.md). This extends
 > §2's "we never reimplement the SOPS format" from the file format to the configuration
-> format. A rule using a backend the app cannot evaluate (pgp, KMS, Vault) reports *Skipped*
-> naming that backend; it must never report OK about a configuration it cannot read.
+> format. A rule using a backend the app cannot evaluate (pgp, KMS, Vault) reports *Unknown*
+> naming that backend — the check ran and does have a verdict on the age recipients, it simply
+> cannot vouch for the rest. The invariant that matters: **it must never report OK about a
+> configuration it cannot read**, including a rule no file matches yet.
 
 ### Behaviour
 
 - Nothing blocks. A failed check never prevents using the app; it shows a badge and an explanation.
 - Every check is independently re-runnable, and the whole report re-runs on demand.
-- Results are categorised **OK / Warning / Problem / Skipped**, and "Skipped" always states why.
+- Results are categorised **OK / Warning / Problem / Skipped / Unknown**. The last two are
+  distinct and both always state why: **Skipped** means the subject does not exist yet (a
+  feature that ships in a later milestone); **Unknown** means the check ran but could not
+  reach a verdict (offline, no consent, or a configuration it cannot read). Neither may
+  outrank a real Warning or Problem in the headline status, and neither may be shown as OK.
 
 ---
 
