@@ -362,19 +362,17 @@ struct ProjectHealthCheckNonAgeBackendTests {
         #expect(stale.status != .ok)
     }
 
-    // Note: a rule that declares a non-age backend but has *zero* matching
-    // files was previously flagged proactively, by enumerating every rule
-    // in the parsed .sops.yaml independent of which files exist. The new
-    // design (SopsBridge.lookupCreationRule) resolves the governing rule
-    // *for a specific target file* — the same shape sops's own config API
-    // offers, and the one the coordinator's redesign asked for — so there
-    // is no "list every rule regardless of files" call to make anymore.
-    // This app only ever surfaces a backend caveat for a rule it can attach
-    // to a real, concrete file (see `mixedBackendFileStillChecksItsAgePart`
-    // below and `pgpOnlyRuleIsUnknownNotOK` above), which is arguably the
-    // more actionable version of this feature: a caveat about a file that
-    // actually exists, not a rule that might never be used. This is a
-    // deliberate scope change, not an oversight — see the fix report.
+    // History, because this capability was removed and then put back and the
+    // comment that used to sit here outlived the removal: when `.sops.yaml`
+    // parsing moved to `SopsBridge.lookupCreationRule`, a rule declaring a
+    // non-age backend with *zero* matching files stopped being flagged —
+    // that call resolves the rule governing one target file, and sops's
+    // config API has no enumerate-every-rule entry point. The result was a
+    // blanket `.ok` about a configuration this app cannot read at all.
+    // `SopsBridge.inspectConfigBackends` was added to close it; see
+    // `ProjectHealthCheckDeclaredBackendTests` at the bottom of this file for
+    // the tests that pin it, and `ProjectHealthCheck.recipientFinding`'s doc
+    // comment for how the three "cannot evaluate" signals combine.
 
     // The blanket sentence the .ok branch produces. No finding about a config
     // this app cannot fully read may ever contain it — that claim is the whole
@@ -551,6 +549,16 @@ struct ProjectHealthCheckDeclaredBackendTests {
     /// into the same key-group list a flat rule produces, so those recipients
     /// are read and compared like any others — raising a caveat about them
     /// would withhold a verdict this app is fully able to reach.
+    ///
+    /// This holds end to end for a *single* key group, and that is not an
+    /// accident of this fixture: real `sops --encrypt` against a one-group
+    /// age-only rule writes a plain `age:` block into the file's metadata, no
+    /// `key_groups:` key at all (verified against the real binary; output in
+    /// the round-4 report). Two or more groups — i.e. Shamir — do emit a
+    /// literal `key_groups:`, which the *file-level* scanner
+    /// `EncryptedFileMetadata.nonAgeBackends` still flags wholesale, so that
+    /// narrower case reaches `.unknown` once a real file exists. Pre-existing
+    /// and deliberately out of scope here; recorded in the report.
     @Test("a key group holding only age recipients does not withhold the verdict")
     func ageOnlyKeyGroupStillReportsOK() async throws {
         let key = try Self.realAgePublicKey()

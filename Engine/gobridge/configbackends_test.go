@@ -2,6 +2,7 @@ package gobridge
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -59,6 +60,14 @@ func TestInspectConfigBackends_MixedAgeRuleAndPGPRule(t *testing.T) {
 // getsops/sops v3.13.3's config.creationRule declares, mapped to the same
 // master-key type identifiers LookupCreationRule reports
 // (keys.MasterKey.TypeToIdentifier()) so both paths speak one vocabulary.
+//
+// Note the `hckms:` shape: a list of plain `region:key-uuid` strings, because
+// config.creationRule declares HCKms as []string at rule level. The
+// list-of-mappings shape (`- key_id: …`) is only valid *inside* a key group,
+// where config.keyGroup declares HCKms as []hckmsKey. Pinned by
+// TestInspectConfigBackends_RuleLevelHCKMSFixtureIsWhatRealSopsAccepts below,
+// against sops's own loader — a fixture only this shim's parser accepts would
+// be worthless.
 func TestInspectConfigBackends_EveryCreationRuleBackendKey(t *testing.T) {
 	got := backendsOf(t, `creation_rules:
   - path_regex: secrets/.*\.yaml$
@@ -67,12 +76,54 @@ func TestInspectConfigBackends_EveryCreationRuleBackendKey(t *testing.T) {
     azure_keyvault: https://test.vault.azure.net/keys/test/0000
     hc_vault_transit_uri: https://vault.example.invalid:8200/v1/transit/keys/test
     hckms:
-      - key_id: test-key-id
+      - cn-north-4:00000000-0000-0000-0000-000000000000
     pgp: 0000000000000000000000000000000000AAAA
 `)
 	want := []string{"azure_kv", "gcp_kms", "hc_vault", "hckms", "kms", "pgp"}
 	if !equalStrings(got, want) {
 		t.Errorf("Backends = %v, want %v", got, want)
+	}
+}
+
+// This shim's structs type every backend field as `any` — they read presence,
+// never meaning — so they accept YAML shapes sops's own schema rejects. That
+// makes it possible to write a fixture only this parser understands, which is
+// the same category of mistake as the checksum-invalid `age1qqqq…`
+// placeholders an earlier round had to replace. This test grounds the
+// rule-level `hckms:` fixture above against sops's real loader, in both
+// directions.
+func TestInspectConfigBackends_RuleLevelHCKMSFixtureIsWhatRealSopsAccepts(t *testing.T) {
+	// `hckms:` as a list of plain strings: config.creationRule declares
+	// HCKms as []string, so this is the shape sops takes at rule level.
+	dir := t.TempDir()
+	valid := writeConfig(t, dir, `creation_rules:
+  - path_regex: secrets/.*\.yaml$
+    hckms:
+      - cn-north-4:00000000-0000-0000-0000-000000000000
+`)
+	got, err := LookupCreationRule(valid, filepath.Join(dir, "secrets", "prod.yaml"))
+	if err != nil {
+		t.Fatalf("sops rejected the fixture shape used above: %v", err)
+	}
+	if !equalStrings(got.NonAgeBackends, []string{"hckms"}) {
+		t.Errorf("NonAgeBackends = %v, want [hckms]", got.NonAgeBackends)
+	}
+
+	// The list-of-mappings shape is valid only *inside* a key group
+	// (config.keyGroup declares HCKms as []hckmsKey). At rule level sops
+	// fails to unmarshal it — verified against the real `sops` binary too:
+	// "Could not unmarshal config file: yaml: unmarshal errors: line 4:
+	// cannot unmarshal !!map into string".
+	invalidDir := t.TempDir()
+	invalid := writeConfig(t, invalidDir, `creation_rules:
+  - path_regex: secrets/.*\.yaml$
+    hckms:
+      - key_id: test-key-id
+`)
+	if _, err := LookupCreationRule(invalid, filepath.Join(invalidDir, "secrets", "prod.yaml")); err == nil {
+		t.Fatalf("expected sops to reject a rule-level hckms list of mappings, got no error")
+	} else if !strings.Contains(err.Error(), "unmarshal") {
+		t.Errorf("error = %q, want a YAML unmarshal error", err)
 	}
 }
 
