@@ -211,6 +211,14 @@ public struct ProjectHealthCheck: HealthCheck {
     /// 3. **The file's own metadata** (`EncryptedFileMetadata`) — ground truth
     ///    for what actually protects it right now, which can drift from what
     ///    its rule declares.
+    /// 4. **The scan itself** (`ScannedTree.wasTruncated`) — whether the walk
+    ///    that produced `tree` covered the whole project or gave up at
+    ///    `maxScannedFiles`. This is a different kind of gap from the other
+    ///    three: it is not that some backend or file is unreadable, it is
+    ///    that files may exist which were never looked at at all. Reporting
+    ///    `.ok` over an incomplete walk is the same vacuous verdict every
+    ///    other signal here exists to prevent, so it goes into the same
+    ///    `unverifiable` bucket and blocks `.ok` the same way.
     ///
     /// Status precedence, deliberate: a genuine age-recipient mismatch is
     /// still `.problem` even when something else was unreadable — a real,
@@ -237,6 +245,16 @@ public struct ProjectHealthCheck: HealthCheck {
         var unverifiable: [String] = []
         var unreadableBackends: Set<String> = []
         var verifiedFileCount = 0
+
+        // Signal 4: the scan itself. Checked first because it is the
+        // broadest possible gap — every other signal below only applies to
+        // files the walk actually reached, and a truncated walk means some
+        // files were never reached at all. See the type-level doc comment.
+        if tree.wasTruncated {
+            let excluded = tree.skippedDirectoryNames.sorted()
+            let excludedNote = excluded.isEmpty ? "" : " This walk also skipped \(excluded.joined(separator: ", ")) entirely, as dependency or build directories — that exclusion is separate from, and on top of, the budget below."
+            unverifiable.append("This project has more files under it than this app's scan budget of \(Self.maxScannedFiles), so the walk stopped before it reached every file. Files beyond that point were never looked at, so this app cannot vouch for this project's recipients as a whole.\(excludedNote)")
+        }
 
         // Signal 1: the whole config, independent of which files exist.
         do {
@@ -360,9 +378,14 @@ public struct ProjectHealthCheck: HealthCheck {
             default:
                 verified = "Checked \(verifiedFileCount) encrypted files' age recipient lists against the rules that govern them — they all match."
             }
-            let reason = unreadableBackends.isEmpty
-                ? "Part of this project's recipients could not be checked. This is not a verdict on them."
-                : "This project uses \(Self.backendList(unreadableBackends)), which this app cannot read — it only understands age keys."
+            let reason: String
+            if !unreadableBackends.isEmpty {
+                reason = "This project uses \(Self.backendList(unreadableBackends)), which this app cannot read — it only understands age keys."
+            } else if tree.wasTruncated {
+                reason = "This project has more files than this app's scan budget, so part of the tree was never checked."
+            } else {
+                reason = "Part of this project's recipients could not be checked. This is not a verdict on them."
+            }
             return HealthFinding(
                 id: "project.\(idScope).stale-recipients",
                 title: "\(project.name): recipients",
@@ -608,32 +631,69 @@ public struct ProjectHealthCheck: HealthCheck {
         /// Files whose *names* conventionally hold plaintext secrets and
         /// which carry no sops metadata at all.
         var plaintextCandidates: [URL] = []
+        /// `true` once the walk stopped early because it reached
+        /// `maxScannedFiles`. A scan that stops early has only looked at part
+        /// of the tree, so nothing downstream may treat its result as
+        /// covering the whole project — see `recipientFinding`.
+        var wasTruncated = false
+        /// Names of directories this walk declined to enter (deduplicated,
+        /// not in walk order). Disclosed to the user rather than left as a
+        /// silent constant — see `skippedDirectoryNames`.
+        var skippedDirectoryNames: [String] = []
     }
 
-    /// Directories that hold a tool's own storage rather than the user's
-    /// content. `.git` is the one that matters: it is large, it is walked on
-    /// every refresh, and nothing a user would call a secret lives there as a
-    /// loose file. Deliberately short — every entry here is a place this app
-    /// promises not to look, and the longer that list gets the more likely it
-    /// is to hide something real. Build and dependency directories
-    /// (`node_modules`, `.build`) are *not* on it: a secret can genuinely end
-    /// up in one, and being slow is better than being silent.
+    /// Directories that hold dependencies, build output, or a tool's own
+    /// storage rather than the user's own files. Walking them is what turned
+    /// a project scan into 170 seconds on a real repository — 272,802 files
+    /// where 13,899 were the user's, driven by `node_modules/.bun` and
+    /// `.worktrees` — and it is disclosed as `wasTruncated`/
+    /// `skippedDirectoryNames` rather than left as a silent constant: every
+    /// entry here is a place this app promises not to look, and the promise
+    /// is only honest if the finding says so.
     ///
-    /// Known cost, deliberately unpaid here: on a real repository this walk
-    /// visits 272,802 files instead of 13,899 and takes ~170 seconds, because
-    /// `node_modules/.bun` and `.worktrees` are inside it. On *this*
-    /// repository it is 5,347 against 30, since `CLAUDE.md` puts worktrees at
-    /// the repository root. Nothing in M1 exposes that: `HealthReport.standard`
-    /// injects `NoProjects()`, so this walk never runs against a real tree.
-    /// It becomes a multi-minute freeze on first launch the day a project
-    /// picker ships — which is why PROPOSAL.md §6 D now makes solving it a
-    /// precondition of that milestone, with the two acceptable shapes
-    /// (a disclosed dependency-directory exclusion, or a budget that degrades
-    /// the finding to Unknown and names what it did not reach) written down
-    /// there. Do not quietly add an entry to this set instead; the set is the
-    /// list of places the app promises not to look, and every addition owes
-    /// the user a sentence.
-    private static let skippedDirectoryNames: Set<String> = [".git", ".hg", ".svn"]
+    /// Justification for the list actually shipped (starting point per the
+    /// task brief, measured and adjusted, not taken on faith):
+    /// - `.git`, `.hg`, `.svn` — VCS internals, never a place a loose secret
+    ///   file lives.
+    /// - `node_modules`, `.build`, `.swiftpm`, `target`, `vendor`, `Pods`,
+    ///   `Carthage`, `DerivedData`, `.venv`, `venv`, `__pycache__`, `.tox`,
+    ///   `.next`, `.nuxt`, `.gradle`, `.terraform` — dependency or toolchain
+    ///   output for JS/Swift/Rust/Go/Ruby/PHP/Python/Terraform ecosystems.
+    ///   All of these are either vendored *other people's* code or
+    ///   regenerable build artifacts, never a place a user hand-places a
+    ///   secret.
+    /// - `.worktrees` — this repository's own convention
+    ///   (`CLAUDE.md`) for nested git worktrees, i.e. a full second copy of
+    ///   the tree (including its own `node_modules`) living inside the first.
+    ///   Without this entry, this app is slow scanning *itself*.
+    ///
+    /// `dist` and `build` were on the brief's starting list and are
+    /// deliberately dropped: `dist` is still excluded as unambiguous build
+    /// output, but a bare `build` is also plausible as a user's own directory
+    /// name (a Swift package target literally named `build/`, a Java module,
+    /// a docs folder) in a way `dist` rarely is. Excluding a directory the
+    /// user might have hand-authored risks hiding a real secret file inside
+    /// it, which is exactly the failure class this list exists to avoid
+    /// creating. `DerivedData` was not on the brief's list but is added: it
+    /// is Xcode's own build cache (this repo's own `App/` target produces
+    /// one), unambiguous machine output, and the same order of magnitude as
+    /// `node_modules` when it accumulates.
+    static let skippedDirectoryNames: Set<String> = [
+        ".git", ".hg", ".svn",
+        "node_modules", ".build", ".swiftpm", ".worktrees",
+        "target", "vendor", "Pods", "Carthage", "DerivedData",
+        ".venv", "venv", "__pycache__", ".tox",
+        ".next", ".nuxt", ".gradle", ".terraform", "dist",
+    ]
+
+    /// A ceiling so an unknown huge directory this app doesn't recognize as
+    /// dependency/build output cannot stall the UI. When it is hit the scan
+    /// says so — `ScannedTree.wasTruncated` — rather than silently reporting
+    /// on a project it only partly read. A budget that is silently exceeded
+    /// is the same failure class as the vacuous "every file's key list
+    /// matches" this check was rewritten to stop producing (see the
+    /// type-level doc comment).
+    static let maxScannedFiles = 20_000
 
     /// Walks the project tree once, classifying every regular file.
     ///
@@ -659,15 +719,30 @@ public struct ProjectHealthCheck: HealthCheck {
             options: [.skipsPackageDescendants]) else { return ScannedTree() }
 
         var tree = ScannedTree()
+        var seenSkippedNames: Set<String> = []
+        var visitedFileCount = 0
         for case let url as URL in enumerator {
             let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey])
             if values?.isDirectory == true {
-                if Self.skippedDirectoryNames.contains(url.lastPathComponent) {
+                let name = url.lastPathComponent
+                if Self.skippedDirectoryNames.contains(name) {
                     enumerator.skipDescendants()
+                    if seenSkippedNames.insert(name).inserted {
+                        tree.skippedDirectoryNames.append(name)
+                    }
                 }
                 continue
             }
             guard values?.isRegularFile == true else { continue }
+
+            // The budget bounds how many files this walk *visits*, not just
+            // how many it classifies — checked before any work is done on
+            // this file, so the count reflects files actually looked at.
+            guard visitedFileCount < Self.maxScannedFiles else {
+                tree.wasTruncated = true
+                break
+            }
+            visitedFileCount += 1
 
             let tail = Self.tailText(of: url, maxBytes: Self.maxSniffedFileBytes)
             if let tail, tail.contains("\nsops:") || tail.hasPrefix("sops:") {
