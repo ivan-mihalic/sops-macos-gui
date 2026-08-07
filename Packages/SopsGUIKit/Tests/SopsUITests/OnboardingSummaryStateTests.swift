@@ -17,15 +17,26 @@ struct OnboardingSummaryStateComputeTests {
             isRunning: true, hasCompletedRefresh: true, findings: [finding("a", .ok)]) == .checking)
     }
 
-    // This is the trap the *previous* fix round left open: gating on
-    // `findings.isEmpty` instead of a real "has this ever settled" signal
-    // meant a report that genuinely completes with zero findings — a
-    // supported construction (`HealthReport(checks: [])`) — got stuck on
-    // `.checking` forever. `hasCompletedRefresh` is the real signal; a
-    // completed run with no findings must report `.ok`, not spin forever.
-    @Test("a completed run with zero findings reports .ok, not a stuck checking state")
-    func emptyCompletedReportReportsOK() {
-        #expect(OnboardingSummaryState.compute(isRunning: false, hasCompletedRefresh: true, findings: []) == .verdict(.ok))
+    // Two traps meet here, and the state must dodge both.
+    //
+    // The first: gating on `findings.isEmpty` instead of a real "has this ever
+    // settled" signal meant a report that genuinely completes with zero
+    // findings — a supported construction (`HealthReport(checks: [])`) — got
+    // stuck on `.checking` forever. `hasCompletedRefresh` is the real signal,
+    // so this must not spin.
+    //
+    // The second, which the previous fix round traded the first one for:
+    // reporting `.verdict(.ok)` here renders the green "Everything checks
+    // out." over a report that ran no checks at all, conflating *verified
+    // clean* with *nothing was configured to be checked*. That is C2's vacuous
+    // OK one layer out. `.nothingChecked` is neither.
+    @Test("a completed run with zero findings is neither stuck nor an all-clear")
+    func emptyCompletedReportIsNothingChecked() {
+        let state = OnboardingSummaryState.compute(
+            isRunning: false, hasCompletedRefresh: true, findings: [])
+        #expect(state == .nothingChecked)
+        #expect(state != .checking, "an empty completed report must not spin forever")
+        #expect(state != .verdict(.ok), "an empty report has verified nothing and must not claim otherwise")
     }
 
     // Belt and suspenders: before a run has ever completed, an empty finding
@@ -61,8 +72,8 @@ struct HealthViewModelHasCompletedRefreshTests {
     // through the real HealthViewModel — not a hand-built compute() call —
     // to prove the flag genuinely reflects refresh() having run, not just
     // that the test asserted it directly.
-    @Test("an empty report reports .ok after refresh, never a stuck checking state")
-    func emptyReportSettlesToOK() async {
+    @Test("an empty report settles to .nothingChecked after refresh, never stuck and never an all-clear")
+    func emptyReportSettlesToNothingChecked() async {
         let health = HealthViewModel(report: HealthReport(checks: []))
         #expect(health.hasCompletedRefresh == false)
         #expect(health.isRunning == false)
@@ -75,7 +86,7 @@ struct HealthViewModelHasCompletedRefreshTests {
         #expect(health.findings.isEmpty)
         #expect(OnboardingSummaryState.compute(
             isRunning: health.isRunning, hasCompletedRefresh: health.hasCompletedRefresh,
-            findings: health.findings) == .verdict(.ok))
+            findings: health.findings) == .nothingChecked)
     }
 }
 

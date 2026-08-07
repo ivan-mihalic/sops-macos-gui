@@ -5,8 +5,7 @@ import Testing
 private struct FakeKeyStore: KeyStoreStatusProviding { let state: KeyStoreState }
 private struct FakeBiometry: BiometryStatusProviding { let state: BiometryState }
 private struct FakeUpdates: AppUpdateStatusProviding {
-    let state: HealthStatus
-    let detail: String
+    let state: AppUpdateState
 }
 
 private func finding(_ findings: [HealthFinding], _ id: String) -> HealthFinding {
@@ -17,7 +16,7 @@ private func makeCheck(
     os: SemanticVersion = SemanticVersion(26, 5, 2),
     keyStore: KeyStoreState = .configured,
     biometry: BiometryState = .available,
-    updates: HealthStatus = .ok,
+    updates: AppUpdateState = .upToDate(version: "1.0.0"),
     legacyKeyFilePath: String = "/nonexistent/keys.txt"
 ) -> SecurityPostureCheck {
     SecurityPostureCheck(
@@ -25,7 +24,7 @@ private func makeCheck(
         minimumOSVersion: SemanticVersion(14, 0, 0),
         keyStore: FakeKeyStore(state: keyStore),
         biometry: FakeBiometry(state: biometry),
-        appUpdates: FakeUpdates(state: updates, detail: "up to date"),
+        appUpdates: FakeUpdates(state: updates),
         legacyKeyFilePath: legacyKeyFilePath)
 }
 
@@ -97,11 +96,62 @@ struct SecurityPostureCheckTests {
         #expect(os.status == .problem)
     }
 
+    // I6. "No age key is configured, so nothing can be decrypted" is a claim
+    // about the whole machine. The user may hold keys in a keys.txt, a
+    // password manager, a YubiKey or another Mac and decrypt with the sops CLI
+    // perfectly well. The only fact this app has is about its own store.
+    @Test("the missing-key finding is scoped to this app, not to the machine")
+    func missingKeyClaimIsScopedToThisApp() async {
+        let keystore = finding(await makeCheck(keyStore: .empty).run(), "security.keystore")
+        let text = keystore.detail.lowercased()
+        #expect(!text.contains("nothing can be decrypted"))
+        #expect(text.contains("this app"))
+    }
+
+    // The row renders the skip reason and the detail one after the other.
+    @Test("a skipped key store's reason and detail do not say the same thing")
+    func skipReasonAndDetailAreNotDuplicated() async {
+        let keystore = finding(
+            await makeCheck(keyStore: .unavailable(reason: "Keychain storage arrives in M3.")).run(),
+            "security.keystore")
+        guard case .skipped(let reason) = keystore.status else {
+            Issue.record("expected skipped, got \(keystore.status)")
+            return
+        }
+        #expect(reason != keystore.detail)
+        #expect(!keystore.detail.contains(reason))
+    }
+
+    // I7. The provider states a fact; this check decides what it is worth. A
+    // provider that has checked nothing cannot express an all-clear.
+    @Test("every app-update fact maps to a status this check chose, and only a completed check can be OK")
+    func updateStatesMapHonestly() async {
+        let cases: [(AppUpdateState, HealthStatus)] = [
+            (.upToDate(version: "1.2.3"), .ok),
+            (.updateAvailable(version: "1.3.0"), .warning),
+            (.couldNotCheck(reason: "GitHub did not answer."),
+             .unknown(reason: "GitHub did not answer.")),
+        ]
+        for (state, expected) in cases {
+            let found = finding(await makeCheck(updates: state).run(), "security.app-updates")
+            #expect(found.status == expected, "\(state) produced \(found.status)")
+            #expect(!found.detail.isEmpty, "\(state) produced an empty detail")
+        }
+
+        // Neither "not shipped" nor "turned off" may present as OK.
+        for state in [AppUpdateState.checksDisabled,
+                      .unavailable(reason: "Update checking arrives with Sparkle in M5.")] {
+            let found = finding(await makeCheck(updates: state).run(), "security.app-updates")
+            #expect(found.status != .ok, "\(state) presented as OK")
+            #expect(!found.detail.isEmpty)
+        }
+    }
+
     @Test("features that have not shipped report skipped with a reason, never a false OK")
     func unshippedFeaturesAreSkipped() async {
         let findings = await makeCheck(
             keyStore: .unavailable(reason: "Keychain storage arrives in M3."),
-            updates: .skipped(reason: "Update checking arrives with Sparkle in M5.")
+            updates: .unavailable(reason: "Update checking arrives with Sparkle in M5.")
         ).run()
 
         for id in ["security.keystore", "security.app-updates"] {

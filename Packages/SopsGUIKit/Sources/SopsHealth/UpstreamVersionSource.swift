@@ -5,8 +5,31 @@ public struct UpstreamRelease: Equatable, Sendable {
     public let releaseNotesURL: URL
 }
 
+/// The outcome of an upstream lookup.
+///
+/// Deliberately not `UpstreamRelease?`. With a bare optional, "the user has
+/// not consented to update checks" and "GitHub did not answer" are the same
+/// value, so `EngineFreshnessCheck` could only tell the user
+///
+///   "This may be because update checks are turned off, this Mac is offline,
+///    or GitHub did not respond — this app can't tell which."
+///
+/// which is false: consent is the app's own setting, and it always knows it.
+/// Every user read that sentence, on every launch, because the flag was
+/// hardcoded off and no toggle existed anywhere. Separating the cases is what
+/// lets the check say which one actually happened, and offer the setting as
+/// the fix when the setting is the cause.
+public enum UpstreamLookupResult: Equatable, Sendable {
+    case release(UpstreamRelease)
+    /// Nothing was sent: the user has not turned update checks on.
+    case checksDisabled
+    /// A request was attempted and produced no usable answer — offline,
+    /// GitHub unreachable, rate-limited, or an unexpected response shape.
+    case lookupFailed
+}
+
 public protocol UpstreamVersionProviding: Sendable {
-    func latestRelease(repository: String) async -> UpstreamRelease?
+    func latestRelease(repository: String) async -> UpstreamLookupResult
 }
 
 /// Looks up the latest release of a GitHub repository.
@@ -59,10 +82,12 @@ public struct GitHubReleaseSource: UpstreamVersionProviding {
     /// what the default (no-argument) initializer installs without a network call.
     var sessionForTesting: URLSession { session }
 
-    public func latestRelease(repository: String) async -> UpstreamRelease? {
-        guard isEnabled() else { return nil }
+    public func latestRelease(repository: String) async -> UpstreamLookupResult {
+        // Checked before anything else, so "disabled" can never be reported
+        // as a failed lookup and no request is built, let alone sent.
+        guard isEnabled() else { return .checksDisabled }
         guard let url = URL(string: "\(baseURL.absoluteString)/repos/\(repository)/releases/latest") else {
-            return nil
+            return .lookupFailed
         }
         var request = URLRequest(url: url, timeoutInterval: 10)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
@@ -70,10 +95,11 @@ public struct GitHubReleaseSource: UpstreamVersionProviding {
         request.setValue(Self.acceptLanguage, forHTTPHeaderField: "Accept-Language")
 
         guard let (data, response) = try? await session.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode == 200
-        else { return nil }
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let release = Self.parseRelease(from: data)
+        else { return .lookupFailed }
 
-        return Self.parseRelease(from: data)
+        return .release(release)
     }
 
     public static func parseRelease(from data: Data) -> UpstreamRelease? {

@@ -97,4 +97,90 @@ struct ExternalToolCheckTests {
         let ids = Set((await check.run()).map(\.id))
         #expect(ids == ["tool.sops", "tool.age", "tool.git", "tool.yq", "tool.docker"])
     }
+
+    // I5. PROPOSAL.md §6 A: "git — warn below 2.30", and failure is reserved
+    // for yq v3. Old git used to be a .problem while *absent* git was only a
+    // .warning, which ranked a missing tool as less serious than a stale one.
+    @Test("git below 2.30 warns rather than failing")
+    func oldGitWarns() async {
+        let check = ExternalToolCheck(
+            locator: FakeLocator(tools: ["git": tool("git", SemanticVersion(2, 20, 0))]),
+            embeddedSopsVersion: embedded)
+        #expect(finding(await check.run(), "tool.git").status == .warning)
+    }
+
+    @Test("a missing git is never treated as less serious than an outdated one")
+    func absentGitIsNotLessSeriousThanOldGit() async {
+        let absent = finding(
+            await ExternalToolCheck(locator: FakeLocator(tools: [:]),
+                                    embeddedSopsVersion: embedded).run(), "tool.git")
+        let old = finding(
+            await ExternalToolCheck(
+                locator: FakeLocator(tools: ["git": tool("git", SemanticVersion(2, 20, 0))]),
+                embeddedSopsVersion: embedded).run(), "tool.git")
+
+        #expect(absent.status.severity >= old.status.severity,
+                "absent git (\(absent.status)) ranks below outdated git (\(old.status))")
+    }
+
+    @Test("yq stays the only tool that can fail outright")
+    func onlyYQCanFail() async {
+        // Every tool at an implausibly ancient version; only yq may be a
+        // .problem, because only yq silently produces wrong output.
+        let ancient = SemanticVersion(0, 1, 0)
+        let check = ExternalToolCheck(
+            locator: FakeLocator(tools: Dictionary(uniqueKeysWithValues:
+                ["sops", "age", "git", "yq", "docker"].map { ($0, tool($0, ancient)) })),
+            embeddedSopsVersion: embedded)
+
+        for finding in await check.run() where finding.status == .problem {
+            #expect(finding.id == "tool.yq", "\(finding.id) must not be a problem: \(finding.detail)")
+        }
+    }
+
+    // The header of ExternalToolCheck.swift says none of these tools are
+    // needed for the app to work — the engine is compiled in. "the minimum
+    // this app supports" contradicted that in the app's own voice.
+    @Test("no finding claims a tool is a minimum the app supports")
+    func copyDoesNotContradictTheChecksOwnPremise() async {
+        let check = ExternalToolCheck(
+            locator: FakeLocator(tools: ["yq": tool("yq", SemanticVersion(3, 4, 1))]),
+            embeddedSopsVersion: embedded)
+        for finding in await check.run() {
+            #expect(!finding.detail.lowercased().contains("minimum"),
+                    "\(finding.id): \(finding.detail)")
+        }
+    }
+
+    // The row renders a skip reason and the detail back to back, so identical
+    // text appears twice on screen.
+    @Test("a skipped tool's reason and detail do not say the same thing")
+    func skipReasonAndDetailAreNotDuplicated() async {
+        let docker = finding(
+            await ExternalToolCheck(locator: FakeLocator(tools: [:]),
+                                    embeddedSopsVersion: embedded).run(), "tool.docker")
+        guard case .skipped(let reason) = docker.status else {
+            Issue.record("expected skipped, got \(docker.status)")
+            return
+        }
+        #expect(reason != docker.detail)
+        #expect(!docker.detail.contains(reason))
+        #expect(!reason.contains(docker.detail))
+    }
+
+    // I2. An embedded sops version the bridge could not report is not a
+    // version. Substituting 0.0.0 made every installed sops look current, so
+    // "warn if the CLI is older than the engine" silently became "always OK".
+    @Test("an unknown embedded sops version does not silently pass the CLI comparison")
+    func unknownEmbeddedVersionIsDisclosed() async {
+        let check = ExternalToolCheck(
+            locator: FakeLocator(tools: ["sops": tool("sops", SemanticVersion(3, 0, 0))]),
+            embeddedSopsVersion: nil)
+
+        let sops = finding(await check.run(), "tool.sops")
+        #expect(!sops.detail.contains("0.0.0"))
+        // The comparison did not happen, and the copy says so rather than
+        // letting a silent pass read as a pass.
+        #expect(sops.detail.lowercased().contains("could not determine"))
+    }
 }

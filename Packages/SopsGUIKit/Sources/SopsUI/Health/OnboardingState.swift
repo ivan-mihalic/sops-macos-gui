@@ -82,16 +82,58 @@ public final class OnboardingState {
 /// emits at least one finding), but `compute` is general-purpose API other
 /// callers can reuse, and that shape of report is a legitimate future case
 /// this must not silently mishandle.
+/// What one of the wizard's four category steps should show, computed
+/// independently of SwiftUI so the decision itself can be tested.
+///
+/// The summary step was gated against a mid-scan false all-clear in Task 14;
+/// these four steps were not. They rendered a bare `List` of whatever
+/// `findings(in:)` returned, which during the ~0.4s scan is an empty array —
+/// so a user clicking Continue faster than the scan settles saw "Security"
+/// with nothing under it. An empty list under a category heading reads as
+/// "nothing to report here", which is the same implied all-clear, one layer
+/// out, and reachable by key-repeat alone.
+///
+/// `.empty` exists separately from `.findings([])` for the same reason
+/// `OnboardingSummaryState.nothingChecked` exists: after a completed run, a
+/// category that genuinely produced nothing should say so rather than leave
+/// the user to interpret blank space.
+public enum OnboardingCategoryState: Equatable, Sendable {
+    /// The scan is still running, or has never completed a run.
+    case checking
+    /// A run completed and this category produced no findings.
+    case empty
+    case findings([HealthFinding])
+
+    public static func compute(
+        isRunning: Bool, hasCompletedRefresh: Bool, findingsInCategory: [HealthFinding]
+    ) -> OnboardingCategoryState {
+        guard !isRunning, hasCompletedRefresh else { return .checking }
+        return findingsInCategory.isEmpty ? .empty : .findings(findingsInCategory)
+    }
+}
+
 public enum OnboardingSummaryState: Equatable, Sendable {
     /// The scan is still running, or has never completed a run.
     /// Never assert a verdict in this state.
     case checking
+    /// A run completed and produced no findings at all.
+    ///
+    /// Distinct from `.verdict(.ok)`, deliberately. `worstStatus(in: [])` is
+    /// `.ok` — correct for that function, there being no worse status among
+    /// zero findings — but rendering it as "Everything checks out." conflates
+    /// *verified clean* with *nothing was configured to be checked*. Nothing
+    /// in `HealthReport.standard` produces an empty report today, but
+    /// `HealthReport(checks: [])` is a supported construction and this is the
+    /// same false-all-clear shape as C2's vacuous "every file's key list
+    /// matches", one layer out.
+    case nothingChecked
     case verdict(HealthStatus)
 
     public static func compute(
         isRunning: Bool, hasCompletedRefresh: Bool, findings: [HealthFinding]
     ) -> OnboardingSummaryState {
         guard !isRunning, hasCompletedRefresh else { return .checking }
+        guard !findings.isEmpty else { return .nothingChecked }
         return .verdict(HealthReport.worstStatus(in: findings))
     }
 }

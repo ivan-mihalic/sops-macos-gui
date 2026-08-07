@@ -3,8 +3,14 @@ import Testing
 @testable import SopsHealth
 
 private struct FakeUpstream: UpstreamVersionProviding {
-    var releases: [String: UpstreamRelease]
-    func latestRelease(repository: String) async -> UpstreamRelease? { releases[repository] }
+    var releases: [String: UpstreamRelease] = [:]
+    /// What a repository with no release entry reports. Defaults to a failed
+    /// lookup; set to `.checksDisabled` to exercise the consent branch.
+    var missing: UpstreamLookupResult = .lookupFailed
+
+    func latestRelease(repository: String) async -> UpstreamLookupResult {
+        releases[repository].map { .release($0) } ?? missing
+    }
 }
 
 private func release(_ version: SemanticVersion) -> UpstreamRelease {
@@ -48,17 +54,73 @@ struct EngineFreshnessCheckTests {
         #expect(sops.remediation?.documentationURL != nil)
     }
 
-    @Test("offline or without consent the verdict is unknown, never a failure")
+    @Test("offline the verdict is unknown, never a failure")
     func offlineIsUnknown() async {
         let check = EngineFreshnessCheck(
             embeddedSops: SemanticVersion(3, 13, 3),
             embeddedAge: SemanticVersion(1, 3, 1),
-            upstream: FakeUpstream(releases: [:]))
+            upstream: FakeUpstream(missing: .lookupFailed))
         for finding in await check.run() {
-            if case .unknown = finding.status {} else {
+            guard case .unknown(let reason) = finding.status else {
                 Issue.record("\(finding.id) should be unknown when upstream is unreachable, got \(finding.status)")
+                continue
             }
+            // I1: the app must not pretend it cannot tell consent from a
+            // failed request. When the request really was attempted, the
+            // reason must say that, not hedge across all three causes.
+            #expect(!reason.lowercased().contains("can't tell"))
+            #expect(!reason.lowercased().contains("cannot tell"))
+            #expect(reason.lowercased().contains("turned off") == false,
+                    "a failed lookup must not be blamed on the consent setting")
         }
+    }
+
+    /// I1. Consent is the app's own flag; it always knows when that is the
+    /// reason, and the remediation is the setting rather than a link to read
+    /// something else instead.
+    @Test("with update checks turned off the finding names the setting and offers it as the fix")
+    func consentOffNamesTheSetting() async {
+        let check = EngineFreshnessCheck(
+            embeddedSops: SemanticVersion(3, 13, 3),
+            embeddedAge: SemanticVersion(1, 3, 1),
+            upstream: FakeUpstream(missing: .checksDisabled))
+
+        for finding in await check.run() {
+            guard case .unknown(let reason) = finding.status else {
+                Issue.record("\(finding.id) should be unknown, got \(finding.status)")
+                continue
+            }
+            #expect(reason.lowercased().contains("turned off"))
+            #expect(!reason.lowercased().contains("offline"))
+            #expect(!reason.lowercased().contains("can't tell"))
+            #expect(finding.remediation?.explanation.lowercased().contains("settings") == true,
+                    "the remediation must offer the setting: \(finding.remediation?.explanation ?? "nil")")
+        }
+    }
+
+    /// I2. An engine version the bridge could not report must fail loudly. The
+    /// old code substituted 0.0.0, which compares unfavourably against
+    /// everything and produced a confident warning about a number nobody read
+    /// — and, on the tool-check side, a confident OK.
+    @Test("an unknown embedded version is a problem, never a comparison against a stand-in")
+    func unknownEmbeddedVersionIsAProblem() async {
+        let check = EngineFreshnessCheck(
+            embeddedSops: nil,
+            embeddedAge: SemanticVersion(1, 3, 1),
+            upstream: FakeUpstream(releases: [
+                "getsops/sops": release(SemanticVersion(3, 13, 3)),
+                "FiloSottile/age": release(SemanticVersion(1, 3, 1)),
+            ]))
+
+        let sops = finding(await check.run(), "engine.sops")
+        #expect(sops.status == .problem)
+        // The stand-in must not appear anywhere in the copy.
+        #expect(!sops.detail.contains("0.0.0"))
+        #expect(sops.detail.lowercased().contains("cannot tell")
+                || sops.detail.lowercased().contains("could not"))
+        // The healthy component is unaffected — one unknown does not poison
+        // the other.
+        #expect(finding(await check.run(), "engine.age").status == .ok)
     }
 
     // The app must not imply it knows whether a version is vulnerable, unsafe,

@@ -45,18 +45,29 @@ struct ToolLocatorTests {
         #expect(await locator.locate("definitely-not-a-tool", versionArguments: ["--version"]) == nil)
     }
 
-    @Test("discovery still works when the process PATH is absent or minimal")
-    func loginShellPathIsRicherThanProcessPath() {
-        // The whole point of this component: a GUI app launched from Finder gets
-        // a minimal process PATH (no /opt/homebrew/bin). Simulate that by wiping
-        // PATH from the environment the login-shell probe inherits, and confirm
-        // discovery still finds a real, richer PATH via the login shell / fallbacks.
+    // Rewritten. The previous version of this test set SHELL to nothing in
+    // particular, unset PATH, and asserted that the result contained
+    // "/usr/bin" and one of "/opt/homebrew/bin" / "/usr/local/bin" — every one
+    // of which is a hardcoded entry in `loginShellSearchPaths`'s own fallback
+    // list. Deleting the login-shell probe entirely left it green, so it
+    // proved nothing about the behaviour it was named for. That behaviour is
+    // covered by `loginShellProbeOutputIsActuallyUsed` below.
+    //
+    // What is left worth testing is the *other* half: the fallbacks must still
+    // hold up when the probe cannot run at all. This version makes that
+    // load-bearing by pointing SHELL at a path that does not exist, so the
+    // probe genuinely fails and only the fallback list can satisfy the
+    // expectations. Deleting the fallback list fails this; deleting the probe
+    // fails the other.
+    @Test("the fallback search paths survive a login shell that cannot run")
+    func fallbackPathsSurviveAnUnusableLoginShell() {
         let originalPath = getenv("PATH").map { String(cString: $0) }
+        let originalShell = getenv("SHELL").map { String(cString: $0) }
         unsetenv("PATH")
+        setenv("SHELL", "/nonexistent/definitely-not-a-shell-\(UUID().uuidString)", 1)
         defer {
-            if let originalPath {
-                setenv("PATH", originalPath, 1)
-            }
+            if let originalPath { setenv("PATH", originalPath, 1) }
+            if let originalShell { setenv("SHELL", originalShell, 1) } else { unsetenv("SHELL") }
         }
 
         let paths = ToolLocator.loginShellSearchPaths()
@@ -66,6 +77,59 @@ struct ToolLocatorTests {
         // The component exists specifically to recover Homebrew's location,
         // which a minimal process PATH would not contain.
         #expect(paths.contains("/opt/homebrew/bin") || paths.contains("/usr/local/bin"))
+    }
+
+    // Task 6's deferred finding, fixed at last. `isExecutableFile(atPath:)`
+    // answers "is the execute bit set for me", and a directory's execute bit
+    // means *searchable*. So a directory named `docker` in the search path
+    // used to be located as if it were the tool.
+    @Test("a directory with the tool's name is not mistaken for the tool")
+    func directoryIsNotAnExecutable() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("locator-dir-" + UUID().uuidString)
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("docker"), withIntermediateDirectories: true)
+
+        let locator = ToolLocator(searchPaths: [dir.path])
+        #expect(await locator.locate("docker", versionArguments: ["--version"]) == nil)
+    }
+
+    // The sharper half of the same bug: `first(where:)` stops at the first
+    // match, so a bogus directory earlier in the search path *shadows* the
+    // real tool later in it. The report then describes a machine the user
+    // does not have — a genuine `docker` reported as `[UNKNOWN]`.
+    @Test("a directory earlier in the search path does not shadow the real tool")
+    func directoryDoesNotShadowARealToolLaterInThePath() async throws {
+        let decoyDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("locator-decoy-" + UUID().uuidString)
+        try FileManager.default.createDirectory(
+            at: decoyDir.appendingPathComponent("faketool"), withIntermediateDirectories: true)
+
+        let realDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("locator-real-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: realDir, withIntermediateDirectories: true)
+        let script = realDir.appendingPathComponent("faketool")
+        try "#!/bin/sh\necho 'faketool version 9.8.7'\n".write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+
+        let locator = ToolLocator(searchPaths: [decoyDir.path, realDir.path])
+        let found = await locator.locate("faketool", versionArguments: ["--version"])
+
+        #expect(found?.path == script.path)
+        #expect(found?.version == SemanticVersion(9, 8, 7))
+    }
+
+    @Test("a non-executable file with the tool's name is not located")
+    func nonExecutableFileIsNotATool() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("locator-plain-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let file = dir.appendingPathComponent("sops")
+        try "not a program".write(to: file, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+
+        let locator = ToolLocator(searchPaths: [dir.path])
+        #expect(await locator.locate("sops", versionArguments: ["--version"]) == nil)
     }
 
     @Test("the login-shell probe's own output is what populates the result, not just the fallback list")

@@ -21,9 +21,32 @@ public protocol BiometryStatusProviding: Sendable {
     var state: BiometryState { get }
 }
 
+/// What an update-check implementation is allowed to report.
+///
+/// A closed set of *facts*, like `KeyStoreState` and `BiometryState` above,
+/// rather than a `HealthStatus`. This used to be a raw `HealthStatus`, which
+/// let the provider choose its own verdict — so a Sparkle implementation in M5
+/// could return `.ok` without ever having checked anything, and nothing in the
+/// type system would notice. The other two providers cannot do that: they can
+/// only say what is true, and `SecurityPostureCheck` decides what each fact
+/// deserves. This one now has the same shape, so a fabricated all-clear is not
+/// expressible.
+public enum AppUpdateState: Equatable, Sendable {
+    /// A check completed: this is the latest release.
+    case upToDate(version: String)
+    /// A check completed: a newer release exists.
+    case updateAvailable(version: String)
+    /// A check was attempted and reached no verdict.
+    case couldNotCheck(reason: String)
+    /// The user has not turned update checks on. Distinct from
+    /// `couldNotCheck` — nothing was attempted, and the app knows why.
+    case checksDisabled
+    /// The subject does not exist yet: the feature has not shipped.
+    case unavailable(reason: String)
+}
+
 public protocol AppUpdateStatusProviding: Sendable {
-    var state: HealthStatus { get }
-    var detail: String { get }
+    var state: AppUpdateState { get }
 }
 
 /// PROPOSAL.md §6 C. Everything here is read-only inspection of the local
@@ -99,13 +122,22 @@ public struct SecurityPostureCheck: HealthCheck {
             HealthFinding(id: "security.keystore", title: "Your age key", status: .ok,
                           detail: "An age key is stored in your Keychain.")
         case .empty:
+            // Scoped to this app, deliberately. "nothing can be decrypted" is
+            // a claim about the whole machine, and the app has no basis for
+            // it: the user may well hold keys in a `keys.txt`, in a password
+            // manager, on a YubiKey, or on another machine entirely, and
+            // decrypt with the sops CLI perfectly happily. The only fact here
+            // is about this app's own Keychain entry.
             HealthFinding(id: "security.keystore", title: "Your age key", status: .problem,
-                          detail: "No age key is configured, so nothing can be decrypted.",
+                          detail: "No age key is configured in this app, so this app cannot decrypt anything. Keys you hold elsewhere are unaffected — this says nothing about them.",
                           remediation: Remediation(
                               explanation: "Generate a new key, or import an existing one, from the Keys section of this app."))
         case .unavailable(let reason):
+            // The row renders the skip reason and the detail back to back, so
+            // printing the same sentence into both read as a stutter.
             HealthFinding(id: "security.keystore", title: "Your age key",
-                          status: .skipped(reason: reason), detail: reason)
+                          status: .skipped(reason: reason),
+                          detail: "Nothing about your key has been checked, and nothing here is a verdict on it.")
         }
     }
 
@@ -136,8 +168,32 @@ public struct SecurityPostureCheck: HealthCheck {
                 explanation: "Import it into the Keychain from the Keys section of this app. Once the import is verified, delete the file yourself; this app will not delete it for you."))
     }
 
+    /// The provider states a fact; this decides what it is worth. See
+    /// `AppUpdateState` for why the provider cannot pick the status itself.
     private var appUpdateFinding: HealthFinding {
-        HealthFinding(id: "security.app-updates", title: "App updates",
-                      status: appUpdates.state, detail: appUpdates.detail)
+        switch appUpdates.state {
+        case .upToDate(let version):
+            HealthFinding(id: "security.app-updates", title: "App updates", status: .ok,
+                          detail: "This app is version \(version), which is the latest release.")
+        case .updateAvailable(let version):
+            HealthFinding(id: "security.app-updates", title: "App updates", status: .warning,
+                          detail: "Version \(version) has been released and this Mac is not running it yet.",
+                          remediation: Remediation(
+                              explanation: "Install the update from the About window. Updating the app is also what updates the encryption engine compiled into it."))
+        case .couldNotCheck(let reason):
+            HealthFinding(id: "security.app-updates", title: "App updates",
+                          status: .unknown(reason: reason),
+                          detail: "This app tried to find out whether it is current and could not, so it is not telling you either way.")
+        case .checksDisabled:
+            HealthFinding(id: "security.app-updates", title: "App updates",
+                          status: .unknown(reason: "Update checks are turned off, so this app did not look for a newer version of itself."),
+                          detail: "Nothing was sent anywhere. This is not a statement about whether an update exists.",
+                          remediation: Remediation(
+                              explanation: "Turn on \"Check for engine updates\" in Settings › Updates if you want this app to look."))
+        case .unavailable(let reason):
+            HealthFinding(id: "security.app-updates", title: "App updates",
+                          status: .skipped(reason: reason),
+                          detail: "Until then, this app does not check whether it is current, and says nothing about whether it is.")
+        }
     }
 }

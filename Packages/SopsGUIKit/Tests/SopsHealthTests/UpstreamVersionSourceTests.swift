@@ -259,7 +259,10 @@ struct UpstreamVersionSourceTests {
 
         let result = await source.latestRelease(repository: "getsops/sops")
 
-        #expect(result == nil)
+        // `.checksDisabled`, not a generic failure: the check downstream tells
+        // the user *which* of the two happened, and can only do that if this
+        // distinction survives the return.
+        #expect(result == .checksDisabled)
         #expect(RecordingURLProtocol.recordedRequests.isEmpty,
                 "no request should reach the URL loading system when consent is off")
     }
@@ -275,7 +278,11 @@ struct UpstreamVersionSourceTests {
 
         let result = await source.latestRelease(repository: "getsops/sops")
 
-        #expect(result?.version == SemanticVersion(3, 13, 3))
+        guard case .release(let release) = result else {
+            Issue.record("expected a release, got \(result)")
+            return
+        }
+        #expect(release.version == SemanticVersion(3, 13, 3))
 
         let requests = RecordingURLProtocol.recordedRequests
         #expect(requests.count == 1)
@@ -291,7 +298,7 @@ struct UpstreamVersionSourceTests {
         #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
     }
 
-    @Test("a rate-limited (403) response yields nil, not an error")
+    @Test("a rate-limited (403) response yields a failed lookup, not an error")
     func rateLimitedYieldsNil() async {
         RecordingURLProtocol.reset()
         let url = URL(string: "https://api.github.com/repos/getsops/sops/releases/latest")!
@@ -300,10 +307,13 @@ struct UpstreamVersionSourceTests {
         let session = RecordingURLProtocol.makeSession()
         let source = GitHubReleaseSource(session: session, isEnabled: { true })
 
-        #expect(await source.latestRelease(repository: "getsops/sops") == nil)
+        // A failed lookup, never `.checksDisabled` — consent is on here, and
+        // blaming the setting would send the user to change something that is
+        // already correct.
+        #expect(await source.latestRelease(repository: "getsops/sops") == .lookupFailed)
     }
 
-    @Test("an unknown repository (404) response yields nil, not an error")
+    @Test("an unknown repository (404) response yields a failed lookup, not an error")
     func unknownRepositoryYieldsNil() async {
         RecordingURLProtocol.reset()
         let url = URL(string: "https://api.github.com/repos/FiloSottile/age/releases/latest")!
@@ -312,7 +322,7 @@ struct UpstreamVersionSourceTests {
         let session = RecordingURLProtocol.makeSession()
         let source = GitHubReleaseSource(session: session, isEnabled: { true })
 
-        #expect(await source.latestRelease(repository: "FiloSottile/age") == nil)
+        #expect(await source.latestRelease(repository: "FiloSottile/age") == .lookupFailed)
     }
 
     @Test("the default session (no session argument) persists nothing: no shared disk cookie jar, no disk cache")
@@ -358,7 +368,9 @@ struct UpstreamVersionSourceTests {
         let release = await releaseTask.value
         let request = try #require(requestText, "no request reached the loopback listener")
 
-        #expect(release?.version == SemanticVersion(3, 13, 3))
+        #expect(release == .release(UpstreamRelease(
+            version: SemanticVersion(3, 13, 3),
+            releaseNotesURL: URL(string: "https://github.com/getsops/sops/releases/tag/v3.13.3")!)))
         #expect(request.hasPrefix("GET /repos/getsops/sops/releases/latest HTTP/1.1"))
         #expect(request.contains("User-Agent: SOPS-GUI-HealthCheck/1.0\r\n"))
         #expect(request.contains("Accept-Language: en\r\n"))

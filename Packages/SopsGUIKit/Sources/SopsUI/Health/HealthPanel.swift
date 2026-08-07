@@ -12,6 +12,15 @@ public struct HealthPanel: View {
     public var body: some View {
         VStack(spacing: 0) {
             List {
+                // A completed run with no findings at all renders as an empty
+                // List, which reads as "nothing to report" — the same implied
+                // all-clear the wizard's summary was fixed for. Say it
+                // instead. Unreachable through `HealthReport.standard` today,
+                // but `HealthReport(checks: [])` is a supported construction.
+                if model.hasCompletedRefresh && !model.isRunning && model.findings.isEmpty {
+                    Text(.healthNothingChecked).foregroundStyle(.secondary)
+                }
+
                 ForEach(HealthCategory.allCases, id: \.self) { category in
                     let findings = model.findings(in: category)
                     if !findings.isEmpty {

@@ -27,7 +27,18 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case healthCategorySecurity = "health.category.security"
     case healthCategoryProjects = "health.category.projects"
     case healthCategoryOther = "health.category.other"
+    // Shown on a wizard step whose category genuinely produced no findings
+    // *after* a completed run. Blank space in its place would read as an
+    // all-clear the app never asserted.
+    case healthCategoryEmpty = "health.category.empty"
+    // Shown when a completed report produced no findings at all. Deliberately
+    // not the green "Everything checks out." — see OnboardingSummaryState.
+    case healthNothingChecked = "health.nothing-checked"
     case settingsTabHealth = "settings.tab.health"
+    case settingsTabUpdates = "settings.tab.updates"
+    case settingsUpdatesToggle = "settings.updates.toggle"
+    case settingsUpdatesExplanation = "settings.updates.explanation"
+    case settingsUpdatesPrivacy = "settings.updates.privacy"
 
     case actionBack = "action.back"
     case actionContinue = "action.continue"
@@ -56,6 +67,9 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // means the check ran but could not reach a verdict (offline, disabled) —
     // "could not run" would misdescribe checks that genuinely did run.
     case onboardingSummaryUnknown = "onboarding.summary.unknown"
+    // Deliberately distinct from `.verdict(.ok)`: a report that ran no checks
+    // has verified nothing, and "Everything checks out." would claim it did.
+    case onboardingSummaryNothingChecked = "onboarding.summary.nothing-checked"
 
     /// The resolved English text. Used in views and asserted in tests.
     public var text: String {

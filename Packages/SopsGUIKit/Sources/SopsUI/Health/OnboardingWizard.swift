@@ -20,7 +20,7 @@ public struct OnboardingWizard: View {
 
             Group {
                 if let category = state.step.category {
-                    List(health.findings(in: category)) { HealthFindingRow(finding: $0) }
+                    categoryStep(category)
                 } else if state.step == .summary {
                     summary
                 } else {
@@ -50,6 +50,40 @@ public struct OnboardingWizard: View {
         .padding(20)
         .frame(width: 640, height: 520)
         .task { await health.refresh() }
+    }
+
+    /// One category's findings — gated exactly like the summary step.
+    ///
+    /// An unfinished scan renders as an empty `List` unless it is gated, and
+    /// an empty list under a heading like "Security" reads as "nothing to
+    /// report here": the same implied all-clear that made the summary a
+    /// Critical, one layer out. The scan takes ~0.4s for 13 findings on a real
+    /// machine, which key-repeat on Continue comfortably beats, so the window
+    /// is reachable by an ordinary user rather than only in theory.
+    ///
+    /// Once a run has completed, a genuinely empty category is stated as such
+    /// rather than shown as blank space.
+    @ViewBuilder
+    private func categoryStep(_ category: HealthCategory) -> some View {
+        switch OnboardingCategoryState.compute(
+            isRunning: health.isRunning,
+            hasCompletedRefresh: health.hasCompletedRefresh,
+            findingsInCategory: health.findings(in: category)
+        ) {
+        case .checking:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(.healthChecking)
+            }
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        case .empty:
+            Text(.healthCategoryEmpty)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        case .findings(let findings):
+            List(findings) { HealthFindingRow(finding: $0) }
+        }
     }
 
     private var welcome: some View {
@@ -102,9 +136,28 @@ public struct OnboardingWizard: View {
             case .verdict(.problem):
                 Label(.onboardingSummaryProblem, systemImage: "xmark.octagon.fill")
                     .foregroundStyle(.red).font(.title3)
+            case .nothingChecked:
+                // "Everything checks out." over a report that ran no checks
+                // is the same lie as "every file's key list matches" over zero
+                // files. Neutral glyph: nothing is wrong, but nothing was
+                // established either.
+                Label(.onboardingSummaryNothingChecked, systemImage: "info.circle.fill")
+                    .foregroundStyle(.secondary).font(.title3)
             }
             Text(.onboardingSummaryFooter)
                 .foregroundStyle(.secondary)
+
+            // A finding whose id prefix matches no known category appears on
+            // none of the four steps, yet still drives the verdict above.
+            // HealthPanel has had an "Other" section for exactly this since
+            // Task 12; the wizard did not, so such a finding could set the
+            // headline while being invisible everywhere in the flow.
+            let orphaned = health.uncategorizedFindings
+            if !orphaned.isEmpty {
+                Divider()
+                Text(.healthCategoryOther).font(.headline)
+                List(orphaned) { HealthFindingRow(finding: $0) }
+            }
         }
     }
 

@@ -22,18 +22,20 @@ public struct EngineFreshnessCheck: HealthCheck {
         let findingID: String
         let title: String
         let repository: String
-        let embedded: SemanticVersion
+        /// nil when the bridge could not report which version it linked. Not
+        /// a version number standing in for "unknown" — see `evaluate`.
+        let embedded: SemanticVersion?
         /// Shown only when upstream could not be reached — there is no
         /// specific release to link to, so this points at the project's
         /// general security-advisories page instead.
         let advisoriesURL: URL
     }
 
-    private let embeddedSops: SemanticVersion
-    private let embeddedAge: SemanticVersion
+    private let embeddedSops: SemanticVersion?
+    private let embeddedAge: SemanticVersion?
     private let upstream: any UpstreamVersionProviding
 
-    public init(embeddedSops: SemanticVersion, embeddedAge: SemanticVersion,
+    public init(embeddedSops: SemanticVersion?, embeddedAge: SemanticVersion?,
                 upstream: any UpstreamVersionProviding) {
         self.embeddedSops = embeddedSops
         self.embeddedAge = embeddedAge
@@ -63,30 +65,69 @@ public struct EngineFreshnessCheck: HealthCheck {
     }
 
     private func evaluate(_ component: Component) async -> HealthFinding {
-        guard let latest = await upstream.latestRelease(repository: component.repository) else {
+        // No embedded version means there is nothing to compare, and this is
+        // the one branch that must never be quiet about it.
+        //
+        // The previous code substituted 0.0.0 for an unreadable version and
+        // carried on comparing. 0.0.0 loses every comparison, so the app
+        // confidently reported that its engine was years out of date — a
+        // statement about a number it had never read. Reporting `.problem`
+        // instead is the "fail loudly" half of the rule: a build that cannot
+        // say what it embeds is broken, and it says so rather than inventing
+        // a plausible answer in either direction.
+        guard let embedded = component.embedded else {
             return HealthFinding(
-                id: component.findingID, title: component.title,
-                status: .unknown(reason: "Could not check for a newer \(component.title) release. "
-                    + "This may be because update checks are turned off, this Mac is offline, "
-                    + "or GitHub did not respond — this app can't tell which."),
-                detail: "This app has \(component.title) \(component.embedded) built in. "
-                    + "The latest available release is not known right now, so no comparison could be made.",
+                id: component.findingID, title: component.title, status: .problem,
+                detail: "This app cannot tell which version of \(component.title) is built into it. "
+                    + "Without that, there is nothing to compare against the latest release, so it "
+                    + "cannot tell you whether the engine it is running is current.",
                 remediation: Remediation(
-                    explanation: "You can review the project's public security advisories page yourself and judge whether anything there matters to you.",
+                    explanation: "This is a fault in this build of the app, not in your setup — nothing you can change on this machine fixes it. Reinstalling the latest release is the one thing worth trying. In the meantime you can read the project's public security advisories yourself.",
                     command: nil,
                     documentationURL: component.advisoriesURL))
         }
 
-        guard component.embedded < latest.version else {
+        let latest: UpstreamRelease
+        switch await upstream.latestRelease(repository: component.repository) {
+        case .release(let found):
+            latest = found
+
+        case .checksDisabled:
+            // The app knows exactly why this did not happen: its own setting.
+            // Saying "this app can't tell which" here was the dishonest part —
+            // and the remediation is the setting, not a link to read instead.
+            return HealthFinding(
+                id: component.findingID, title: component.title,
+                status: .unknown(reason: "Update checks are turned off, so this app did not contact GitHub to see whether a newer \(component.title) exists."),
+                detail: "This app has \(component.title) \(embedded) built in. "
+                    + "Nothing was sent anywhere, so there is no comparison to show.",
+                remediation: Remediation(
+                    explanation: "Turn on \"Check for engine updates\" in Settings › Updates to let this app ask GitHub for the latest release. It is off until you say otherwise: it is the only network request this app ever makes. You can also read the project's public security advisories yourself instead.",
+                    command: nil,
+                    documentationURL: component.advisoriesURL))
+
+        case .lookupFailed:
+            return HealthFinding(
+                id: component.findingID, title: component.title,
+                status: .unknown(reason: "Update checks are on, but GitHub did not answer — this Mac may be offline, or the request may have failed or been rate-limited."),
+                detail: "This app has \(component.title) \(embedded) built in. "
+                    + "The latest available release is not known right now, so no comparison could be made.",
+                remediation: Remediation(
+                    explanation: "Re-run this check when you are back online. You can also review the project's public security advisories page yourself and judge whether anything there matters to you.",
+                    command: nil,
+                    documentationURL: component.advisoriesURL))
+        }
+
+        guard embedded < latest.version else {
             return HealthFinding(
                 id: component.findingID, title: component.title, status: .ok,
-                detail: "This app has \(component.title) \(component.embedded) built in. "
+                detail: "This app has \(component.title) \(embedded) built in. "
                     + "The latest known release is \(latest.version).")
         }
 
         return HealthFinding(
             id: component.findingID, title: component.title, status: .warning,
-            detail: "This app has \(component.title) \(component.embedded) built in, "
+            detail: "This app has \(component.title) \(embedded) built in, "
                 + "and \(latest.version) has since been released.",
             remediation: Remediation(
                 explanation: "The \(component.title) ships inside this app rather than as a separate install, "

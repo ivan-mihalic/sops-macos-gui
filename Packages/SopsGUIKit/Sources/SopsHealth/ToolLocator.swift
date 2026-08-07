@@ -42,7 +42,7 @@ public struct ToolLocator: ToolLocating {
     public func locate(_ name: String, versionArguments: [String]) async -> LocatedTool? {
         guard let path = searchPaths
             .map({ ($0 as NSString).appendingPathComponent(name) })
-            .first(where: { FileManager.default.isExecutableFile(atPath: $0) })
+            .first(where: { Self.isRunnableExecutable(atPath: $0) })
         else { return nil }
 
         let output = (try? Self.capture(path, versionArguments, timeout: 5)) ?? ""
@@ -52,6 +52,30 @@ public struct ToolLocator: ToolLocating {
             version: Self.parseVersion(from: output),
             rawVersionOutput: output.trimmingCharacters(in: .whitespacesAndNewlines)
         )
+    }
+
+    /// Whether something at `path` is a file this app could actually run.
+    ///
+    /// `FileManager.isExecutableFile(atPath:)` answers "is the execute bit set
+    /// for me", and a directory's execute bit means *searchable*, not
+    /// runnable — so every directory the user can `cd` into answers yes. A
+    /// directory named `docker` anywhere in the search path therefore produced
+    /// a `LocatedTool` whose version probe failed, i.e. a bogus `[UNKNOWN]
+    /// Docker was found at … but its version output was not recognisable`.
+    ///
+    /// Worse than the bogus finding: `first(where:)` stops at it. A real
+    /// `docker` later in `PATH` is never reached, so the directory *shadows*
+    /// the tool and the report describes a machine the user does not have.
+    ///
+    /// The identical bug was found and fixed in `SecurityPostureCheck`'s
+    /// legacy-key-file probe; this is the same fix, at the other site. Both
+    /// cost only a `stat`.
+    static func isRunnableExecutable(atPath path: String) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+              !isDirectory.boolValue
+        else { return false }
+        return FileManager.default.isExecutableFile(atPath: path)
     }
 
     /// Pulls the first version-looking token out of a tool's output.
@@ -66,73 +90,19 @@ public struct ToolLocator: ToolLocating {
         return nil
     }
 
-    /// Runs a command and returns stdout+stderr. Never throws for a non-zero
-    /// exit — many tools print `--version` to stderr and exit non-zero.
+    /// Runs a command and returns stdout followed by stderr. Never throws for
+    /// a non-zero exit — many tools print `--version` to stderr and exit
+    /// non-zero, so the status is deliberately ignored here.
     ///
-    /// Reads the pipe to EOF on a background thread *while* the process runs,
-    /// then waits for exit. A child that writes more than the pipe buffer
-    /// (~64 KB) blocks on write until someone drains the pipe; polling
-    /// `process.isRunning` in a sleep loop and only reading afterwards would
-    /// deadlock against that backpressure until the timeout fired, and would
-    /// silently truncate output even when the child finishes fine. Draining
-    /// concurrently avoids both failure modes.
+    /// The concurrent-drain machinery this needs (a child that writes more
+    /// than the ~64 KB pipe buffer blocks on `write` until someone reads, so
+    /// "wait for exit, then read" deadlocks against its own backpressure)
+    /// lives in `CommandRunner`, shared with the `git` probes in
+    /// `GitIgnoreOracle`. One copy of that reasoning, not two.
     private static func capture(_ launchPath: String, _ arguments: [String], timeout: TimeInterval) throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: launchPath)
-        process.arguments = arguments
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        // No standardInput: an unattached stdin reads as closed/EOF for the
-        // child rather than blocking it waiting for input.
-
-        try process.run()
-
-        // Drain the pipe on a background thread concurrently with the process
-        // running, so a chatty child never blocks on a full pipe buffer.
-        let outputBox = Mutex<Data>(Data())
-        let readThread = Thread {
-            let handle = pipe.fileHandleForReading
-            let data = handle.readDataToEndOfFile()
-            outputBox.withLock { $0 = data }
+        guard let outcome = CommandRunner.run(launchPath, arguments: arguments, timeout: timeout) else {
+            throw CocoaError(.fileNoSuchFile)
         }
-        readThread.start()
-
-        let deadline = Date().addingTimeInterval(timeout)
-        while process.isRunning && Date() < deadline {
-            usleep(20_000)
-        }
-        if process.isRunning {
-            process.terminate()
-        }
-        process.waitUntilExit()
-
-        // The read thread hits EOF once the process exits and the write end of
-        // the pipe closes; give it a bounded moment to finish draining.
-        let readDeadline = Date().addingTimeInterval(1)
-        while !readThread.isFinished && Date() < readDeadline {
-            usleep(10_000)
-        }
-
-        let data = outputBox.withLock { $0 }
-        return String(decoding: data, as: UTF8.self)
-    }
-}
-
-/// Minimal thread-safe box, used to hand data back from the background
-/// drain thread without pulling in a heavier concurrency primitive.
-private final class Mutex<Value>: @unchecked Sendable {
-    private var value: Value
-    private let lock = NSLock()
-
-    init(_ value: Value) {
-        self.value = value
-    }
-
-    func withLock<T>(_ body: (inout Value) -> T) -> T {
-        lock.lock()
-        defer { lock.unlock() }
-        return body(&value)
+        return outcome.standardOutputText + outcome.standardErrorText
     }
 }
