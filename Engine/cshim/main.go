@@ -114,6 +114,30 @@ func sops_apply_edits(encrypted *C.char, editsJSON *C.char, agePrivateKey *C.cha
 	return result(out, payload, err)
 }
 
+// sops_apply_changes is sops_apply_edits plus the two operations that change
+// a document's shape. changesJSON is the JSON encoding of a
+// gobridge.ChangeSet: `sets` (the same []Edit sops_apply_edits takes), `adds`
+// and `removes`.
+//
+// The same metadata guarantee holds: the saved file keeps its own recipients,
+// encrypted_regex, MAC settings and shamir_threshold, and a newly added value
+// lands on whichever side of the file's own encryption rules its key puts it.
+// Nothing here reads .sops.yaml.
+//
+// Removing a list element renumbers everything after it, so a change set in
+// which that renumbering could be read two ways is refused rather than
+// guessed at — see gobridge/documentchanges.go's header for the rule.
+//
+//export sops_apply_changes
+func sops_apply_changes(encrypted *C.char, changesJSON *C.char, agePrivateKey *C.char, out **C.char) C.int {
+	payload, err := gobridge.ApplyChangesJSON(
+		[]byte(C.GoString(encrypted)),
+		[]byte(C.GoString(changesJSON)),
+		C.GoString(agePrivateKey),
+	)
+	return result(out, payload, err)
+}
+
 //export sops_free
 func sops_free(p *C.char) {
 	C.free(unsafe.Pointer(p))

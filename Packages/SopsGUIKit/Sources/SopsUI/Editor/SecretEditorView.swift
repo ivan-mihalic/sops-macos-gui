@@ -20,16 +20,23 @@ import SwiftUI
 /// comment.
 ///
 /// ## Add/remove rows
-/// **Omitted with an explicit, disabled affordance** — not left out
-/// silently. `SecretDocumentViewModel` doesn't implement `addRow`/`removeRow`
-/// at all (see its doc comment): the bridge's `applyEdits` can only set an
-/// existing value, so a view-level splice would look like it worked and
-/// vanish on save. A toolbar `+`/`-` pair is shown, disabled, with a
-/// `.help()` tooltip and a footer line stating plainly that this isn't
-/// supported yet — a control that's visibly present but explains itself is
-/// more honest than a control that's simply missing, which a user has no way
-/// to distinguish from "not thought of yet." The follow-up is tracked
-/// separately (M2 Task 8b).
+/// Live, and backed by real bridge operations — Task 8b replaced the disabled
+/// affordance Task 9 shipped. `-` removes the selected row; `+` opens a sheet
+/// asking for the new key's name, type and value.
+///
+/// Two choices worth stating:
+///
+/// - **The `+` adds into the selected row's own container**, or into a
+///   selected empty map/list, or into the document's root when nothing is
+///   selected. `SecretDocumentViewModel.addDestination(forSelectedRowID:)`
+///   decides that, not this view, because whether a container is a map or a
+///   list cannot be told from a path (`"0"` is a legitimate map key) and
+///   getting it wrong is a correctness problem, not a cosmetic one.
+/// - **A row added in this session shows a "new" badge instead of a
+///   padlock.** `SecretRow.isEncrypted` is honestly `false` for a row that is
+///   not in the file yet, but rendering that as an open padlock would tell
+///   the user the value is unprotected when the file's own rules will very
+///   likely encrypt it the moment they save. Saying "new" claims neither.
 ///
 /// ## Merge keys
 /// A row whose path contains the literal segment `"<<"` is a YAML merge key
@@ -58,11 +65,32 @@ public struct SecretEditorView: View {
     @State private var revealedRowIDs: Set<String> = []
     @State private var saveErrorMessage: String?
     @State private var isSaving = false
+    @State private var selectedRowID: String?
+    @State private var addRequest: AddRowRequest?
 
-    public init(viewModel: SecretDocumentViewModel, fileName: String, unsavedChanges: UnsavedChangesTracker) {
+    /// The `+` sheet's subject, captured when the button is pressed so the
+    /// destination cannot drift under the sheet if the selection changes.
+    private struct AddRowRequest: Identifiable {
+        let id = UUID()
+        let destination: SecretDocumentViewModel.AddDestination
+    }
+
+    /// - Parameter initiallySelectedRowID: which row starts selected. The
+    ///   app leaves this `nil`; it exists because the toolbar's `-` is
+    ///   enabled only with a selection, and the headless snapshot tool
+    ///   cannot click a row to produce one (CLAUDE.md, "What it still cannot
+    ///   see") — so without it there is no way to review the enabled state
+    ///   of a control at all.
+    public init(
+        viewModel: SecretDocumentViewModel,
+        fileName: String,
+        unsavedChanges: UnsavedChangesTracker,
+        initiallySelectedRowID: String? = nil
+    ) {
         self.viewModel = viewModel
         self.fileName = fileName
         self.unsavedChanges = unsavedChanges
+        self._selectedRowID = State(initialValue: initiallySelectedRowID)
     }
 
     public var body: some View {
@@ -83,6 +111,25 @@ public struct SecretEditorView: View {
             // `.failed`'s text is never routed through `LocalizedKey`.
             Text(saveErrorMessage ?? "")
         }
+        .sheet(item: $addRequest) { request in
+            EditorAddRowSheet(
+                destination: request.destination,
+                isNameTaken: { viewModel.isNameTaken($0, in: request.destination) },
+                onCancel: { addRequest = nil },
+                onAdd: { key, kind, value in
+                    let outcome = viewModel.addRow(
+                        in: request.destination, key: key, kind: kind, value: value)
+                    if case .added(let id) = outcome {
+                        selectedRowID = id
+                        // A value the user just typed is not a secret they
+                        // need protecting from themselves, and hiding it the
+                        // instant the sheet closes reads as the app having
+                        // lost it.
+                        revealedRowIDs.insert(id)
+                    }
+                    addRequest = nil
+                })
+        }
         // Reveal state is per open file, not persisted across a switch —
         // Task 9's brief is explicit ("Reveal is per row and does not
         // persist across file switches"). Resetting whenever the identity
@@ -91,7 +138,19 @@ public struct SecretEditorView: View {
         // enforces that without this view needing to know when a file
         // switch happened.
         .onChange(of: viewModel.loadState) { _, newState in
-            if newState != .loaded { revealedRowIDs = [] }
+            if newState != .loaded {
+                revealedRowIDs = []
+                selectedRowID = nil
+            }
+        }
+        // A row that is gone — removed, or renumbered away by a save that
+        // changed the document's shape — must not stay "selected", or the
+        // next `-` would act on nothing and the next `+` would aim at a
+        // container that is no longer there.
+        .onChange(of: viewModel.rows) { _, newRows in
+            if let selectedRowID, !newRows.contains(where: { $0.id == selectedRowID }) {
+                self.selectedRowID = nil
+            }
         }
         .onChange(of: viewModel.isDirty, initial: true) { _, isDirty in
             unsavedChanges.update(isDirty: isDirty, save: { await viewModel.save() })
@@ -120,21 +179,26 @@ public struct SecretEditorView: View {
 
             Spacer()
 
-            // Disabled by design — see the type's doc comment ("Add/remove
-            // rows").
             Button {
+                if let selectedRowID { viewModel.removeRow(id: selectedRowID) }
             } label: {
                 Image(systemName: "minus")
             }
-            .disabled(true)
-            .help(LocalizedKey.editorAddRemoveDisabled.text)
+            .disabled(!canRemoveSelection)
+            .help(canRemoveSelection
+                ? LocalizedKey.editorRemoveRow.text
+                : LocalizedKey.editorRemoveRowDisabled.text)
+            .accessibilityLabel(LocalizedKey.editorRemoveRow.text)
 
             Button {
+                addRequest = AddRowRequest(
+                    destination: viewModel.addDestination(forSelectedRowID: selectedRowID))
             } label: {
                 Image(systemName: "plus")
             }
-            .disabled(true)
-            .help(LocalizedKey.editorAddRemoveDisabled.text)
+            .disabled(viewModel.loadState != .loaded)
+            .help(LocalizedKey.editorAddRow.text)
+            .accessibilityLabel(LocalizedKey.editorAddRow.text)
 
             Button {
                 Task { await save() }
@@ -148,6 +212,11 @@ public struct SecretEditorView: View {
             .disabled(!viewModel.isDirty || isSaving || viewModel.loadState != .loaded)
         }
         .padding(10)
+    }
+
+    private var canRemoveSelection: Bool {
+        guard viewModel.loadState == .loaded, let selectedRowID else { return false }
+        return viewModel.rows.contains { $0.id == selectedRowID }
     }
 
     private func save() async {
@@ -236,7 +305,7 @@ public struct SecretEditorView: View {
     // MARK: - Rows
 
     private var rowList: some View {
-        List(viewModel.rows) { row in
+        List(viewModel.rows, selection: $selectedRowID) { row in
             SecretRowView(
                 row: row,
                 isRevealed: revealedRowIDs.contains(row.id),
@@ -303,13 +372,26 @@ private struct SecretRowView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
 
-                    Image(systemName: row.isEncrypted ? "lock.fill" : "lock.open")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .accessibilityLabel(
-                            row.isEncrypted
-                                ? LocalizedKey.editorValueEncrypted.text
-                                : LocalizedKey.editorValueNotEncrypted.text)
+                    if row.isPendingAdd {
+                        // Deliberately not a padlock either way. This row is
+                        // not in the file, so `isEncrypted` is honestly
+                        // false — but an open padlock would say "this value
+                        // is exposed", which the file's own rules will most
+                        // likely contradict the moment it is saved. See the
+                        // enclosing view's doc comment.
+                        Text(.editorNewRowBadge)
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .help(LocalizedKey.editorNewRowExplanation.text)
+                    } else {
+                        Image(systemName: row.isEncrypted ? "lock.fill" : "lock.open")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel(
+                                row.isEncrypted
+                                    ? LocalizedKey.editorValueEncrypted.text
+                                    : LocalizedKey.editorValueNotEncrypted.text)
+                    }
                 }
             }
 
@@ -360,6 +442,138 @@ private struct SecretRowView: View {
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+/// The `+` sheet: what to call the new key, what type it is, and its value.
+///
+/// Public rather than private only so the headless snapshot catalog — which
+/// lives in its own target — can render it. That tool cannot drive a real
+/// interaction to open a sheet (CLAUDE.md, "What it still cannot see"), and
+/// an unreviewed sheet is exactly the kind of surface that ships wrong.
+/// Nothing in the app constructs it except `SecretEditorView` itself.
+///
+/// The value goes in a plain `TextField`, not the `SecureField` the row list
+/// uses. The row list masks a value the *file* is showing you; this is a
+/// value the user is composing right now, and typing a secret into a field
+/// that shows dots with no way to check it is how a wrong secret gets saved.
+/// It is masked like any other row the moment the sheet closes.
+public struct EditorAddRowSheet: View {
+    let destination: SecretDocumentViewModel.AddDestination
+    let isNameTaken: (String) -> Bool
+    let onCancel: () -> Void
+    let onAdd: (String, SecretRow.Kind, String) -> Void
+
+    @State private var key = ""
+    @State private var kind: SecretRow.Kind = .string
+    @State private var value = ""
+
+    /// Written out rather than synthesized. A `private struct`'s memberwise
+    /// initializer is itself private, and this machine's three Swift
+    /// compilers disagree about whether that is reachable from the enclosing
+    /// type — the open-source toolchain rejects it where Xcode's accepts it,
+    /// which is the same defect CLAUDE.md records for `HealthFindingRow`.
+    public init(
+        destination: SecretDocumentViewModel.AddDestination,
+        isNameTaken: @escaping (String) -> Bool,
+        onCancel: @escaping () -> Void,
+        onAdd: @escaping (String, SecretRow.Kind, String) -> Void
+    ) {
+        self.destination = destination
+        self.isNameTaken = isNameTaken
+        self.onCancel = onCancel
+        self.onAdd = onAdd
+    }
+
+    /// The kinds that have a value to type into. `emptyMap`/`emptyList` are
+    /// rows the editor can show but not create: an empty container is not a
+    /// value, and adding one would be a shape the user could not then put
+    /// anything into without a second, differently-shaped operation.
+    private static let offeredKinds: [SecretRow.Kind] = [
+        .string, .int, .float, .bool, .null, .timestamp,
+    ]
+
+    private var isDuplicate: Bool { !destination.isList && !key.isEmpty && isNameTaken(key) }
+
+    private var canAdd: Bool {
+        if destination.isList { return true }
+        return !key.trimmingCharacters(in: .whitespaces).isEmpty && !isDuplicate
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(.editorAddSheetTitle).font(.headline)
+
+            HStack(spacing: 6) {
+                Text(.editorAddDestination)
+                    .foregroundStyle(.secondary)
+                Text(destinationLabel)
+                    .font(.system(.body, design: .monospaced))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .font(.callout)
+
+            Form {
+                if destination.isList {
+                    Text(.editorAddListNote)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    TextField(LocalizedKey.editorAddKeyField.text, text: $key)
+                    if isDuplicate {
+                        Text(.editorAddDuplicateKey)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+
+                Picker(LocalizedKey.editorAddTypeField.text, selection: $kind) {
+                    ForEach(Self.offeredKinds, id: \.self) { offered in
+                        Text(SecretRowViewLogic.kindLabel(offered).text).tag(offered)
+                    }
+                }
+
+                if kind != .null {
+                    TextField(LocalizedKey.editorAddValueField.text, text: $value)
+                        .font(.system(.body, design: .monospaced))
+                }
+            }
+            .formStyle(.grouped)
+
+            HStack {
+                Spacer()
+                Button(LocalizedKey.actionCancel.text, action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button(LocalizedKey.actionAdd.text) {
+                    onAdd(key.trimmingCharacters(in: .whitespaces), kind, kind == .null ? "" : value)
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canAdd)
+            }
+        }
+        .padding(16)
+        .frame(width: 420)
+        .onChange(of: kind) { _, newKind in
+            value = Self.defaultValue(for: newKind)
+        }
+    }
+
+    private var destinationLabel: String {
+        destination.parent.isEmpty
+            ? LocalizedKey.editorAddDestinationRoot.text
+            : destination.parent.joined(separator: ".")
+    }
+
+    /// A starting value that actually parses as the chosen type, so the Add
+    /// button does not hand the bridge something it will refuse.
+    private static func defaultValue(for kind: SecretRow.Kind) -> String {
+        switch kind {
+        case .int, .float: return "0"
+        case .bool: return "false"
+        case .timestamp: return ISO8601DateFormatter().string(from: Date())
+        default: return ""
+        }
     }
 }
 

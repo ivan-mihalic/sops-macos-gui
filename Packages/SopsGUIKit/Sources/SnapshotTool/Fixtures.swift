@@ -380,6 +380,65 @@ enum Fixtures {
         return model
     }
 
+    /// The editor mid-edit: one row added in this session (the "New" badge —
+    /// see `SecretEditorView`'s doc comment for why it is not a padlock), one
+    /// baseline row removed, and one value changed. This is the state Task 8b
+    /// added, and the only one in which the toolbar's `-` is enabled.
+    ///
+    /// Returned with the id of the row to start selected, because the toolbar
+    /// enables `-` on a selection and this tool cannot click one.
+    static func editorPendingChangesViewModel() async throws -> (SecretDocumentViewModel, String?) {
+        // Deliberately a short document, not `editorRichDocumentYAML`: a
+        // `List` is a `ScrollView`, and this tool only ever sees its
+        // unscrolled top (CLAUDE.md, "What it still cannot see"). A snapshot
+        // whose whole subject sat below the fold would review nothing.
+        let key = try SnapshotAgeKeyPair.generate()
+        let encrypted = try SopsBridge.encryptYAML(
+            """
+            db:
+                host: db.internal.example
+                password: correct-horse-battery-staple-EXAMPLE
+            feature_flags:
+                - beta_checkout
+                - dark_mode
+            """, recipients: [key.public])
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let model = SecretDocumentViewModel(
+            fileURL: URL(fileURLWithPath: "/dev/null/snapshot-pending.yaml"),
+            keyStore: store,
+            readFile: { _ in encrypted })
+        await model.load()
+
+        if let password = model.rows.first(where: { $0.path == ["db", "password"] }) {
+            model.update(rowID: password.id, to: "rotated-EXAMPLE-value")
+        }
+        if let flag = model.rows.first(where: { $0.path == ["feature_flags", "1"] }) {
+            model.removeRow(id: flag.id)
+        }
+        var selected: String?
+        if let host = model.rows.first(where: { $0.path == ["db", "host"] }) {
+            let destination = model.addDestination(forSelectedRowID: host.id)
+            if case .added(let id) = model.addRow(
+                in: destination, key: "replica_host", kind: .string, value: "db-replica.internal.example")
+            {
+                selected = id
+            }
+        }
+        return (model, selected)
+    }
+
+    /// The `+` sheet, in both shapes it has: a named key for a map, and an
+    /// appended entry for a list.
+    static func addRowSheet(isList: Bool) -> EditorAddRowSheet {
+        EditorAddRowSheet(
+            destination: SecretDocumentViewModel.AddDestination(
+                document: 0, parent: isList ? ["feature_flags"] : ["db"], isList: isList),
+            isNameTaken: { $0 == "host" },
+            onCancel: {},
+            onAdd: { _, _, _ in })
+    }
+
     /// Real ciphertext, but the session holds a *different* real identity —
     /// the same "wrong key" shape `SopsDocumentTests` covers at the bridge
     /// layer, one level up: this is what the editor shows for it.

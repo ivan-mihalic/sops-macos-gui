@@ -60,20 +60,25 @@ private enum Outcome<Success: Sendable>: Sendable {
 /// round trip (ADR 0002).
 ///
 /// ## Add/remove rows
-/// The brief for this type asks for `addRow(path:)` and `removeRow(id:)`.
-/// They are deliberately **not implemented here**. `SopsBridge.applyEdits`
-/// only sets existing values — Task 7's report states the scope explicitly
-/// ("Scope: set only") — there is no bridge call that adds or removes a key
-/// from the tree. A view-model-only implementation could splice `rows` in
-/// memory, but `save()` would then have no way to carry that change into the
-/// file: the structural edit would look successful in the UI and silently
-/// vanish on save, which is exactly the "presents as something it is not"
-/// failure this milestone exists to close. Task 7's report names the
-/// follow-up directly and flags a real hazard for whoever writes it:
-/// removing a list element shifts every later element's index, which
-/// invalidates the paths of any other pending edit in the same batch. That
-/// belongs with the Go API extension, not against a call that does not
-/// exist.
+/// `addRow` and `removeRow` are backed by real bridge operations
+/// (`SopsBridge.applyChanges`), not by splicing `rows` and hoping — a
+/// structural edit that looked successful in the UI and vanished on save is
+/// the exact failure this milestone exists to close.
+///
+/// The pending state is kept as *changes against the loaded document* —
+/// which values were edited, which rows were removed, which rows were added —
+/// and `rows` is recomposed from the baseline plus those changes on every
+/// mutation. Nothing is spliced in place. That is what makes the dirty flag
+/// exact rather than approximate: adding a row and then removing it again
+/// leaves no pending change at all, so the document is clean, not "dirty
+/// because something happened once".
+///
+/// A save that changed the document's **shape** reloads from the bytes it
+/// just produced instead of trusting the in-memory rows. It has to: removing
+/// a list element renumbers everything after it, so the paths this type is
+/// holding stop matching the file the moment such a save succeeds, and the
+/// next edit would land on the wrong element. A value-only save keeps the
+/// fast path, because nothing about it can move a path.
 ///
 /// ## Merge keys
 /// A row whose path contains the literal segment `"<<"` comes from a YAML
@@ -114,11 +119,43 @@ public final class SecretDocumentViewModel {
     /// load has succeeded at least once — `save()` refuses without it.
     private var encryptedContents: String?
 
-    /// Each editable row's value as of the last successful load or save —
-    /// the baseline `isDirty` and the edit set compare against. Keyed by
-    /// `SecretRow.id`, which Task 7 documents as stable across reloads of the
-    /// same document (derived from position, not content).
-    private var baselineValues: [String: String] = [:]
+    /// The document exactly as the bridge last reported it — the last
+    /// successful load, or the reload that follows a structural save. Every
+    /// pending change below is expressed against *this*, and `rows` is
+    /// recomposed from it.
+    private var baselineRows: [SecretRow] = []
+
+    /// Edited values, keyed by the baseline row's `SecretRow.id` (stable
+    /// across reloads of the same document — Task 7 derives it from position,
+    /// not content). An entry is removed when the value is typed back to what
+    /// it was, so "no entries" really means "nothing edited".
+    private var editedValues: [String: String] = [:]
+
+    /// Baseline rows the user removed. A `Set` for lookup; the removals a
+    /// save sends are emitted in baseline order so a batch is reproducible.
+    private var removedRowIDs: Set<String> = []
+
+    /// Rows added in this session, in the order they were added.
+    private var pendingAdditions: [PendingAddition] = []
+
+    /// Composed row id → index into `pendingAdditions`. Rebuilt with `rows`,
+    /// because a pending row's id is derived from its path and a list
+    /// entry's path depends on what else is in the list.
+    private var pendingAdditionIndexByRowID: [String: Int] = [:]
+
+    /// One row the user added but has not saved.
+    private struct PendingAddition {
+        let document: Int
+        /// The map or list it goes into; empty means the document root.
+        let parent: [String]
+        /// The new map key's name, or `""` when `parent` is a list, where the
+        /// position comes from appending rather than from a name.
+        let key: String
+        let kind: SecretRow.Kind
+        var value: String
+
+        var isListEntry: Bool { key.isEmpty }
+    }
 
     /// - Parameters:
     ///   - fileURL: The encrypted SOPS document on disk.
@@ -192,9 +229,7 @@ public final class SecretDocumentViewModel {
         switch decrypted {
         case .success(let newRows):
             encryptedContents = contents
-            rows = newRows
-            baselineValues = Dictionary(uniqueKeysWithValues: newRows.map { ($0.id, $0.value) })
-            isDirty = false
+            adoptBaseline(newRows)
             loadState = .loaded
         case .failure(let message):
             resetToEmpty()
@@ -216,10 +251,25 @@ public final class SecretDocumentViewModel {
     /// closed rather than left to depend on `save()`'s guard ordering never
     /// changing.
     private func resetToEmpty() {
+        baselineRows = []
+        discardPendingChanges()
         rows = []
-        baselineValues = [:]
-        isDirty = false
         encryptedContents = nil
+    }
+
+    /// Takes `newRows` as the new truth and drops every pending change.
+    private func adoptBaseline(_ newRows: [SecretRow]) {
+        baselineRows = newRows
+        discardPendingChanges()
+        recompose()
+    }
+
+    private func discardPendingChanges() {
+        editedValues = [:]
+        removedRowIDs = []
+        pendingAdditions = []
+        pendingAdditionIndexByRowID = [:]
+        isDirty = false
     }
 
     /// Runs `SopsBridge.decryptToRows` off the main actor, via
@@ -294,14 +344,243 @@ public final class SecretDocumentViewModel {
     /// editable (`SecretRow.Kind.isEditable` — an empty map or list has no
     /// value of its own to type into).
     public func update(rowID: String, to newValue: String) {
-        guard let index = rows.firstIndex(where: { $0.id == rowID }) else { return }
-        guard rows[index].kind.isEditable else { return }
-        rows[index].value = newValue
-        recomputeIsDirty()
+        guard let row = rows.first(where: { $0.id == rowID }), row.kind.isEditable else { return }
+
+        if let index = pendingAdditionIndexByRowID[rowID] {
+            pendingAdditions[index].value = newValue
+        } else if let baseline = baselineRows.first(where: { $0.id == rowID }) {
+            // Typed back to what it was is not an edit. Without this, saving
+            // would send a set for a value that did not change, rewriting a
+            // line of the user's file for nothing.
+            if baseline.value == newValue {
+                editedValues.removeValue(forKey: rowID)
+            } else {
+                editedValues[rowID] = newValue
+            }
+        } else {
+            return
+        }
+        recompose()
     }
 
-    private func recomputeIsDirty() {
-        isDirty = rows.contains { baselineValues[$0.id] != $0.value }
+    // MARK: - Adding and removing rows
+
+    /// Why an `addRow` call was refused. The bridge is the authority on all
+    /// of these — it re-checks every one against the real document — but
+    /// answering here lets the UI say so before the user commits to a save.
+    public enum AddRowRefusal: Equatable, Sendable {
+        /// No document is open, so there is nothing to add to.
+        case notLoaded
+        /// A new key in a map needs a name.
+        case emptyKey
+        /// A key by that name is already in this map. Changing its value is
+        /// an edit, not an addition — silently turning one into the other
+        /// would overwrite a value nobody chose.
+        case duplicateKey
+        /// The kind has no value to type into (`emptyMap`/`emptyList`).
+        case unsupportedKind
+    }
+
+    public enum AddRowOutcome: Equatable, Sendable {
+        /// The id of the new row, as it now appears in `rows`.
+        case added(String)
+        case refused(AddRowRefusal)
+    }
+
+    /// Where an `addRow` would put a new row, given what is selected.
+    ///
+    /// This lives here rather than in the view because it is a fact about the
+    /// document, and because getting it wrong is a correctness problem, not a
+    /// presentation one: a map needs a key name and a list is appended, and
+    /// the two cannot be told apart from a path — `"0"` is a legitimate map
+    /// key. `SecretRow.isInList` carries the bridge's own answer.
+    public struct AddDestination: Equatable, Sendable {
+        public let document: Int
+        /// The container to add into; empty means the document's root map.
+        public let parent: [String]
+        /// Whether that container is a list, in which case the new entry is
+        /// appended and has no name.
+        public let isList: Bool
+
+        public init(document: Int, parent: [String], isList: Bool) {
+            self.document = document
+            self.parent = parent
+            self.isList = isList
+        }
+    }
+
+    /// The destination for a `+` pressed while `selectedRowID` is selected.
+    ///
+    /// - A selected empty map or list is added *into*, so `foo: {}` is not a
+    ///   dead end nothing can ever be put in.
+    /// - Any other selected row means "another one of these", i.e. its own
+    ///   container.
+    /// - Nothing selected means the document's root map.
+    public func addDestination(forSelectedRowID selectedRowID: String?) -> AddDestination {
+        guard let selectedRowID, let row = rows.first(where: { $0.id == selectedRowID }) else {
+            return AddDestination(document: 0, parent: [], isList: false)
+        }
+        switch row.kind {
+        case .emptyMap:
+            return AddDestination(document: row.document, parent: row.path, isList: false)
+        case .emptyList:
+            return AddDestination(document: row.document, parent: row.path, isList: true)
+        default:
+            return AddDestination(
+                document: row.document, parent: Array(row.path.dropLast()), isList: row.isInList)
+        }
+    }
+
+    /// Adds a row to the document in memory. Nothing reaches disk until
+    /// `save()`.
+    ///
+    /// `key` names the new map key and must be empty when
+    /// `destination.isList` — a list entry is appended, and there is no way
+    /// to ask for a position, deliberately: an insertion renumbers every
+    /// later element exactly as a removal does. See `SecretChangeSet`.
+    @discardableResult
+    public func addRow(
+        in destination: AddDestination, key: String, kind: SecretRow.Kind, value: String
+    ) -> AddRowOutcome {
+        guard loadState == .loaded else { return .refused(.notLoaded) }
+        guard kind.isEditable else { return .refused(.unsupportedKind) }
+
+        // Trimmed here rather than trusted from the caller: a key that is
+        // only spaces is not a name, and YAML would happily accept it as one.
+        let name = destination.isList ? "" : key.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !destination.isList {
+            if name.isEmpty { return .refused(.emptyKey) }
+            if isNameTaken(name, in: destination) { return .refused(.duplicateKey) }
+        }
+
+        pendingAdditions.append(
+            PendingAddition(
+                document: destination.document, parent: destination.parent,
+                key: name, kind: kind, value: value))
+        recompose()
+
+        guard let id = pendingAdditionIndexByRowID.first(where: { $0.value == pendingAdditions.count - 1 })?.key
+        else {
+            // Unreachable: recompose always produces a row per pending
+            // addition. Undo rather than report an id that does not exist.
+            pendingAdditions.removeLast()
+            recompose()
+            return .refused(.notLoaded)
+        }
+        return .added(id)
+    }
+
+    /// Whether a map key by that name is already present at `destination` —
+    /// as a value, as an empty container, or as a whole subtree.
+    public func isNameTaken(_ key: String, in destination: AddDestination) -> Bool {
+        let candidate = destination.parent + [key]
+        return rows.contains { row in
+            row.document == destination.document
+                && row.path.count >= candidate.count
+                && Array(row.path.prefix(candidate.count)) == candidate
+        }
+    }
+
+    /// Removes a row from the document in memory. Nothing reaches disk until
+    /// `save()`.
+    ///
+    /// Removing a row that was added in this session simply undoes the
+    /// addition — there is nothing in the file to remove — and leaves the
+    /// document exactly as clean as it was before the addition.
+    ///
+    /// A no-op for an id that is not in `rows`.
+    public func removeRow(id: String) {
+        if let index = pendingAdditionIndexByRowID[id] {
+            pendingAdditions.remove(at: index)
+        } else if baselineRows.contains(where: { $0.id == id }), !removedRowIDs.contains(id) {
+            removedRowIDs.insert(id)
+            editedValues.removeValue(forKey: id)
+        } else {
+            return
+        }
+        recompose()
+    }
+
+    /// Rebuilds `rows` from the baseline plus the pending changes, and with
+    /// it the dirty flag and the pending-row index.
+    private func recompose() {
+        var composed: [SecretRow] = []
+        for baseline in baselineRows where !removedRowIDs.contains(baseline.id) {
+            var row = baseline
+            if let edited = editedValues[baseline.id] { row.value = edited }
+            composed.append(row)
+        }
+
+        var indexByRowID: [String: Int] = [:]
+        for (index, addition) in pendingAdditions.enumerated() {
+            let row = SecretRow(
+                document: addition.document,
+                path: pendingPath(for: addition, in: composed),
+                value: addition.value,
+                kind: addition.kind,
+                isInList: addition.isListEntry,
+                isPendingAdd: true,
+                // Honest: it is not ciphertext in the file, because it is not
+                // in the file. Whether it will be is the file's own rules'
+                // decision at save time, which is why the editor shows this
+                // row as new rather than as unprotected.
+                isEncrypted: false)
+            composed.insert(row, at: insertionIndex(for: addition, in: composed))
+            indexByRowID[row.id] = index
+        }
+
+        // A container that has something in it is no longer an empty
+        // container, so its `{}` / `[]` row goes — which is what a reload
+        // would show, and what keeps the same key from appearing twice.
+        let snapshot = composed
+        composed = composed.filter { row in
+            guard row.kind == .emptyMap || row.kind == .emptyList else { return true }
+            return !snapshot.contains { other in
+                other.document == row.document
+                    && other.path.count > row.path.count
+                    && Array(other.path.prefix(row.path.count)) == row.path
+            }
+        }
+
+        rows = composed
+        pendingAdditionIndexByRowID = indexByRowID
+        isDirty = !editedValues.isEmpty || !removedRowIDs.isEmpty || !pendingAdditions.isEmpty
+    }
+
+    /// The path a pending row shows up under. For a map that is the key; for
+    /// a list it is the next free index, which is what the bridge's append
+    /// will produce.
+    private func pendingPath(for addition: PendingAddition, in composed: [SecretRow]) -> [String] {
+        guard addition.isListEntry else { return addition.parent + [addition.key] }
+        var next = 0
+        for row in composed where row.document == addition.document {
+            guard row.path.count > addition.parent.count,
+                Array(row.path.prefix(addition.parent.count)) == addition.parent,
+                let index = Int(row.path[addition.parent.count])
+            else { continue }
+            next = max(next, index + 1)
+        }
+        return addition.parent + [String(next)]
+    }
+
+    /// Where the new row goes in the displayed order: after the last row
+    /// already inside its container, or — for a container that has no rows of
+    /// its own yet — directly after that container's own row.
+    private func insertionIndex(for addition: PendingAddition, in composed: [SecretRow]) -> Int {
+        var last: Int?
+        for (index, row) in composed.enumerated() where row.document == addition.document {
+            if row.path.count > addition.parent.count,
+                Array(row.path.prefix(addition.parent.count)) == addition.parent {
+                last = index
+            }
+        }
+        if let last { return last + 1 }
+        if let container = composed.firstIndex(where: {
+            $0.document == addition.document && $0.path == addition.parent
+        }) {
+            return container + 1
+        }
+        return composed.count
     }
 
     /// Writes the current rows back to `fileURL`.
@@ -346,14 +625,12 @@ public final class SecretDocumentViewModel {
             return .failed("no document is loaded")
         }
 
-        let edits = rows
-            .filter { baselineValues[$0.id] != $0.value }
-            .map { SecretEdit(row: $0) }
+        let changes = pendingChangeSet()
 
         // Same reasoning as `load()`: `body` receives the key and hops off
         // this actor itself; the key never lives in a local variable here.
         let applied: Outcome<String>? = await keyStore.withKey { key in
-            await Self.applyEdits(contents, edits: edits, agePrivateKey: key)
+            await Self.applyChanges(contents, changes: changes, agePrivateKey: key)
         }
 
         guard let applied else {
@@ -370,9 +647,70 @@ public final class SecretDocumentViewModel {
                 return .failed("the saved file could not be written to disk: \(fileURL.lastPathComponent)")
             }
             encryptedContents = newEncrypted
-            baselineValues = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0.value) })
-            isDirty = false
+            await adoptSavedDocument(newEncrypted, changedShape: !changes.adds.isEmpty || !changes.removes.isEmpty)
             return .saved
+        }
+    }
+
+    /// The pending changes as the bridge takes them. Removals are emitted in
+    /// baseline order rather than in a `Set`'s arbitrary one, so the same
+    /// user actions always produce the same batch.
+    private func pendingChangeSet() -> SecretChangeSet {
+        var sets: [SecretEdit] = []
+        var removes: [SecretRemoval] = []
+        for baseline in baselineRows {
+            if removedRowIDs.contains(baseline.id) {
+                removes.append(SecretRemoval(document: baseline.document, path: baseline.path))
+            } else if let edited = editedValues[baseline.id] {
+                sets.append(
+                    SecretEdit(
+                        document: baseline.document, path: baseline.path,
+                        value: edited, kind: baseline.kind))
+            }
+        }
+        let adds = pendingAdditions.map {
+            SecretAddition(
+                document: $0.document, parent: $0.parent, key: $0.key,
+                value: $0.value, kind: $0.kind)
+        }
+        return SecretChangeSet(sets: sets, adds: adds, removes: removes)
+    }
+
+    /// Resyncs this type with the file it just wrote.
+    ///
+    /// A value-only save cannot move a path, so the rows already on screen
+    /// are still correct and become the new baseline directly. A save that
+    /// added or removed something can move paths — removing a list element
+    /// renumbers every element after it — so the in-memory paths stop
+    /// matching the file and the next edit would land on the wrong element.
+    /// That case re-reads the bytes it just produced, which is the only
+    /// source of truth for where things ended up.
+    ///
+    /// If that re-read fails the *file is still saved* — the bytes are on
+    /// disk. The document simply can no longer be shown, and saying so is
+    /// more honest than leaving a stale editor open over it.
+    private func adoptSavedDocument(_ newEncrypted: String, changedShape: Bool) async {
+        guard changedShape else {
+            adoptBaseline(rows.map {
+                SecretRow(
+                    document: $0.document, path: $0.path, value: $0.value, kind: $0.kind,
+                    isInList: $0.isInList, isPendingAdd: false, isEncrypted: $0.isEncrypted)
+            })
+            return
+        }
+
+        let reloaded: Outcome<[SecretRow]>? = await keyStore.withKey { key in
+            await Self.decrypt(newEncrypted, agePrivateKey: key)
+        }
+        switch reloaded {
+        case .success(let newRows)?:
+            adoptBaseline(newRows)
+        case .failure(let message)?:
+            resetToEmpty()
+            loadState = .failed(message)
+        case nil:
+            resetToEmpty()
+            loadState = .needsKey
         }
     }
 
@@ -383,12 +721,12 @@ public final class SecretDocumentViewModel {
     /// ~382ms for an 8,000-key/1.19MB fixture when run off the cooperative
     /// pool; over nine seconds when it wasn't. `key`'s lifetime is exactly
     /// this call.
-    private static func applyEdits(
-        _ contents: String, edits: [SecretEdit], agePrivateKey key: String
+    private static func applyChanges(
+        _ contents: String, changes: SecretChangeSet, agePrivateKey key: String
     ) async -> Outcome<String> {
         await runOffCooperativePool {
             do {
-                return .success(try SopsBridge.applyEdits(contents, edits: edits, agePrivateKey: key))
+                return .success(try SopsBridge.applyChanges(contents, changes: changes, agePrivateKey: key))
             } catch let error as SopsBridgeError {
                 return .failure(error.description)
             } catch {

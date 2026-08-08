@@ -189,6 +189,7 @@ enum Catalog {
         let empty = try await Fixtures.editorEmptyDocumentViewModel()
         let needsKey = await Fixtures.editorNeedsKeyViewModel()
         let failed = try await Fixtures.editorLoadFailedViewModel()
+        let (pending, pendingSelection) = try await Fixtures.editorPendingChangesViewModel()
 
         let editorSize = CGSize(width: 760, height: 560)
         func editor(_ name: String, _ model: SecretDocumentViewModel, fileName: String) -> Snapshot {
@@ -203,6 +204,20 @@ enum Catalog {
             editor("editor-empty-document", empty, fileName: "empty.secrets.yaml"),
             editor("editor-needs-key", needsKey, fileName: "needs-key.secrets.yaml"),
             editor("editor-load-failed", failed, fileName: "wrong-key.secrets.yaml"),
+            // Task 8b: the +/- affordance live, a row added in this session,
+            // and a row removed — the state that did not exist before.
+            Snapshot("editor-pending-changes", size: editorSize) {
+                SecretEditorView(
+                    viewModel: pending, fileName: "production.secrets.yaml",
+                    unsavedChanges: UnsavedChangesTracker(),
+                    initiallySelectedRowID: pendingSelection)
+            },
+            Snapshot("editor-add-sheet-map", size: CGSize(width: 460, height: 330)) {
+                Fixtures.addRowSheet(isList: false)
+            },
+            Snapshot("editor-add-sheet-list", size: CGSize(width: 460, height: 310)) {
+                Fixtures.addRowSheet(isList: true)
+            },
         ]
     }
 

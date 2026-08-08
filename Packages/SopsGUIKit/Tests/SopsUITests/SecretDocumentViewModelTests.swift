@@ -652,3 +652,294 @@ struct SecretDocumentViewModelTests {
                     + "load()/save(); got \(finalTicks) heartbeat ticks, which reads as a block"))
     }
 }
+
+// A document with a list of scalars, a nested map and an empty map — the
+// three shapes adding and removing behave differently in.
+private let structuralYAML = """
+    service: api
+    ports:
+        - 8080
+        - 8443
+        - 9090
+    db:
+        host: localhost
+        password: hunter2
+    empty_map: {}
+
+    """
+
+@Suite("SecretDocumentViewModel — adding and removing rows")
+@MainActor
+struct SecretDocumentStructuralTests {
+
+    private func loaded(_ yaml: String) async throws -> (SecretDocumentViewModel, AgeKeyPair, URL) {
+        let key = try AgeKeyPair.generate()
+        let fileURL = try encryptedFixture(yaml, key: key)
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        await vm.load()
+        #expect(vm.loadState == .loaded)
+        return (vm, key, fileURL)
+    }
+
+    private func row(_ vm: SecretDocumentViewModel, _ path: String...) throws -> SecretRow {
+        guard let found = vm.rows.first(where: { $0.path == path }) else {
+            throw FixtureError("no row at \(path); present: \(vm.rows.map { $0.path.joined(separator: ".") })")
+        }
+        return found
+    }
+
+    private func paths(_ vm: SecretDocumentViewModel) -> [String] {
+        vm.rows.map { $0.path.joined(separator: ".") }
+    }
+
+    // MARK: The dirty-flag property the brief names explicitly
+
+    @Test("adding a row and then removing it again leaves the document clean")
+    func addThenRemoveIsClean() async throws {
+        let (vm, _, _) = try await loaded(structuralYAML)
+        let before = vm.rows
+
+        let destination = vm.addDestination(forSelectedRowID: try row(vm, "db", "host").id)
+        guard case .added(let id) = vm.addRow(in: destination, key: "replica", kind: .string, value: "r")
+        else {
+            Issue.record("the addition was refused")
+            return
+        }
+        #expect(vm.isDirty)
+        #expect(paths(vm).contains("db.replica"))
+
+        vm.removeRow(id: id)
+
+        #expect(!vm.isDirty, "undoing an addition must leave the document clean, not merely 'touched'")
+        #expect(vm.rows == before, "the row list must be exactly what it was before the addition")
+    }
+
+    @Test("removing a row and re-adding a key of the same name is still dirty")
+    func removeAndReAddIsStillDirty() async throws {
+        // Not the same thing as undoing an addition: the file really does
+        // change (the value differs), so the document must stay dirty.
+        let (vm, _, _) = try await loaded(structuralYAML)
+        let hostID = try row(vm, "db", "host").id
+
+        vm.removeRow(id: hostID)
+        #expect(vm.isDirty)
+        #expect(!paths(vm).contains("db.host"))
+
+        let destination = vm.addDestination(forSelectedRowID: try row(vm, "db", "password").id)
+        if case .refused(let reason) = vm.addRow(
+            in: destination, key: "host", kind: .string, value: "elsewhere") {
+            Issue.record("re-adding a removed key was refused: \(reason)")
+        }
+        #expect(vm.isDirty)
+    }
+
+    // MARK: Where a new row goes
+
+    @Test("the add destination follows the selection, and knows a list from a map")
+    func addDestinationFollowsSelection() async throws {
+        let (vm, _, _) = try await loaded(structuralYAML)
+
+        let root = vm.addDestination(forSelectedRowID: nil)
+        #expect(root.parent.isEmpty)
+        #expect(!root.isList)
+
+        let inMap = vm.addDestination(forSelectedRowID: try row(vm, "db", "host").id)
+        #expect(inMap.parent == ["db"])
+        #expect(!inMap.isList)
+
+        let inList = vm.addDestination(forSelectedRowID: try row(vm, "ports", "1").id)
+        #expect(inList.parent == ["ports"])
+        #expect(inList.isList, "a list entry's container must be reported as a list, not inferred from its path")
+
+        // An empty container is added *into*, or `foo: {}` would be a dead end.
+        let intoEmpty = vm.addDestination(forSelectedRowID: try row(vm, "empty_map").id)
+        #expect(intoEmpty.parent == ["empty_map"])
+        #expect(!intoEmpty.isList)
+    }
+
+    @Test("a key added to a map appears at the end of that map, not at the end of the file")
+    func addedKeyAppearsInItsOwnContainer() async throws {
+        let (vm, _, _) = try await loaded(structuralYAML)
+        let destination = vm.addDestination(forSelectedRowID: try row(vm, "db", "host").id)
+        _ = vm.addRow(in: destination, key: "replica", kind: .string, value: "r")
+
+        #expect(paths(vm) == ["service", "ports.0", "ports.1", "ports.2", "db.host", "db.password", "db.replica", "empty_map"])
+    }
+
+    @Test("a list entry is appended and takes the next index")
+    func listEntryIsAppended() async throws {
+        let (vm, _, _) = try await loaded(structuralYAML)
+        let destination = vm.addDestination(forSelectedRowID: try row(vm, "ports", "0").id)
+        _ = vm.addRow(in: destination, key: "", kind: .int, value: "9443")
+        _ = vm.addRow(in: destination, key: "", kind: .int, value: "9999")
+
+        #expect(paths(vm).filter { $0.hasPrefix("ports.") } == ["ports.0", "ports.1", "ports.2", "ports.3", "ports.4"])
+        #expect(try row(vm, "ports", "3").value == "9443")
+        #expect(try row(vm, "ports", "4").value == "9999")
+    }
+
+    @Test("adding into an empty map replaces its empty-container row")
+    func addingIntoAnEmptyMapReplacesItsRow() async throws {
+        let (vm, _, _) = try await loaded(structuralYAML)
+        let destination = vm.addDestination(forSelectedRowID: try row(vm, "empty_map").id)
+        _ = vm.addRow(in: destination, key: "first", kind: .string, value: "one")
+
+        #expect(!paths(vm).contains("empty_map"), "a map with something in it is not an empty map")
+        #expect(paths(vm).contains("empty_map.first"))
+    }
+
+    // MARK: Refusals
+
+    @Test("a duplicate key is refused, including one that names a whole subtree")
+    func duplicateKeyIsRefused() async throws {
+        let (vm, _, _) = try await loaded(structuralYAML)
+
+        let inDB = vm.addDestination(forSelectedRowID: try row(vm, "db", "host").id)
+        #expect(vm.addRow(in: inDB, key: "host", kind: .string, value: "x")
+            == .refused(.duplicateKey))
+
+        // `db` has no row of its own — it is a subtree — and adding a second
+        // `db` at the root must still be refused.
+        let atRoot = vm.addDestination(forSelectedRowID: nil)
+        #expect(vm.addRow(in: atRoot, key: "db", kind: .string, value: "x")
+            == .refused(.duplicateKey))
+        #expect(!vm.isDirty, "a refused addition must not dirty the document")
+    }
+
+    @Test("a map key with no name is refused")
+    func emptyKeyIsRefused() async throws {
+        let (vm, _, _) = try await loaded(structuralYAML)
+        let atRoot = vm.addDestination(forSelectedRowID: nil)
+        #expect(vm.addRow(in: atRoot, key: "  ", kind: .string, value: "x") == .refused(.emptyKey))
+    }
+
+    @Test("adding to a document that was never loaded is refused")
+    func addingWithoutADocumentIsRefused() async throws {
+        let vm = SecretDocumentViewModel(
+            fileURL: URL(fileURLWithPath: "/nowhere/none.yaml"), keyStore: SessionKeyStore())
+        let destination = vm.addDestination(forSelectedRowID: nil)
+        #expect(vm.addRow(in: destination, key: "k", kind: .string, value: "v") == .refused(.notLoaded))
+    }
+
+    @Test("removing a row that is not there does nothing")
+    func removingAnUnknownRowIsANoOp() async throws {
+        let (vm, _, _) = try await loaded(structuralYAML)
+        let before = vm.rows
+        vm.removeRow(id: "not-a-row")
+        #expect(vm.rows == before)
+        #expect(!vm.isDirty)
+    }
+
+    // MARK: Saving
+
+    @Test("one save that adds, removes and edits changes exactly those three things")
+    func addRemoveAndEditInOneSave() async throws {
+        let (vm, key, fileURL) = try await loaded(structuralYAML)
+        let before = try cliDecrypt(fileURL, key: key)
+
+        vm.update(rowID: try row(vm, "service").id, to: "api-v2")
+        vm.removeRow(id: try row(vm, "db", "password").id)
+        let destination = vm.addDestination(forSelectedRowID: try row(vm, "db", "host").id)
+        _ = vm.addRow(in: destination, key: "replica", kind: .string, value: "replica.internal")
+
+        #expect(await vm.save() == .saved)
+        #expect(!vm.isDirty)
+
+        let after = try cliDecrypt(fileURL, key: key)
+        #expect(!after.contains("password"))
+        #expect(after.contains("replica: replica.internal"))
+        #expect(after.contains("service: api-v2"))
+        // Untouched content survives verbatim.
+        #expect(after.contains("host: localhost"))
+        #expect(after.contains("- 8080"))
+        #expect(after.contains("empty_map: {}"))
+        #expect(before.contains("password: hunter2"))
+    }
+
+    @Test("after a save that removes a list entry, the rows match the file's new numbering")
+    func rowsAreResyncedAfterAStructuralSave() async throws {
+        let (vm, key, fileURL) = try await loaded(structuralYAML)
+
+        vm.removeRow(id: try row(vm, "ports", "1").id)
+        #expect(await vm.save() == .saved)
+
+        // The whole point: `ports.1` is now 9090, not 8443. Holding the old
+        // paths would send the next edit to the wrong element.
+        #expect(paths(vm).filter { $0.hasPrefix("ports.") } == ["ports.0", "ports.1"])
+        #expect(try row(vm, "ports", "0").value == "8080")
+        #expect(try row(vm, "ports", "1").value == "9090")
+
+        // And a follow-up edit lands where the editor says it does.
+        vm.update(rowID: try row(vm, "ports", "1").id, to: "9091")
+        #expect(await vm.save() == .saved)
+        let after = try cliDecrypt(fileURL, key: key)
+        #expect(after.contains("- 9091"))
+        #expect(!after.contains("- 8443"))
+        #expect(after.contains("- 8080"))
+    }
+
+    @Test("an added value is encrypted by the file's own rules, and reported as such after saving")
+    func addedValuesFollowTheFilesRules() async throws {
+        let key = try AgeKeyPair.generate()
+        let fileURL = try encryptedFixture(
+            structuralYAML, key: key, extraArgs: ["--encrypted-regex", "^(password|token)$"])
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        await vm.load()
+
+        let destination = vm.addDestination(forSelectedRowID: try row(vm, "db", "host").id)
+        _ = vm.addRow(in: destination, key: "token", kind: .string, value: "t-123")
+        _ = vm.addRow(in: destination, key: "region", kind: .string, value: "eu")
+
+        // Before the save the editor makes no claim either way.
+        #expect(try row(vm, "db", "token").isPendingAdd)
+        #expect(try row(vm, "db", "region").isPendingAdd)
+
+        #expect(await vm.save() == .saved)
+
+        #expect(try row(vm, "db", "token").isEncrypted)
+        #expect(try !row(vm, "db", "region").isEncrypted)
+        #expect(try !row(vm, "db", "token").isPendingAdd)
+
+        let onDisk = try String(contentsOf: fileURL, encoding: .utf8)
+        #expect(!onDisk.contains("t-123"))
+        #expect(onDisk.contains("region: eu"))
+    }
+
+    @Test("a batch the bridge refuses fails the save and leaves every pending change intact")
+    func anAmbiguousBatchIsRefusedAndNothingIsLost() async throws {
+        let (vm, key, fileURL) = try await loaded(structuralYAML)
+        let originalOnDisk = try String(contentsOf: fileURL, encoding: .utf8)
+
+        // Removing ports.1 renumbers ports.2, which this same save edits.
+        vm.removeRow(id: try row(vm, "ports", "1").id)
+        vm.update(rowID: try row(vm, "ports", "2").id, to: "9091")
+
+        let outcome = await vm.save()
+        guard case .failed(let message) = outcome else {
+            Issue.record("an ambiguous batch was accepted: \(outcome)")
+            return
+        }
+        #expect(message.contains("ports"), Comment(rawValue: message))
+        #expect(!message.contains("hunter2"), "a refusal must never carry a value")
+
+        #expect(vm.isDirty, "a refused save must leave the user's work exactly where they left it")
+        #expect(try row(vm, "ports", "2").value == "9091")
+        #expect(!paths(vm).contains("ports.1"), "the pending removal is still pending")
+        #expect(try String(contentsOf: fileURL, encoding: .utf8) == originalOnDisk,
+                "a refused save must not touch the file")
+        #expect(try cliDecrypt(fileURL, key: key).contains("- 8443"),
+                "the file the CLI sees is untouched too")
+    }
+
+    @Test("saving with nothing pending writes nothing at all")
+    func aCleanSaveIsANoOp() async throws {
+        let (vm, _, fileURL) = try await loaded(structuralYAML)
+        let before = try String(contentsOf: fileURL, encoding: .utf8)
+        #expect(await vm.save() == .saved)
+        #expect(try String(contentsOf: fileURL, encoding: .utf8) == before)
+    }
+}

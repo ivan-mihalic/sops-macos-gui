@@ -143,10 +143,6 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case editorSaveErrorTitle = "editor.save-error.title"
     case editorRevealValue = "editor.reveal-value"
     case editorHideValue = "editor.hide-value"
-    // Task 9's brief: add/remove rows are shown disabled with an honest
-    // explanation rather than omitted outright or silently faked — see
-    // `SecretEditorView`'s doc comment ("Add/remove rows").
-    case editorAddRemoveDisabled = "editor.add-remove-disabled"
     case editorMergeKeyBadge = "editor.merge-key-badge"
     case editorMergeKeyExplanation = "editor.merge-key-explanation"
     case editorValueEncrypted = "editor.value-encrypted"
@@ -159,6 +155,27 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case editorKindTimestamp = "editor.kind.timestamp"
     case editorKindEmptyMap = "editor.kind.empty-map"
     case editorKindEmptyList = "editor.kind.empty-list"
+
+    // MARK: Task 8b — adding and removing rows
+
+    case actionAdd = "action.add"
+    case editorAddRow = "editor.add-row"
+    case editorRemoveRow = "editor.remove-row"
+    case editorRemoveRowDisabled = "editor.remove-row-disabled"
+    case editorAddSheetTitle = "editor.add.title"
+    case editorAddDestination = "editor.add.destination"
+    case editorAddDestinationRoot = "editor.add.destination-root"
+    case editorAddKeyField = "editor.add.key"
+    case editorAddValueField = "editor.add.value"
+    case editorAddTypeField = "editor.add.type"
+    // A list entry has no name and no position to choose: it goes at the end.
+    // Saying so is what stops a user looking for the field that isn't there.
+    case editorAddListNote = "editor.add.list-note"
+    case editorAddDuplicateKey = "editor.add.duplicate-key"
+    // Shown instead of a padlock on a row added in this session — see
+    // `SecretEditorView`'s doc comment for why neither padlock would be true.
+    case editorNewRowBadge = "editor.new-row-badge"
+    case editorNewRowExplanation = "editor.new-row-explanation"
 
     // MARK: Task 9 — unsaved-changes prompts (file/project switch and quit)
 

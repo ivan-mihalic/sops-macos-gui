@@ -2,6 +2,17 @@
   "sourceLanguage": "en",
   "version": "1.0",
   "strings": {
+    "action.add": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add"
+          }
+        }
+      }
+    },
     "action.add-project": {
       "extractionState": "manual",
       "localizations": {
@@ -145,13 +156,101 @@
         }
       }
     },
-    "editor.add-remove-disabled": {
+    "editor.add-row": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Adding and removing keys isn't supported yet — only existing values can be edited."
+            "value": "Add a key"
+          }
+        }
+      }
+    },
+    "editor.add.destination": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adding to"
+          }
+        }
+      }
+    },
+    "editor.add.destination-root": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the top level"
+          }
+        }
+      }
+    },
+    "editor.add.duplicate-key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A key with this name is already here. Change its value instead."
+          }
+        }
+      }
+    },
+    "editor.add.key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Key"
+          }
+        }
+      }
+    },
+    "editor.add.list-note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A new entry is appended to the end of this list."
+          }
+        }
+      }
+    },
+    "editor.add.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add to this document"
+          }
+        }
+      }
+    },
+    "editor.add.type": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Type"
+          }
+        }
+      }
+    },
+    "editor.add.value": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Value"
           }
         }
       }
@@ -354,6 +453,28 @@
         }
       }
     },
+    "editor.new-row-badge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New"
+          }
+        }
+      }
+    },
+    "editor.new-row-explanation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Added in this session and not in the file yet. Whether it is stored encrypted is decided by this file's own rules when you save."
+          }
+        }
+      }
+    },
     "editor.no-file-selected": {
       "extractionState": "manual",
       "localizations": {
@@ -383,6 +504,28 @@
           "stringUnit": {
             "state": "translated",
             "value": "You have unsaved changes"
+          }
+        }
+      }
+    },
+    "editor.remove-row": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove the selected key"
+          }
+        }
+      }
+    },
+    "editor.remove-row-disabled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select a row to remove it."
           }
         }
       }

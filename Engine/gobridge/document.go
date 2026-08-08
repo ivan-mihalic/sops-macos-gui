@@ -98,6 +98,13 @@ type Row struct {
 	Value string `json:"value"`
 	// Kind is one of the Kind* constants above.
 	Kind string `json:"kind"`
+	// InList reports whether this row's immediate parent is a list rather
+	// than a map. The editor cannot work this out from the path — a map key
+	// "0" and list index 0 look identical as text, which is exactly the
+	// ambiguity Path's own doc comment describes — and it has to know,
+	// because adding into a list appends while adding into a map needs a
+	// name. So the walk, which is looking straight at the container, says.
+	InList bool `json:"inList"`
 	// Encrypted reports whether this value is ciphertext in the file on disk.
 	// It is read from the file rather than derived from `.sops.yaml`, so with
 	// an `encrypted_regex` the editor can tell which values are actually
@@ -109,7 +116,8 @@ type Row struct {
 // Edit sets the value at Path to Value, interpreted as Kind.
 //
 // Only existing rows can be set. Adding and removing keys changes the shape
-// of the document and is not part of this API.
+// of the document; those live in documentchanges.go as Add and Removal, and
+// travel together with edits in a ChangeSet.
 type Edit struct {
 	Document int      `json:"document"`
 	Path     []string `json:"path"`
@@ -373,7 +381,7 @@ type leafState struct {
 func encryptedLeafStates(tree *sops.Tree) []leafState {
 	var out []leafState
 	// A walk error (a non-string key) just truncates what is available.
-	_ = walkLeaves(tree.Branches, func(document int, path []string, value interface{}) error {
+	_ = walkLeaves(tree.Branches, func(document int, path []string, value interface{}, _ bool) error {
 		label := pathLabel(path)
 		if document != 0 {
 			label = fmt.Sprintf("document %d, %s", document, label)
@@ -403,7 +411,7 @@ func leavesSopsWouldEncrypt(tree *sops.Tree) map[string]bool {
 		return nil
 	}
 	covered := make(map[string]bool)
-	if err := walkLeaves(tree.Branches, func(document int, path []string, value interface{}) error {
+	if err := walkLeaves(tree.Branches, func(document int, path []string, value interface{}, _ bool) error {
 		if text, isString := value.(string); isString && encValueRe.MatchString(text) {
 			covered[pathKey(document, path)] = true
 		}
@@ -484,7 +492,7 @@ func pathKey(document int, path []string) string {
 // collectEncryptedPaths records which leaves hold sops ciphertext.
 func collectEncryptedPaths(branches sops.TreeBranches) (map[string]bool, error) {
 	out := make(map[string]bool)
-	err := walkLeaves(branches, func(document int, path []string, value interface{}) error {
+	err := walkLeaves(branches, func(document int, path []string, value interface{}, _ bool) error {
 		text, ok := value.(string)
 		out[pathKey(document, path)] = ok && encValueRe.MatchString(text)
 		return nil
@@ -501,7 +509,7 @@ func collectEncryptedPaths(branches sops.TreeBranches) (map[string]bool, error) 
 // editor can render as key/value. It is not lost by being skipped — nothing
 // here rebuilds the tree, values are changed in place, so anything not
 // visited simply stays exactly as it was.
-func walkLeaves(branches sops.TreeBranches, visit func(document int, path []string, value interface{}) error) error {
+func walkLeaves(branches sops.TreeBranches, visit leafVisitor) error {
 	for document, branch := range branches {
 		if err := walkBranchLeaves(document, branch, nil, visit); err != nil {
 			return err
@@ -510,7 +518,12 @@ func walkLeaves(branches sops.TreeBranches, visit func(document int, path []stri
 	return nil
 }
 
-func walkBranchLeaves(document int, branch sops.TreeBranch, path []string, visit func(int, []string, interface{}) error) error {
+// leafVisitor receives one editable value. inList says whether the value's
+// immediate parent is a list — see Row.InList for why that has to come from
+// the walk rather than be inferred from the path.
+type leafVisitor func(document int, path []string, value interface{}, inList bool) error
+
+func walkBranchLeaves(document int, branch sops.TreeBranch, path []string, visit leafVisitor) error {
 	for _, item := range branch {
 		if _, isComment := item.Key.(sops.Comment); isComment {
 			continue
@@ -524,37 +537,37 @@ func walkBranchLeaves(document int, branch sops.TreeBranch, path []string, visit
 			return fmt.Errorf("document %d: %s contains a key of type %T, and only string keys are supported",
 				document, pathLabel(path), item.Key)
 		}
-		if err := walkValueLeaves(document, childPath(path, key), item.Value, visit); err != nil {
+		if err := walkValueLeaves(document, childPath(path, key), item.Value, false, visit); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func walkValueLeaves(document int, path []string, value interface{}, visit func(int, []string, interface{}) error) error {
+func walkValueLeaves(document int, path []string, value interface{}, inList bool, visit leafVisitor) error {
 	switch v := value.(type) {
 	case sops.Comment:
 		return nil
 	case sops.TreeBranch:
 		if len(v) == 0 {
-			return visit(document, path, v)
+			return visit(document, path, v, inList)
 		}
 		return walkBranchLeaves(document, v, path, visit)
 	case []interface{}:
 		if len(v) == 0 {
-			return visit(document, path, v)
+			return visit(document, path, v, inList)
 		}
 		for i, element := range v {
 			if _, isComment := element.(sops.Comment); isComment {
 				continue
 			}
-			if err := walkValueLeaves(document, childPath(path, strconv.Itoa(i)), element, visit); err != nil {
+			if err := walkValueLeaves(document, childPath(path, strconv.Itoa(i)), element, true, visit); err != nil {
 				return err
 			}
 		}
 		return nil
 	default:
-		return visit(document, path, v)
+		return visit(document, path, v, inList)
 	}
 }
 
@@ -675,7 +688,7 @@ func DecryptToRows(encrypted []byte, agePrivateKey string) ([]Row, error) {
 	}
 
 	rows := make([]Row, 0)
-	err = walkLeaves(doc.tree.Branches, func(document int, path []string, value interface{}) error {
+	err = walkLeaves(doc.tree.Branches, func(document int, path []string, value interface{}, inList bool) error {
 		kind, text, describeErr := describeValue(value)
 		if describeErr != nil {
 			return fmt.Errorf("%s: %w", pathLabel(path), describeErr)
@@ -685,6 +698,7 @@ func DecryptToRows(encrypted []byte, agePrivateKey string) ([]Row, error) {
 			Path:      path,
 			Value:     text,
 			Kind:      kind,
+			InList:    inList,
 			Encrypted: doc.encryptedPaths[pathKey(document, path)],
 		})
 		return nil
@@ -709,51 +723,14 @@ func DecryptToRows(encrypted []byte, agePrivateKey string) ([]Row, error) {
 // its key already put it on, for the same reason: the rules come from the
 // document, and sops decides per key, so a value that was plaintext by rule
 // stays readable and one that was ciphertext stays ciphertext.
+//
+// This is the set-only entry point and its contract is unchanged: a caller
+// that only edits values passes a []Edit and gets the same behaviour and the
+// same refusals it always did. Structural changes go through
+// ApplyChangesAndEncrypt, which this delegates to — one implementation, so
+// the two can never drift on metadata handling or error hygiene.
 func ApplyEditsAndEncrypt(encrypted []byte, edits []Edit, agePrivateKey string) ([]byte, error) {
-	doc, err := loadAndDecrypt(encrypted, agePrivateKey)
-	if err != nil {
-		return nil, err
-	}
-
-	seen := make(map[string]bool, len(edits))
-	for _, edit := range edits {
-		key := pathKey(edit.Document, edit.Path)
-		if seen[key] {
-			// Two edits for one row mean the caller lost track of its own
-			// state. Applying whichever came last would write a value nobody
-			// chose and look like it worked.
-			return nil, fmt.Errorf("%s: the same row was edited twice in one save", editLabel(edit))
-		}
-		seen[key] = true
-
-		value, parseErr := parseEditValue(edit)
-		if parseErr != nil {
-			return nil, parseErr
-		}
-		if setErr := setValueAtPath(doc.tree.Branches, edit, value); setErr != nil {
-			return nil, setErr
-		}
-	}
-
-	if err := common.EncryptTree(common.EncryptTreeOpts{
-		DataKey: doc.dataKey,
-		Tree:    doc.tree,
-		Cipher:  doc.cipher,
-	}); err != nil {
-		// Deliberately not wrapped: sops's tree-encryption errors interpolate
-		// the value that failed ("Could not convert %s to bytes") and the
-		// text of an encrypted comment. This path is handling plaintext, so
-		// the message is replaced rather than passed along.
-		return nil, fmt.Errorf("the document could not be re-encrypted")
-	}
-
-	out, err := doc.store.EmitEncryptedFile(*doc.tree)
-	if err != nil {
-		// The YAML encoder quotes what it could not marshal, and a file with
-		// an encrypted_regex still holds plaintext values at this point.
-		return nil, fmt.Errorf("the saved document could not be rendered")
-	}
-	return out, nil
+	return ApplyChangesAndEncrypt(encrypted, ChangeSet{Sets: edits}, agePrivateKey)
 }
 
 // setValueAtPath resolves a path against the tree and replaces one value.
