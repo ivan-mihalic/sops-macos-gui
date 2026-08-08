@@ -119,12 +119,31 @@ public final class SecretDocumentViewModel {
     private let fileURL: URL
     private let keyStore: SessionKeyStore
     private let readFile: (URL) throws -> String
-    private let writeFile: (String, URL) throws -> Void
+    private let fingerprintFile: (URL) -> FileFingerprint?
+    private let writeFile: (String, URL, FileFingerprint?) throws -> FileFingerprint?
 
     /// The file's own encrypted bytes, as last read from disk (by `load()`)
     /// or produced by the most recent successful `save()`. `nil` until a
     /// load has succeeded at least once — `save()` refuses without it.
     private var encryptedContents: String?
+
+    /// What the file looked like when `encryptedContents` was taken from it,
+    /// so a save can tell whether anything else has written it since.
+    ///
+    /// This is the *expectation* half of the second-writer check, and it lives
+    /// here rather than in `AtomicFileWriter` because this is the only object
+    /// that knows what was read. The *verification* half lives in the writer,
+    /// immediately before the replace, because that is the latest possible
+    /// moment and the writer is what is standing there — see
+    /// `AtomicFileWriter`'s "A second writer" section. Splitting it that way
+    /// is the only arrangement in which the comparison is both against the
+    /// right baseline and as late as it can be; doing it all here would leave
+    /// a whole re-encryption (120–380 ms) between the check and the write.
+    ///
+    /// Refreshed after a successful save from the fingerprint the *writer*
+    /// reported, never by re-`stat`ing the file afterwards — see
+    /// `AtomicWriteReceipt.fingerprint`.
+    private var loadedFingerprint: FileFingerprint?
 
     /// The document exactly as the bridge last reported it — the last
     /// successful load, or the reload that follows a structural save. Every
@@ -189,18 +208,29 @@ public final class SecretDocumentViewModel {
     ///     reported as succeeded.
     ///
     ///     Still overridable so tests can force a write failure without
-    ///     filesystem permission tricks.
+    ///     filesystem permission tricks. Takes the fingerprint the load
+    ///     captured and returns the one the write produced; see
+    ///     `loadedFingerprint`.
+    ///   - fingerprintFile: How the file's identity is captured, so `save()`
+    ///     can refuse to overwrite a file something else has written since.
+    ///     Defaults to `FileFingerprint.of`. Injectable for the same reason
+    ///     `readFile` is — a test with an in-memory reader has no real file to
+    ///     `stat` — and a `nil` answer means "no expectation", which skips the
+    ///     check rather than failing the save.
     public init(
         fileURL: URL,
         keyStore: SessionKeyStore,
         readFile: @escaping (URL) throws -> String = { try String(contentsOf: $0, encoding: .utf8) },
-        writeFile: @escaping (String, URL) throws -> Void = { contents, url in
-            try AtomicFileWriter.write(contents, to: url)
+        fingerprintFile: @escaping (URL) -> FileFingerprint? = { FileFingerprint.of($0) },
+        writeFile: @escaping (String, URL, FileFingerprint?) throws -> FileFingerprint? = {
+            contents, url, expecting in
+            try AtomicFileWriter.write(contents, to: url, expecting: expecting).fingerprint
         }
     ) {
         self.fileURL = fileURL
         self.keyStore = keyStore
         self.readFile = readFile
+        self.fingerprintFile = fingerprintFile
         self.writeFile = writeFile
     }
 
@@ -215,6 +245,18 @@ public final class SecretDocumentViewModel {
     /// content.
     public func load() async {
         loadState = .loading
+
+        // Fingerprint *before* the read, deliberately, and this is the one
+        // ordering that is safe. Taken first, a write that lands between the
+        // two leaves this holding the older fingerprint against the newer
+        // contents, so the next save refuses — a false refusal the user clears
+        // by reloading. Taken after the read, the same interleaving would
+        // leave this holding the *writer's* fingerprint against the contents
+        // from before it, and the next save would sail past the check and
+        // delete their work. One ordering is wrong in a recoverable direction
+        // and the other is wrong in the direction this whole check exists to
+        // prevent.
+        let fingerprint = fingerprintFile(fileURL)
 
         let contents: String
         do {
@@ -246,6 +288,7 @@ public final class SecretDocumentViewModel {
         switch decrypted {
         case .success(let newRows):
             encryptedContents = contents
+            loadedFingerprint = fingerprint
             adoptBaseline(newRows)
             loadState = .loaded
         case .failure(let message):
@@ -272,6 +315,10 @@ public final class SecretDocumentViewModel {
         discardPendingChanges()
         rows = []
         encryptedContents = nil
+        // Cleared alongside the ciphertext it describes. A fingerprint left
+        // behind here would be an expectation about a file this type is no
+        // longer holding the contents of.
+        loadedFingerprint = nil
     }
 
     /// Takes `newRows` as the new truth and drops every pending change.
@@ -685,6 +732,26 @@ public final class SecretDocumentViewModel {
     /// reaches these guards; they are what makes that a property of the type
     /// rather than of one view remembering to.
     ///
+    /// ## A file something else has written since is refused, never merged
+    /// and never clobbered
+    /// The re-encryption starts from `encryptedContents` — the bytes read at
+    /// `load()` — so a save is, by construction, "the file as I last saw it,
+    /// plus my edits". If something else has written the file in between, that
+    /// is a different file, and writing over it deletes whatever they did:
+    /// verified before this check existed, with the real `sops set` as the
+    /// other writer, the save reported `.saved` and the other writer's key was
+    /// gone.
+    ///
+    /// So `loadedFingerprint` goes to the writer as `expecting:`, and a
+    /// mismatch comes back as `AtomicFileWriter.Error.destinationChangedOnDisk`
+    /// — surfaced verbatim, like the writer's other errors, because it names
+    /// the file and says to reload it. Nothing is merged: reconciling two
+    /// versions of a secrets file is not something this app can do correctly,
+    /// and doing it silently would be worse than either alternative. The
+    /// user's edits stay in `rows`, `isDirty` stays set, and a `load()` clears
+    /// the refusal (`SecretDocumentViewModelTests` drives exactly that
+    /// sequence).
+    ///
     /// ## Failure leaves everything as the user left it
     /// A failure — no document loaded, no key configured, a bridge refusal,
     /// a write error — never touches `rows`, `baselineValues` or
@@ -729,8 +796,9 @@ public final class SecretDocumentViewModel {
         case .failure(let message):
             return .failed(message)
         case .success(let newEncrypted):
+            let written: FileFingerprint?
             do {
-                try writeFile(newEncrypted, fileURL)
+                written = try writeFile(newEncrypted, fileURL, loadedFingerprint)
             } catch let error as AtomicFileWriter.Error {
                 // Surfaced verbatim, and *only* for this one error type.
                 // `AtomicFileWriter.Error`'s cases are built from a path and
@@ -747,6 +815,13 @@ public final class SecretDocumentViewModel {
                 return .failed("the saved file could not be written to disk: \(fileURL.lastPathComponent)")
             }
             encryptedContents = newEncrypted
+            // The writer's own answer, not a fresh `stat` of the file. A
+            // re-`stat` here would pick up a second writer that landed
+            // immediately after this save and adopt *their* file as this
+            // type's baseline, so the following save would overwrite it —
+            // the same hole one write later. See
+            // `AtomicWriteReceipt.fingerprint`.
+            loadedFingerprint = written
             await adoptSavedDocument(newEncrypted, changedShape: !changes.adds.isEmpty || !changes.removes.isEmpty)
             return .saved
         }

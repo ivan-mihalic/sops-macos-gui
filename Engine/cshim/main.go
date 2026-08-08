@@ -18,10 +18,33 @@
 //
 // So every entry point below runs its work inside gobridge.Guard or
 // gobridge.GuardVoid, which turn a panic into an ordinary error carrying no
-// part of the document. The argument conversions are *inside* the guarded
-// closure deliberately: C.GoString on a pointer Swift got wrong would panic
-// too, and a guard that started after the arguments were unpacked would miss
-// exactly the case it exists for.
+// part of the document.
+//
+// # What the guard does not cover, stated where someone might rely on it
+//
+// The argument conversions sit inside the guarded closure too, and an earlier
+// version of this comment gave the wrong reason for that — it claimed
+// C.GoString on a pointer Swift got wrong would panic and be caught here.
+// Neither half is true, checked directly on this toolchain (go1.26.5,
+// darwin/arm64) rather than reasoned about:
+//
+//   - C.GoString(nil) does not panic at all. It returns "". runtime.findnull
+//     answers 0 for a nil pointer and runtime.gostring returns the empty
+//     string, so a nil argument arrives here as an empty document and fails
+//     as an ordinary parse error, which is the behaviour — just not a
+//     recovered panic.
+//   - C.GoString of a garbage non-nil pointer faults:
+//     "unexpected fault address 0x… / fatal error: fault", raised through
+//     runtime.throw. recover() never sees it and the host application dies.
+//     No arrangement of guards in this file changes that; only Swift not
+//     handing over a bad pointer does.
+//
+// The conversions stay inside the closure because that is where the work
+// belongs and because hoisting them would put real work outside the guard for
+// no gain — exports_test.go enforces that shape structurally. What the guard
+// genuinely catches is a panic raised by sops's own code partway through a
+// document it mis-parses, which is the case it was built for and the case
+// gobridge/enginefault_test.go reproduces.
 package main
 
 /*
@@ -44,11 +67,24 @@ const (
 
 // result writes either the payload or the error into *out and returns the status.
 //
-// Its own recover is the last link in the chain: C.CString allocates, and if
-// that fails there is nowhere left to put a message. Leaving *out nil is a
-// state the Swift side already handles — SopsBridge.call reports "bridge
-// returned no result (status N)" — so the failure is still described rather
-// than turning into a crash at the very step meant to prevent one.
+// Its own recover is the last link in the chain, and it is worth being exact
+// about what that link actually holds. An earlier version of this comment said
+// it covered C.CString failing to allocate. It does not, and cannot:
+//
+//   - It *does* catch a nil `out`. `*out = …` through a nil pointer is an
+//     ordinary Go nil-pointer dereference, which recover() sees.
+//   - It *does* catch C.CString's own panic("string too large"), which cgo
+//     raises when len(s)+1 overflows int.
+//   - It does *not* catch an allocation failure. cgo's C.CString reaches
+//     _cgo_cmalloc, which calls runtime.throw("runtime: C malloc failed") when
+//     malloc returns nil (go1.26.5, cmd/cgo/out.go's cMallocDefGo). A
+//     runtime.throw is fatal by construction — no recover() anywhere in the
+//     process sees it — so this function does not pretend otherwise.
+//
+// On the paths it does catch, leaving *out nil is a state the Swift side
+// already handles — SopsBridge.call reports "bridge returned no result
+// (status N)" — so the failure is still described rather than turning into a
+// crash at the very step meant to prevent one.
 func result(out **C.char, payload []byte, err error) (status C.int) {
 	defer func() {
 		if recover() != nil {
@@ -191,12 +227,30 @@ func sops_apply_changes(encrypted *C.char, changesJSON *C.char, agePrivateKey *C
 
 // sops_free releases a string one of the entry points above returned.
 //
-// The error GuardVoid produces is discarded here, and that discard is the
-// point rather than an oversight: this function has no out-parameter and no
-// status, so there is nowhere to report to. A panic in free() means the Swift
-// side handed back a pointer it did not own or freed twice — a defect worth
-// finding, but killing the user's app with their unsaved documents in it is a
-// strictly worse way to report it than doing nothing.
+// # The guard here protects nothing, and saying so is the point
+//
+// An earlier version of this comment claimed the GuardVoid turned a
+// double-free or a foreign pointer into a discarded error instead of a crash.
+// It does not. Misusing free() does not produce a Go panic at all — checked
+// directly on this toolchain (go1.26.5, darwin/arm64):
+//
+//   - a second free of the same pointer traps inside libc:
+//     "SIGTRAP: trace trap … signal arrived during cgo execution";
+//   - a free of a pointer this process never allocated aborts the same way
+//     (SIGABRT).
+//
+// Both kill the host application with the user's unsaved documents in it, and
+// recover() is never reached, so GuardVoid neither catches nor mitigates
+// either. The only protection is correct use: exactly one sops_free per
+// non-nil out pointer, which is what SopsBridge.call's defer does, and the nil
+// check below so that freeing a never-populated out parameter is a no-op.
+//
+// What the guard is still doing here is holding the shape rather than the
+// promise: every //export in this file runs inside one and exports_test.go
+// enforces that structurally, so an exception here would be an invitation to
+// add the tenth entry point without one. The error it produces is discarded
+// because there is genuinely nowhere to report to — no out-parameter, no
+// status.
 //
 //export sops_free
 func sops_free(p *C.char) {
@@ -214,8 +268,21 @@ func sops_free(p *C.char) {
 // the Swift side must handle explicitly, because it deliberately does not
 // parse as a version number.
 //
+// The out-parameters are cleared to nil first, in a guarded step of their own,
+// before anything that could fault runs. This file's header states the whole
+// calling convention as "either way the caller owns the memory and must
+// release it with sops_free"; a fault that left *outSops holding whatever was
+// in that memory beforehand would break exactly that, and the caller would
+// free a pointer it never received. Clearing first means the worst case is a
+// nil, which sops_free accepts. The Swift caller happens to pre-initialise
+// both, so nothing observable changes today — this is the contract being kept
+// by the side that declares it rather than by the side that reads it.
+//
 //export sops_engine_versions
 func sops_engine_versions(outSops **C.char, outAge **C.char) {
+	_ = gobridge.GuardVoid(gobridge.OpReportingVersions, func() {
+		*outSops, *outAge = nil, nil
+	})
 	sopsVersion, ageVersion := gobridge.UnknownVersion, gobridge.UnknownVersion
 	_ = gobridge.GuardVoid(gobridge.OpReportingVersions, func() {
 		sopsVersion, ageVersion = gobridge.SopsVersion(), gobridge.AgeVersion()

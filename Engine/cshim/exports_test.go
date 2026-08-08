@@ -12,12 +12,29 @@ package main
 // future — a tenth entry point added without one, six months from now, by
 // someone who never read this. So it is checked structurally, against the
 // source, rather than trusted to review.
+//
+// # Why this is an AST check and not a strings.Contains
+//
+// It used to be `strings.Contains(body, "gobridge.Guard(")`, and that check was
+// vacuous. Verified, not suspected: delete the guard from sops_decrypt_yaml,
+// leave the comment `// TODO: wrap in gobridge.Guard( ... ) one day` behind,
+// and `go test ./cshim/` reported ok. Hoisting the real work above an
+// otherwise-intact guard passed too. Since this test is the sole evidence for
+// PROPOSAL §9's claim that all nine entry points recover, a check that a
+// comment can satisfy is worse than no check — it is a claim nobody will
+// re-examine.
+//
+// So the shape is asserted instead, in `complaintsAbout` below, and the
+// mutations that used to slip through are in `TestGuardWiringCatchesMutations`
+// as permanent cases rather than as something a reviewer once tried by hand.
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -27,44 +44,35 @@ import (
 // by accident.
 const exportedEntryPointCount = 9
 
+// TestEveryExportedEntryPointRecoversFromPanics checks the real main.go.
 func TestEveryExportedEntryPointRecoversFromPanics(t *testing.T) {
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "main.go", nil, parser.ParseComments)
+	// A nil src makes go/parser read the named file from the package
+	// directory, which is the point: this asserts against the shipped source,
+	// not against a copy of it.
+	exports, complaints, err := inspectGuardWiring(nil)
 	if err != nil {
 		t.Fatalf("parse main.go: %v", err)
 	}
-	source := readSource(t, "main.go")
 
-	exported := map[string]string{}
-	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Doc == nil || fn.Body == nil {
-			continue
-		}
-		if !hasExportDirective(fn.Doc) {
-			continue
-		}
-		start := fset.Position(fn.Body.Pos()).Offset
-		end := fset.Position(fn.Body.End()).Offset
-		exported[fn.Name.Name] = source[start:end]
-	}
-
-	if len(exported) != exportedEntryPointCount {
+	if len(exports) != exportedEntryPointCount {
 		t.Fatalf("found %d //export'ed entry points, expected %d: %v",
-			len(exported), exportedEntryPointCount, names(exported))
+			len(exports), exportedEntryPointCount, exports)
 	}
 
-	for name, body := range exported {
-		if !strings.Contains(body, "gobridge.Guard(") && !strings.Contains(body, "gobridge.GuardVoid(") {
-			t.Errorf("%s does not run its work inside gobridge.Guard/GuardVoid: "+
-				"a panic there terminates the host application", name)
-		}
+	for _, complaint := range complaints {
+		t.Errorf("%s", complaint)
 	}
 }
 
 // TestResultRecoversToo. `result` is the one step that runs outside the guard,
 // because it is what writes the guard's own message out. If it can panic, the
 // whole chain has a hole at the end of it.
+//
+// What its recover covers is narrower than this test can see and narrower than
+// this file once claimed — a nil `out` and C.CString's "string too large"
+// panic, but *not* an allocation failure, which reaches runtime.throw and is
+// fatal everywhere. `result`'s own doc comment in main.go states the three
+// cases and why. All this test establishes is that the recover is still there.
 func TestResultRecoversToo(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "main.go", nil, parser.ParseComments)
@@ -81,11 +89,274 @@ func TestResultRecoversToo(t *testing.T) {
 		start := fset.Position(fn.Body.Pos()).Offset
 		end := fset.Position(fn.Body.End()).Offset
 		if !strings.Contains(source[start:end], "recover()") {
-			t.Fatal("result does not recover; a failure in C.CString would crash the host application")
+			t.Fatal("result does not recover; a nil out-parameter would then crash the host application")
 		}
 		return
 	}
 	t.Fatal("no function named result in main.go")
+}
+
+// MARK: - The rule
+
+// inspectGuardWiring parses `src` (nil means "read main.go from this
+// directory") and returns the names of the //export'ed entry points it found
+// together with every way in which one of them departs from the required
+// shape.
+//
+// The required shape, for an entry point with a status result:
+//
+//	x, err := gobridge.Guard(op, func() ([]byte, error) { …all the work… })
+//	return result(out, x, err)
+//
+// and for one without:
+//
+//	_ = gobridge.GuardVoid(op, func() { …all the work… })
+//
+// Anything else is a complaint. See `complaintsAbout` for the four rules that
+// spell that out and what each one exists to catch.
+func inspectGuardWiring(src any) (exports []string, complaints []string, err error) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "main.go", src, parser.ParseComments)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Doc == nil || fn.Body == nil || !hasExportDirective(fn.Doc) {
+			continue
+		}
+		exports = append(exports, fn.Name.Name)
+		complaints = append(complaints, complaintsAbout(fn)...)
+	}
+	sort.Strings(exports)
+	return exports, complaints, nil
+}
+
+// complaintsAbout applies four rules to one //export'ed function body. Each is
+// here because a mutation that violates it used to pass.
+//
+//  1. There is at least one gobridge.Guard/GuardVoid call, and it is a
+//     statement of the body rather than something nested inside an `if` or a
+//     loop that might not run. Catches the guard being deleted outright —
+//     including when a comment naming it is left behind, which is exactly what
+//     defeated the previous substring check.
+//  2. No call at all happens outside a guard, except the single `result(…)`
+//     in the trailing return. Catches work hoisted above the guard or left
+//     dangling after it: `plain := C.GoString(p)` on the line before
+//     `gobridge.Guard(` is a call, and a panic there is not caught by a guard
+//     that has not started yet.
+//  3. No pointer dereference happens outside a guard either. Same reason as
+//     rule 2 for the one kind of work that is not syntactically a call.
+//  4. A function with results ends in exactly one `return result(out, x, err)`
+//     whose payload and error are identifiers a guard call assigned. Catches
+//     the guard running and its error then being thrown away — `_, _ :=
+//     gobridge.Guard(…)` followed by `return result(out, nil, nil)` reports
+//     success for a call that panicked. A function without results must not
+//     call `result` at all.
+func complaintsAbout(fn *ast.FuncDecl) []string {
+	var out []string
+	say := func(format string, args ...any) {
+		out = append(out, fn.Name.Name+" "+fmt.Sprintf(format, args...))
+	}
+
+	// Everything lexically inside a guard call — its closure included — is by
+	// definition guarded, so the walk stops descending there and whatever it
+	// still finds is, by construction, outside every guard.
+	var guardCalls, strayCalls []*ast.CallExpr
+	var strayDerefs []*ast.StarExpr
+	var strayReturns []*ast.ReturnStmt
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		switch node := n.(type) {
+		case *ast.CallExpr:
+			if isGuardCall(node) {
+				guardCalls = append(guardCalls, node)
+				return false
+			}
+			strayCalls = append(strayCalls, node)
+		case *ast.StarExpr:
+			strayDerefs = append(strayDerefs, node)
+		case *ast.ReturnStmt:
+			// Counted at any depth, not just the body's own statement list.
+			// An `if in == nil { return statusFailure }` above the guard is
+			// nested, and it is exactly the kind of early exit that skips it.
+			strayReturns = append(strayReturns, node)
+		}
+		return true
+	})
+
+	// Rule 1.
+	if len(guardCalls) == 0 {
+		say("runs no gobridge.Guard/GuardVoid at all: a panic in it aborts the host application")
+		return out
+	}
+	if !hasTopLevelGuard(fn.Body) {
+		say("has a gobridge.Guard/GuardVoid, but not as a statement of its own body — " +
+			"a guard nested inside another statement does not always run")
+	}
+
+	// Rule 4, first half: identify the trailing `return result(…)` so rule 2
+	// can exempt it.
+	hasResults := fn.Type.Results != nil && len(fn.Type.Results.List) > 0
+	resultCall := trailingResultCall(fn.Body)
+
+	if hasResults {
+		if resultCall == nil {
+			say("does not end in `return result(out, …)`: the guard's error has no way " +
+				"to reach the caller")
+		} else if len(resultCall.Args) != 3 {
+			say("calls result with %d arguments, expected 3", len(resultCall.Args))
+		} else {
+			assigned := guardAssignedNames(fn.Body)
+			// A slice, not a map, so a body with both wrong produces its two
+			// complaints in the same order every run.
+			for _, arg := range []struct {
+				position int
+				label    string
+			}{{1, "payload"}, {2, "error"}} {
+				name, ok := resultCall.Args[arg.position].(*ast.Ident)
+				if !ok || !assigned[name.Name] {
+					say("passes something other than the guard's own %s to result: "+
+						"a guard whose result is discarded reports success for a call that panicked",
+						arg.label)
+				}
+			}
+		}
+		if count := len(strayReturns); count != 1 {
+			say("has %d return statements outside its guard, expected exactly 1: "+
+				"an early return is a path that skips the guard", count)
+		}
+	} else if resultCall != nil || callsResultAnywhere(strayCalls) {
+		say("has no status to return but calls result anyway")
+	}
+
+	// Rule 2.
+	for _, call := range strayCalls {
+		if call == resultCall {
+			continue
+		}
+		say("calls %s outside any guard: work above or below the guard is not covered by it",
+			describeCall(call))
+	}
+
+	// Rule 3.
+	if len(strayDerefs) > 0 {
+		say("dereferences a pointer outside any guard (%d time(s)): same exposure as rule 2, "+
+			"for the one kind of work that is not syntactically a call", len(strayDerefs))
+	}
+
+	return out
+}
+
+func isGuardCall(call *ast.CallExpr) bool {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	pkg, ok := selector.X.(*ast.Ident)
+	if !ok || pkg.Name != "gobridge" {
+		return false
+	}
+	return selector.Sel.Name == "Guard" || selector.Sel.Name == "GuardVoid"
+}
+
+// hasTopLevelGuard reports whether some statement of the body *is* a guard
+// call — `x, err := gobridge.Guard(…)`, `_ = gobridge.GuardVoid(…)`, or the
+// bare call as an expression statement.
+func hasTopLevelGuard(body *ast.BlockStmt) bool {
+	for _, stmt := range body.List {
+		if guardCallIn(stmt) != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func guardCallIn(stmt ast.Stmt) *ast.CallExpr {
+	var candidate ast.Expr
+	switch node := stmt.(type) {
+	case *ast.AssignStmt:
+		if len(node.Rhs) != 1 {
+			return nil
+		}
+		candidate = node.Rhs[0]
+	case *ast.ExprStmt:
+		candidate = node.X
+	default:
+		return nil
+	}
+	call, ok := candidate.(*ast.CallExpr)
+	if !ok || !isGuardCall(call) {
+		return nil
+	}
+	return call
+}
+
+// guardAssignedNames collects the identifiers the body's top-level guard
+// assignments bind, so rule 4 can insist the trailing `result` call passes
+// those and not something else.
+func guardAssignedNames(body *ast.BlockStmt) map[string]bool {
+	names := map[string]bool{}
+	for _, stmt := range body.List {
+		assign, ok := stmt.(*ast.AssignStmt)
+		if !ok || guardCallIn(stmt) == nil {
+			continue
+		}
+		for _, lhs := range assign.Lhs {
+			if ident, ok := lhs.(*ast.Ident); ok && ident.Name != "_" {
+				names[ident.Name] = true
+			}
+		}
+	}
+	return names
+}
+
+// trailingResultCall returns the `result(…)` call in the body's last statement
+// when that statement is `return result(…)`, and nil otherwise — including
+// when a `return result(…)` exists but is not last, which is itself a defect
+// rule 4 reports.
+func trailingResultCall(body *ast.BlockStmt) *ast.CallExpr {
+	if len(body.List) == 0 {
+		return nil
+	}
+	ret, ok := body.List[len(body.List)-1].(*ast.ReturnStmt)
+	if !ok || len(ret.Results) != 1 {
+		return nil
+	}
+	call, ok := ret.Results[0].(*ast.CallExpr)
+	if !ok {
+		return nil
+	}
+	name, ok := call.Fun.(*ast.Ident)
+	if !ok || name.Name != "result" {
+		return nil
+	}
+	return call
+}
+
+func callsResultAnywhere(calls []*ast.CallExpr) bool {
+	for _, call := range calls {
+		if name, ok := call.Fun.(*ast.Ident); ok && name.Name == "result" {
+			return true
+		}
+	}
+	return false
+}
+
+// describeCall names a call for an error message. It never sees a value from a
+// document — this walks source text, not data — but it is deliberately limited
+// to the callee's own name for the same habit.
+func describeCall(call *ast.CallExpr) string {
+	switch fn := call.Fun.(type) {
+	case *ast.Ident:
+		return fn.Name + "(…)"
+	case *ast.SelectorExpr:
+		if pkg, ok := fn.X.(*ast.Ident); ok {
+			return pkg.Name + "." + fn.Sel.Name + "(…)"
+		}
+		return fn.Sel.Name + "(…)"
+	default:
+		return "a function"
+	}
 }
 
 func hasExportDirective(doc *ast.CommentGroup) bool {
@@ -95,14 +366,6 @@ func hasExportDirective(doc *ast.CommentGroup) bool {
 		}
 	}
 	return false
-}
-
-func names(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for name := range m {
-		out = append(out, name)
-	}
-	return out
 }
 
 func readSource(t *testing.T, path string) string {

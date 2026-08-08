@@ -4,14 +4,46 @@ import SopsUI
 import SopsHealth
 import SopsProjects
 
-/// Runs the pasteboard's termination-time guard on the way out. AppKit calls
-/// `applicationWillTerminate(_:)` for an ordinary quit — Cmd-Q, the app's
-/// Quit menu item, "Quit and Keep Windows" — never for a force-quit or a
-/// crash, so this closes the specific gap where a secret was copied and the
-/// ~30s auto-clear timer (`ClipboardClearing.copy`) hadn't fired yet when the
-/// user quit. See `ClipboardClearing.clearOnTermination()` for the guard
+/// The two things that have to happen around termination, both of them
+/// through AppKit rather than SwiftUI because SwiftUI has no hook for either.
+///
+/// `applicationShouldTerminate` is the one funnel *every* quit passes through
+/// — ⌘Q, the app's own Quit item, the Dock icon's Quit, the Apple menu at
+/// logout/restart/shutdown, and `osascript -e 'quit app "SopsGUI"'`. Before it
+/// existed here, only the first two asked about unsaved edits, because they
+/// were the only ones that went through a SwiftUI command; every other path
+/// got AppKit's default `.terminateNow` and the edits vanished. All the
+/// judgement lives in `QuitRequest` (in SopsUI, where a test can reach it);
+/// what is left below is the mapping onto AppKit's enum.
+///
+/// `applicationWillTerminate` runs the pasteboard's termination-time guard on
+/// the way out. AppKit calls it for an ordinary quit — never for a force-quit
+/// or a crash — so it closes the specific gap where a secret was copied and
+/// the ~30s auto-clear timer (`ClipboardClearing.copy`) hadn't fired yet when
+/// the user quit. See `ClipboardClearing.clearOnTermination()` for the guard
 /// itself and the same limit stated where it's enforced.
+///
+/// Both collaborators are handed over by `SopsGUIApp` once the scene is up.
+/// Until then they are `nil` and termination is allowed through, which is
+/// correct rather than merely convenient: no document can be open before the
+/// window that opens documents exists, so there is nothing to lose.
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    var unsavedChanges: UnsavedChangesTracker?
+    var quitRequest: QuitRequest?
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let quitRequest, let unsavedChanges else { return .terminateNow }
+        switch quitRequest.answerTerminationRequest(documentIsDirty: unsavedChanges.isDirty) {
+        case .terminateNow:
+            return .terminateNow
+        case .askFirst:
+            // Not `.terminateLater`: see QuitRequest's doc comment for why the
+            // safe failure here is a cancelled logout and not a hung process.
+            return .terminateCancel
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         ClipboardClearing.clearOnTermination()
     }
@@ -51,7 +83,11 @@ struct SopsGUIApp: App {
     // `UnsavedChangesTracker`'s doc comment for why this can't just be a
     // `@State` local to whichever view happens to own the open file.
     @State private var unsavedChanges = UnsavedChangesTracker()
-    @State private var isShowingQuitConfirmation = false
+    /// Answers every termination request and holds the "the user already said
+    /// yes" latch — see `QuitRequest`. Handed to `AppDelegate` in `onAppear`
+    /// below, because `applicationShouldTerminate` is the only hook that sees
+    /// all the ways this app can be told to quit.
+    @State private var quitRequest = QuitRequest()
     @State private var quitSaveErrorMessage: String?
 
     init() {
@@ -72,23 +108,35 @@ struct SopsGUIApp: App {
                 }
                 .onAppear {
                     isShowingOnboarding = !onboarding.hasCompletedOnboarding
+                    // `AppDelegate` cannot reach into scene state, and this is
+                    // the earliest point at which both it and the state exist.
+                    // Until it runs, `applicationShouldTerminate` sees nil and
+                    // lets a quit through — correct, because no document can
+                    // be open before this window is.
+                    appDelegate.unsavedChanges = unsavedChanges
+                    appDelegate.quitRequest = quitRequest
                 }
                 // The confirmation itself has to be attached to a view that's
                 // actually on screen — `.commands` closures below are not
                 // views and can't host an `.alert`/`.confirmationDialog` of
-                // their own.
+                // their own, and neither can `AppDelegate`.
                 .confirmationDialog(
                     LocalizedKey.editorQuitUnsavedTitle.text,
-                    isPresented: $isShowingQuitConfirmation
+                    isPresented: $quitRequest.isAsking
                 ) {
                     Button(LocalizedKey.editorSaveAndQuit.text) {
                         Task { await saveAndQuit() }
                     }
                     Button(LocalizedKey.editorDiscardAndQuit.text, role: .destructive) {
+                        // Latch first, then terminate: this call comes straight
+                        // back through `applicationShouldTerminate`, where the
+                        // document is still dirty, and without the latch the
+                        // app could never actually be quit. See `QuitRequest`.
+                        quitRequest.settle()
                         NSApp.terminate(nil)
                     }
                     Button(LocalizedKey.actionCancel.text, role: .cancel) {
-                        isShowingQuitConfirmation = false
+                        quitRequest.cancel()
                     }
                 } message: {
                     Text(.editorQuitUnsavedMessage)
@@ -121,14 +169,16 @@ struct SopsGUIApp: App {
                     Task { await health.refresh() }
                 }
             }
-            // PROPOSAL.md's editor is the one place in this app where
-            // quitting can destroy work — an open document with unsaved
-            // edits. Replacing the standard Quit item (rather than adding a
-            // second one) is what lets this also intercept ⌘Q itself, not
-            // just the menu click.
+            // This item no longer decides anything, and that is the fix. It
+            // used to call a `requestQuit()` that checked `isDirty` itself,
+            // which meant ⌘Q and this menu item asked and every other way of
+            // quitting the app did not. The check now lives behind
+            // `AppDelegate.applicationShouldTerminate`, which all of them go
+            // through, so this is an ordinary Quit button again — kept only so
+            // the item keeps its own localized title and ⌘Q binding.
             CommandGroup(replacing: .appTermination) {
                 Button(LocalizedKey.actionQuit.text) {
-                    requestQuit()
+                    NSApp.terminate(nil)
                 }
                 .keyboardShortcut("q", modifiers: .command)
             }
@@ -148,18 +198,6 @@ struct SopsGUIApp: App {
         }
     }
 
-    /// Quits immediately when nothing is unsaved; otherwise shows the
-    /// confirmation instead of terminating. `unsavedChanges.isDirty` is kept
-    /// current by whichever `SecretEditorView` is on screen — see
-    /// `UnsavedChangesTracker`.
-    private func requestQuit() {
-        if unsavedChanges.isDirty {
-            isShowingQuitConfirmation = true
-        } else {
-            NSApp.terminate(nil)
-        }
-    }
-
     /// "Save and Quit": saves the open document through the tracker (which
     /// forwards to the real `SecretDocumentViewModel.save()` — see
     /// `UnsavedChangesTracker.save()`) and only terminates if that actually
@@ -170,6 +208,11 @@ struct SopsGUIApp: App {
     private func saveAndQuit() async {
         switch await unsavedChanges.save() {
         case .saved, nil:
+            // Only latched on the path that actually saved. A failed save
+            // falls through to the error below with the guard still armed, so
+            // the next quit asks again rather than walking out over the
+            // unsaved edit.
+            quitRequest.settle()
             NSApp.terminate(nil)
         case .failed(let message):
             quitSaveErrorMessage = message

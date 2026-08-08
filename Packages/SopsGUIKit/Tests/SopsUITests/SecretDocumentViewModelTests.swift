@@ -114,6 +114,21 @@ private func cliDecrypt(_ url: URL, key: AgeKeyPair) throws -> String {
         environment: ["SOPS_AGE_KEY_FILE": keysURL.path])
 }
 
+/// Adds a key to an existing encrypted document with the real `sops set`,
+/// which is one of the things that actually happens to a file while this app
+/// has it open (`git pull`, `sops updatekeys`, a second instance of the app,
+/// or literally this). Used as the *external writer* in the concurrent-write
+/// tests: a hand-rolled append would break the document's MAC and would prove
+/// something else entirely.
+private func cliSet(_ url: URL, key: AgeKeyPair, path: String, value: String) throws {
+    let dir = try scratchDirectory("cli-set")
+    let keysURL = dir.appendingPathComponent("keys.txt")
+    try (key.private + "\n").write(to: keysURL, atomically: true, encoding: .utf8)
+    try run(
+        try toolPath("sops"), ["set", url.path, path, value],
+        environment: ["SOPS_AGE_KEY_FILE": keysURL.path])
+}
+
 /// A flat document with `keyCount` distinct top-level keys — a stand-in for
 /// a real service's secrets file, used only to measure `load()`/`save()`
 /// against a realistic key count (see `bridgeCallDoesNotBlockMainActor`).
@@ -316,6 +331,147 @@ struct SecretDocumentViewModelTests {
         #expect(decrypted.contains("# top of file"), "comments must survive the save")
     }
 
+    // MARK: A second writer
+
+    @Test("a save refuses when something else changed the file after it was loaded")
+    func externalChangeIsRefusedNotClobbered() async throws {
+        let key = try AgeKeyPair.generate()
+        let fileURL = try encryptedFixture(sampleYAML, key: key)
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+
+        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        await vm.load()
+        let hostID = try row(vm, "db", "host").id
+        vm.update(rowID: hostID, to: "db.internal")
+
+        // Something else writes the same file while it is open here. This is
+        // the real `sops set`, not a simulation of one.
+        try cliSet(fileURL, key: key, path: "[\"added_elsewhere\"]", value: "\"from-another-writer\"")
+
+        let outcome = await vm.save()
+
+        guard case .failed(let message) = outcome else {
+            Issue.record("expected the save to refuse, got \(outcome)")
+            return
+        }
+        #expect(
+            message.lowercased().contains("changed"),
+            Comment(rawValue: "the message has to tell the user what happened: \(message)"))
+
+        // The other writer's key is still in the file. This is the assertion
+        // the whole finding is about: before this change the save reported
+        // success and `added_elsewhere` was gone.
+        let decrypted = try cliDecrypt(fileURL, key: key)
+        #expect(
+            decrypted.contains("added_elsewhere"),
+            "the external writer's key must still be on disk")
+        #expect(
+            !decrypted.contains("db.internal"),
+            "the refused save must not have landed either")
+
+        // And the user's own edit is still where they left it, unsaved.
+        #expect(vm.isDirty)
+        #expect(try row(vm, "db", "host").value == "db.internal")
+    }
+
+    @Test("a save is allowed again once the document is reloaded from the changed file")
+    func reloadingClearsTheRefusal() async throws {
+        let key = try AgeKeyPair.generate()
+        let fileURL = try encryptedFixture(sampleYAML, key: key)
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+
+        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        await vm.load()
+        try cliSet(fileURL, key: key, path: "[\"added_elsewhere\"]", value: "\"from-another-writer\"")
+
+        // Reload is the remediation the refusal points at, so it has to
+        // actually work — a refusal the user cannot clear is a stuck editor.
+        await vm.load()
+        #expect(vm.loadState == .loaded)
+        let hostID = try row(vm, "db", "host").id
+        vm.update(rowID: hostID, to: "db.internal")
+
+        let outcome = await vm.save()
+
+        #expect(outcome == .saved)
+        let decrypted = try cliDecrypt(fileURL, key: key)
+        #expect(decrypted.contains("db.internal"))
+        #expect(decrypted.contains("added_elsewhere"), "the other writer's key survives the save")
+    }
+
+    @Test("two saves in a row both land: the first one's own write is not read as a foreign change")
+    func consecutiveSavesBothLand() async throws {
+        let key = try AgeKeyPair.generate()
+        let fileURL = try encryptedFixture(sampleYAML, key: key)
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+
+        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        await vm.load()
+
+        let hostID = try row(vm, "db", "host").id
+        vm.update(rowID: hostID, to: "first")
+        #expect(await vm.save() == .saved)
+
+        // The whole point of tracking the fingerprint the *writer* produced
+        // rather than re-reading the file afterwards: this second save must
+        // not mistake the first save's own bytes for a second writer's.
+        vm.update(rowID: hostID, to: "second")
+        #expect(await vm.save() == .saved)
+
+        let decrypted = try cliDecrypt(fileURL, key: key)
+        #expect(decrypted.contains("host: second"))
+    }
+
+    /// The one test that tells the two candidate implementations apart.
+    ///
+    /// After a save, the baseline fingerprint can come from the receipt the
+    /// writer produced, or from a fresh `stat` of the file. In the quiet case
+    /// those are identical, so no ordinary test can distinguish them. They
+    /// differ exactly when a second writer lands *immediately after* this
+    /// app's own write: re-`stat`ing adopts that writer's file as this
+    /// document's baseline and the next save deletes their work — the original
+    /// hole, one write later. Taking the receipt's value leaves the baseline
+    /// describing the bytes this app actually wrote, so the next save refuses.
+    ///
+    /// The `writeFile` injection here is what makes that ordering
+    /// deterministic instead of a race.
+    @Test("a writer that lands right after this app's own save is still caught")
+    func writerLandingImmediatelyAfterTheSaveIsCaught() async throws {
+        let key = try AgeKeyPair.generate()
+        let fileURL = try encryptedFixture(sampleYAML, key: key)
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+
+        let vm = SecretDocumentViewModel(
+            fileURL: fileURL, keyStore: store,
+            writeFile: { contents, url, expecting in
+                let receipt = try AtomicFileWriter.write(contents, to: url, expecting: expecting)
+                // The other writer gets in between this save finishing and
+                // the next one starting.
+                try cliSet(url, key: key, path: "[\"added_elsewhere\"]", value: "\"squeezed-in\"")
+                return receipt.fingerprint
+            })
+        await vm.load()
+
+        let hostID = try row(vm, "db", "host").id
+        vm.update(rowID: hostID, to: "first")
+        #expect(await vm.save() == .saved)
+
+        vm.update(rowID: hostID, to: "second")
+        let outcome = await vm.save()
+
+        guard case .failed = outcome else {
+            Issue.record("expected the second save to refuse, got \(outcome)")
+            return
+        }
+        let decrypted = try cliDecrypt(fileURL, key: key)
+        #expect(decrypted.contains("added_elsewhere"), "the other writer's key must survive")
+        #expect(!decrypted.contains("host: second"))
+    }
+
     @Test("a failed save leaves isDirty set and the rows untouched")
     func failedSaveLeavesStateUntouched() async throws {
         let key = try AgeKeyPair.generate()
@@ -326,7 +482,7 @@ struct SecretDocumentViewModelTests {
         struct WriteBoom: Error {}
         let vm = SecretDocumentViewModel(
             fileURL: fileURL, keyStore: store,
-            writeFile: { _, _ in throw WriteBoom() })
+            writeFile: { _, _, _ in throw WriteBoom() })
         await vm.load()
         let hostID = try row(vm, "db", "host").id
         vm.update(rowID: hostID, to: "changed-but-unsaved")
@@ -359,9 +515,10 @@ struct SecretDocumentViewModelTests {
         var writeWasCalled = false
         let vm = SecretDocumentViewModel(
             fileURL: fileURL, keyStore: store,
-            writeFile: { contents, url in
+            writeFile: { contents, url, _ in
                 writeWasCalled = true
                 try contents.write(to: url, atomically: true, encoding: .utf8)
+                return FileFingerprint.of(url)
             })
         await vm.load()
         #expect(!vm.isDirty)
@@ -411,7 +568,7 @@ struct SecretDocumentViewModelTests {
         struct WriteBoom: Error {}
         let saveVM = SecretDocumentViewModel(
             fileURL: goodFileURL, keyStore: store,
-            writeFile: { _, _ in throw WriteBoom() })
+            writeFile: { _, _, _ in throw WriteBoom() })
         await saveVM.load()
         let hostID = try row(saveVM, "db", "host").id
         saveVM.update(rowID: hostID, to: canary)

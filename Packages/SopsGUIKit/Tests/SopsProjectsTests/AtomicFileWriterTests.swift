@@ -434,6 +434,165 @@ struct AtomicFileWriterTests {
             "staged at \(receipt.temporaryFile.path), not beside the symlink's target")
     }
 
+    // MARK: - A second writer
+
+    /// The property the whole `expecting:` parameter exists for: a write over
+    /// a file somebody else has touched is refused, and refused *inertly* —
+    /// the other writer's bytes are still there afterwards.
+    @Test("a write with a stale expectation is refused and the other writer's file survives")
+    func staleExpectationIsRefused() throws {
+        let directory = try makeScratchDirectory()
+        let destination = directory.appendingPathComponent("secrets.yaml")
+        try Data("as this caller read it".utf8).write(to: destination)
+
+        let expectation = FileFingerprint.of(destination)
+        #expect(expectation != nil)
+
+        // Somebody else writes the file. `AtomicFileWriter` itself, because
+        // that is what a second instance of this app would use, and because it
+        // replaces the inode rather than editing in place — the case a
+        // size-and-mtime-only check could plausibly miss.
+        try AtomicFileWriter.write(Data("what the other writer put there".utf8), to: destination)
+
+        #expect(throws: AtomicFileWriter.Error.destinationChangedOnDisk(path: destination.path)) {
+            try AtomicFileWriter.write(Data("the clobbering write".utf8), to: destination,
+                expecting: expectation)
+        }
+
+        #expect(
+            try Data(contentsOf: destination) == Data("what the other writer put there".utf8),
+            "the refused write must have left the other writer's bytes alone")
+        let remaining = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        #expect(remaining == ["secrets.yaml"], "a refused write left a staging file behind: \(remaining)")
+    }
+
+    /// Same-size, in-place, no inode change: the case that separates a real
+    /// fingerprint from a `size` comparison.
+    @Test("a same-size in-place overwrite by someone else is still caught")
+    func sameSizeInPlaceChangeIsCaught() throws {
+        let directory = try makeScratchDirectory()
+        let destination = directory.appendingPathComponent("secrets.yaml")
+        try Data("AAAAAAAAAA".utf8).write(to: destination)
+        let expectation = FileFingerprint.of(destination)
+
+        // Straight into the same inode — no rename, no size change.
+        let descriptor = open(destination.path, O_WRONLY)
+        #expect(descriptor >= 0)
+        _ = "BBBBBBBBBB".withCString { Darwin.write(descriptor, $0, 10) }
+        close(descriptor)
+
+        #expect(throws: AtomicFileWriter.Error.destinationChangedOnDisk(path: destination.path)) {
+            try AtomicFileWriter.write(Data("clobber".utf8), to: destination, expecting: expectation)
+        }
+        #expect(try Data(contentsOf: destination) == Data("BBBBBBBBBB".utf8))
+    }
+
+    /// A file deleted out from under the caller is a change, not "nothing to
+    /// compare against". `git checkout` of a branch without the file does
+    /// exactly this.
+    @Test("a destination that has vanished is refused rather than recreated")
+    func vanishedDestinationIsRefused() throws {
+        let directory = try makeScratchDirectory()
+        let destination = directory.appendingPathComponent("secrets.yaml")
+        try Data("before".utf8).write(to: destination)
+        let expectation = FileFingerprint.of(destination)
+
+        try FileManager.default.removeItem(at: destination)
+
+        #expect(throws: AtomicFileWriter.Error.destinationChangedOnDisk(path: destination.path)) {
+            try AtomicFileWriter.write(Data("recreated".utf8), to: destination, expecting: expectation)
+        }
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    @Test("a matching expectation writes exactly as an unchecked write would")
+    func matchingExpectationWrites() throws {
+        let directory = try makeScratchDirectory()
+        let destination = directory.appendingPathComponent("secrets.yaml")
+        try Data("before".utf8).write(to: destination)
+
+        let receipt = try AtomicFileWriter.write(
+            Data("after".utf8), to: destination, expecting: FileFingerprint.of(destination))
+
+        #expect(try Data(contentsOf: destination) == Data("after".utf8))
+        #expect(receipt.fingerprint != nil)
+    }
+
+    /// `AtomicWriteReceipt.fingerprint` is read from the *staged* file before
+    /// the replace, on the claim that a replace is a rename and the
+    /// destination therefore inherits the staged file's identity. That claim
+    /// is what makes a caller's next `expecting:` correct, so it is checked
+    /// against a real `stat` rather than assumed.
+    @Test("the receipt's fingerprint is what a fresh stat of the destination reports")
+    func receiptFingerprintMatchesTheDestination() throws {
+        let directory = try makeScratchDirectory()
+        let destination = directory.appendingPathComponent("secrets.yaml")
+        try Data("before".utf8).write(to: destination)
+
+        let receipt = try AtomicFileWriter.write(Data("after".utf8), to: destination)
+
+        #expect(receipt.fingerprint != nil)
+        #expect(receipt.fingerprint == FileFingerprint.of(destination))
+    }
+
+    /// Chained writes, each expecting what the previous one reported. This is
+    /// the editor's own save-twice path, and the thing that would break if the
+    /// receipt's fingerprint were taken from anywhere other than the file the
+    /// write actually produced.
+    @Test("the receipt's fingerprint is accepted as the next write's expectation")
+    func receiptFingerprintChains() throws {
+        let directory = try makeScratchDirectory()
+        let destination = directory.appendingPathComponent("secrets.yaml")
+        try Data("one".utf8).write(to: destination)
+
+        var expectation = FileFingerprint.of(destination)
+        for round in 2...5 {
+            let receipt = try AtomicFileWriter.write(
+                Data("round \(round)".utf8), to: destination, expecting: expectation)
+            expectation = receipt.fingerprint
+        }
+
+        #expect(try Data(contentsOf: destination) == Data("round 5".utf8))
+    }
+
+    /// `nil` means "no expectation", which is what `ProjectStore` and every
+    /// pre-existing caller pass. It must not have quietly become a check
+    /// against an absent file.
+    @Test("no expectation means no check, including for a file that does not exist yet")
+    func noExpectationSkipsTheCheck() throws {
+        let directory = try makeScratchDirectory()
+        let fresh = directory.appendingPathComponent("new.yaml")
+        try AtomicFileWriter.write(Data("created".utf8), to: fresh)
+        #expect(try Data(contentsOf: fresh) == Data("created".utf8))
+
+        // And over an existing file that something else just rewrote.
+        try Data("changed by someone else".utf8).write(to: fresh)
+        try AtomicFileWriter.write(Data("overwritten anyway".utf8), to: fresh)
+        #expect(try Data(contentsOf: fresh) == Data("overwritten anyway".utf8))
+    }
+
+    /// The refusal message names the file and says what to do. It must never
+    /// name anything else — this writer's errors are shown to the user
+    /// verbatim by `SecretDocumentViewModel.save()`.
+    @Test("the refusal message carries the path and no file contents")
+    func refusalMessageCarriesNoContents() throws {
+        let directory = try makeScratchDirectory()
+        let destination = directory.appendingPathComponent("secrets.yaml")
+        let canary = "SUPERSECRETCANARY9999"
+        try Data(canary.utf8).write(to: destination)
+        let expectation = FileFingerprint.of(destination)
+        try Data("\(canary)-and-more".utf8).write(to: destination)
+
+        do {
+            try AtomicFileWriter.write(Data(canary.utf8), to: destination, expecting: expectation)
+            Issue.record("expected the write to be refused")
+        } catch let error as AtomicFileWriter.Error {
+            #expect(!error.description.contains(canary), Comment(rawValue: error.description))
+            #expect(error.description.contains(destination.path))
+            #expect(error.description.contains("reload"))
+        }
+    }
+
     // MARK: - The String convenience the editor actually calls
 
     @Test("the String overload round-trips UTF-8 exactly")

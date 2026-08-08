@@ -49,4 +49,28 @@ public enum WorkspaceSwitchDecision: Equatable, Sendable {
         guard current != requested else { return .alreadyThere }
         return documentIsDirty ? .askAboutUnsavedChanges : .proceed
     }
+
+    /// The decision for quitting the application.
+    ///
+    /// Quitting is leaving the open document, so it is the same question with
+    /// the target fixed: from "a document is open" to "none will be". It
+    /// delegates to `forSwitch` rather than restating `documentIsDirty ? ask :
+    /// proceed`, and that is the whole reason it exists as a function instead
+    /// of two lines in the app delegate — a second, separately-written notion
+    /// of "is anything at stake" is exactly how the ⌘Q path and the
+    /// Dock-icon path came to disagree in the first place.
+    ///
+    /// Never returns `.alreadyThere`: there is no such thing as already having
+    /// quit, and the caller would have nothing to do with the answer.
+    public static func forQuit(documentIsDirty: Bool) -> WorkspaceSwitchDecision {
+        forSwitch(from: SwitchTarget.theOpenDocument, to: SwitchTarget.nothing,
+                  documentIsDirty: documentIsDirty)
+    }
+
+    /// Only exists to give `forQuit` two distinguishable values to hand
+    /// `forSwitch`; nothing else should need it.
+    private enum SwitchTarget: Equatable {
+        case theOpenDocument
+        case nothing
+    }
 }

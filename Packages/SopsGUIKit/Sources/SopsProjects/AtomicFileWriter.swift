@@ -20,6 +20,31 @@ public struct AtomicWriteReceipt: Equatable, Sendable {
     /// why that is the whole point), and no longer present on disk by the time
     /// this is returned.
     public let temporaryFile: URL
+
+    /// What `destination` now looks like to `FileFingerprint.of` — the value a
+    /// caller has to hold onto if its *next* write is going to pass
+    /// `expecting:`.
+    ///
+    /// Taken from the staged temp file just before the replace, not by
+    /// `stat`ing the destination afterwards, and the difference is the whole
+    /// reason it is reported here rather than left to the caller. The replace
+    /// is a rename within one directory, so the destination afterwards *is*
+    /// the staged inode with the staged size and mtime. Re-`stat`ing the
+    /// destination after the fact would instead pick up whatever a second
+    /// writer had managed to land in the meantime, and the caller would then
+    /// treat that writer's file as its own and clobber it on the next save —
+    /// reintroducing, one write later, exactly the hole `expecting:` closes.
+    ///
+    /// `AtomicFileWriterTests` pins the equality against a fresh `stat` of the
+    /// destination, so this is a checked property of `replaceItemAt` rather
+    /// than an assumption about it.
+    public let fingerprint: FileFingerprint?
+
+    public init(destination: URL, temporaryFile: URL, fingerprint: FileFingerprint?) {
+        self.destination = destination
+        self.temporaryFile = temporaryFile
+        self.fingerprint = fingerprint
+    }
 }
 
 /// Replaces a file's contents without ever exposing a partial version of it.
@@ -77,6 +102,35 @@ public struct AtomicWriteReceipt: Equatable, Sendable {
 /// - **Owner and group.** Changing those needs privileges this app does not
 ///   have and must not want (CLAUDE.md: the app never mutates the system).
 ///   `replaceItemAt` preserves what it can; nothing here escalates.
+/// - **That no second writer wins a race with the check.** See below.
+///
+/// ## A second writer
+///
+/// Everything above is about *readers*. It says nothing about another process
+/// writing the same file, and for a long time neither did anything else in the
+/// app: the editor loaded a document, held its ciphertext, and replaced the
+/// file unconditionally on save, so a `git pull`, a `sops set` in another
+/// terminal or a second instance of this app could add a key and the next save
+/// would delete it again while reporting success.
+///
+/// `expecting:` closes that. A caller that knows what the file looked like
+/// when it read it passes that `FileFingerprint`; if the destination no longer
+/// matches, the write is refused with `.destinationChangedOnDisk` and nothing
+/// is touched. `nil` means the caller has no expectation — `ProjectStore`
+/// writes its own file that nothing else owns — and skips the check.
+///
+/// **This narrows the window; it does not remove it.** The comparison happens
+/// immediately before `replaceItemAt`, with nothing but the comparison itself
+/// between them, but macOS offers no compare-and-swap over a directory entry:
+/// a writer that lands inside those microseconds is still lost. Saying so is
+/// the point. The realistic cases — a human running `sops set`, a `git
+/// checkout`, another window of this app — are all many orders of magnitude
+/// slower than that window, and the check catches every one of them.
+///
+/// `AtomicWriteReceipt.fingerprint` is what the caller carries forward to the
+/// next write, and it deliberately comes from the staged file rather than from
+/// a `stat` after the replace — see that property for why the difference
+/// matters.
 ///
 /// ## Errors never contain the file's contents
 ///
@@ -129,6 +183,17 @@ public enum AtomicFileWriter {
         case couldNotPreservePermissions(path: String, reason: String)
         /// The atomic replace itself failed. The original is untouched.
         case couldNotReplace(path: String, reason: String)
+        /// Somebody else wrote the file between the caller reading it and this
+        /// write. The original is untouched — see the "A second writer"
+        /// section of this type's doc comment.
+        ///
+        /// Only ever produced when the caller passed an `expecting:`
+        /// fingerprint. The message names the file and says what to do about
+        /// it, and deliberately does not offer to merge or to overwrite:
+        /// merging two versions of a secrets file is not something this app
+        /// can do correctly, and overwriting is the defect this case exists to
+        /// prevent.
+        case destinationChangedOnDisk(path: String)
 
         public var description: String {
             switch self {
@@ -144,14 +209,19 @@ public enum AtomicFileWriter {
                 return "could not preserve the file permissions of \(path): \(reason)"
             case .couldNotReplace(let path, let reason):
                 return "could not replace \(path): \(reason)"
+            case .destinationChangedOnDisk(let path):
+                return "\(path) changed on disk after it was opened here, "
+                    + "so it was left exactly as it is — reload it and make the change again"
             }
         }
     }
 
-    /// Writes `contents` as UTF-8. See `write(_:to:)`.
+    /// Writes `contents` as UTF-8. See `write(_:to:expecting:)`.
     @discardableResult
-    public static func write(_ contents: String, to url: URL) throws -> AtomicWriteReceipt {
-        try write(Data(contents.utf8), to: url)
+    public static func write(
+        _ contents: String, to url: URL, expecting: FileFingerprint? = nil
+    ) throws -> AtomicWriteReceipt {
+        try write(Data(contents.utf8), to: url, expecting: expecting)
     }
 
     /// Replaces the file at `url` with `data`, atomically.
@@ -161,7 +231,15 @@ public enum AtomicFileWriter {
     ///   link — see the symlink note below. The containing directory must
     ///   already exist; this never creates one, because a save is always over
     ///   a file the user already opened.
-    /// - Returns: What was written where, including the staging path. See
+    /// - Parameter expecting: What the caller last saw at `url`. When
+    ///   non-`nil` and the destination no longer matches it, nothing is
+    ///   written and `Error.destinationChangedOnDisk` is thrown. `nil` — the
+    ///   default — means the caller has no expectation to check, which is
+    ///   right for a file only this app writes and wrong for a document the
+    ///   user also edits with other tools. See the "A second writer" section
+    ///   of this type's doc comment for the guarantee and its limit.
+    /// - Returns: What was written where, including the staging path and the
+    ///   fingerprint to pass as the *next* write's `expecting:`. See
     ///   `AtomicWriteReceipt`.
     ///
     /// ## Symlinks
@@ -187,7 +265,9 @@ public enum AtomicFileWriter {
     /// beside the link, which matters for the same reason step 2 matters: a
     /// symlink that crosses a volume is the common case for making one.
     @discardableResult
-    public static func write(_ data: Data, to url: URL) throws -> AtomicWriteReceipt {
+    public static func write(
+        _ data: Data, to url: URL, expecting: FileFingerprint? = nil
+    ) throws -> AtomicWriteReceipt {
         let destination = url.resolvingSymlinksInPath()
         let directory = destination.deletingLastPathComponent()
         let temporaryFile = directory.appendingPathComponent(
@@ -203,6 +283,12 @@ public enum AtomicFileWriter {
         if originalMode != nil, access(destination.path, W_OK) != 0 {
             throw Error.destinationNotWritable(path: destination.path)
         }
+
+        // Cheap early refusal, so a caller whose file was changed an hour ago
+        // does not first watch a temp file get staged and fsynced. It is *not*
+        // the check that matters — the one immediately before the replace is —
+        // and this one being here does not make that one redundant.
+        try refuseIfChanged(destination, from: expecting)
 
         // Created 0600 unconditionally, then chmodded to `finalMode` below.
         // Never the other way round: for the window in which the temp file
@@ -243,6 +329,17 @@ public enum AtomicFileWriter {
                 path: destination.path, reason: (error as NSError).localizedDescription)
         }
 
+        // Read *before* the replace, because after it the temp file is gone.
+        // The replace is a rename within one directory, so these are the
+        // destination's own numbers a moment later. See
+        // `AtomicWriteReceipt.fingerprint`.
+        let staged = FileFingerprint.of(temporaryFile)
+
+        // The check that actually matters, with nothing between it and the
+        // replace. See "A second writer" in this type's doc comment for why
+        // this narrows the window rather than closing it.
+        try refuseIfChanged(destination, from: expecting)
+
         do {
             _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporaryFile)
         } catch {
@@ -252,7 +349,25 @@ public enum AtomicFileWriter {
 
         syncDirectory(directory)
 
-        return AtomicWriteReceipt(destination: destination, temporaryFile: temporaryFile)
+        return AtomicWriteReceipt(
+            destination: destination, temporaryFile: temporaryFile, fingerprint: staged)
+    }
+
+    /// Throws `.destinationChangedOnDisk` when `expected` is non-nil and the
+    /// file at `destination` no longer matches it.
+    ///
+    /// A destination that has *vanished* counts as changed, not as "nothing to
+    /// compare against": the caller read a file there, and a save into the gap
+    /// left by `rm` or by a `git checkout` that removed it is not the write
+    /// they asked for. A caller with no expectation (`nil`) is unaffected —
+    /// creating a file that was never there is a normal use of this writer.
+    private static func refuseIfChanged(
+        _ destination: URL, from expected: FileFingerprint?
+    ) throws {
+        guard let expected else { return }
+        guard FileFingerprint.of(destination) == expected else {
+            throw Error.destinationChangedOnDisk(path: destination.path)
+        }
     }
 
     // MARK: - Steps
