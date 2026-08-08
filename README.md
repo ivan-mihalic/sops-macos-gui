@@ -18,16 +18,15 @@ atomically. Every file the editor writes is round-tripped against the real `sops
 CLI in `EditorCompatibilityTests` — comments, key order, recipients and
 `encrypted_regex` all survive, and untouched values keep their exact ciphertext.
 
-Both items that blocked M2 at final verification were worked, but a whole-branch
-review found each weaker than claimed and the milestone is **not** closed; see
-PROPOSAL.md §9. A file declaring
-`type:bytes` used to panic vendored sops v3.13.3 and take the whole process
-down; every one of the nine cgo entry points now recovers and returns a
-described error, and no panic payload reaches the message. And the project scan
-states its own scope: it skips dependency and build directories
-(`node_modules`, `.build`, `.worktrees`, …), and now says which ones in the
-finding itself rather than only when it also exhausts its file budget — PROPOSAL.md
-§6 D forbids reporting OK about files the check did not look at.
+A file declaring `type:bytes` no longer takes the process down with it, the
+project scan states the scope it actually covered instead of reporting "found
+none" over directories it skipped, a save refuses rather than overwriting a
+file something else changed underneath it, quitting from anywhere prompts for
+unsaved edits, copied secrets are marked concealed so clipboard managers do not
+archive them, and revealing a row can no longer expose a different secret after
+a save renumbers the document. **The milestone tick is held back pending a
+second whole-branch review** — the first one found the previous tick unearned,
+and PROPOSAL.md §9 records why.
 
 The age key lives in memory for the session only; Keychain and Touch ID are M3.
 YAML is the only format this build opens (PROPOSAL.md §10).

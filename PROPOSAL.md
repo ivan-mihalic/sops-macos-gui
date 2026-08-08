@@ -278,6 +278,21 @@ Ranked by value/effort; ✦ = recommended for v1:
 | M5 | Polish & release | Liquid Glass pass, Sparkle, notarized release pipeline, first public release → **repo goes public** |
 | M6 | DX extras | Items from §8 by priority |
 
+> **Status 2026-08-08, after the review's findings were worked (Tasks 17–21).** Every
+> blocking finding below is now closed, and so are the non-blocking ones the review would
+> have let through to M3: the editor no longer keeps a reveal alive across a save that
+> renumbers rows, the unsaved-changes dialog is not shown during an in-flight save (where it
+> could both lie and lose data), the padlock no longer contradicts the file, copied secrets
+> carry `ConcealedType`/`TransientType` and never reach Universal Clipboard, and the two
+> tests the review caught certifying nothing now discriminate. 569 Swift tests under both
+> compilers, 156 Go, zero failures.
+>
+> **The tick stays off until a second whole-branch review passes.** The first review existed
+> because the tick had gone on without one; awarding it again on the strength of task reports
+> would repeat exactly the mistake recorded below.
+>
+> ---
+>
 > **The ✅ was awarded prematurely and withdrawn** (2026-08-08). A whole-branch review, run
 > after the fix wave and after this note first claimed the milestone closed, found that
 > **both** bullets below are weaker than they are written. They are kept verbatim, with the
