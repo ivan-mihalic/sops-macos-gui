@@ -138,7 +138,7 @@ public struct ProjectHealthCheck: HealthCheck {
         }
 
         let leak = gitignoreFinding(for: project, idScope: idScope, root: root,
-                                    candidates: tree.plaintextCandidates, gitPath: gitPath)
+                                    tree: tree, gitPath: gitPath)
 
         guard FileManager.default.fileExists(atPath: configURL.path) else {
             // The plaintext-leak finding is emitted even here. A project with
@@ -190,6 +190,97 @@ public struct ProjectHealthCheck: HealthCheck {
                              configPath: configURL.path, tree: tree),
             leak,
         ]
+    }
+
+    /// How many excluded directory names a scope sentence spells out before it
+    /// switches to "and N more".
+    ///
+    /// `ProjectScanner.skippedDirectoryNames` has twenty entries, so an
+    /// unsummarised worst case is a twenty-item comma list in the middle of a
+    /// paragraph — a wall nobody reads, which is the same "the user cannot
+    /// actually act on this" failure as saying nothing at all, dressed up as
+    /// diligence. Eight covers every realistic project outright: this
+    /// repository hits three (`.git`, `.build`, `.swiftpm`), a JS monorepo
+    /// four or five (`.git`, `node_modules`, `dist`, `.next`), and reaching
+    /// nine means a tree that is simultaneously a JS, Swift, Rust, Go, Ruby,
+    /// Python and Terraform project — at which point the individual names
+    /// have stopped being the information and the *count* has started being
+    /// it.
+    ///
+    /// What is never summarised away is the count itself: the sentence always
+    /// states exactly how many names are not shown, so the size of the
+    /// exclusion is never hidden, only the tail of an alphabetical list.
+    static let excludedNamesShown = 8
+
+    /// The opening clause every scope disclosure starts with, and the only
+    /// one. Factored out because it is the structural guarantee, not just a
+    /// string: exactly one of these appears per finding, so the excluded-only,
+    /// truncated-only and both-at-once cases read as one account of what was
+    /// missed rather than as two paragraphs a reader has to reconcile.
+    static let scopeLeadIn = "Not everything under this project was looked at"
+
+    /// What this walk deliberately or unavoidably did not cover, as one
+    /// paragraph — or `nil` when it covered the whole tree and there is
+    /// nothing to disclose.
+    ///
+    /// PROPOSAL.md §6 D makes this mandatory for the exclusion route in as
+    /// many words: the exclusion "must be *stated in the finding*, not buried
+    /// in a constant", and "the check may not report OK about files it did not
+    /// look at". Before this existed, the exclusion was disclosed in exactly
+    /// one place — inside `recipientFinding`'s `tree.wasTruncated` branch — so
+    /// a scan that skipped `.build` and `.swiftpm` and never came near the
+    /// 20,000-file budget disclosed nothing whatsoever, and the plaintext
+    /// finding announced "Looked through <root> … and found none" over a tree
+    /// it had declined to enter parts of. Reproduced against this app's own
+    /// repository, which is exactly the shape that triggers it.
+    ///
+    /// Nothing here is excused from disclosure, `.git` included. It is
+    /// tempting to treat VCS internals as too obvious to mention, but a
+    /// carve-out list of "exclusions that don't count" is the silent constant
+    /// this whole function exists to abolish, re-created one level down — and
+    /// `.git/config` holding a remote URL with an embedded token is an
+    /// ordinary way to leak a credential, not a hypothetical.
+    ///
+    /// The names, not paths: `ProjectScanner` skips by directory *name*
+    /// anywhere in the tree, so "this scan never enters `.build`" is the
+    /// accurate statement and a list of the specific paths it declined would
+    /// be both longer and less true.
+    static func scanScopeSentence(tree: ScannedTree) -> String? {
+        let excluded = tree.skippedDirectoryNames.sorted()
+        let budget = "it stopped at its scan budget of \(ProjectScanner.maxScannedFiles) files, so an unknown number of the files past that point were never opened"
+
+        switch (excluded.isEmpty, tree.wasTruncated) {
+        case (true, false):
+            return nil
+        case (true, true):
+            return "\(scopeLeadIn): \(budget). Nothing above is a statement about them."
+        case (false, false):
+            let plural = excluded.count == 1
+            return "\(scopeLeadIn): this scan never enters \(excludedDirectoryList(excluded)), "
+                + "\(plural ? "a directory name" : "directory names") this app always skips as dependency, build or version-control output. "
+                + "Nothing above is a statement about what is inside \(plural ? "it" : "them"), so treat this as a verdict on the rest of the tree only."
+        case (false, true):
+            // Both at once, said once. Two separate paragraphs — one about the
+            // exclusion, one about the budget — read as two competing accounts
+            // of the same walk; a reader has to work out whether they overlap.
+            // One sentence with two clauses does not have that problem.
+            return "\(scopeLeadIn), for two reasons at once: this scan never enters "
+                + "\(excludedDirectoryList(excluded)) — \(excluded.count == 1 ? "a directory name" : "directory names") this app always skips as dependency, build or version-control output — and then \(budget) either. "
+                + "Nothing above is a statement about either group."
+        }
+    }
+
+    /// Excluded directory names as a sentence fragment, summarised past
+    /// `excludedNamesShown` — see that constant for why, and for what is
+    /// deliberately never summarised away.
+    private static func excludedDirectoryList(_ sorted: [String]) -> String {
+        guard sorted.count > excludedNamesShown else {
+            guard let last = sorted.last else { return "" }
+            guard sorted.count > 1 else { return last }
+            return sorted.dropLast().joined(separator: ", ") + " and " + last
+        }
+        return sorted.prefix(excludedNamesShown).joined(separator: ", ")
+            + " and \(sorted.count - excludedNamesShown) more"
     }
 
     /// Human-readable label for a sops master-key type identifier
@@ -294,14 +385,14 @@ public struct ProjectHealthCheck: HealthCheck {
         var unreadableBackends: Set<String> = []
         var verifiedFileCount = 0
 
-        // Signal 4: the scan itself. Checked first because it is the
-        // broadest possible gap — every other signal below only applies to
-        // files the walk actually reached, and a truncated walk means some
-        // files were never reached at all. See the type-level doc comment.
-        if tree.wasTruncated {
-            let excluded = tree.skippedDirectoryNames.sorted()
-            let excludedNote = excluded.isEmpty ? "" : " This walk also skipped \(excluded.joined(separator: ", ")) entirely, as dependency or build directories — that exclusion is separate from, and on top of, the budget below."
-            unverifiable.append("This project has more files under it than this app's scan budget of \(ProjectScanner.maxScannedFiles), so the walk stopped before it reached every file. Files beyond that point were never looked at, so this app cannot vouch for this project's recipients as a whole.\(excludedNote)")
+        // Signal 4: the scan itself. It does not go into `unverifiable` with
+        // the per-file signals, because it is not a fact about any file — it
+        // is the scope of the whole walk, and it applies to every branch
+        // below including the affirmative one. It is appended, once, to
+        // whatever detail this method ends up returning.
+        let scope = Self.scanScopeSentence(tree: tree)
+        func withScope(_ detail: String) -> String {
+            scope.map { detail + "\n\n" + $0 } ?? detail
         }
 
         // Signal 1: the whole config, independent of which files exist.
@@ -407,13 +498,21 @@ public struct ProjectHealthCheck: HealthCheck {
             return HealthFinding(
                 id: "project.\(idScope).stale-recipients",
                 title: "\(project.name): recipients", status: .problem,
-                detail: detail,
+                detail: withScope(detail),
                 remediation: Remediation(
                     explanation: "Run updatekeys to re-wrap these files for the recipients .sops.yaml declares." + rotateNote,
                     command: "sops updatekeys <file>"))
         }
 
-        guard unverifiable.isEmpty else {
+        // `tree.wasTruncated` is a status condition in its own right, not just
+        // a line of prose: a walk that gave up part-way through cannot produce
+        // an affirmative verdict about recipients, exactly as PROPOSAL.md §6 D
+        // requires of the budget route ("the finding degrading to *Unknown*").
+        // The exclusion deliberately does **not** appear here — see
+        // `scanScopeSentence` and the disclosure suite for why a permanent,
+        // named, bounded exclusion is stated rather than allowed to make every
+        // finding in the app permanently `.unknown`.
+        guard unverifiable.isEmpty, !tree.wasTruncated else {
             // Lead with what was actually verified. A user whose age rule is
             // healthy deserves to know that part is fine; they must simply
             // not read it as a verdict on the whole project.
@@ -426,20 +525,29 @@ public struct ProjectHealthCheck: HealthCheck {
             default:
                 verified = "Checked \(verifiedFileCount) encrypted files' age recipient lists against the rules that govern them — they all match."
             }
+            // Truncation is named first when it applies. It is the broadest
+            // gap of the three — an unreadable backend is a bounded fact about
+            // a named rule or file, whereas a walk that ran out of budget
+            // cannot even say *which* files it missed — so it is the reason a
+            // one-line status should carry.
             let reason: String
-            if !unreadableBackends.isEmpty {
-                reason = "This project uses \(Self.backendList(unreadableBackends)), which this app cannot read — it only understands age keys."
-            } else if tree.wasTruncated {
+            if tree.wasTruncated {
                 reason = "This project has more files than this app's scan budget, so part of the tree was never checked."
+            } else if !unreadableBackends.isEmpty {
+                reason = "This project uses \(Self.backendList(unreadableBackends)), which this app cannot read — it only understands age keys."
             } else {
                 reason = "Part of this project's recipients could not be checked. This is not a verdict on them."
+            }
+            var detail = verified
+            if !unverifiable.isEmpty {
+                detail += "\n\nDeliberately not checked:\n"
+                    + unverifiable.map { "• " + $0 }.joined(separator: "\n")
             }
             return HealthFinding(
                 id: "project.\(idScope).stale-recipients",
                 title: "\(project.name): recipients",
                 status: .unknown(reason: reason),
-                detail: verified + "\n\nDeliberately not checked:\n"
-                    + unverifiable.map { "• " + $0 }.joined(separator: "\n"),
+                detail: withScope(detail),
                 remediation: Remediation(
                     explanation: "Nothing here needs fixing on this app's account — it reports only what it read. To check the rest, use the tooling for that backend: `gpg --list-keys` for PGP, or your cloud provider's console for KMS, Key Vault or Vault. This app only manages age keys."))
         }
@@ -466,8 +574,13 @@ public struct ProjectHealthCheck: HealthCheck {
                 return HealthFinding(
                     id: "project.\(idScope).stale-recipients",
                     title: "\(project.name): recipients",
-                    status: .skipped(reason: "No sops-encrypted files were found anywhere under \(project.rootPath)."),
-                    detail: "The .sops.yaml here parses and uses age keys only, but there are no encrypted files yet, so no recipient list was compared against it. This app is not vouching for this project's recipients either way.")
+                    // "under", not "anywhere under": the walk behind this has
+                    // an exclusion list, so "anywhere" was a claim it could
+                    // not make. The scope paragraph in the detail says which
+                    // places, and this reason no longer overstates what the
+                    // one-liner covers.
+                    status: .skipped(reason: "No sops-encrypted files were found under \(project.rootPath)."),
+                    detail: withScope("The .sops.yaml here parses and uses age keys only, but there are no encrypted files yet, so no recipient list was compared against it. This app is not vouching for this project's recipients either way."))
             }
             // Files exist, every one of them resolved to a rule, and not one
             // comparison had an age key on either side. The check ran and
@@ -476,7 +589,7 @@ public struct ProjectHealthCheck: HealthCheck {
                 id: "project.\(idScope).stale-recipients",
                 title: "\(project.name): recipients",
                 status: .unknown(reason: "No encrypted file here declares an age recipient, and neither does the rule governing it, so there was nothing to compare."),
-                detail: "Encrypted files were found under \(project.rootPath), but none of them — and none of the rules governing them — names a single age recipient. This app reads age recipients, so it has not verified anything about how these files are protected.")
+                detail: withScope("Encrypted files were found under \(project.rootPath), but none of them — and none of the rules governing them — names a single age recipient. This app reads age recipients, so it has not verified anything about how these files are protected."))
         }
 
         let checked = verifiedFileCount == 1
@@ -485,7 +598,7 @@ public struct ProjectHealthCheck: HealthCheck {
         return HealthFinding(
             id: "project.\(idScope).stale-recipients",
             title: "\(project.name): recipients", status: .ok,
-            detail: checked + " Every rule in .sops.yaml uses age keys only, so there is nothing here this app could not read.")
+            detail: withScope(checked + " Every rule in .sops.yaml uses age keys only, so there is nothing here this app could not read."))
     }
 
     /// Reports only that a plaintext secret file exists and is not
@@ -532,10 +645,26 @@ public struct ProjectHealthCheck: HealthCheck {
     /// a path, not a pattern — there is only the shell layer to get right, and
     /// `ShellQuoting` plus a `--` separator gets it right for every filename
     /// that can appear on one line.
+    ///
+    /// **Scope.** This finding is produced from the same single walk
+    /// `recipientFinding` uses, and it inherits that walk's limits: the
+    /// directory-name exclusion list, and the file budget. Both are stated in
+    /// the detail, on every branch, via `scanScopeSentence` — the walk is
+    /// never the whole tree, and "found none" is a verdict about a scope, so
+    /// the scope has to be on the page next to it. Reproduced before this
+    /// existed: this app scanning its own repository skipped `.build` and
+    /// `.swiftpm`, never came near the budget, and reported "Looked through
+    /// <root> … and found none" naming no exclusion at all.
     private func gitignoreFinding(for project: InspectedProject, idScope: String, root: URL,
-                                  candidates: [URL], gitPath: String?) -> HealthFinding {
+                                  tree: ScannedTree, gitPath: String?) -> HealthFinding {
         let findingID = "project.\(idScope).gitignore"
         let title = "\(project.name): plaintext files"
+        let candidates = tree.plaintextCandidates
+
+        let scope = Self.scanScopeSentence(tree: tree)
+        func withScope(_ detail: String) -> String {
+            scope.map { detail + "\n\n" + $0 } ?? detail
+        }
 
         let rootPrefix = Self.canonicalPath(root.path) + "/"
         func relativeName(_ url: URL) -> String {
@@ -543,12 +672,25 @@ public struct ProjectHealthCheck: HealthCheck {
             return path.hasPrefix(rootPrefix) ? String(path.dropFirst(rootPrefix.count)) : path
         }
 
-        // No candidate file at all is a definite answer that needs no git:
-        // it is a fact about the filesystem, not about ignore rules.
+        // No candidate file at all is a definite answer that needs no git —
+        // but only about the part of the tree the walk actually entered. A
+        // walk that ran out of budget cannot say "found none" at all: it does
+        // not know which files it never reached, so there is no scope left to
+        // be right about. That is the budget route PROPOSAL.md §6 D describes
+        // ("degrading to *Unknown* and naming what it did not reach"), applied
+        // to this finding as it already was to `recipientFinding`. The
+        // exclusion is handled differently and deliberately — it is named, not
+        // demoted; see `scanScopeSentence`.
         guard !candidates.isEmpty else {
+            guard !tree.wasTruncated else {
+                return HealthFinding(
+                    id: findingID, title: title,
+                    status: .unknown(reason: "This project has more files than this app's scan budget, so part of the tree was never searched for plaintext secret files."),
+                    detail: withScope("No plaintext files whose names conventionally hold secrets (.env and its variants) turned up in the part of \(project.rootPath) this scan reached — but it did not reach all of it, so this app is not telling you there are none."))
+            }
             return HealthFinding(
                 id: findingID, title: title, status: .ok,
-                detail: "Looked through \(project.rootPath) for plaintext files whose names conventionally hold secrets (.env and its variants) and found none.")
+                detail: withScope("Looked through \(project.rootPath) for plaintext files whose names conventionally hold secrets (.env and its variants) and found none."))
         }
 
         let names = candidates.map(relativeName).sorted()
@@ -563,7 +705,7 @@ public struct ProjectHealthCheck: HealthCheck {
                 : "Check them yourself with `git check-ignore -v`, and make sure anything holding a real secret is either ignored or moved into a file this app encrypts. \(Self.newlineInNameNote)"
             return HealthFinding(
                 id: findingID, title: title, status: .unknown(reason: reason),
-                detail: "These files under \(project.rootPath) have names that conventionally hold plaintext secrets: \(names.joined(separator: ", ")). Whether they are ignored could not be established, so this app is not telling you either way.",
+                detail: withScope("These files under \(project.rootPath) have names that conventionally hold plaintext secrets: \(names.joined(separator: ", ")). Whether they are ignored could not be established, so this app is not telling you either way."),
                 remediation: Remediation(explanation: explanation, command: command))
 
         case .answered(let exposed, let tracked):
@@ -571,9 +713,19 @@ public struct ProjectHealthCheck: HealthCheck {
                 let count = candidates.count == 1
                     ? "1 plaintext file whose name conventionally holds secrets"
                     : "\(candidates.count) plaintext files whose names conventionally hold secrets"
+                // "git ignores all of them" is true of the files that were
+                // found; over a truncated walk it is not an answer about the
+                // project, for the same reason the empty-candidate branch
+                // above is not.
+                guard !tree.wasTruncated else {
+                    return HealthFinding(
+                        id: findingID, title: title,
+                        status: .unknown(reason: "This project has more files than this app's scan budget, so part of the tree was never searched for plaintext secret files."),
+                        detail: withScope("Found \(count) in the part of \(project.rootPath) this scan reached (\(names.joined(separator: ", "))), and git ignores every one of those. The scan did not reach the whole project, so this app is not telling you that is all of them."))
+                }
                 return HealthFinding(
                     id: findingID, title: title, status: .ok,
-                    detail: "Found \(count) under \(project.rootPath) (\(names.joined(separator: ", "))). git ignores all of them, so none can be committed by accident.")
+                    detail: withScope("Found \(count) under \(project.rootPath) (\(names.joined(separator: ", "))). git ignores all of them, so none can be committed by accident."))
             }
 
             let exposedNames = exposed.map(relativeName).sorted()
@@ -599,7 +751,7 @@ public struct ProjectHealthCheck: HealthCheck {
 
             return HealthFinding(
                 id: findingID, title: title, status: .problem,
-                detail: detail,
+                detail: withScope(detail),
                 // No command. See this method's doc comment: a `.gitignore`
                 // line needs pattern escaping as well as shell escaping, and a
                 // string correct in both is one nobody can read before running.

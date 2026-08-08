@@ -340,18 +340,48 @@ public struct ProjectScanner {
                 ? .plaintextCandidate(url) : .none
         }
         let tail = Self.stripLeadingUTF8BOM(rawTail)
+        // Two stages on purpose. The byte-level marker searches below are the
+        // cheap filter that runs on every file in the tree; the structural
+        // confirmation behind them (`SopsMetadataShape`) runs only for the
+        // handful that matched one, so the per-file cost of the walk is
+        // unchanged. See `SopsMetadataShape` for why a substring alone is not
+        // an answer.
+        // Decoded at most once per file, and only for a file that already
+        // matched a byte-level marker — the near-totality of a real project's
+        // files match none and never reach this. Memoized by hand rather than
+        // called in both branches: the structural confirmation costs on the
+        // order of a millisecond per marker-matching file (measured across
+        // this repository's eleven of them: a whole-repo scan went from
+        // ~0.018s to ~0.025s), and there is no reason to pay the UTF-8 decode
+        // twice on top of that.
+        var decoded: String??
+        func text() -> String? {
+            if let decoded { return decoded }
+            let value = Self.decodeTailText(tail)
+            decoded = .some(value)
+            return value
+        }
+
         if tail.range(of: Self.sopsBlockMarker) != nil || tail.starts(with: Self.sopsBlockPrefix),
-           let text = Self.decodeTailText(tail) {
-            // The byte-level marker matched *and* the tail decoded as valid
-            // UTF-8 (true for every real sops output — YAML is text). A
-            // decode failure here falls through to the same checks a read
-            // failure would, rather than returning early, matching the
+           let text = text(),
+           SopsMetadataShape.isYAMLMetadata(text) {
+            // The byte-level marker matched, the tail decoded as valid UTF-8
+            // (true for every real sops output — YAML is text), *and* what it
+            // decoded to has the shape sops's own serializer writes. A decode
+            // failure here falls through to the same checks a read failure
+            // would, rather than returning early, matching the
             // pre-parallelisation behaviour where a String that failed to
-            // decode was indistinguishable from a tail that failed to read.
+            // decode was indistinguishable from a tail that failed to read —
+            // and so, now, does a structural mismatch: a file that merely
+            // *mentions* a sops block is not one.
             return .encrypted(SniffedFile(url: url, tail: text))
-        } else if Self.looksSopsEncryptedInAnotherFormat(tail) {
+        }
+        if Self.looksSopsEncryptedInAnotherFormat(tail),
+           let text = text(),
+           SopsMetadataShape.isNonYAMLMetadata(text) {
             return .otherFormat(url)
-        } else if Self.isPlaintextSecretCandidate(url.lastPathComponent) {
+        }
+        if Self.isPlaintextSecretCandidate(url.lastPathComponent) {
             return .plaintextCandidate(url)
         }
         return .none
@@ -588,10 +618,10 @@ public struct ProjectScanner {
         }
     }
 
-    /// sops metadata as written by its non-YAML stores. Only used to keep an
-    /// encrypted file from being mistaken for a plaintext one — an encrypted
-    /// `.env` reported as a leaking secret is a false alarm, and false alarms
-    /// are how a user learns to skip this finding.
+    /// Cheap byte-level prefilter for sops metadata as written by its
+    /// non-YAML stores. A hit here is a *candidate*, confirmed structurally by
+    /// `SopsMetadataShape.isNonYAMLMetadata` — on its own this matches any
+    /// file that happens to contain the bytes, including this very file.
     ///
     /// Operates on raw bytes, not a decoded `String` — see `classify`'s doc
     /// comment for why.

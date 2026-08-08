@@ -12,10 +12,19 @@ struct ProjectScanPerformanceTests {
 
     /// A fixed sops-metadata block. Deliberately hand-written rather than run
     /// through `SopsBridge` — `ProjectScanner` only pattern-matches on the
-    /// text shape (`"\nsops:"`), it never verifies the crypto, so a literal
-    /// string pins the exact bytes `SniffedFile.tail` must come back with.
+    /// text shape, it never verifies the crypto, so a literal string pins the
+    /// exact bytes `SniffedFile.tail` must come back with.
+    ///
+    /// It must nonetheless carry the *shape* sops writes, not just the
+    /// `"\nsops:"` substring. Task 14 tightened classification from "contains
+    /// the marker" to "has the structure sops's own serializer emits" —
+    /// because on this app's own repository the substring version offered two
+    /// Markdown reports quoting a sops block as openable encrypted files. The
+    /// `mac:` line below is part of that: sops writes `mac` and `version` for
+    /// every file it encrypts, in every store, so a fixture without one was
+    /// never a faithful stand-in for real output. See `SopsMetadataShape`.
     private static let encryptedContent =
-        "message: ENC[AES256_GCM,data:xyz,iv:abc,tag:def,type:str]\nsops:\n    age:\n        - recipient: age1exampleexamplerecipientexampleexampleexampleexamplex\n    version: 3.13.3\n"
+        "message: ENC[AES256_GCM,data:xyz,iv:abc,tag:def,type:str]\nsops:\n    age:\n        - recipient: age1exampleexamplerecipientexampleexampleexampleexamplex\n    lastmodified: \"2026-08-08T00:00:00Z\"\n    mac: ENC[AES256_GCM,data:mno,iv:pqr,tag:stu,type:str]\n    version: 3.13.3\n"
 
     /// Builds a tree with, in one `src/` directory:
     /// - `matchingCount` copies of a genuinely sops-tagged file

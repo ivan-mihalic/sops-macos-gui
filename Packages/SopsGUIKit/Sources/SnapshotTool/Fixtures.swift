@@ -512,13 +512,17 @@ enum Fixtures {
 
     // MARK: - The file list (`FileListView`)
 
-    /// Hand-written text carrying the same byte-level markers
-    /// `EncryptedFileMetadata`/`ProjectScanner` sniff for (`sops:` block,
-    /// `mac:` field) — mirrors `FileListModelTests.writeSopsLike`. What is
-    /// under test in the file-list snapshots is layout, sorting and
-    /// truncation/other-format disclosure, not sops's own file format,
-    /// which the bridge's and `SopsEngineTests`' real-binary fixtures
-    /// already hold to the real standard.
+    /// Hand-written text carrying the structure `ProjectScanner` requires of a
+    /// sops-written YAML file (`sops:` as the last top-level key, with `mac`
+    /// and `version` under it — see `SopsMetadataShape`) — mirrors
+    /// `FileListModelTests.writeSopsLike`. What is under test in the file-list
+    /// snapshots is layout, sorting and truncation/other-format disclosure,
+    /// not sops's own file format, which the bridge's and `SopsEngineTests`'
+    /// real-binary fixtures already hold to the real standard. It still has to
+    /// be a shape sops could have produced: since Task 14 the scanner requires
+    /// structure rather than a bare marker, so a block without `version:`
+    /// renders an empty file list instead of the populated one this fixture
+    /// exists to show.
     private static func writeSopsLikeYAML(_ root: URL, at relativePath: String) throws {
         let url = root.appendingPathComponent(relativePath)
         try FileManager.default.createDirectory(
@@ -529,6 +533,7 @@ enum Fixtures {
                 age:
                     - recipient: age1exampleexampleexampleexampleexampleexampleexampleexamplex
                 mac: ENC[AES256_GCM,data:AAAA,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
+                version: 3.13.3
             """.write(to: url, atomically: true, encoding: .utf8)
     }
 

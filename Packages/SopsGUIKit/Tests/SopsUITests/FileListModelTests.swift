@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import SopsUI
 
-// Fixtures here are hand-written text carrying the same byte-level markers
+// Fixtures here are hand-written text carrying the same markers
 // `ProjectScanner`'s own suite uses (`sops:`, `sops_mac=`) — not a real `sops`
 // CLI encrypt. That mirrors `ProjectScanner`'s own tests (e.g.
 // `ProjectScanBoundsTests`), because what's under test here is `FileListModel`
@@ -10,6 +10,13 @@ import Testing
 // published properties come from where — not sops's own file format, which
 // `ProjectScanner`'s and the bridge's suites already hold to the real-binary
 // standard.
+//
+// They must still carry the *shape* sops writes, not just its markers. Task 14
+// tightened `ProjectScanner` from substring sniffing to a structural check
+// (`SopsMetadataShape`) after this app classified two of its own Markdown task
+// reports as openable encrypted files. A fixture with a `sops:` block but no
+// `version:` under it was never something sops could have produced, and no
+// longer passes for one.
 @Suite("FileListModel")
 @MainActor
 struct FileListModelTests {
@@ -30,6 +37,7 @@ struct FileListModelTests {
             age:
                 - recipient: age1exampleexampleexampleexampleexampleexampleexampleexamplex
             mac: ENC[AES256_GCM,data:AAAA,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
+            version: 3.13.3
         """.write(to: url, atomically: true, encoding: .utf8)
     }
 
