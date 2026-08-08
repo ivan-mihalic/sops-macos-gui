@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SopsEngine
 import SwiftUI
 
@@ -57,15 +58,51 @@ import SwiftUI
 /// the value is right does not have to expose it on screen just to copy it
 /// elsewhere. `ClipboardClearing` handles the ~30s auto-clear PROPOSAL.md §2
 /// requires.
+///
+/// ## How long a reveal lasts
+/// A revealed value is plaintext on a screen, and a copied value is plaintext
+/// on a pasteboard. The second has had a deliberate ~30 s life since Task 9
+/// (`ClipboardClearing`); the first used to have none at all — it survived
+/// until the user clicked the eye again, and it survived the app losing focus,
+/// being hidden, and being covered by another window. Three rules now bound
+/// it, and all three are in `body`:
+///
+/// - **A reveal belongs to one row-identity generation** and is void in any
+///   other. See `RevealedRows` for what that closes, which is a good deal
+///   worse than a value staying visible too long.
+/// - **The app stopping being the front app hides everything** —
+///   `didResignActive`, `didHide`, and a window going non-visible
+///   (`didChangeOcclusionState`). These are AppKit notifications rather than
+///   SwiftUI's `scenePhase`, because they are what actually fires for a
+///   `Cmd-Tab`, a `Cmd-H` and a window being covered, and because they can be
+///   driven from a test (`RevealedRowTests`) where a scene phase cannot.
+/// - **`revealTimeout` after the last reveal or edit, everything hides.**
+///   Restarted by typing, so it cannot mask a field mid-edit — the masked
+///   field is `.disabled`, so being masked mid-edit would take the keyboard
+///   away from the user.
 public struct SecretEditorView: View {
+
+    /// How long a revealed value stays on screen without the user touching
+    /// it. The same "~30 s" PROPOSAL.md §2 sets for the pasteboard, applied to
+    /// the other place a plaintext secret sits — deliberately not read from
+    /// `ClipboardClearing.defaultInterval`, because these are two different
+    /// exposures that happen to agree today, and coupling them would mean
+    /// changing one silently changes the other.
+    public static let revealTimeout: Duration = .seconds(30)
+
     @Bindable private var viewModel: SecretDocumentViewModel
     private let unsavedChanges: UnsavedChangesTracker
+    private let revealTimeout: Duration
+
     private let fileName: String
 
-    @State private var revealedRowIDs: Set<String> = []
+    @State private var revealed = RevealedRows()
+    @State private var selection = RowSelection()
     @State private var saveErrorMessage: String?
-    @State private var selectedRowID: String?
     @State private var addRequest: AddRowRequest?
+    /// The pending auto-hide. Held so each reveal or edit can restart it
+    /// rather than stacking a second timer on top of the first.
+    @State private var autoHide: Task<Void, Never>?
 
     /// The `+` sheet's subject, captured when the button is pressed so the
     /// destination cannot drift under the sheet if the selection changes.
@@ -74,22 +111,42 @@ public struct SecretEditorView: View {
         let destination: SecretDocumentViewModel.AddDestination
     }
 
-    /// - Parameter initiallySelectedRowID: which row starts selected. The
-    ///   app leaves this `nil`; it exists because the toolbar's `-` is
-    ///   enabled only with a selection, and the headless snapshot tool
-    ///   cannot click a row to produce one (CLAUDE.md, "What it still cannot
-    ///   see") — so without it there is no way to review the enabled state
-    ///   of a control at all.
+    /// - Parameters:
+    ///   - initiallySelectedRowID: which row starts selected. The app leaves
+    ///     this `nil`; it exists because the toolbar's `-` is enabled only
+    ///     with a selection, and the headless snapshot tool cannot click a row
+    ///     to produce one (CLAUDE.md, "What it still cannot see") — so without
+    ///     it there is no way to review the enabled state of a control at all.
+    ///   - initiallyRevealedRowIDs: which rows start revealed, for exactly the
+    ///     same reason and with the same caveat. The app leaves it empty; the
+    ///     snapshot catalog uses it for `editor-revealed-row`, and
+    ///     `RevealedRowTests` uses it to get a real, laid-out editor into the
+    ///     revealed state that no test could otherwise reach — reveal is a
+    ///     click, and there is nothing to click in a headless host.
+    ///   - revealTimeout: how long a reveal lasts untouched. Injectable only
+    ///     so a test does not have to wait 30 real seconds to prove the timer
+    ///     exists; nothing in the app passes it.
     public init(
         viewModel: SecretDocumentViewModel,
         fileName: String,
         unsavedChanges: UnsavedChangesTracker,
-        initiallySelectedRowID: String? = nil
+        initiallySelectedRowID: String? = nil,
+        initiallyRevealedRowIDs: Set<String> = [],
+        revealTimeout: Duration = SecretEditorView.revealTimeout
     ) {
         self.viewModel = viewModel
         self.fileName = fileName
         self.unsavedChanges = unsavedChanges
-        self._selectedRowID = State(initialValue: initiallySelectedRowID)
+        self.revealTimeout = revealTimeout
+        // Both recorded against the generation the document is in *now*, so
+        // they are subject to exactly the same invalidation as a selection the
+        // user made or a row they revealed by clicking. A seam that started
+        // life outside the rule would be a seam that could not review it.
+        let generation = viewModel.rowIdentityGeneration
+        self._selection = State(
+            initialValue: RowSelection(initiallySelectedRowID, in: generation))
+        self._revealed = State(
+            initialValue: RevealedRows(revealing: initiallyRevealedRowIDs, in: generation))
     }
 
     public var body: some View {
@@ -119,44 +176,105 @@ public struct SecretEditorView: View {
                     let outcome = viewModel.addRow(
                         in: request.destination, key: key, kind: kind, value: value)
                     if case .added(let id) = outcome {
-                        selectedRowID = id
+                        // Recorded against the generation `addRow` has just
+                        // moved the document into, so this is a claim about
+                        // the row that now exists rather than one the next
+                        // invalidation has to be trusted to catch.
+                        //
                         // A value the user just typed is not a secret they
                         // need protecting from themselves, and hiding it the
                         // instant the sheet closes reads as the app having
-                        // lost it.
-                        revealedRowIDs.insert(id)
+                        // lost it. It is still only revealed until the app
+                        // loses focus, the shape changes again, or the
+                        // auto-hide fires — the hole here was never that the
+                        // new row was shown, it was that it was shown for the
+                        // rest of the session.
+                        let generation = viewModel.rowIdentityGeneration
+                        selection.select(id, in: generation)
+                        revealed.reveal(id, in: generation)
                     }
                     addRequest = nil
                 })
         }
         // Reveal state is per open file, not persisted across a switch —
         // Task 9's brief is explicit ("Reveal is per row and does not
-        // persist across file switches"). Resetting whenever the identity
-        // of the loaded document changes (its ciphertext, which changes on
-        // every successful load/save of a *different* file) is what
-        // enforces that without this view needing to know when a file
-        // switch happened.
+        // persist across file switches"). Leaving `.loaded` is already an
+        // invalidation of the row identity (`resetToEmpty` bumps the
+        // generation), so this is belt and braces rather than the mechanism;
+        // what it adds is stopping the auto-hide timer for a document that is
+        // no longer on screen.
         .onChange(of: viewModel.loadState) { _, newState in
             if newState != .loaded {
-                revealedRowIDs = []
-                selectedRowID = nil
+                hideEverythingRevealed()
+                selection.clear()
             }
         }
-        // A row that is gone — removed, or renumbered away by a save that
-        // changed the document's shape — must not stay "selected", or the
-        // next `-` would act on nothing and the next `+` would aim at a
-        // container that is no longer there.
-        .onChange(of: viewModel.rows) { _, newRows in
-            if let selectedRowID, !newRows.contains(where: { $0.id == selectedRowID }) {
-                self.selectedRowID = nil
-            }
+        // Nothing prunes `selection` or `revealed` against `rows` any more,
+        // and that is the fix rather than an omission. Pruning can only drop
+        // ids that vanished, and the ones that hurt are the ids that *survive*
+        // a renumbering while coming to name a different value. Both pieces of
+        // state carry the generation they were recorded under instead, so a
+        // change that can re-aim an id voids them without anything having to
+        // notice — see `RevealedRows`.
+        //
+        // Every change to what is revealed restarts the countdown, including
+        // the first render of an editor that starts with something revealed
+        // (`initial: true`). Driving it from the state rather than from each
+        // call site is what stops a future third way of revealing a row from
+        // quietly arriving without a deadline attached — which is exactly how
+        // the `+` sheet's reveal came to be permanent.
+        .onChange(of: revealed, initial: true) { _, _ in
+            restartAutoHide()
         }
-        .onChange(of: viewModel.isDirty, initial: true) { _, isDirty in
-            unsavedChanges.update(isDirty: isDirty, save: { await viewModel.save() })
+        .onChange(of: unsavedState, initial: true) { _, state in
+            unsavedChanges.update(
+                isDirty: state.isDirty, isSaving: state.isSaving,
+                save: { await viewModel.save() })
+        }
+        // Losing the front-app position, being hidden, or having the window
+        // covered all mean the plaintext on screen is no longer in front of
+        // the person who asked for it — or is in front of somebody else. The
+        // three AppKit notifications are what actually fire for those; see the
+        // type's doc comment for why not `scenePhase`.
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didResignActiveNotification)) { _ in
+            hideEverythingRevealed()
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didHideNotification)) { _ in
+            hideEverythingRevealed()
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSWindow.didChangeOcclusionStateNotification)) { notification in
+            // Fires in both directions; only the "no longer visible" edge is
+            // a reason to hide anything. Not filtered to *this* view's own
+            // window, deliberately: this view cannot name its window without
+            // reaching for an `NSViewRepresentable`, and the cost of the
+            // over-reaction (Settings being covered masks the editor behind
+            // it) is a click, while the cost of under-reacting is a secret
+            // left on a screen the user is not at.
+            guard let window = notification.object as? NSWindow,
+                  !window.occlusionState.contains(.visible) else { return }
+            hideEverythingRevealed()
         }
         .onDisappear {
+            hideEverythingRevealed()
+            selection.clear()
             unsavedChanges.clear()
         }
+    }
+
+    /// The pair the tracker needs, as one `Equatable` value — `onChange`
+    /// watches one thing, and two separate `onChange`s racing to call
+    /// `update` with one another's stale half is precisely the kind of
+    /// view-local duplicate of model state this view avoids elsewhere.
+    private struct UnsavedState: Equatable {
+        let isDirty: Bool
+        let isSaving: Bool
+    }
+
+    private var unsavedState: UnsavedState {
+        UnsavedState(isDirty: viewModel.isDirty, isSaving: viewModel.isSaving)
     }
 
     // MARK: - Toolbar
@@ -212,6 +330,16 @@ public struct SecretEditorView: View {
         }
         .padding(10)
     }
+
+    /// The current row-identity generation — every read and write of
+    /// `selection`/`revealed` is scoped to it. See
+    /// `SecretDocumentViewModel.rowIdentityGeneration`.
+    private var rowGeneration: Int { viewModel.rowIdentityGeneration }
+
+    /// `nil` whenever the selection was made against a document whose rows may
+    /// since have been renumbered — so the `-` button goes back to disabled
+    /// rather than deleting a row other than the one the user is looking at.
+    private var selectedRowID: String? { selection.id(in: rowGeneration) }
 
     private var canRemoveSelection: Bool {
         guard viewModel.loadState == .loaded, let selectedRowID else { return false }
@@ -308,12 +436,18 @@ public struct SecretEditorView: View {
     // MARK: - Rows
 
     private var rowList: some View {
-        List(viewModel.rows, selection: $selectedRowID) { row in
+        List(viewModel.rows, selection: selectionBinding) { row in
             SecretRowView(
                 row: row,
-                isRevealed: revealedRowIDs.contains(row.id),
+                isRevealed: revealed.contains(row.id, in: rowGeneration),
                 onToggleReveal: { toggleReveal(row.id) },
-                onChange: { newValue in viewModel.update(rowID: row.id, to: newValue) })
+                onChange: { newValue in
+                    viewModel.update(rowID: row.id, to: newValue)
+                    // Typing counts as touching the reveal: the masked field
+                    // is disabled, so auto-hiding a row mid-edit would take
+                    // the keyboard out from under the user.
+                    restartAutoHide()
+                })
         }
         // A save snapshots the pending changes and then spends a few hundred
         // milliseconds encrypting. An edit made in that window has no
@@ -325,12 +459,162 @@ public struct SecretEditorView: View {
         .scrollOverflowFade()
     }
 
+    /// `List`'s selection binding, translated through the generation so a
+    /// selection can never outlive the row identities it was made against.
+    private var selectionBinding: Binding<String?> {
+        Binding(
+            get: { selection.id(in: rowGeneration) },
+            set: { selection.select($0, in: rowGeneration) })
+    }
+
     private func toggleReveal(_ id: String) {
-        if revealedRowIDs.contains(id) {
-            revealedRowIDs.remove(id)
-        } else {
-            revealedRowIDs.insert(id)
+        revealed.toggle(id, in: rowGeneration)
+    }
+
+    private func hideEverythingRevealed() {
+        autoHide?.cancel()
+        autoHide = nil
+        revealed.hideAll()
+    }
+
+    /// Starts the auto-hide countdown over, or stops it when nothing is
+    /// revealed. Called from every reveal and every edit, so the deadline is
+    /// always measured from the last time the user touched a revealed value
+    /// rather than from the first reveal of the session.
+    private func restartAutoHide() {
+        autoHide?.cancel()
+        guard !revealed.isEmpty else {
+            autoHide = nil
+            return
         }
+        let timeout = revealTimeout
+        autoHide = Task { @MainActor in
+            // `Task.sleep` throws on cancellation, which is the ordinary way
+            // this task ends — a later reveal restarted the clock.
+            guard (try? await Task.sleep(for: timeout)) != nil else { return }
+            revealed.hideAll()
+            autoHide = nil
+        }
+    }
+}
+
+/// Which rows the user has revealed — and, inseparably, the row-identity
+/// generation they were revealed under.
+///
+/// ## Why the generation is part of the value and not a cleanup step
+/// Reveal is keyed by `SecretRow.id`, which is derived purely from the row's
+/// path, so `ports.1` means "whatever is second in that list *right now*".
+/// Removing `ports.0` renumbers the rest, and the id the user revealed comes
+/// to name the value after it. That is not a stale entry waiting to be tidied
+/// up; it is a live one pointing at a secret nobody asked to see, and it was
+/// three clicks away: reveal `ports.1`, select `ports.0`, press `−`, Save —
+/// and the third list entry is on screen in plaintext, never revealed.
+///
+/// The obvious repair, pruning on every row change, does not close it. A prune
+/// can only drop ids that have *disappeared*, and the dangerous ones are
+/// exactly the ids that survive; one save can even remove a list element and
+/// append another, leaving the id list identical over shifted values. A prune
+/// is also a step someone has to remember to run, in an `onChange` whose
+/// ordering against the reveal it is meant to invalidate is SwiftUI's to
+/// decide and not something a test can pin.
+///
+/// So the generation is stored with the reveal, and every read is answered
+/// against the generation the caller asks about. A reveal recorded under
+/// generation 4 is simply not a reveal in generation 5 — nothing cleaned it
+/// up, it was never a claim about generation 5 in the first place. There is no
+/// step to forget and no ordering to get wrong.
+///
+/// A plain `struct`, so the whole rule is unit-testable without a window —
+/// `RevealedRowsTests` drives it directly, and `RevealedRowTests` drives the
+/// same rule through a real laid-out editor.
+struct RevealedRows: Equatable {
+
+    /// `nil` means "nothing is revealed, under any generation".
+    private var generation: Int?
+    private var ids: Set<String> = []
+
+    init() {}
+
+    /// The starting state for `SecretEditorView`'s `initiallyRevealedRowIDs`
+    /// seam. Empty stays generation-less so an editor constructed with nothing
+    /// revealed is `== RevealedRows()` whatever generation it was built in.
+    init(revealing ids: Set<String>, in generation: Int) {
+        guard !ids.isEmpty else { return }
+        self.generation = generation
+        self.ids = ids
+    }
+
+    var isEmpty: Bool { ids.isEmpty }
+
+    func contains(_ id: String, in generation: Int) -> Bool {
+        self.generation == generation && ids.contains(id)
+    }
+
+    mutating func toggle(_ id: String, in generation: Int) {
+        if contains(id, in: generation) {
+            hide(id, in: generation)
+        } else {
+            reveal(id, in: generation)
+        }
+    }
+
+    mutating func reveal(_ id: String, in generation: Int) {
+        adopt(generation)
+        ids.insert(id)
+    }
+
+    mutating func hide(_ id: String, in generation: Int) {
+        adopt(generation)
+        ids.remove(id)
+        if ids.isEmpty { self.generation = nil }
+    }
+
+    mutating func hideAll() {
+        generation = nil
+        ids = []
+    }
+
+    /// The first reveal in a new generation starts from nothing: whatever was
+    /// revealed under the old one was about rows that may not be these rows.
+    private mutating func adopt(_ generation: Int) {
+        guard self.generation != generation else { return }
+        self.generation = generation
+        ids = []
+    }
+}
+
+/// The selected row id, scoped to a row-identity generation exactly as
+/// `RevealedRows` is, and for the same reason one step along: a selection made
+/// before a renumbering names a different row afterwards, so the next `−`
+/// deletes something other than what the user can see is selected. Both
+/// pieces of state alias the same way because both are path-derived ids held
+/// across a change to the document, so both are fixed the same way rather than
+/// one of them being fixed and the other left as the next report.
+struct RowSelection: Equatable {
+
+    private var generation: Int?
+    private var selected: String?
+
+    init() {}
+
+    init(_ id: String?, in generation: Int) {
+        guard let id else { return }
+        self.generation = generation
+        self.selected = id
+    }
+
+    func id(in generation: Int) -> String? {
+        self.generation == generation ? selected : nil
+    }
+
+    mutating func select(_ id: String?, in generation: Int) {
+        self.generation = id == nil ? nil : generation
+        self.selected = id
+    }
+
+    mutating func clear() {
+        generation = nil
+        selected = nil
     }
 }
 

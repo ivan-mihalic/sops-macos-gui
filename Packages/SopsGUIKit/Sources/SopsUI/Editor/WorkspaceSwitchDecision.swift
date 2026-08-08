@@ -19,6 +19,29 @@
 /// without saving has to be warned exactly as much as one who edited a value,
 /// and `WorkspaceSwitchDecisionTests` drives a real document through both to
 /// prove it rather than trusting the flag's name.
+///
+/// ## Why a save in flight is its own answer
+/// `documentIsDirty` used to be the only input, and during the 133–380 ms a
+/// save spends encrypting it is still `true` — so a switch requested inside
+/// that window got the ordinary unsaved-changes prompt, in which *both*
+/// answers were wrong:
+///
+/// - **"Save and continue"** called `SecretDocumentViewModel.save()`, which
+///   refuses a re-entrant save (`"a save of this document is already in
+///   progress"`). The user was shown a save-failed alert while their save was
+///   in fact succeeding — the app contradicting the file, which is the one
+///   thing this editor may not do.
+/// - **"Discard changes"** tore the editor down, but the `Task` running the
+///   save holds a strong reference to the document and finished anyway:
+///   verified, the discarded changes landed on disk. The user said discard and
+///   the app wrote.
+///
+/// Neither is fixed by wording. The question itself is unanswerable while a
+/// save is in flight, because "are there unsaved changes" has no settled
+/// answer yet — so the decision is `.waitForSaveInFlight`, and the caller asks
+/// again once the save has finished (`SecretDocumentViewModel
+/// .awaitSaveInFlight()`), against a document that has settled. Nothing is
+/// torn down and nothing is asked in the meantime.
 public enum WorkspaceSwitchDecision: Equatable, Sendable {
 
     /// The request names what is already open. Nothing to do, and — the part
@@ -34,19 +57,42 @@ public enum WorkspaceSwitchDecision: Equatable, Sendable {
     /// torn down.
     case askAboutUnsavedChanges
 
+    /// A save is in flight, so whether anything is at stake is not yet
+    /// decided. Do not tear anything down and do not put the question to the
+    /// user; wait for the save to finish and ask again. See the type's doc
+    /// comment for what asking anyway did.
+    ///
+    /// Deliberately *not* "refuse the switch": the user's click is honoured,
+    /// only late. Dropping it would make the file list feel broken for the
+    /// few hundred milliseconds a save takes, which is how a user learns to
+    /// click twice.
+    case waitForSaveInFlight
+
     /// The decision, for any switch target that can be compared — a file URL
-    /// or a project id; both reach the same three answers and differ only in
+    /// or a project id; both reach the same four answers and differ only in
     /// how the caller acts on them.
+    ///
+    /// `saveIsInFlight` is checked before `documentIsDirty`, because during a
+    /// save the dirty flag is still set (it clears only when the saved
+    /// document is adopted) and it is precisely that combination —
+    /// dirty *and* saving — that used to produce a prompt with two wrong
+    /// answers.
     ///
     /// - Parameters:
     ///   - current: what the workspace has open now, `nil` for nothing.
     ///   - requested: what the user just asked for, `nil` to close.
     ///   - documentIsDirty: `SecretDocumentViewModel.isDirty` for the open
     ///     document; `false` when no document is open.
+    ///   - saveIsInFlight: `SecretDocumentViewModel.isSaving` for the open
+    ///     document; `false` when no document is open. Not defaulted, on
+    ///     purpose: a default would let a new call site silently reintroduce
+    ///     the hole this parameter exists to close.
     public static func forSwitch<Target: Equatable>(
-        from current: Target, to requested: Target, documentIsDirty: Bool
+        from current: Target, to requested: Target,
+        documentIsDirty: Bool, saveIsInFlight: Bool
     ) -> WorkspaceSwitchDecision {
         guard current != requested else { return .alreadyThere }
+        if saveIsInFlight { return .waitForSaveInFlight }
         return documentIsDirty ? .askAboutUnsavedChanges : .proceed
     }
 
@@ -60,11 +106,18 @@ public enum WorkspaceSwitchDecision: Equatable, Sendable {
     /// of "is anything at stake" is exactly how the ⌘Q path and the
     /// Dock-icon path came to disagree in the first place.
     ///
+    /// The same delegation is why it takes `saveIsInFlight` too. Terminating
+    /// mid-save is the switch hole with the process teardown added: the write
+    /// may not have happened yet, and there is no editor left to notice. See
+    /// `QuitRequest` for what the app does with the answer.
+    ///
     /// Never returns `.alreadyThere`: there is no such thing as already having
     /// quit, and the caller would have nothing to do with the answer.
-    public static func forQuit(documentIsDirty: Bool) -> WorkspaceSwitchDecision {
+    public static func forQuit(documentIsDirty: Bool, saveIsInFlight: Bool)
+        -> WorkspaceSwitchDecision
+    {
         forSwitch(from: SwitchTarget.theOpenDocument, to: SwitchTarget.nothing,
-                  documentIsDirty: documentIsDirty)
+                  documentIsDirty: documentIsDirty, saveIsInFlight: saveIsInFlight)
     }
 
     /// Only exists to give `forQuit` two distinguishable values to hand

@@ -34,12 +34,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let quitRequest, let unsavedChanges else { return .terminateNow }
-        switch quitRequest.answerTerminationRequest(documentIsDirty: unsavedChanges.isDirty) {
+        switch quitRequest.answerTerminationRequest(
+            documentIsDirty: unsavedChanges.isDirty, saveIsInFlight: unsavedChanges.isSaving)
+        {
         case .terminateNow:
             return .terminateNow
         case .askFirst:
             // Not `.terminateLater`: see QuitRequest's doc comment for why the
             // safe failure here is a cancelled logout and not a hung process.
+            return .terminateCancel
+        case .waitForSaveInFlight:
+            // Same reply, no dialog. A save takes 133–380 ms and cannot be
+            // interrupted; quitting inside that window risks tearing the
+            // process down between the encrypt and the write. The user's next
+            // ⌘Q, a moment later, meets a settled document — and if they were
+            // saving because they wanted to quit, that quit now goes straight
+            // through instead of asking about changes that are already on
+            // disk.
             return .terminateCancel
         }
     }

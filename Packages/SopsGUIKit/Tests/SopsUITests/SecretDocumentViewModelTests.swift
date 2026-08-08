@@ -136,14 +136,143 @@ private func flatYAML(keyCount: Int) -> String {
     (0..<keyCount).map { "key\($0): value-\($0)-abcdefghijkl" }.joined(separator: "\n") + "\n"
 }
 
-/// Counts ticks from a `Task` running on `@MainActor`, used to prove the
-/// main actor stayed free to run other work while `load()`/`save()` were in
-/// flight — a direct test of "the bridge call does not block the main
-/// actor," not just a wall-clock timing that could pass for the wrong
-/// reason (e.g. a fast machine masking a real block).
+/// Counts ticks from a `Task` running on `@MainActor`. Kept for the number it
+/// prints, which is the one the M2 report quotes — **not** as the assertion.
+/// See `MainThreadOccupancy` for why a tick count cannot carry this property.
 private actor TickCounter {
     private(set) var count = 0
     func tick() { count += 1 }
+}
+
+// MARK: - Measuring whether the main actor was blocked
+
+/// How much of a window's wall-clock time the **main thread spent computing**.
+///
+/// # Why not the heartbeat
+///
+/// The obvious instrument — start a `@MainActor` task ticking every 2ms and
+/// check it ticked — was here first, asserting `ticks > 0`, and it certified
+/// nothing. Measured:
+///
+/// | run | load+save | ticks | rate |
+/// |---|---|---|---|
+/// | `--no-parallel`, 3000 keys | 0.21s | 61 | ~290/s |
+/// | `--no-parallel`, 8000 keys | 0.64s | 193 | ~290/s |
+/// | `--filter SecretDocumentViewModel` (parallel) | ~3.8s | 3 | ~0.8/s |
+///
+/// So in the full suite the assertion passed while the main actor was 99.85%
+/// unavailable — 0.15% of the scheduling the test exists to require. And the
+/// first tick is structural: the heartbeat's first `tick()` runs at the first
+/// suspension of `await vm.load()`, before any bridge work, so `> 0` is close
+/// to guaranteed however badly things go.
+///
+/// Raising the bar does not fix it, and neither does a ratio against a
+/// baseline taken in the same run. The starvation is real but it is the
+/// *harness's*: 38 `@MainActor` tests in this file each run `sops` through a
+/// synchronous `Process` from a main-actor test body, in parallel. When the
+/// main actor is saturated by other tests, nothing measured from the main
+/// actor can distinguish "this call blocked it" from "everything else did" —
+/// both the subject window and any control window collapse to the same two or
+/// three ticks.
+///
+/// # What this measures instead
+///
+/// The property is "the bridge call does not block the main actor". Its
+/// mechanical form is "the bridge call does not run its work *on the main
+/// thread*", and that is directly observable from outside: `thread_info` on
+/// the main thread reports the CPU time that thread itself has burned.
+///
+/// Encrypting and decrypting a few thousand keys is CPU-bound work of a few
+/// hundred milliseconds. If the bridge runs it on the main actor, the main
+/// thread's own CPU clock advances by roughly the duration of the call and the
+/// fraction below approaches 1. If it runs off the main actor — a dedicated
+/// `Thread`, as `runOffCooperativePool` does today — the main thread burns
+/// almost nothing and the fraction is near 0.
+///
+/// This is immune to exactly the contention the tick count was not. The other
+/// 37 tests saturate the main actor by *blocking* it in `waitUntilExit` and
+/// `readDataToEndOfFile`, which consume wall-clock time but no CPU; the sops
+/// work itself happens in a child process, charged to that process. Suite
+/// parallelism can therefore stretch the denominator, which only makes the
+/// fraction smaller — it cannot manufacture main-thread CPU that a
+/// correctly-offloaded bridge did not spend.
+///
+/// `mainActorInstrumentDiscriminates` pins both ends of that claim with a
+/// deliberate on-main-thread burn and a deliberate off-main-thread one, so the
+/// instrument's own sensitivity is a test rather than an assertion of mine.
+private struct MainThreadOccupancy {
+    let wallSeconds: Double
+    let cpuSeconds: Double
+
+    /// 0 = the main thread did nothing while this ran; 1 = it was computing
+    /// the whole time.
+    var fraction: Double { cpuSeconds / max(wallSeconds, 1e-9) }
+
+    var description: String {
+        String(format: "%.3fs wall, %.3fs main-thread CPU (%.1f%%)",
+               wallSeconds, cpuSeconds, fraction * 100)
+    }
+}
+
+/// Anything at or above this is read as "the work ran on the main actor".
+/// A genuine block measures ~1.0 (`mainActorInstrumentDiscriminates`'s positive
+/// control); correct offloading measures a few percent. There is nothing near
+/// the middle, so the exact number is not load-bearing — it is set well clear
+/// of both.
+private let blockedMainThreadFraction = 0.5
+
+/// The main thread's own accumulated CPU time, user + system.
+///
+/// `@MainActor` is what makes `mach_thread_self()` the right thread: the main
+/// actor's executor is the main thread, so a call from main-actor-isolated
+/// code is a call from it.
+@MainActor
+private func mainThreadCPUSeconds() -> Double {
+    var info = thread_basic_info()
+    var count = mach_msg_type_number_t(
+        MemoryLayout<thread_basic_info_data_t>.size / MemoryLayout<natural_t>.size)
+    let thread = mach_thread_self()
+    defer { mach_port_deallocate(mach_task_self_, thread) }
+
+    let status = withUnsafeMutablePointer(to: &info) { pointer in
+        pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+            thread_info(thread, thread_flavor_t(THREAD_BASIC_INFO), $0, &count)
+        }
+    }
+    guard status == KERN_SUCCESS else { return .nan }
+
+    func seconds(_ value: time_value_t) -> Double {
+        Double(value.seconds) + Double(value.microseconds) / 1_000_000
+    }
+    return seconds(info.user_time) + seconds(info.system_time)
+}
+
+@MainActor
+private func measuringMainThread<T>(
+    _ body: () async throws -> T
+) async rethrows -> (value: T, occupancy: MainThreadOccupancy) {
+    let cpuStart = mainThreadCPUSeconds()
+    let clockStart = ContinuousClock.now
+    let value = try await body()
+    let elapsed = clockStart.duration(to: .now)
+    let cpu = mainThreadCPUSeconds() - cpuStart
+
+    let wall = Double(elapsed.components.seconds)
+        + Double(elapsed.components.attoseconds) / 1e18
+    return (value, MainThreadOccupancy(wallSeconds: wall, cpuSeconds: cpu))
+}
+
+/// A sink the optimiser cannot discard, so `burnMainThreadCPU` really burns.
+nonisolated(unsafe) private var cpuBurnSink: UInt64 = 0
+
+/// Occupies whatever thread calls it, computing, for `duration`.
+private func burnCPU(for duration: Duration) {
+    let deadline = ContinuousClock.now + duration
+    var accumulator: UInt64 = 0
+    while ContinuousClock.now < deadline {
+        accumulator = accumulator &+ 1
+    }
+    cpuBurnSink = cpuBurnSink &+ accumulator
 }
 
 /// A small document with one of each scalar kind the editor has to render,
@@ -742,11 +871,15 @@ struct SecretDocumentViewModelTests {
 
     // MARK: Review round 1 — the bridge call must not block the main actor
 
-    /// Reproduces the reviewer's measurement directly: a `TickCounter`
-    /// running on `@MainActor` alongside `load()`/`save()` proves the main
-    /// actor stayed free to run other work while the bridge call was in
-    /// flight, and prints the wall-clock timings this report's verification
-    /// section quotes.
+    /// The property: `load()` and `save()` must do the bridge's CPU work
+    /// somewhere other than the main actor, so a window stays responsive while
+    /// a large document is decrypted or re-encrypted.
+    ///
+    /// Asserted on how much CPU the **main thread itself** burned during the
+    /// call — see `MainThreadOccupancy` for why, and for what the heartbeat
+    /// this replaced was actually certifying (0.15% of the scheduling it
+    /// demanded). The heartbeat is still counted and printed, because the M2
+    /// report quotes those numbers; nothing depends on them.
     @Test(
         "load() and save() do not block the main actor, at realistic file sizes",
         arguments: [3_000, 8_000])
@@ -768,45 +901,74 @@ struct SecretDocumentViewModelTests {
         }
         defer { heartbeat.cancel() }
 
-        let loadStart = ContinuousClock.now
-        await vm.load()
-        let loadElapsed = loadStart.duration(to: .now)
+        let (_, loading) = await measuringMainThread { await vm.load() }
         #expect(vm.loadState == .loaded)
 
         let firstRowID = try #require(vm.rows.first).id
         vm.update(rowID: firstRowID, to: "changed-value")
         #expect(vm.isDirty)
 
-        let saveStart = ContinuousClock.now
-        let outcome = await vm.save()
-        let saveElapsed = saveStart.duration(to: .now)
+        let (outcome, saving) = await measuringMainThread { await vm.save() }
         #expect(outcome == .saved)
 
         heartbeat.cancel()
         let finalTicks = await ticks.count
 
         print("=== PERFORMANCE: \(keyCount) keys, \(fileSize) bytes on disk ===")
-        print("  load(): \(loadElapsed)")
-        print("  save(): \(saveElapsed)")
+        print("  load(): \(loading.description)")
+        print("  save(): \(saving.description)")
         print("  MainActor heartbeat ticks during load()+save(): \(finalTicks)")
 
-        // >0, not a larger threshold: under this machine's own heavy
-        // unrelated contention (other processes' CPU load, not this test
-        // suite's own parallelism), the *absolute* tick count is not
-        // reproducible enough to gate on — a tighter bound flaked under
-        // real observed load average >1.5x this machine's core count, from
-        // processes unrelated to this test. Zero ticks is still the
-        // meaningful line: it is what `Task.detached`'s cooperative-pool
-        // starvation actually produced (measured 10-20s stalls, vs. ~0.1-0.4s
-        // off the pool) before this was fixed to a dedicated `Thread` — see
-        // `runOffCooperativePool`'s doc comment. Any tick at all means the
-        // main actor got scheduled at least once while the bridge call was
-        // in flight, which a genuine block cannot produce.
-        #expect(
-            finalTicks > 0,
-            Comment(
-                rawValue: "the main actor should have been scheduled at least once during "
-                    + "load()/save(); got \(finalTicks) heartbeat ticks, which reads as a block"))
+        // The assertion. A bridge call moved back onto the main actor drives
+        // these to ~1.0 — the work is CPU-bound and there is nowhere else for
+        // it to be charged. Correct offloading leaves only the row-building
+        // this type genuinely does on the main actor, a few percent of the
+        // call. `mainActorInstrumentDiscriminates` proves the instrument can
+        // tell those apart; `blockedMainThreadFraction` sits between them with
+        // room on both sides.
+        #expect(loading.fraction < blockedMainThreadFraction, Comment(rawValue:
+            "load() spent \(loading.description) — the main thread did the bridge's work itself, "
+            + "so a window would have been frozen for the whole call"))
+        #expect(saving.fraction < blockedMainThreadFraction, Comment(rawValue:
+            "save() spent \(saving.description) — the main thread did the bridge's work itself, "
+            + "so a window would have been frozen for the whole call"))
+    }
+
+    /// The instrument's own test, and the reason the assertion above is worth
+    /// anything: an occupancy measurement that cannot tell a blocked main
+    /// thread from a busy machine would be the tick counter all over again.
+    ///
+    /// Neither control touches `SecretDocumentViewModel` — they are a known
+    /// block and a known non-block of the same size, so this stays true
+    /// whatever the view model does next.
+    @Test("the main-actor instrument tells a blocked main actor from a busy machine")
+    func mainActorInstrumentDiscriminates() async throws {
+        let burn = Duration.milliseconds(300)
+
+        // Positive control: the work happens on the main actor. This is what a
+        // bridge call reverted to `runOffCooperativePool { … }()` — or to any
+        // synchronous call — looks like from here.
+        let (_, blocked) = await measuringMainThread { burnCPU(for: burn) }
+        #expect(blocked.fraction > 0.8, Comment(rawValue:
+            "the instrument did not see a main thread that was busy for the entire window: "
+            + blocked.description))
+
+        // Negative control: identical work, identical duration, off the main
+        // actor. Suite parallelism can only stretch the wall time here, which
+        // pushes the fraction further down — it cannot invent main-thread CPU.
+        let (_, offloaded) = await measuringMainThread {
+            await Task.detached { burnCPU(for: burn) }.value
+        }
+        #expect(offloaded.fraction < blockedMainThreadFraction, Comment(rawValue:
+            "the instrument reported a block for work that ran on a detached task, so it is "
+            + "measuring machine load rather than main-thread occupancy: " + offloaded.description))
+
+        print("=== INSTRUMENT: on main actor \(blocked.description); off main actor \(offloaded.description) ===")
+
+        // And the two are on opposite sides of the threshold the test above
+        // uses, in this run, on this machine.
+        #expect(blocked.fraction > blockedMainThreadFraction)
+        #expect(offloaded.fraction < blocked.fraction / 2)
     }
 }
 
@@ -1354,5 +1516,160 @@ struct SecretDocumentViewModelAtomicSaveTests {
         #expect(!message.contains("never-lands"), "the error must not carry the edited value")
         #expect(vm.isDirty, "the edit must still be reported as unsaved")
         #expect(try String(contentsOf: fileURL, encoding: .utf8) == before, "the file was modified")
+    }
+}
+
+/// A document that has all three of the things sops treats differently when it
+/// decides what to encrypt: an ordinary value, an empty string, and a null.
+/// sops encrypts the first and neither of the other two, which is what makes
+/// this the fixture the padlock gets wrong.
+private let padlockYAML = """
+    filled: an-ordinary-EXAMPLE-value
+    blank: ""
+    nothing: null
+
+    """
+
+/// What the padlock next to each row claims, against what the file says.
+///
+/// `SecretRow.isEncrypted` is the app's answer to "is this value protected",
+/// rendered as `lock.fill`/`lock.open` with the accessibility labels
+/// `editorValueEncrypted`/`editorValueNotEncrypted` (`SecretEditorView`). It is
+/// not decoration, and it is the kind of claim that is only worth anything if
+/// it is true every time — a padlock that is right nine times out of ten is
+/// worse than none, because the tenth is the one the user acts on.
+///
+/// It was wrong in a reachable, ordinary case. A save that changed no keys used
+/// to re-adopt the rows already in memory and carry `isEncrypted` over from
+/// before the write. sops does not encrypt an empty string, so `blank: ""`
+/// loads as not-encrypted; type a real value into it, save, and the file holds
+/// `ENC[…]` while the editor goes on saying, in words, that the value is not
+/// encrypted — until a reload.
+///
+/// Every test here checks the model against **the file itself**, either by
+/// reading the ciphertext or by loading it again from scratch. Asserting the
+/// model against another part of the model would have passed throughout.
+@Suite("SecretDocumentViewModel — what the padlock claims")
+@MainActor
+struct SecretDocumentPadlockTests {
+
+    private func loaded(_ yaml: String) async throws -> (SecretDocumentViewModel, AgeKeyPair, URL) {
+        let key = try AgeKeyPair.generate()
+        let fileURL = try encryptedFixture(yaml, key: key)
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        await vm.load()
+        #expect(vm.loadState == .loaded)
+        return (vm, key, fileURL)
+    }
+
+    private func row(_ vm: SecretDocumentViewModel, _ path: String...) throws -> SecretRow {
+        guard let found = vm.rows.first(where: { $0.path == path }) else {
+            throw FixtureError("no row at \(path); present: \(vm.rows.map { $0.path.joined(separator: ".") })")
+        }
+        return found
+    }
+
+    /// Loads the same file again, from scratch, and returns its rows — the
+    /// file's own answer, produced by the same bridge call `load()` uses.
+    private func rowsAsTheFileHasThem(_ fileURL: URL, key: AgeKeyPair) async throws -> [SecretRow] {
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let fresh = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        await fresh.load()
+        #expect(fresh.loadState == .loaded, "the saved file could not be read back")
+        return fresh.rows
+    }
+
+    /// The premise, checked rather than assumed: if sops started encrypting
+    /// empty strings, every test below would be testing nothing.
+    @Test("the fixture really does load with an empty value reported as unencrypted")
+    func fixturePremiseHolds() async throws {
+        let (vm, _, _) = try await loaded(padlockYAML)
+        #expect(try row(vm, "filled").isEncrypted, "an ordinary value must load as encrypted")
+        #expect(try !row(vm, "blank").isEncrypted, "sops does not encrypt an empty string")
+        #expect(try !row(vm, "nothing").isEncrypted, "sops does not encrypt a null")
+    }
+
+    /// The finding. One edit, no keys added or removed, and the padlock lies.
+    @Test("filling in an empty value and saving stops claiming the value is unencrypted")
+    func fillingAnEmptyValueUpdatesThePadlock() async throws {
+        let (vm, key, fileURL) = try await loaded(padlockYAML)
+        vm.update(rowID: try row(vm, "blank").id, to: "now-a-real-EXAMPLE-value")
+
+        #expect(await vm.save() == .saved)
+
+        // The file's answer first, so the expectation below is anchored to
+        // something outside the object under test.
+        let onDisk = try String(contentsOf: fileURL, encoding: .utf8)
+        #expect(onDisk.contains("blank: ENC["),
+                "the fixture did not actually encrypt the new value, so this proves nothing")
+        #expect(try row(vm, "blank").isEncrypted,
+                "the editor says this value is not encrypted; the file says ENC[…]")
+        #expect(try await rowsAsTheFileHasThem(fileURL, key: key).contains {
+            $0.path == ["blank"] && $0.isEncrypted
+        })
+    }
+
+    /// The reverse, and the one that costs more: a closed padlock over a value
+    /// that is sitting in the file as plaintext.
+    @Test("clearing an encrypted value stops claiming the value is still encrypted")
+    func clearingAValueUpdatesThePadlock() async throws {
+        let (vm, key, fileURL) = try await loaded(padlockYAML)
+        vm.update(rowID: try row(vm, "filled").id, to: "")
+
+        #expect(await vm.save() == .saved)
+
+        let onDisk = try String(contentsOf: fileURL, encoding: .utf8)
+        #expect(!onDisk.contains("filled: ENC["),
+                "the fixture did not actually leave the value in the clear, so this proves nothing")
+        #expect(try !row(vm, "filled").isEncrypted,
+                "the editor shows a closed padlock over a value the file holds in the clear")
+        #expect(try await rowsAsTheFileHasThem(fileURL, key: key).contains {
+            $0.path == ["filled"] && !$0.isEncrypted
+        })
+    }
+
+    /// The general property the two cases above are instances of, stated once
+    /// so a future fast path cannot reintroduce the class of bug by finding a
+    /// case neither of them happens to cover: **after any save, every row the
+    /// editor is showing is exactly the row a fresh load of that file
+    /// produces** — path, value, kind, list membership and padlock.
+    @Test("after a save, every row matches what a fresh load of the saved file reports")
+    func savedRowsMatchTheFileExactly() async throws {
+        let (vm, key, fileURL) = try await loaded(padlockYAML)
+        vm.update(rowID: try row(vm, "blank").id, to: "filled-in-EXAMPLE")
+        vm.update(rowID: try row(vm, "filled").id, to: "")
+        vm.update(rowID: try row(vm, "nothing").id, to: "no-longer-null-EXAMPLE")
+
+        #expect(await vm.save() == .saved)
+
+        let fromFile = try await rowsAsTheFileHasThem(fileURL, key: key)
+        // Padlock state only in the message — never a value.
+        let onScreen = vm.rows.map { "\($0.path)=\($0.isEncrypted)" }
+        let inFile = fromFile.map { "\($0.path)=\($0.isEncrypted)" }
+        #expect(vm.rows == fromFile,
+                "the editor and the file disagree: \(onScreen) vs \(inFile)")
+    }
+
+    /// The same property for a save that *did* change the shape, which always
+    /// re-read the file and so was never wrong — pinned so the two branches
+    /// cannot drift apart again now that there is only one of them.
+    @Test("a shape-changing save matches the file exactly too")
+    func structuralSaveRowsMatchTheFileExactly() async throws {
+        let (vm, key, fileURL) = try await loaded(padlockYAML)
+        let destination = vm.addDestination(forSelectedRowID: nil)
+        guard case .added = vm.addRow(
+            in: destination, key: "added", kind: .string, value: "added-EXAMPLE-value")
+        else {
+            Issue.record("the fixture add was refused")
+            return
+        }
+        vm.removeRow(id: try row(vm, "nothing").id)
+
+        #expect(await vm.save() == .saved)
+
+        #expect(vm.rows == (try await rowsAsTheFileHasThem(fileURL, key: key)))
     }
 }

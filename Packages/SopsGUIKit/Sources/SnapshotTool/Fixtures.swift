@@ -488,6 +488,44 @@ enum Fixtures {
         return (model, selected)
     }
 
+    /// One row revealed, the rest masked — the state a reveal actually puts
+    /// the editor in, and the one nothing had ever looked at. Every other
+    /// editor snapshot shows an all-masked list, so the eye/eye-slash swap,
+    /// the plaintext field beside eight bullets, and the fact that only the
+    /// clicked row opens up were all unreviewed.
+    ///
+    /// Returned with the ids to reveal, because reveal is a click and this
+    /// tool cannot click — the same reason `editorPendingChangesViewModel`
+    /// returns a selection.
+    ///
+    /// Short document, deliberately: a `List` is a `ScrollView` and this tool
+    /// only sees its unscrolled top (CLAUDE.md), so a revealed row below the
+    /// fold would review nothing. The values are obviously fake, per the
+    /// standing rule — a snapshot is a PNG of a plaintext secret, and this is
+    /// the one fixture where that is the entire subject.
+    static func editorRevealedRowViewModel() async throws -> (SecretDocumentViewModel, Set<String>) {
+        let key = try SnapshotAgeKeyPair.generate()
+        let encrypted = try SopsBridge.encryptYAML(
+            """
+            db:
+                host: db.internal.example
+                password: correct-horse-battery-staple-EXAMPLE
+            api_key: sk_live_EXAMPLEEXAMPLEEXAMPLEEXAMPLE0001
+            """, recipients: [key.public])
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let model = SecretDocumentViewModel(
+            fileURL: URL(fileURLWithPath: "/dev/null/snapshot-revealed.yaml"),
+            keyStore: store,
+            readFile: { _ in encrypted })
+        await model.load()
+
+        let revealed = model.rows
+            .filter { $0.path == ["db", "password"] }
+            .map(\.id)
+        return (model, Set(revealed))
+    }
+
     /// The `+` sheet, in both shapes it has: a named key for a map, and an
     /// appended entry for a list.
     static func addRowSheet(isList: Bool) -> EditorAddRowSheet {

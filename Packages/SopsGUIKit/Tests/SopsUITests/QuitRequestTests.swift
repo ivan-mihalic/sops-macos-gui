@@ -42,14 +42,14 @@ struct QuitRequestTests {
     @Test("a termination request with unsaved edits is refused and asks instead")
     func dirtyTerminationAsks() {
         let request = QuitRequest()
-        #expect(request.answerTerminationRequest(documentIsDirty: true) == .askFirst)
+        #expect(request.answerTerminationRequest(documentIsDirty: true, saveIsInFlight: false) == .askFirst)
         #expect(request.isAsking, "the refusal has to actually put the question on screen")
     }
 
     @Test("a termination request with nothing unsaved goes straight through")
     func cleanTerminationProceeds() {
         let request = QuitRequest()
-        #expect(request.answerTerminationRequest(documentIsDirty: false) == .terminateNow)
+        #expect(request.answerTerminationRequest(documentIsDirty: false, saveIsInFlight: false) == .terminateNow)
         #expect(!request.isAsking, "there is nothing to ask about")
     }
 
@@ -62,7 +62,7 @@ struct QuitRequestTests {
         // ⌘Q, then the Dock icon, then a logout, then osascript — four
         // deliveries of the same question with nothing changed in between.
         for _ in 1...4 {
-            #expect(request.answerTerminationRequest(documentIsDirty: true) == .askFirst)
+            #expect(request.answerTerminationRequest(documentIsDirty: true, saveIsInFlight: false) == .askFirst)
         }
     }
 
@@ -74,11 +74,11 @@ struct QuitRequestTests {
     @Test("after the user commits, a still-dirty document no longer blocks the quit")
     func settledRequestLetsTheQuitThrough() {
         let request = QuitRequest()
-        #expect(request.answerTerminationRequest(documentIsDirty: true) == .askFirst)
+        #expect(request.answerTerminationRequest(documentIsDirty: true, saveIsInFlight: false) == .askFirst)
 
         request.settle()
 
-        #expect(request.answerTerminationRequest(documentIsDirty: true) == .terminateNow)
+        #expect(request.answerTerminationRequest(documentIsDirty: true, saveIsInFlight: false) == .terminateNow)
         #expect(!request.isAsking, "committing to the quit has to take the prompt down")
     }
 
@@ -87,7 +87,7 @@ struct QuitRequestTests {
         let request = QuitRequest()
         request.settle()
         for _ in 1...3 {
-            #expect(request.answerTerminationRequest(documentIsDirty: true) == .terminateNow)
+            #expect(request.answerTerminationRequest(documentIsDirty: true, saveIsInFlight: false) == .terminateNow)
         }
         #expect(request.isSettled)
     }
@@ -99,14 +99,14 @@ struct QuitRequestTests {
     @Test("a cancelled prompt leaves the guard armed for the next quit")
     func cancellingRearmsTheGuard() {
         let request = QuitRequest()
-        #expect(request.answerTerminationRequest(documentIsDirty: true) == .askFirst)
+        #expect(request.answerTerminationRequest(documentIsDirty: true, saveIsInFlight: false) == .askFirst)
 
         request.cancel()
 
         #expect(!request.isAsking)
         #expect(!request.isSettled, "backing out of a quit is not committing to one")
         #expect(
-            request.answerTerminationRequest(documentIsDirty: true) == .askFirst,
+            request.answerTerminationRequest(documentIsDirty: true, saveIsInFlight: false) == .askFirst,
             "the next quit has to ask again")
     }
 
@@ -124,19 +124,88 @@ struct QuitRequestTests {
     /// means. This pins the delegation itself.
     @Test("the quit decision is the file-switch decision with the target fixed")
     func quitIsASwitchToNothing() {
+        // Both axes, not just dirty: the save-in-flight answer has to be
+        // delegated too, or the ⌘Q path and the file-switch path start
+        // disagreeing again — one file over from where they last did.
         for dirty in [true, false] {
-            #expect(
-                WorkspaceSwitchDecision.forQuit(documentIsDirty: dirty)
-                    == WorkspaceSwitchDecision.forSwitch(
-                        from: 1, to: 0, documentIsDirty: dirty),
-                "quitting must reach the same answer as switching away from the document")
+            for saving in [true, false] {
+                #expect(
+                    WorkspaceSwitchDecision.forQuit(
+                        documentIsDirty: dirty, saveIsInFlight: saving)
+                        == WorkspaceSwitchDecision.forSwitch(
+                            from: 1, to: 0, documentIsDirty: dirty, saveIsInFlight: saving),
+                    "quitting must reach the same answer as switching away from the document")
+            }
         }
+    }
+
+    // MARK: - Quitting on top of a save in flight
+
+    /// The switch hole with the process teardown added. A save takes 133–380 ms
+    /// and is not interruptible; terminating inside that window can tear the
+    /// process down between the encrypt and the write, and there is no editor
+    /// left to notice. So the quit is refused — and, unlike the dirty case, no
+    /// question is put, because during a save "are there unsaved changes" has
+    /// no settled answer to ask about.
+    @Test("a termination request during a save is refused without asking anything")
+    func terminationDuringASaveWaits() {
+        let request = QuitRequest()
+        #expect(
+            request.answerTerminationRequest(documentIsDirty: true, saveIsInFlight: true)
+                == .waitForSaveInFlight)
+        #expect(!request.isAsking, "there is no question to put while a save is in flight")
+    }
+
+    /// `isDirty` clears only when the saved document is adopted, so the
+    /// realistic mid-save state is dirty *and* saving. This pins the other
+    /// combination anyway, because a caller reading `isSaving` from one place
+    /// and `isDirty` from another can produce it.
+    @Test("a save in flight refuses the quit even with nothing recorded as dirty")
+    func terminationDuringASaveWaitsEvenWhenClean() {
+        let request = QuitRequest()
+        #expect(
+            request.answerTerminationRequest(documentIsDirty: false, saveIsInFlight: true)
+                == .waitForSaveInFlight)
+    }
+
+    /// The latch outranks it: `settle()` is only ever called immediately
+    /// before `NSApp.terminate` on a path that has already resolved the
+    /// document, so re-arming here would make a committed quit unquittable.
+    @Test("a settled quit is not held up by a save in flight")
+    func settledQuitIgnoresASaveInFlight() {
+        let request = QuitRequest()
+        request.settle()
+        #expect(
+            request.answerTerminationRequest(documentIsDirty: true, saveIsInFlight: true)
+                == .terminateNow)
+    }
+
+    /// The editor forwards both halves through the same tracker, so the app
+    /// delegate reads one object rather than working either out for itself.
+    @Test("the tracker carries the save-in-flight flag to the quit decision")
+    func trackerCarriesSaveInFlight() {
+        let tracker = UnsavedChangesTracker()
+        let request = QuitRequest()
+
+        tracker.update(isDirty: true, isSaving: true, save: { .saved })
+        #expect(
+            request.answerTerminationRequest(
+                documentIsDirty: tracker.isDirty, saveIsInFlight: tracker.isSaving)
+                == .waitForSaveInFlight)
+
+        // The save landed and the document is still dirty (it failed, say) —
+        // now there is a real question again.
+        tracker.update(isDirty: true, isSaving: false, save: { .saved })
+        #expect(
+            request.answerTerminationRequest(
+                documentIsDirty: tracker.isDirty, saveIsInFlight: tracker.isSaving)
+                == .askFirst)
     }
 
     @Test("quitting never reports alreadyThere: there is no such thing as having already quit")
     func quitNeverReportsAlreadyThere() {
-        #expect(WorkspaceSwitchDecision.forQuit(documentIsDirty: true) != .alreadyThere)
-        #expect(WorkspaceSwitchDecision.forQuit(documentIsDirty: false) != .alreadyThere)
+        #expect(WorkspaceSwitchDecision.forQuit(documentIsDirty: true, saveIsInFlight: false) != .alreadyThere)
+        #expect(WorkspaceSwitchDecision.forQuit(documentIsDirty: false, saveIsInFlight: false) != .alreadyThere)
     }
 
     // MARK: - Driven by a real document, not by a Bool
@@ -153,16 +222,16 @@ struct QuitRequestTests {
         let tracker = UnsavedChangesTracker()
         let request = QuitRequest()
 
-        #expect(request.answerTerminationRequest(documentIsDirty: tracker.isDirty) == .terminateNow)
+        #expect(request.answerTerminationRequest(documentIsDirty: tracker.isDirty, saveIsInFlight: false) == .terminateNow)
 
-        tracker.update(isDirty: true, save: { .saved })
-        #expect(request.answerTerminationRequest(documentIsDirty: tracker.isDirty) == .askFirst)
+        tracker.update(isDirty: true, isSaving: false, save: { .saved })
+        #expect(request.answerTerminationRequest(documentIsDirty: tracker.isDirty, saveIsInFlight: false) == .askFirst)
 
         // The editor leaving clears the registration, and the quit stops
         // asking — the same `clear()` that stops "Save and Quit" resurrecting
         // a save against a document the user already moved away from.
         tracker.clear()
         request.cancel()
-        #expect(request.answerTerminationRequest(documentIsDirty: tracker.isDirty) == .terminateNow)
+        #expect(request.answerTerminationRequest(documentIsDirty: tracker.isDirty, saveIsInFlight: false) == .terminateNow)
     }
 }

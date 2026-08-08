@@ -49,7 +49,7 @@ struct WorkspaceSwitchDecisionTests {
     func dirtyFileSwitchAsks() {
         #expect(
             WorkspaceSwitchDecision.forSwitch(
-                from: Self.fileA, to: Self.fileB, documentIsDirty: true)
+                from: Self.fileA, to: Self.fileB, documentIsDirty: true, saveIsInFlight: false)
                 == .askAboutUnsavedChanges)
     }
 
@@ -57,7 +57,7 @@ struct WorkspaceSwitchDecisionTests {
     func cleanFileSwitchProceeds() {
         #expect(
             WorkspaceSwitchDecision.forSwitch(
-                from: Self.fileA, to: Self.fileB, documentIsDirty: false)
+                from: Self.fileA, to: Self.fileB, documentIsDirty: false, saveIsInFlight: false)
                 == .proceed)
     }
 
@@ -67,7 +67,7 @@ struct WorkspaceSwitchDecisionTests {
     func reselectingTheOpenFileIsNotASwitch() {
         #expect(
             WorkspaceSwitchDecision.forSwitch(
-                from: Self.fileA, to: Self.fileA, documentIsDirty: true)
+                from: Self.fileA, to: Self.fileA, documentIsDirty: true, saveIsInFlight: false)
                 == .alreadyThere)
     }
 
@@ -75,7 +75,7 @@ struct WorkspaceSwitchDecisionTests {
     func openingFromNothingProceeds() {
         #expect(
             WorkspaceSwitchDecision.forSwitch(
-                from: URL?.none, to: Self.fileA, documentIsDirty: false)
+                from: URL?.none, to: Self.fileA, documentIsDirty: false, saveIsInFlight: false)
                 == .proceed)
     }
 
@@ -85,7 +85,7 @@ struct WorkspaceSwitchDecisionTests {
     func closingADirtyDocumentAsks() {
         #expect(
             WorkspaceSwitchDecision.forSwitch(
-                from: Self.fileA, to: URL?.none, documentIsDirty: true)
+                from: Self.fileA, to: URL?.none, documentIsDirty: true, saveIsInFlight: false)
                 == .askAboutUnsavedChanges)
     }
 
@@ -99,7 +99,7 @@ struct WorkspaceSwitchDecisionTests {
     func dirtyProjectSwitchAsks() {
         let a = StoredProject.ID(), b = StoredProject.ID()
         #expect(
-            WorkspaceSwitchDecision.forSwitch(from: a, to: b, documentIsDirty: true)
+            WorkspaceSwitchDecision.forSwitch(from: a, to: b, documentIsDirty: true, saveIsInFlight: false)
                 == .askAboutUnsavedChanges)
     }
 
@@ -107,7 +107,7 @@ struct WorkspaceSwitchDecisionTests {
     func cleanProjectSwitchProceeds() {
         let a = StoredProject.ID(), b = StoredProject.ID()
         #expect(
-            WorkspaceSwitchDecision.forSwitch(from: a, to: b, documentIsDirty: false)
+            WorkspaceSwitchDecision.forSwitch(from: a, to: b, documentIsDirty: false, saveIsInFlight: false)
                 == .proceed)
     }
 
@@ -115,7 +115,7 @@ struct WorkspaceSwitchDecisionTests {
     func reselectingTheOpenProjectIsNotASwitch() {
         let a = StoredProject.ID()
         #expect(
-            WorkspaceSwitchDecision.forSwitch(from: a, to: a, documentIsDirty: true)
+            WorkspaceSwitchDecision.forSwitch(from: a, to: a, documentIsDirty: true, saveIsInFlight: false)
                 == .alreadyThere)
     }
 
@@ -138,14 +138,25 @@ struct WorkspaceSwitchDecisionTests {
     /// A loaded `SecretDocumentViewModel` over real sops ciphertext and a
     /// real age identity — one identity and one encrypt for the whole suite,
     /// per its doc comment. Neither ever touches the main actor.
-    private func loadedDocument() async throws -> SecretDocumentViewModel {
+    private func loadedDocument(observedBy observer: SaveObserver? = nil) async throws
+        -> SecretDocumentViewModel
+    {
         let fixture = try #require(sharedFixture, "the shared sops fixture could not be built")
         let model = try await MainActor.run {
             let store = SessionKeyStore()
             try store.importKey(fixture.privateKey)
-            return SecretDocumentViewModel(
+            let model = SecretDocumentViewModel(
                 fileURL: WorkspaceSwitchDecisionTests.fileA,
-                keyStore: store, readFile: { _ in fixture.encrypted })
+                keyStore: store, readFile: { _ in fixture.encrypted },
+                // No expectation to check, and nothing on disk to check it
+                // against: these fixtures never touch the filesystem.
+                fingerprintFile: { _ in nil },
+                writeFile: { contents, _, _ in
+                    observer?.write(contents)
+                    return nil
+                })
+            observer?.model = model
+            return model
         }
         await model.load()
         #expect(await model.loadState == .loaded, "the fixture document did not decrypt")
@@ -155,9 +166,11 @@ struct WorkspaceSwitchDecisionTests {
     private func decision(forSwitchingAwayFrom model: SecretDocumentViewModel) async
         -> WorkspaceSwitchDecision
     {
-        // Exactly what `ProjectWorkspaceView.requestFileSwitch(to:)` computes.
+        // Exactly what `ProjectWorkspaceView.requestFileSwitch(to:)` computes —
+        // both inputs read off the same model, not one of them hardcoded here.
         await WorkspaceSwitchDecision.forSwitch(
-            from: Self.fileA, to: Self.fileB, documentIsDirty: model.isDirty)
+            from: Self.fileA, to: Self.fileB,
+            documentIsDirty: model.isDirty, saveIsInFlight: model.isSaving)
     }
 
     @Test("a freshly loaded document lets a file switch through")
@@ -227,6 +240,164 @@ struct WorkspaceSwitchDecisionTests {
         }
         #expect(await !model.isDirty)
         #expect(await decision(forSwitchingAwayFrom: model) == .proceed)
+    }
+
+    // MARK: - A save in flight
+
+    // The window is 133–380 ms wide, measured, and the file list and sidebar
+    // used to stay live across it. Inside it the ordinary unsaved-changes
+    // prompt had two answers and both were wrong: "Save and continue" called
+    // `save()`, which refuses a re-entrant save, so the user got a save-failed
+    // alert while the save was succeeding; "Discard changes" tore the editor
+    // down while the `Task` running the save kept the document alive and wrote
+    // the discarded changes to disk.
+
+    @Test("a save in flight is its own answer, not the unsaved-changes prompt")
+    func saveInFlightWaits() {
+        #expect(
+            WorkspaceSwitchDecision.forSwitch(
+                from: Self.fileA, to: Self.fileB, documentIsDirty: true, saveIsInFlight: true)
+                == .waitForSaveInFlight)
+    }
+
+    /// `isDirty` clears only when the saved document is adopted, so in practice
+    /// a save in flight is always dirty too. Pinned on its own anyway: the
+    /// answer must come from the save, not from the two happening to coincide.
+    @Test("a save in flight outranks a clean document")
+    func saveInFlightOutranksClean() {
+        #expect(
+            WorkspaceSwitchDecision.forSwitch(
+                from: Self.fileA, to: Self.fileB, documentIsDirty: false, saveIsInFlight: true)
+                == .waitForSaveInFlight)
+    }
+
+    /// Re-clicking the open row is still not leaving it, save or no save.
+    /// Making a user wait for a switch that is not a switch would be a new way
+    /// of being wrong about the same window.
+    @Test("re-selecting the open file during a save is still not a switch")
+    func reselectingDuringASaveIsNotASwitch() {
+        #expect(
+            WorkspaceSwitchDecision.forSwitch(
+                from: Self.fileA, to: Self.fileA, documentIsDirty: true, saveIsInFlight: true)
+                == .alreadyThere)
+    }
+
+    /// The same thing again, but against a **real save actually in flight** —
+    /// a real age identity, a real sops encrypt, and the decision computed
+    /// from the live model exactly as `ProjectWorkspaceView` computes it. The
+    /// three cases above would pass over a `saveIsInFlight` nothing ever sets;
+    /// this is the one that says the flag is true when it matters.
+    ///
+    /// Observed from *inside* the save rather than by racing it from outside.
+    /// `writeFile` is called on the main actor from within `save()`, with
+    /// `isSaving` set — so this is the mid-save moment itself, not a poll that
+    /// hopes to land in it. The first version did poll, and on this fixture
+    /// (five keys, an encrypt in single-digit milliseconds) it missed the
+    /// window every time: a test that has to be lucky to see the bug is a test
+    /// that will one day be unlucky about the fix.
+    @Test("a real, in-flight save produces the wait decision from the live model")
+    func realInFlightSaveIsSeenByTheDecision() async throws {
+        let observer = await SaveObserver()
+        let model = try await loadedDocument(observedBy: observer)
+        try await MainActor.run {
+            let row = try #require(model.rows.first { $0.path == ["db", "password"] })
+            model.update(rowID: row.id, to: "rotated-EXAMPLE-value")
+            observer.duringWrite = { model in
+                WorkspaceSwitchDecision.forSwitch(
+                    from: WorkspaceSwitchDecisionTests.fileA,
+                    to: WorkspaceSwitchDecisionTests.fileB,
+                    documentIsDirty: model.isDirty, saveIsInFlight: model.isSaving)
+            }
+        }
+        #expect(await decision(forSwitchingAwayFrom: model) == .askAboutUnsavedChanges)
+
+        #expect(await model.save() == .saved)
+
+        #expect(await observer.contents != nil, "the fixture save never reached the writer")
+        #expect(
+            await observer.observedDecision == .waitForSaveInFlight,
+            "a switch requested mid-save must neither prompt nor proceed")
+        // And once it lands the question is asked again, against a document
+        // that has settled — which is the whole point of waiting rather than
+        // refusing: the user's click is honoured, just late.
+        #expect(await decision(forSwitchingAwayFrom: model) == .proceed)
+    }
+
+    /// What the workspace waits on. Polling `isSaving` from a view would be
+    /// the obvious alternative and a worse one; this is the seam that makes
+    /// the deferred switch a suspension instead of a loop.
+    ///
+    /// The waiter is started from inside `writeFile`, i.e. from within the
+    /// save, so there is no window to miss: it is guaranteed to suspend, and
+    /// what is asserted is that it comes back at all and comes back *after*
+    /// the save is done.
+    @Test("awaitSaveInFlight suspends inside a save and returns once it has finished")
+    func awaitSaveInFlightWaitsForTheSave() async throws {
+        let observer = await SaveObserver()
+        let model = try await loadedDocument(observedBy: observer)
+        try await MainActor.run {
+            let row = try #require(model.rows.first { $0.path == ["db", "password"] })
+            model.update(rowID: row.id, to: "rotated-again-EXAMPLE-value")
+            observer.startWaiterDuringWrite = true
+        }
+
+        #expect(await model.save() == .saved)
+
+        let waiter = try #require(await observer.waiter, "no waiter was started inside the save")
+        let resumedWhileStillSaving = await waiter.value
+        #expect(
+            resumedWhileStillSaving == false,
+            "the wait returned while the save was still in flight")
+    }
+
+    /// With no save in flight it must not suspend at all — a workspace that
+    /// hung here would never switch files again. This test hanging *is* the
+    /// failure; there is nothing more to assert.
+    @Test("awaitSaveInFlight returns immediately when nothing is saving")
+    func awaitSaveInFlightIsANoOpWhenIdle() async throws {
+        let model = try await loadedDocument()
+        await model.awaitSaveInFlight()
+        #expect(await !model.isSaving)
+    }
+}
+
+/// A window into the middle of a save.
+///
+/// `SecretDocumentViewModel.writeFile` is the last thing a save does, on the
+/// main actor, with `isSaving` still set — the only place a test can stand
+/// inside the 133–380 ms window deterministically instead of trying to catch
+/// it from outside. It also keeps the saved bytes out of the filesystem: this
+/// suite's `fileA`/`fileB` are `/tmp/project/…` paths that do not exist, and a
+/// decision test has no business creating them.
+@MainActor
+final class SaveObserver {
+    /// Set by `loadedDocument` right after construction, because the write
+    /// closure has to be handed to the initializer that produces the model it
+    /// wants to ask about.
+    var model: SecretDocumentViewModel?
+    var contents: String?
+
+    /// Evaluated during the write, against the live model.
+    var duringWrite: ((SecretDocumentViewModel) -> WorkspaceSwitchDecision)?
+    private(set) var observedDecision: WorkspaceSwitchDecision?
+
+    /// Whether to start an `awaitSaveInFlight()` waiter from inside the write.
+    /// Its value is `isSaving` *as the waiter saw it on resuming* — `false` is
+    /// the passing answer.
+    var startWaiterDuringWrite = false
+    private(set) var waiter: Task<Bool, Never>?
+
+    func write(_ contents: String) {
+        self.contents = contents
+        if let model, let duringWrite {
+            observedDecision = duringWrite(model)
+        }
+        if startWaiterDuringWrite, let model {
+            waiter = Task { @MainActor in
+                await model.awaitSaveInFlight()
+                return model.isSaving
+            }
+        }
     }
 }
 

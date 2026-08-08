@@ -73,12 +73,14 @@ private enum Outcome<Success: Sendable>: Sendable {
 /// leaves no pending change at all, so the document is clean, not "dirty
 /// because something happened once".
 ///
-/// A save that changed the document's **shape** reloads from the bytes it
-/// just produced instead of trusting the in-memory rows. It has to: removing
-/// a list element renumbers everything after it, so the paths this type is
-/// holding stop matching the file the moment such a save succeeds, and the
-/// next edit would land on the wrong element. A value-only save keeps the
-/// fast path, because nothing about it can move a path.
+/// **Every** save reloads from the bytes it just produced instead of trusting
+/// the in-memory rows. It has to: removing a list element renumbers everything
+/// after it, so the paths this type is holding stop matching the file the
+/// moment such a save succeeds, and the next edit would land on the wrong
+/// element. A value-only save cannot move a path — but it can still change
+/// what the file says about a row (whether the value is ciphertext, for one),
+/// so it is re-read too. See `adoptSavedDocument(_:)` for the fast path that
+/// used to be here and the padlock it got wrong.
 ///
 /// ## Merge keys
 /// A row whose path contains the literal segment `"<<"` comes from a YAML
@@ -109,12 +111,44 @@ public final class SecretDocumentViewModel {
     public private(set) var loadState: LoadState = .idle
     public private(set) var isDirty = false
 
+    /// Bumped every time a row id may have come to name a **different value**
+    /// than it did before.
+    ///
+    /// `SecretRow.id` is derived purely from the row's path
+    /// (`SopsDocument.swift`), which is what makes it stable across reloads of
+    /// the same document — and also what makes it *unstable* across anything
+    /// that renumbers a list: remove `ports[0]` and the id `ports.1` stops
+    /// meaning the value it meant a moment ago and starts meaning the one
+    /// after it. Anything holding a row id across such a change is holding a
+    /// pointer that has been silently re-aimed.
+    ///
+    /// A view cannot work this out from `rows` alone. "The id list is
+    /// unchanged" is not enough — one save can remove a list element and
+    /// append another, leaving the same ids over shifted values. So the type
+    /// that *does* know says so, once, with a counter: state keyed by row id
+    /// (which row is revealed, which row is selected) is valid only for the
+    /// generation it was recorded under and is void for any other. See
+    /// `RevealedRows`/`RowSelection` in `SecretEditorView.swift`, which is why
+    /// this is not a private detail.
+    ///
+    /// Deliberately **not** bumped by `update(rowID:to:)`: typing a new value
+    /// into a row cannot move any path, and masking a field the moment the
+    /// user types into it would make a revealed row unusable.
+    public private(set) var rowIdentityGeneration = 0
+
     /// Whether a `save()` is in flight.
     ///
     /// Exposed because the editor must disable its editing affordances while
     /// it is true, and because the view having its own copy of this is how
     /// the two can disagree. See `save()`.
     public private(set) var isSaving = false
+
+    /// Everyone waiting on `awaitSaveInFlight()`, resumed together when the
+    /// save in flight finishes. Not `@ObservationIgnored`-worthy bookkeeping
+    /// that anyone reads — it exists only so a caller can *wait* rather than
+    /// poll `isSaving`, which is what a "did the save finish yet" loop in a
+    /// view would otherwise have to do.
+    private var saveCompletionWaiters: [CheckedContinuation<Void, Never>] = []
 
     private let fileURL: URL
     private let keyStore: SessionKeyStore
@@ -313,6 +347,7 @@ public final class SecretDocumentViewModel {
     private func resetToEmpty() {
         baselineRows = []
         discardPendingChanges()
+        invalidateRowIdentity()
         rows = []
         encryptedContents = nil
         // Cleared alongside the ciphertext it describes. A fingerprint left
@@ -325,7 +360,17 @@ public final class SecretDocumentViewModel {
     private func adoptBaseline(_ newRows: [SecretRow]) {
         baselineRows = newRows
         discardPendingChanges()
+        invalidateRowIdentity()
         recompose()
+    }
+
+    /// See `rowIdentityGeneration`. Called from every place a row id can come
+    /// to name a different value — a new baseline, a reset, an addition, a
+    /// removal — and from nowhere else. `&+=` because the only thing anyone
+    /// may do with this number is compare two of them for equality; wrapping
+    /// after 2⁶³ edits is not a correctness question, but trapping would be.
+    private func invalidateRowIdentity() {
+        rowIdentityGeneration &+= 1
     }
 
     private func discardPendingChanges() {
@@ -538,6 +583,7 @@ public final class SecretDocumentViewModel {
             PendingAddition(
                 document: destination.document, parent: destination.parent,
                 key: name, kind: kind, value: value))
+        invalidateRowIdentity()
         recompose()
 
         guard let id = pendingAdditionIndexByRowID.first(where: { $0.value == pendingAdditions.count - 1 })?.key
@@ -545,6 +591,7 @@ public final class SecretDocumentViewModel {
             // Unreachable: recompose always produces a row per pending
             // addition. Undo rather than report an id that does not exist.
             pendingAdditions.removeLast()
+            invalidateRowIdentity()
             recompose()
             return .refused(.notLoaded)
         }
@@ -602,6 +649,7 @@ public final class SecretDocumentViewModel {
         } else {
             return
         }
+        invalidateRowIdentity()
         recompose()
     }
 
@@ -780,7 +828,15 @@ public final class SecretDocumentViewModel {
         // `removeRow` all refuse. See the "A save is not interruptible"
         // section of this method's doc comment.
         isSaving = true
-        defer { isSaving = false }
+        defer {
+            isSaving = false
+            // Taken and cleared before resuming, so a waiter that immediately
+            // starts another save cannot find itself in a list this `defer` is
+            // still walking.
+            let waiters = saveCompletionWaiters
+            saveCompletionWaiters = []
+            for waiter in waiters { waiter.resume() }
+        }
 
         // Same reasoning as `load()`: `body` receives the key and hops off
         // this actor itself; the key never lives in a local variable here.
@@ -822,8 +878,35 @@ public final class SecretDocumentViewModel {
             // the same hole one write later. See
             // `AtomicWriteReceipt.fingerprint`.
             loadedFingerprint = written
-            await adoptSavedDocument(newEncrypted, changedShape: !changes.adds.isEmpty || !changes.removes.isEmpty)
+            await adoptSavedDocument(newEncrypted)
             return .saved
+        }
+    }
+
+    /// Returns once the save currently in flight has finished, or immediately
+    /// if there is none.
+    ///
+    /// This exists for the workspace's "you are leaving a dirty document"
+    /// prompt. That prompt used to be put to the user *during* a save, where
+    /// both of its answers were wrong: "Save and continue" called `save()`,
+    /// which refuses a re-entrant save, so the user was shown a save-failed
+    /// alert while the save was in fact succeeding; and "Discard changes" tore
+    /// the editor down while the `Task` running the save kept a strong
+    /// reference to this object and went on to write the discarded changes to
+    /// disk. The window is 133–380 ms, measured, and both outcomes were
+    /// reproduced in it.
+    ///
+    /// Waiting is the answer rather than cancelling because the save is not
+    /// cancellable and should not be: past the point where `applyChanges` has
+    /// produced bytes, the only choices are to write them or to throw away a
+    /// completed encryption, and a half-applied save is the one outcome this
+    /// type refuses to have. So the switch is *deferred* by at most that
+    /// window and then decided again against a settled document — see
+    /// `WorkspaceSwitchDecision.waitForSaveInFlight`.
+    public func awaitSaveInFlight() async {
+        guard isSaving else { return }
+        await withCheckedContinuation { continuation in
+            saveCompletionWaiters.append(continuation)
         }
     }
 
@@ -851,29 +934,41 @@ public final class SecretDocumentViewModel {
         return SecretChangeSet(sets: sets, adds: adds, removes: removes)
     }
 
-    /// Resyncs this type with the file it just wrote.
+    /// Resyncs this type with the file it just wrote, by re-reading the bytes
+    /// it just produced. Always — there is no fast path.
     ///
-    /// A value-only save cannot move a path, so the rows already on screen
-    /// are still correct and become the new baseline directly. A save that
-    /// added or removed something can move paths — removing a list element
-    /// renumbers every element after it — so the in-memory paths stop
-    /// matching the file and the next edit would land on the wrong element.
-    /// That case re-reads the bytes it just produced, which is the only
-    /// source of truth for where things ended up.
+    /// There used to be one, for a save that changed no keys: such a save
+    /// cannot move a path, so the rows already on screen were re-adopted
+    /// directly, carrying each row's fields over from before the save. That
+    /// reasoning was sound about paths and wrong about everything else a
+    /// `SecretRow` carries. `isEncrypted` is the one that bit: sops does not
+    /// encrypt an empty string, so `blank: ""` loads with `isEncrypted ==
+    /// false`, and after the user typed a real value and saved it, the file on
+    /// disk held `ENC[…]` while the row carried the old `false` — so the
+    /// editor drew an open padlock, labelled `editorValueNotEncrypted`, over a
+    /// value that *was* encrypted, until the next reload. The reverse (clearing
+    /// an encrypted value) drew a closed padlock over plaintext on disk. A
+    /// padlock is not decoration; it is the app's answer to "is this
+    /// protected", and answering it from memory that predates the write is
+    /// exactly the "screen disagrees with the file" failure this milestone is
+    /// about.
     ///
-    /// If that re-read fails the *file is still saved* — the bytes are on
+    /// It could have been narrowed instead — only a value crossing
+    /// empty↔non-empty can flip sops's answer for an unchanged path, so only
+    /// those saves need the re-read. That is very probably true, and "very
+    /// probably" is the standard `save()`'s own doc comment refuses ("a fix
+    /// that is right for one branch and quietly wrong for the other is the
+    /// plausible-instead-of-certain pattern this project keeps paying for").
+    /// Reading it back is certain, it is the only source of truth for what the
+    /// file now says, and it costs one decrypt of bytes already in memory —
+    /// measured at ~73 ms for a 3,000-key document against the 120–380 ms the
+    /// encrypt in front of it already spends, off the cooperative pool
+    /// (`runOffCooperativePool`). Certainty is worth that here.
+    ///
+    /// If the re-read fails the *file is still saved* — the bytes are on
     /// disk. The document simply can no longer be shown, and saying so is
     /// more honest than leaving a stale editor open over it.
-    private func adoptSavedDocument(_ newEncrypted: String, changedShape: Bool) async {
-        guard changedShape else {
-            adoptBaseline(rows.map {
-                SecretRow(
-                    document: $0.document, path: $0.path, value: $0.value, kind: $0.kind,
-                    isInList: $0.isInList, isPendingAdd: false, isEncrypted: $0.isEncrypted)
-            })
-            return
-        }
-
+    private func adoptSavedDocument(_ newEncrypted: String) async {
         let reloaded: Outcome<[SecretRow]>? = await keyStore.withKey { key in
             await Self.decrypt(newEncrypted, agePrivateKey: key)
         }

@@ -249,6 +249,7 @@ enum Catalog {
         let needsKey = await Fixtures.editorNeedsKeyViewModel()
         let failed = try await Fixtures.editorLoadFailedViewModel()
         let (pending, pendingSelection) = try await Fixtures.editorPendingChangesViewModel()
+        let (revealed, revealedRowIDs) = try await Fixtures.editorRevealedRowViewModel()
 
         let editorSize = CGSize(width: 760, height: 560)
         func editor(_ name: String, _ model: SecretDocumentViewModel, fileName: String) -> Snapshot {
@@ -270,6 +271,16 @@ enum Catalog {
                     viewModel: pending, fileName: "production.secrets.yaml",
                     unsavedChanges: UnsavedChangesTracker(),
                     initiallySelectedRowID: pendingSelection)
+            },
+            // One row revealed and the rest masked — the state a click on the
+            // eye produces. Task 20: reveal had no snapshot and no test at
+            // all, which is how a revealed row came to survive a save that
+            // renumbered the list under it.
+            Snapshot("editor-revealed-row", size: editorSize) {
+                SecretEditorView(
+                    viewModel: revealed, fileName: "production.secrets.yaml",
+                    unsavedChanges: UnsavedChangesTracker(),
+                    initiallyRevealedRowIDs: revealedRowIDs)
             },
             Snapshot("editor-add-sheet-map", size: CGSize(width: 460, height: 330)) {
                 Fixtures.addRowSheet(isList: false)

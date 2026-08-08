@@ -16,6 +16,18 @@ public enum TerminationDecision: Equatable, Sendable {
     /// There are unsaved edits. Do not terminate; put the question to the user
     /// instead — `QuitRequest.isAsking` has been set.
     case askFirst
+    /// A save is in flight. Do not terminate, and do not ask anything either:
+    /// the question has no settled answer yet, and both of the answers the
+    /// unsaved-changes prompt offers are wrong inside that window (see
+    /// `WorkspaceSwitchDecision`). Tearing the process down there is the same
+    /// hole with no editor left to notice — the write may not have happened.
+    ///
+    /// Refusing the quit outright, with no prompt, is the deliberate choice
+    /// over `.terminateLater`, for the reason set out under "`.terminateCancel`,
+    /// not `.terminateLater`" below: a save takes 133–380 ms, so the user's
+    /// next ⌘Q lands on a settled document, and the failure mode is a quit
+    /// that has to be repeated rather than one that loses the file.
+    case waitForSaveInFlight
 }
 
 /// The single place a request to quit is answered, whoever asked.
@@ -84,9 +96,26 @@ public final class QuitRequest {
     ///   the editor's own `SecretDocumentViewModel.isDirty` — all three kinds
     ///   of pending change, not just edited values. See
     ///   `WorkspaceSwitchDecision`'s "What dirty has to mean here".
-    public func answerTerminationRequest(documentIsDirty: Bool) -> TerminationDecision {
+    /// - Parameter saveIsInFlight: `UnsavedChangesTracker.isSaving`, which is
+    ///   the editor's own `SecretDocumentViewModel.isSaving`. See
+    ///   `TerminationDecision.waitForSaveInFlight`.
+    ///
+    /// The settled latch still wins over everything, including a save in
+    /// flight — it is only ever set immediately before `NSApp.terminate` on a
+    /// path that has already resolved the document (a discard the user chose,
+    /// or a save that returned `.saved`), so there is nothing left for this to
+    /// protect and re-arming here would make the app unquittable.
+    public func answerTerminationRequest(documentIsDirty: Bool, saveIsInFlight: Bool)
+        -> TerminationDecision
+    {
         guard !isSettled else { return .terminateNow }
-        switch WorkspaceSwitchDecision.forQuit(documentIsDirty: documentIsDirty) {
+        switch WorkspaceSwitchDecision.forQuit(
+            documentIsDirty: documentIsDirty, saveIsInFlight: saveIsInFlight)
+        {
+        case .waitForSaveInFlight:
+            // Deliberately does not set `isAsking`: there is no question to
+            // put, only a few hundred milliseconds to wait out.
+            return .waitForSaveInFlight
         case .askAboutUnsavedChanges:
             isAsking = true
             return .askFirst

@@ -23,16 +23,27 @@ import Observation
 public final class UnsavedChangesTracker {
 
     public private(set) var isDirty = false
+
+    /// Whether the active editor's document has a save in flight — the
+    /// editor's own `SecretDocumentViewModel.isSaving`, forwarded for the same
+    /// reason `isDirty` is: the quit path has to know, and it cannot reach the
+    /// view model. Terminating inside that window, or offering to save again
+    /// inside it, is the hole `WorkspaceSwitchDecision.waitForSaveInFlight`
+    /// exists to close.
+    public private(set) var isSaving = false
+
     private var saveAction: (() async -> SaveOutcome)?
 
     public init() {}
 
-    /// Called by the active editor whenever its document's `isDirty` changes,
-    /// and once when it appears. `save` is invoked, if at all, from
-    /// `save()` below — never stored and called except in response to an
-    /// explicit save request, and never retained past the next `update`/`clear`.
-    public func update(isDirty: Bool, save: (() async -> SaveOutcome)?) {
+    /// Called by the active editor whenever its document's `isDirty` or
+    /// `isSaving` changes, and once when it appears. `save` is invoked, if at
+    /// all, from `save()` below — never stored and called except in response to
+    /// an explicit save request, and never retained past the next
+    /// `update`/`clear`.
+    public func update(isDirty: Bool, isSaving: Bool, save: (() async -> SaveOutcome)?) {
         self.isDirty = isDirty
+        self.isSaving = isSaving
         self.saveAction = save
     }
 
@@ -43,6 +54,7 @@ public final class UnsavedChangesTracker {
     /// against a document the user already moved away from.
     public func clear() {
         isDirty = false
+        isSaving = false
         saveAction = nil
     }
 

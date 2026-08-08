@@ -148,10 +148,21 @@ private struct ProjectWorkspaceView: View {
         NavigationSplitView {
             ProjectSidebar(model: projects)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 220)
+                // Everything that can leave the open document is unavailable
+                // while that document is being written, for the same reason
+                // `SecretEditorView` already disables its own rows and
+                // toolbar: a save is not interruptible, so a control that
+                // looks live but cannot be honoured until the save lands
+                // should not look live. `requestProjectSwitch`/
+                // `requestFileSwitch` still handle the case, because a click
+                // can land in the instant before the disable takes effect and
+                // a correctness property may not rest on a `.disabled`.
+                .disabled(openDocumentIsSaving)
         } detail: {
             HSplitView {
                 fileListPane
                     .frame(minWidth: 220, idealWidth: 260, maxHeight: .infinity)
+                    .disabled(openDocumentIsSaving)
                 editorPane
                     .frame(minWidth: 360, maxHeight: .infinity)
             }
@@ -230,23 +241,56 @@ private struct ProjectWorkspaceView: View {
     /// not just edited values.
     private var openDocumentIsDirty: Bool { documentViewModel?.isDirty == true }
 
+    /// The other half of the question, and the half that used to be missing.
+    /// See `WorkspaceSwitchDecision`'s "Why a save in flight is its own
+    /// answer" for what a prompt put inside this window did to the file.
+    private var openDocumentIsSaving: Bool { documentViewModel?.isSaving == true }
+
     private func requestProjectSwitch(to id: StoredProject.ID?) {
         switch WorkspaceSwitchDecision.forSwitch(
-            from: activeProjectID, to: id, documentIsDirty: openDocumentIsDirty)
+            from: activeProjectID, to: id,
+            documentIsDirty: openDocumentIsDirty, saveIsInFlight: openDocumentIsSaving)
         {
         case .alreadyThere: return
         case .proceed: activateProject(id)
         case .askAboutUnsavedChanges: pendingSwitch = .project(id)
+        case .waitForSaveInFlight:
+            // The click is kept, not dropped: `projects.selection` already
+            // holds `id` (ProjectSidebar writes it directly), so leaving it
+            // alone and re-deciding when the save lands is both the honest
+            // thing on screen and the one that does not lose the gesture.
+            retryWhenSaveLands { requestProjectSwitch(to: id) }
         }
     }
 
     private func requestFileSwitch(to url: URL?) {
         switch WorkspaceSwitchDecision.forSwitch(
-            from: selectedFileURL, to: url, documentIsDirty: openDocumentIsDirty)
+            from: selectedFileURL, to: url,
+            documentIsDirty: openDocumentIsDirty, saveIsInFlight: openDocumentIsSaving)
         {
         case .alreadyThere: return
         case .proceed: activateFile(url)
         case .askAboutUnsavedChanges: pendingSwitch = .file(url)
+        case .waitForSaveInFlight: retryWhenSaveLands { requestFileSwitch(to: url) }
+        }
+    }
+
+    /// Re-asks the question once the save in flight has finished — 133–380 ms,
+    /// measured — and never tears anything down in between.
+    ///
+    /// Terminates: `awaitSaveInFlight()` returns only when `isSaving` is back
+    /// to `false`, so the re-decision cannot reach `.waitForSaveInFlight`
+    /// again unless the user started *another* save in the meantime, which
+    /// requires the Save button they cannot reach while the panes are
+    /// disabled.
+    private func retryWhenSaveLands(_ retry: @escaping @MainActor () -> Void) {
+        guard let documentViewModel else {
+            retry()
+            return
+        }
+        Task { @MainActor in
+            await documentViewModel.awaitSaveInFlight()
+            retry()
         }
     }
 
