@@ -9,6 +9,13 @@ import SopsHealth
 private let validKey = "AGE-SECRET-KEY-1QZ7X9K3M8V2N5P0R4T6W1Y8B3D9F2H5J7L0Q4S6U8W1Z3"
 private let distinctiveGarbage = "NOT-AN-AGE-KEY-XYZZY-PLUGH-QUUX-42"
 
+/// The three line endings a real `keys.txt` might use: bare LF (the common
+/// case), CRLF (Windows, or `git core.autocrlf=true`), and a lone CR. A
+/// file-scope constant, not a member of the `@MainActor`-isolated test
+/// suite below — `@Test(arguments:)` needs to evaluate this outside actor
+/// isolation, at macro-expansion time.
+private let lineEndings = ["\n", "\r\n", "\r"]
+
 @Suite("SessionKeyStore")
 @MainActor
 struct SessionKeyStoreTests {
@@ -161,6 +168,102 @@ struct SessionKeyStoreTests {
         # created: 2026-08-06T12:00:00Z
         # public key: age1exampleexampleexampleexampleexampleexampleexamplex
         """
+
+        #expect(throws: SessionKeyStore.Error.empty) {
+            try store.importFromKeysFileContents(contents)
+        }
+        #expect(store.state == .empty)
+    }
+
+    // MARK: - Line endings (CRLF regression)
+
+    // Review finding: `Character` is an extended grapheme cluster, and CRLF
+    // ("\r\n") is *one* such cluster, not two — splitting on the `Character`
+    // "\n" alone never breaks a CRLF-encoded keys.txt into lines at all.
+    // Reproduced by the reviewer two ways: an all-comment CRLF file with a
+    // good key present was refused as `.empty` (the key was never separated
+    // out of the single unsplit "line"), and a key-first CRLF file had its
+    // key plus every following "\r\n#comment" line accepted as a single
+    // AGE-SECRET-KEY-1…-prefixed blob and stored as "the key" — silently
+    // defeating the multi-key refusal above, since nothing was ever split
+    // into candidates to count. Same gotcha as Task 1b's
+    // `String.contains("\nsops:")` blind spot against `"\r\nsops:"`.
+    //
+    // Each of the four shapes above (single key with comments, several
+    // keys, comments only, blank lines only) is re-run under all three line
+    // endings a real file might use — bare LF, CRLF, and a lone CR (see the
+    // file-scope `lineEndings` constant above).
+
+    @Test("a keys.txt with comments then one key imports correctly under any line ending",
+          arguments: lineEndings)
+    func singleKeyWithCommentsFirstImportsAcrossLineEndings(lineEnding: String) throws {
+        let store = SessionKeyStore()
+        let contents = [
+            "# created: 2026-08-06T12:00:00Z",
+            "# public key: age1exampleexampleexampleexampleexampleexampleexamplex",
+            validKey,
+        ].joined(separator: lineEnding)
+
+        try store.importFromKeysFileContents(contents)
+
+        #expect(store.state == .configured)
+        #expect(store.withKey { $0 } == validKey)
+    }
+
+    // The specific shape that broke under CRLF: the key comes *first*, with
+    // a comment line trailing it. Before the fix, this stored the key with
+    // the trailing "\r\n# comment..." text still glued onto it, because the
+    // unsplit blob still satisfied `hasPrefix("AGE-SECRET-KEY-1")`.
+    @Test("a keys.txt with one key then a comment imports just the key under any line ending",
+          arguments: lineEndings)
+    func singleKeyThenCommentImportsAcrossLineEndings(lineEnding: String) throws {
+        let store = SessionKeyStore()
+        let contents = [
+            validKey,
+            "# public key: age1exampleexampleexampleexampleexampleexampleexamplex",
+        ].joined(separator: lineEnding)
+
+        try store.importFromKeysFileContents(contents)
+
+        #expect(store.state == .configured)
+        // Must be exactly the key, with no trailing newline/comment text
+        // riding along — the failure mode this test guards against stored
+        // the whole multi-line blob as "the key".
+        #expect(store.withKey { $0 } == validKey)
+    }
+
+    @Test("a keys.txt with several keys is refused under any line ending", arguments: lineEndings)
+    func multipleKeysRefusedAcrossLineEndings(lineEnding: String) {
+        let store = SessionKeyStore()
+        let secondKey = "AGE-SECRET-KEY-1L5R8T2N6Q9V3X7Z1B4D8F0H2J6M9P3R5T8W0Y2A4C6E8"
+        let contents = [
+            "# personal", validKey, "# work", secondKey,
+        ].joined(separator: lineEnding)
+
+        #expect(throws: SessionKeyStore.Error.multipleKeysInFile(count: 2)) {
+            try store.importFromKeysFileContents(contents)
+        }
+        #expect(store.state == .empty)
+    }
+
+    @Test("a comments-only keys.txt is refused as empty under any line ending", arguments: lineEndings)
+    func commentsOnlyRefusedAcrossLineEndings(lineEnding: String) {
+        let store = SessionKeyStore()
+        let contents = [
+            "# created: 2026-08-06T12:00:00Z",
+            "# public key: age1exampleexampleexampleexampleexampleexampleexamplex",
+        ].joined(separator: lineEnding)
+
+        #expect(throws: SessionKeyStore.Error.empty) {
+            try store.importFromKeysFileContents(contents)
+        }
+        #expect(store.state == .empty)
+    }
+
+    @Test("a keys.txt with only blank lines is refused as empty under any line ending", arguments: lineEndings)
+    func blankLinesOnlyRefusedAcrossLineEndings(lineEnding: String) {
+        let store = SessionKeyStore()
+        let contents = ["", "", ""].joined(separator: lineEnding)
 
         #expect(throws: SessionKeyStore.Error.empty) {
             try store.importFromKeysFileContents(contents)

@@ -136,9 +136,29 @@ public final class SessionKeyStore {
     /// file to the one key they want, or paste that specific key into the
     /// paste field directly — which always accepts exactly one key, by
     /// construction.
-    public func importFromKeysFileContents(_ contents: String) throws {
+    /// Splitting on `"\n"` (a single-`Character` separator) does not do what
+    /// it looks like it does: Swift's `Character` is an extended grapheme
+    /// cluster, and CRLF (`"\r\n"`) is *one* such cluster, not two. A
+    /// `keys.txt` written on Windows, or passed through `git
+    /// core.autocrlf=true`, or edited on a shared drive, never contains a
+    /// bare `"\n"` character at all — splitting on it left the whole file as
+    /// a single "line", which broke this method two different ways at once:
+    /// an all-comment CRLF file was refused as `.empty` even with a good key
+    /// present (the key line was never separated out), and a key-first CRLF
+    /// file had its key *and* every following `\r\n#comment` line accepted
+    /// as one `AGE-SECRET-KEY-1…`-prefixed blob — silently defeating the
+    /// multi-key refusal this method exists to enforce, since nothing was
+    /// ever split into candidates to count.
+    ///
+    /// This is the second time this exact gotcha has bitten this codebase —
+    /// Task 1b's `String.contains("\nsops:")` had the identical blind spot
+    /// against `"\r\nsops:"`. `Character.isNewline` is the fix both times:
+    /// it recognizes LF, CR, and the CRLF cluster as a single newline each,
+    /// so `split(whereSeparator:)` breaks the content into lines correctly
+    /// under any of the three.
+    func importFromKeysFileContents(_ contents: String) throws {
         let keyLines = contents
-            .split(separator: "\n", omittingEmptySubsequences: false)
+            .split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty && !$0.hasPrefix("#") }
 
