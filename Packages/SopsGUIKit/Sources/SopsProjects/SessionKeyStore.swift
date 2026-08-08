@@ -176,8 +176,10 @@ public final class SessionKeyStore {
     /// `key`, and only on success.
     ///
     /// This is also always an explicit user gesture from `KeyImportView`'s
-    /// "Import from `~/.config/sops/age/keys.txt`" button, never something
-    /// this app does on its own — `SecurityPostureCheck`'s
+    /// key-file import control — a button when exactly one candidate file
+    /// exists, a menu the user picks from when several do (see
+    /// `LegacyKeyFileImportOptions`) — never something this app does on its
+    /// own, and never a path this app chose. `SecurityPostureCheck`'s
     /// `security.legacy-key-file` finding exists precisely to warn that this
     /// file sits unprotected, and silently reading it on the app's own
     /// initiative would contradict that warning.

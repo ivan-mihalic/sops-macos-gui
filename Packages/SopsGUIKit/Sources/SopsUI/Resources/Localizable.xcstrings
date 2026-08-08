@@ -888,7 +888,18 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Import from ~/.config/sops/age/keys.txt"
+            "value": "Import from this key file"
+          }
+        }
+      }
+    },
+    "key.import.legacy-choose-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import from a key file…"
           }
         }
       }
@@ -899,7 +910,29 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This only reads that file when you press the button above — never automatically."
+            "value": "This only reads a key file when you ask it to — never automatically."
+          }
+        }
+      }
+    },
+    "key.import.legacy-none-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No key file to import"
+          }
+        }
+      }
+    },
+    "key.import.legacy-none-footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No age key file is sitting at any of the places sops reads one from:"
           }
         }
       }

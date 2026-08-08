@@ -83,6 +83,54 @@ struct AgeKeyFileLocationTests {
         #expect(Set(paths).count == paths.count, "\(paths)")
     }
 
+    // MARK: - The shared existence question and the shared remediation
+
+    /// `SecurityPostureCheck` and `KeyImportView`'s import control both need
+    /// "is there a regular file here?", and this is the one place that answers
+    /// it. A second copy is how the path list itself came to disagree with
+    /// itself — see this type's doc comment.
+    @Test("a directory sitting where a key file would be is not a key file")
+    func directoryIsNotAKeyFile() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("home-" + UUID().uuidString)
+        let directory = home.appendingPathComponent(".config/sops/age/keys.txt")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let paths = AgeKeyFileLocations.candidates(environment: [:], homeDirectory: home.path)
+        #expect(AgeKeyFileLocations.existingFiles(among: paths).isEmpty,
+                "a `mkdir -p keys.txt` is not a plaintext key")
+        #expect(!AgeKeyFileLocations.isRegularFile(directory.path))
+    }
+
+    @Test("existingFiles keeps the order it was given")
+    func existingFilesPreservesOrder() {
+        let paths = ["/a/keys.txt", "/b/keys.txt", "/c/keys.txt"]
+        let found = AgeKeyFileLocations.existingFiles(among: paths) { $0 != "/b/keys.txt" }
+
+        #expect(found == ["/a/keys.txt", "/c/keys.txt"])
+    }
+
+    /// One `chmod 600`, built in one place, so the health finding's
+    /// remediation and the import view's post-import callout cannot say
+    /// different things about the same file.
+    @Test("the protect command single-quotes every path it names")
+    func protectCommandQuotes() throws {
+        let command = try #require(
+            AgeKeyFileLocations.protectCommand(for: ["/Users/probe/a b/keys.txt", "/x/keys.txt"]))
+
+        #expect(command == "chmod 600 '/Users/probe/a b/keys.txt' '/x/keys.txt'")
+    }
+
+    /// `ShellQuoting` refuses a name no single-line command can carry, and
+    /// this must pass that refusal along rather than emit a command that
+    /// silently spans two lines. Reachable: `SOPS_AGE_KEY_FILE` is a user
+    /// -settable environment variable and may hold anything.
+    @Test("a path no single-line command can name yields no command")
+    func protectCommandRefusesUnquotablePath() {
+        #expect(AgeKeyFileLocations.protectCommand(for: ["/x/keys\n.txt"]) == nil)
+    }
+
     // MARK: - What the finding says
 
     /// The defect this suite exists for. An all-clear that names nothing is

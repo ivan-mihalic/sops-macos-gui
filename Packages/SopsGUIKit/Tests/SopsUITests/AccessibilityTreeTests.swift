@@ -318,6 +318,108 @@ struct AccessibilityTreeTests {
         #expect(nodes.contains { $0.value == "sops" })
         #expect(nodes.contains { $0.value.contains("/opt/homebrew/bin/sops") })
     }
+
+    // MARK: - KeyImportView: what the import control claims about the disk
+
+    /// The label was the worst part of the wrong-path defect.
+    ///
+    /// `KeyImportView`'s button read *"Import from ~/.config/sops/age/keys.txt"*
+    /// unconditionally while `SecurityPostureCheck` had already been fixed to
+    /// look in the three places the embedded sops really reads
+    /// (`AgeKeyFileLocations`). Naming a path the click will not use is not a
+    /// cosmetic slip: it is the app asserting, in the one place the user looks,
+    /// that it is looking somewhere it is not.
+    ///
+    /// These render the real view — `./Scripts/snapshots.sh` shows the same
+    /// three states as pixels, and pixels are the better proof of layout, but
+    /// only the tree can be asserted on in CI.
+    private static let libraryKeyFile =
+        "/Users/probe/Library/Application Support/sops/age/keys.txt"
+    private static let dotConfigKeyFile = "/Users/probe/.config/sops/age/keys.txt"
+
+    @MainActor
+    private func keyImportTree(_ options: LegacyKeyFileImportOptions,
+                               store: SessionKeyStore = SessionKeyStore()) -> [AXProbe.Node] {
+        AXProbe.tree(size: CGSize(width: 560, height: 460)) {
+            KeyImportView(store: store, legacyKeyFiles: { options })
+        }
+    }
+
+    @Test("with exactly one key file, the control names the path it will read")
+    @MainActor
+    func oneKeyFileIsNamedInTheControl() {
+        let nodes = keyImportTree(.one(Self.libraryKeyFile))
+        let text = nodes.map { $0.label + " " + $0.value }.joined(separator: "\n")
+
+        // Canary: an empty tree cannot name anything, and every assertion
+        // below would pass by finding nothing.
+        #expect(text.contains(LocalizedKey.keyImportLegacyButton.text),
+                "the tree did not populate — this test would be vacuous")
+        #expect(text.contains(Self.libraryKeyFile),
+                "the control must name the file a click actually reads: \(text)")
+        #expect(!text.contains(Self.dotConfigKeyFile),
+                "the path this app used to hardcode must not appear: \(text)")
+    }
+
+    /// With two candidates there is no true answer to "which file?" until the
+    /// user gives one, so the control's own label must not pretend there is.
+    /// The paths live on the menu's items, which do not exist until it is
+    /// opened — and opening it is the user's gesture, not this app's.
+    @Test("with several key files, the control names no path before the click")
+    @MainActor
+    func severalKeyFilesNameNoPathUpFront() {
+        let nodes = keyImportTree(.several([Self.libraryKeyFile, Self.dotConfigKeyFile]))
+        let text = nodes.map { $0.label + " " + $0.value }.joined(separator: "\n")
+
+        #expect(text.contains(LocalizedKey.keyImportLegacyChooseButton.text),
+                "the tree did not populate — this test would be vacuous: \(text)")
+        #expect(!text.contains(Self.libraryKeyFile), "a path was named up front: \(text)")
+        #expect(!text.contains(Self.dotConfigKeyFile), "a path was named up front: \(text)")
+    }
+
+    /// "No key file found" is worth nothing unless the user can see *where*
+    /// this app looked — the same lesson `SecurityPostureCheck`'s all-clear
+    /// had to learn, one view over.
+    @Test("with no key file, the control names every place it looked")
+    @MainActor
+    func noKeyFileNamesEveryPlaceSearched() {
+        let searched = [Self.libraryKeyFile, Self.dotConfigKeyFile]
+        let nodes = keyImportTree(.noneFound(searched: searched))
+        let text = nodes.map { $0.label + " " + $0.value }.joined(separator: "\n")
+
+        #expect(text.contains(LocalizedKey.keyImportLegacyNoneButton.text),
+                "the tree did not populate — this test would be vacuous: \(text)")
+        for path in searched {
+            #expect(text.contains(path), "an all-clear must say where it looked: \(text)")
+        }
+    }
+
+    /// The property `KeyImportView`'s header comment exists to protect, tested
+    /// against a real file rather than asserted in prose: building and laying
+    /// out the whole view over a key file that genuinely exists on disk must
+    /// leave the store empty. Resolving the candidates is a `stat` per path;
+    /// the `open` happens on a click and nowhere else.
+    @Test("showing the view never reads a key file that is really there")
+    @MainActor
+    func showingTheViewImportsNothing() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("keyfile-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let keyFile = directory.appendingPathComponent("keys.txt")
+        // A real, well-formed identity would be imported successfully if this
+        // view ever read the file on its own — which is the point. Obviously
+        // fake per CLAUDE.md: never generated, never a usable key.
+        try "AGE-SECRET-KEY-1EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE\n"
+            .write(to: keyFile, atomically: true, encoding: .utf8)
+
+        let store = SessionKeyStore()
+        let nodes = keyImportTree(.one(keyFile.path), store: store)
+
+        #expect(!nodes.isEmpty, "the tree did not populate — this test would be vacuous")
+        #expect(store.state == .empty,
+                "the view imported a key nobody asked it to import")
+    }
 }
 
 /// A throwaway age identity from the real `age-keygen`. Mirrors

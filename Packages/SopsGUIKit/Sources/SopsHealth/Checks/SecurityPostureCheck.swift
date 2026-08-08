@@ -143,8 +143,19 @@ public struct SecurityPostureCheck: HealthCheck {
                           // point at (the sibling finding below had the same
                           // defect before it was fixed). Settings › Key is
                           // real as of this task, and only import exists.
+                          //
+                          // This sentence used to end "…or import it from
+                          // ~/.config/sops/age/keys.txt." — the third copy of
+                          // the wrong path, in the one place a user reading a
+                          // health report would take as authoritative. It
+                          // names no path now, for the reason
+                          // `LegacyKeyFileImportOptions` states at length:
+                          // this check cannot know which file, if any, that
+                          // button will offer, and naming one it might not
+                          // use is how the app told the user to look
+                          // somewhere it was not looking.
                           remediation: Remediation(
-                              explanation: "Import an existing age key in Settings › Key — paste it directly, or import it from ~/.config/sops/age/keys.txt."))
+                              explanation: "Import an existing age key in Settings › Key — paste it directly, or import it from a key file this app finds on disk."))
         case .unavailable(let reason):
             // The row renders the skip reason and the detail back to back, so
             // printing the same sentence into both read as a stutter.
@@ -188,11 +199,11 @@ public struct SecurityPostureCheck: HealthCheck {
                                  detail: "Nothing here is a statement about whether one exists.")
         }
 
-        let found = legacyKeyFilePaths.filter { path in
-            var isDirectory: ObjCBool = false
-            return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
-                && !isDirectory.boolValue
-        }
+        // `AgeKeyFileLocations.existingFiles`, not an inline filter: this is
+        // the same "does a regular file sit here?" question `KeyImportView`'s
+        // import control asks, and answering it twice is how the path list
+        // itself came to have two copies.
+        let found = AgeKeyFileLocations.existingFiles(among: legacyKeyFilePaths)
 
         guard !found.isEmpty else {
             return HealthFinding(
@@ -201,7 +212,7 @@ public struct SecurityPostureCheck: HealthCheck {
                     + Self.pathList(legacyKeyFilePaths) + ".")
         }
 
-        let command = ShellQuoting.singleQuotedList(found).map { "chmod 600 " + $0 }
+        let command = AgeKeyFileLocations.protectCommand(for: found)
         return HealthFinding(
             id: "security.legacy-key-file", title: "Plaintext key file", status: .warning,
             detail: (found.count == 1

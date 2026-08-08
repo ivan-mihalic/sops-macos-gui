@@ -47,8 +47,23 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case keyPasteFooter = "key.paste.footer"
     case keyImportPasteButton = "key.import.paste-button"
     case keyForgetButton = "key.forget-button"
+    // The three shapes of the key-file import control, one per case of
+    // `LegacyKeyFileImportOptions`. None of them contains a path: the one
+    // case that may name a path — exactly one file found — shows it as
+    // `Text(verbatim:)` beneath this title, because a path is not
+    // translatable and, resolved through the catalog, would vanish under
+    // whichever build system copies `.xcstrings` uncompiled. The old single
+    // key read literally "Import from ~/.config/sops/age/keys.txt", naming a
+    // path the app no longer necessarily reads and, on macOS, usually does
+    // not.
     case keyImportLegacyButton = "key.import.legacy-button"
+    case keyImportLegacyChooseButton = "key.import.legacy-choose-button"
+    case keyImportLegacyNoneButton = "key.import.legacy-none-button"
     case keyImportLegacyFooter = "key.import.legacy-footer"
+    // Introduces the list of paths that were stat'd and held nothing. Same
+    // discipline as `SecurityPostureCheck`'s all-clear: "found nothing" means
+    // nothing unless the places looked at are named.
+    case keyImportLegacyNoneFooter = "key.import.legacy-none-footer"
     // Shown after a successful import from the legacy keys.txt file,
     // immediately above the same `chmod 600` remediation
     // `SecurityPostureCheck`'s `security.legacy-key-file` finding offers —

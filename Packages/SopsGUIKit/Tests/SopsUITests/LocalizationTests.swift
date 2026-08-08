@@ -75,6 +75,34 @@ struct LocalizationTests {
         #expect(!value.isEmpty, "empty English catalog entry for \(key.rawValue) in Localizable.xcstrings")
     }
 
+    /// No shipped string may name an age key file's path.
+    ///
+    /// `key.import.legacy-button` read literally "Import from
+    /// ~/.config/sops/age/keys.txt" — a path the app does not necessarily read
+    /// and, on macOS, usually does not (`AgeKeyFileLocations` has the citation
+    /// from sops's own `age/keysource.go`). A hardcoded path in a *label* is
+    /// worse than one in code: the user reads it as a statement of where the
+    /// app is looking, so it hides the mismatch instead of exposing it.
+    ///
+    /// Paths that a click will really read are composed at runtime with
+    /// `Text(verbatim:)` from `LegacyKeyFileImportOptions`, never written into
+    /// the catalog — so nothing legitimate needs an exception here. This reads
+    /// the catalog JSON rather than resolved text, so it holds under both of
+    /// this machine's compilers (see this suite's header).
+    @Test("no catalog string hardcodes a key-file path")
+    func noCatalogStringNamesAKeyFilePath() throws {
+        let catalog = try #require(Self.catalog)
+        let forbidden = ["keys.txt", "~/.config", "sops/age", "Application Support"]
+
+        for (key, entry) in catalog.strings {
+            guard let value = entry.localizations?["en"]?.stringUnit?.value else { continue }
+            for fragment in forbidden {
+                #expect(!value.contains(fragment),
+                        "\(key) names \"\(fragment)\": a key-file path belongs to LegacyKeyFileImportOptions at runtime, not to a translatable string — \"\(value)\"")
+            }
+        }
+    }
+
     // MARK: - Bundle-based checks (only meaningful where a build system compiles the catalog)
 
     /// True when the module bundle has the `Contents/Resources` layout that

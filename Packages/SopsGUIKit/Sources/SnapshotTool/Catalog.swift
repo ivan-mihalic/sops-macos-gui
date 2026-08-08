@@ -149,13 +149,32 @@ enum Catalog {
         // rule against secret-shaped values in fixtures.
         try? configured.importKey("AGE-SECRET-KEY-1EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE")
 
+        // The import control's three shapes, each pinned to a fixture rather
+        // than to whatever happens to be under this machine's real `$HOME` —
+        // otherwise these two snapshots would render differently on a Mac
+        // that has a `keys.txt` and one that does not, which is not a diff
+        // anyone wants to read. The label is the thing that was wrong here
+        // (it named `~/.config/sops/age/keys.txt` unconditionally), so all
+        // three get their own image.
+        let libraryKeyFile = "/Users/example/Library/Application Support/sops/age/keys.txt"
+        let dotConfigKeyFile = "/Users/example/.config/sops/age/keys.txt"
+        let searched = [libraryKeyFile, dotConfigKeyFile]
+
+        func keyImport(_ name: String,
+                       _ store: SessionKeyStore,
+                       _ options: LegacyKeyFileImportOptions) -> Snapshot {
+            Snapshot(name, size: CGSize(width: 560, height: 460)) {
+                KeyImportView(store: store, legacyKeyFiles: { options })
+            }
+        }
+
         return [
-            Snapshot("key-import-empty", size: CGSize(width: 520, height: 420)) {
-                KeyImportView(store: empty)
-            },
-            Snapshot("key-import-configured", size: CGSize(width: 520, height: 420)) {
-                KeyImportView(store: configured)
-            },
+            keyImport("key-import-empty", empty, .one(libraryKeyFile)),
+            keyImport("key-import-configured", configured, .one(libraryKeyFile)),
+            keyImport("key-import-no-key-file", SessionKeyStore(),
+                      .noneFound(searched: searched)),
+            keyImport("key-import-several-key-files", SessionKeyStore(),
+                      .several(searched)),
         ]
     }
 

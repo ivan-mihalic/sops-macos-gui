@@ -44,6 +44,29 @@ struct SecurityPostureCheckTests {
         #expect(keystore.status == .problem)
     }
 
+    /// The third copy of the wrong path, and the one a user would trust most.
+    ///
+    /// This remediation used to end "…or import it from
+    /// ~/.config/sops/age/keys.txt" — a place the embedded sops does not read
+    /// on macOS (`AgeKeyFileLocations`) and a place the import control may
+    /// well not offer. A health report telling the user to go to a file that
+    /// is not there, next to a sibling finding that correctly named
+    /// `Library/Application Support`, is worse than saying nothing: it
+    /// contradicts the app's own check. It names no path now — which file, if
+    /// any, exists is `LegacyKeyFileImportOptions`' answer at the moment the
+    /// user is standing in front of the control.
+    @Test("the missing-key remediation points at the app, never at a guessed path")
+    func missingKeyRemediationNamesNoPath() async throws {
+        let keystore = finding(await makeCheck(keyStore: .empty).run(), "security.keystore")
+        let explanation = try #require(keystore.remediation?.explanation)
+
+        #expect(explanation.contains("Settings"), "it must still say where to go: \(explanation)")
+        for fragment in ["keys.txt", "~/.config", "sops/age", "Application Support"] {
+            #expect(!explanation.contains(fragment),
+                    "this check cannot know which key file exists, so it must name none: \(explanation)")
+        }
+    }
+
     @Test("biometry not enrolled is a warning, not a problem — a password still works")
     func biometryNotEnrolledWarns() async {
         let biometry = finding(await makeCheck(biometry: .notEnrolled).run(), "security.biometry")
