@@ -6,6 +6,15 @@ struct HealthFindingRow: View {
     let finding: HealthFinding
     @State private var didCopy = false
 
+    // Explicit, non-private init: the compiler-synthesized memberwise init
+    // is private here because `_didCopy` (the `@State` property wrapper's
+    // backing storage) is private, which makes the whole synthesized init
+    // private too — unusable from any other file in this module, including
+    // `HealthPanel` and `OnboardingWizard`, which construct this view.
+    init(finding: HealthFinding) {
+        self.finding = finding
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
