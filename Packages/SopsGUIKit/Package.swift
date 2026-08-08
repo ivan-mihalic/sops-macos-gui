@@ -9,6 +9,7 @@ let package = Package(
         .library(name: "SopsUI", targets: ["SopsUI"]),
         .library(name: "SopsEngine", targets: ["SopsEngine"]),
         .library(name: "SopsHealth", targets: ["SopsHealth"]),
+        .library(name: "SopsProjects", targets: ["SopsProjects"]),
     ],
     targets: [
         .target(name: "SopsUI", dependencies: ["SopsHealth"], resources: [.process("Resources")]),
@@ -29,5 +30,7 @@ let package = Package(
         .testTarget(name: "SopsEngineTests", dependencies: ["SopsEngine"]),
         .target(name: "SopsHealth", dependencies: ["SopsEngine"]),
         .testTarget(name: "SopsHealthTests", dependencies: ["SopsHealth", "SopsEngine"]),
+        .target(name: "SopsProjects", dependencies: ["SopsHealth"]),
+        .testTarget(name: "SopsProjectsTests", dependencies: ["SopsProjects"]),
     ]
 )
