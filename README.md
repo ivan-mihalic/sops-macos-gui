@@ -6,7 +6,7 @@ per-project organization, Touch ID protected age keys, producing files 100%
 compatible with the standard `sops` CLI. Working title; see
 [`PROPOSAL.md`](PROPOSAL.md) for the full spec, non-goals, and open questions.
 
-**Current state (M2 — core editing, complete):** the app has a sidebar shell with About and
+**Current state (M2 — core editing, feature-complete but not closed):** the app has a sidebar shell with About and
 Settings pinned at the bottom, and a re-runnable health check / onboarding wizard
 (PROPOSAL.md §6) that verifies the machine's tooling, the embedded engine's
 freshness, the app's own security posture, and per-project health. On top of that,
@@ -18,7 +18,9 @@ atomically. Every file the editor writes is round-tripped against the real `sops
 CLI in `EditorCompatibilityTests` — comments, key order, recipients and
 `encrypted_regex` all survive, and untouched values keep their exact ciphertext.
 
-Both items that blocked M2 at final verification are closed. A file declaring
+Both items that blocked M2 at final verification were worked, but a whole-branch
+review found each weaker than claimed and the milestone is **not** closed; see
+PROPOSAL.md §9. A file declaring
 `type:bytes` used to panic vendored sops v3.13.3 and take the whole process
 down; every one of the nine cgo entry points now recovers and returns a
 described error, and no panic payload reaches the message. And the project scan
