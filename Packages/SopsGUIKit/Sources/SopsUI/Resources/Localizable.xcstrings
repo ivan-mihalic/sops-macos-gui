@@ -2,6 +2,17 @@
   "sourceLanguage": "en",
   "version": "1.0",
   "strings": {
+    "action.add-project": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Project…"
+          }
+        }
+      }
+    },
     "action.back": {
       "extractionState": "manual",
       "localizations": {
@@ -9,6 +20,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Back"
+          }
+        }
+      }
+    },
+    "action.cancel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel"
           }
         }
       }
@@ -64,6 +86,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Learn more"
+          }
+        }
+      }
+    },
+    "action.remove-project": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove"
           }
         }
       }
@@ -383,6 +416,116 @@
           "stringUnit": {
             "state": "translated",
             "value": "Welcome"
+          }
+        }
+      }
+    },
+    "projects.add-error.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't add that project"
+          }
+        }
+      }
+    },
+    "projects.empty.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No projects yet."
+          }
+        }
+      }
+    },
+    "projects.error.add-failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The project list couldn't be saved. Try again."
+          }
+        }
+      }
+    },
+    "projects.error.duplicate": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This project has already been added."
+          }
+        }
+      }
+    },
+    "projects.error.not-directory": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That isn't a folder."
+          }
+        }
+      }
+    },
+    "projects.error.remove-failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Removing this project didn't save. Try again."
+          }
+        }
+      }
+    },
+    "projects.missing-badge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Missing"
+          }
+        }
+      }
+    },
+    "projects.remove-confirm.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This only stops tracking it in SOPS GUI. Nothing is deleted from disk."
+          }
+        }
+      }
+    },
+    "projects.remove-confirm.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop tracking this project?"
+          }
+        }
+      }
+    },
+    "projects.worktree-label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Worktree"
           }
         }
       }

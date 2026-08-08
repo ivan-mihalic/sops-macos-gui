@@ -1,20 +1,41 @@
 import SwiftUI
 import SopsUI
 import SopsHealth
+import SopsProjects
 
 @main
 struct SopsGUIApp: App {
-    // Read live from UserDefaults on every run of the report, not captured
-    // once at launch: Settings › Updates writes the same key, and a captured
-    // Bool would ignore the toggle for the rest of the session.
-    @State private var health = HealthViewModel(
-        report: .standard(updateChecksEnabled: { UpdateCheckConsent.isEnabled() }))
+    // One ProjectStore, shared by the sidebar and the health check, backed
+    // by the app's real Application Support location. The sidebar mutates it
+    // (add/remove); the health report reads it fresh on every refresh — see
+    // `_health`'s initializer below and `HealthViewModel.init(reportBuilder:)`.
+    // Two separate instances would each load the same file at launch and
+    // *look* consistent then, but the sidebar's edits would never reach the
+    // health check without a relaunch — the exact staleness bug
+    // `reportBuilder` exists to avoid.
+    private let projectStore = ProjectStore(fileURL: ProjectStore.defaultFileURL)
+    @State private var projects: ProjectSidebarModel
+    // Rebuilt from scratch on every refresh rather than captured once at
+    // launch, so a project added through the sidebar mid-session is seen the
+    // next time the report runs, not only after relaunching the app. Also
+    // read live from UserDefaults on every run: Settings › Updates writes the
+    // same key, and a captured Bool would ignore the toggle for the rest of
+    // the session.
+    @State private var health: HealthViewModel
     @State private var onboarding = OnboardingState()
     @State private var isShowingOnboarding = false
 
+    init() {
+        let store = projectStore
+        _projects = State(initialValue: ProjectSidebarModel(store: store))
+        _health = State(initialValue: HealthViewModel(reportBuilder: {
+            .standard(updateChecksEnabled: { UpdateCheckConsent.isEnabled() }, projects: store.healthSource)
+        }))
+    }
+
     var body: some Scene {
         WindowGroup {
-            AppShell()
+            AppShell(projects: projects)
                 .sheet(isPresented: $isShowingOnboarding) {
                     OnboardingWizard(health: health, state: onboarding)
                 }

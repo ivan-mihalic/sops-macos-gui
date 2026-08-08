@@ -33,8 +33,17 @@ public struct AppShell: View {
         Section.allCases.filter { !Section.pinnedToBottom.contains($0) }
 
     @State private var selection: Section = .projects
+    private let projects: ProjectSidebarModel
 
-    public init() {}
+    /// `projects` has no default: the caller (`SopsGUIApp`) owns the single
+    /// `ProjectStore` instance the health check is also wired to (see
+    /// `HealthViewModel.init(reportBuilder:)`), and a hidden default here
+    /// would make it too easy to accidentally construct a second, unrelated
+    /// store — which would desync the sidebar from what the health report
+    /// sees, silently.
+    public init(projects: ProjectSidebarModel) {
+        self.projects = projects
+    }
 
     public var body: some View {
         NavigationSplitView {
@@ -57,8 +66,18 @@ public struct AppShell: View {
             }
             .navigationSplitViewColumnWidth(min: 200, ideal: 220)
         } detail: {
-            Text(.detailNoSelection)
-                .foregroundStyle(.secondary)
+            // Only `.projects` has real content so far — About and Settings
+            // are reached elsewhere (Settings opens via ⌘, as its own scene;
+            // About has no view yet). Selecting either still shows the
+            // placeholder rather than the project list, which would be a
+            // confusing thing to land on from an unrelated sidebar row.
+            switch selection {
+            case .projects:
+                ProjectSidebar(model: projects)
+            case .about, .settings:
+                Text(.detailNoSelection)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }

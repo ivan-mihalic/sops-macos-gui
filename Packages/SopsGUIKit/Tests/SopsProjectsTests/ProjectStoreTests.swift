@@ -193,6 +193,65 @@ struct ProjectStoreTests {
         #expect(store.projects.count == 1)
     }
 
+    // MARK: - Display vs identity: carried over from Task 3's review
+
+    // A project added through a symlink must be *identified* by the
+    // resolved (target) path — that's what dedup keys off, proven by the
+    // tests above — but *displayed* using the path the user actually typed.
+    // Showing the resolved path in the sidebar would mean a user with a
+    // symlinked home directory (iCloud Desktop/Documents does this) never
+    // recognizes their own project.
+    @Test("a project added via a symlink displays the symlink path, not the resolved target")
+    func displaysSymlinkPathNotResolvedTarget() throws {
+        let (store, _) = makeStore()
+        let target = try makeDirectory()
+
+        let symlink = FileManager.default.temporaryDirectory
+            .appendingPathComponent("symlink-\(UUID().uuidString)")
+        try FileManager.default.createSymbolicLink(
+            at: symlink, withDestinationURL: URL(fileURLWithPath: target))
+
+        let project = try store.add(path: symlink.path)
+
+        // Identity: the resolved path, matching `WorktreeResolver` and every
+        // filesystem operation the rest of the app performs on this project.
+        #expect(project.rootPath == target)
+        // Display: exactly what was typed, symlink component intact.
+        #expect(project.displayPath == symlink.path)
+        #expect(project.displayName == symlink.lastPathComponent)
+    }
+
+    // A non-symlinked path has nothing to disagree about: identity and
+    // display must still both resolve to the same, ordinary directory.
+    @Test("a project added via an ordinary path has matching identity and display paths")
+    func displayMatchesIdentityWithoutASymlink() throws {
+        let (store, _) = makeStore()
+        let path = try makeDirectory()
+
+        let project = try store.add(path: path)
+
+        #expect(project.rootPath == path)
+        #expect(project.displayPath == path)
+    }
+
+    // The display path must also survive a reload from disk — it is a real
+    // stored field, not derived on the fly from `rootPath`.
+    @Test("the display path persists across instances")
+    func displayPathPersists() throws {
+        let (store, url) = makeStore()
+        let target = try makeDirectory()
+        let symlink = FileManager.default.temporaryDirectory
+            .appendingPathComponent("symlink-\(UUID().uuidString)")
+        try FileManager.default.createSymbolicLink(
+            at: symlink, withDestinationURL: URL(fileURLWithPath: target))
+
+        _ = try store.add(path: symlink.path)
+
+        let reloaded = ProjectStore(fileURL: url)
+        #expect(reloaded.projects.map(\.displayPath) == [symlink.path])
+        #expect(reloaded.projects.map(\.rootPath) == [target])
+    }
+
     @Test("a relative path is recognized as the same project as its absolute form")
     func dedupesRelativePath() throws {
         let (store, _) = makeStore()

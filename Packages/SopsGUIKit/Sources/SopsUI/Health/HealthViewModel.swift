@@ -14,7 +14,9 @@ public final class HealthViewModel {
     /// flag rather than infer it from `findings` being non-empty.
     public private(set) var hasCompletedRefresh = false
 
-    private let report: HealthReport
+    /// Built fresh on every `refresh()` rather than captured once — see
+    /// `init(reportBuilder:)`.
+    private let reportBuilder: @MainActor @Sendable () -> HealthReport
 
     /// The currently-running refresh, if any. A caller that arrives while a
     /// refresh is already in flight awaits this same task instead of starting
@@ -22,7 +24,33 @@ public final class HealthViewModel {
     private var inFlightRefresh: Task<Void, Never>?
 
     public init(report: HealthReport) {
-        self.report = report
+        self.reportBuilder = { report }
+    }
+
+    /// Same as `init(report:)`, except the report is (re)built from scratch
+    /// on every `refresh()` instead of once at construction time.
+    ///
+    /// Exists for exactly one reason: `HealthReport.standard(projects:)` is
+    /// handed a `ProjectSourceProviding` *value* — `ProjectStore.HealthSource`
+    /// is a plain struct snapshot of `ProjectStore.projects` at the moment it
+    /// was read. `SopsGUIApp` builds `health` once, in a property initializer,
+    /// before the window (and therefore the project sidebar) has ever been
+    /// shown — so a `HealthViewModel(report:)` built the old way would freeze
+    /// the projects section at "whatever was on disk at launch" for the rest
+    /// of the run: add a project through the sidebar, click "Re-run checks",
+    /// and the new project would never appear without quitting and relaunching.
+    /// That is exactly the class of bug this app's own standing rule forbids
+    /// — a stale result standing in for one nobody actually checked. This
+    /// mirrors `HealthReport.standard`'s own `updateChecksEnabled` closure,
+    /// which exists for the identical reason (its doc comment: "a captured
+    /// value would freeze the user's consent... for the rest of the session").
+    ///
+    /// `@MainActor` because the builder needs to read `ProjectStore`, which is
+    /// itself `@MainActor`-isolated; `refresh()` already runs its body on the
+    /// main actor (see below), so calling the builder there requires no
+    /// additional hop.
+    public init(reportBuilder: @escaping @MainActor @Sendable () -> HealthReport) {
+        self.reportBuilder = reportBuilder
     }
 
     public var headlineStatus: HealthStatus {
@@ -76,7 +104,7 @@ public final class HealthViewModel {
         }
         isRunning = true
         let task = Task {
-            let results = await self.report.run()
+            let results = await self.reportBuilder().run()
             self.findings = results
             self.hasCompletedRefresh = true
             self.isRunning = false

@@ -125,7 +125,19 @@ public struct ProjectHealthCheck: HealthCheck {
                 status: .warning,
                 detail: "No .sops.yaml in \(project.rootPath). Without it, sops has no rules for which keys to encrypt new files to.",
                 remediation: Remediation(
-                    explanation: "Create one from the .sops.yaml wizard in this app.")), leak]
+                    // Was "Create one from the .sops.yaml wizard in this
+                    // app." — a real defect, caught only once this check ran
+                    // against a real project for the first time (this task):
+                    // no such wizard exists anywhere in this app. PROPOSAL.md
+                    // §5 lists one as a future Help feature; nothing in this
+                    // milestone or any earlier one builds it. Telling the
+                    // user to go use a tool that isn't there is exactly the
+                    // "claims more than it established" failure this app's
+                    // findings are held to — so until the wizard exists, say
+                    // what the user can actually do today: write the file by
+                    // hand. When the wizard ships, this remediation is where
+                    // it should point.
+                    explanation: "Add a .sops.yaml file at the project root with a creation_rules entry naming the age public keys new files should be encrypted to. This app does not have a .sops.yaml generator yet — see sops's own documentation for the file format.")), leak]
         }
 
         // Probe that the config itself loads under sops's own parser,

@@ -12,7 +12,7 @@ let package = Package(
         .library(name: "SopsProjects", targets: ["SopsProjects"]),
     ],
     targets: [
-        .target(name: "SopsUI", dependencies: ["SopsHealth"], resources: [.process("Resources")]),
+        .target(name: "SopsUI", dependencies: ["SopsHealth", "SopsProjects"], resources: [.process("Resources")]),
         .testTarget(name: "SopsUITests", dependencies: ["SopsUI"]),
         .binaryTarget(
             name: "CSopsBridge",

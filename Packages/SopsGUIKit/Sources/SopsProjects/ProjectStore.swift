@@ -10,12 +10,28 @@ public struct StoredProject: Codable, Identifiable, Equatable, Sendable {
     public let id: UUID
     public var displayName: String
     public var rootPath: String
+    /// The path as the user chose it — absolute, and with `.`/`..`/trailing
+    /// slashes collapsed lexically, but with any symlink component left
+    /// exactly as typed. `rootPath` above is the *identity* key (symlink-
+    /// resolved, see `ProjectStore.normalize(_:)`); this is the *display*
+    /// value. They differ exactly when the chosen path passes through a
+    /// symlink — a symlinked home directory (iCloud Desktop/Documents does
+    /// this) or a symlinked dev volume being the two real-world cases. See
+    /// `ProjectStore.add(path:)` for why the two must not be the same field.
+    public var displayPath: String
     public var addedAt: Date
 
-    public init(id: UUID = UUID(), displayName: String, rootPath: String, addedAt: Date = Date()) {
+    public init(id: UUID = UUID(), displayName: String, rootPath: String, displayPath: String? = nil,
+                addedAt: Date = Date()) {
         self.id = id
         self.displayName = displayName
         self.rootPath = rootPath
+        // Tests and any other caller that doesn't care about the distinction
+        // can omit `displayPath`; it falls back to `rootPath` rather than
+        // forcing every call site in the test suite to spell out a field
+        // that's only ever different from `rootPath` when a symlink is
+        // involved.
+        self.displayPath = displayPath ?? rootPath
         self.addedAt = addedAt
     }
 }
@@ -64,8 +80,12 @@ public final class ProjectStore {
     ///
     /// `path` is normalized (symlinks resolved, `..`/`.`, trailing slashes,
     /// and relative components collapsed) before both the existence check
-    /// and the duplicate comparison, and the *normalized* path is what gets
-    /// stored — see `normalize(_:)` for why.
+    /// and the duplicate comparison, and that *identity-normalized* path is
+    /// what gets stored as `rootPath` — see `normalize(_:)` for why. A
+    /// separate, lexically-standardized-but-not-symlink-resolved form of
+    /// `path` is stored as `displayPath` — see `standardizeForDisplay(_:)`
+    /// and `StoredProject.displayPath`'s doc comment for why identity and
+    /// display are kept apart.
     ///
     /// Persist-then-mutate: the write to disk happens before `projects` is
     /// updated, and only on success. If persisting fails, this throws and
@@ -85,8 +105,9 @@ public final class ProjectStore {
             throw Error.alreadyAdded(existing: existing)
         }
 
-        let name = (normalizedPath as NSString).lastPathComponent
-        let project = StoredProject(displayName: name, rootPath: normalizedPath)
+        let displayPath = Self.standardizeForDisplay(path)
+        let name = (displayPath as NSString).lastPathComponent
+        let project = StoredProject(displayName: name, rootPath: normalizedPath, displayPath: displayPath)
         let candidate = projects + [project]
         try persist(candidate)
         projects = candidate
@@ -184,13 +205,36 @@ public final class ProjectStore {
     /// must collapse to one entry, both at `add(path:)` time and for every
     /// later consumer (`healthSource`, and anything wired to it later,
     /// including `ForEach`-rendered `HealthFinding`s whose identity a
-    /// duplicate would corrupt). The cost is that a user who typed a
-    /// symlinked path may see the resolved path displayed instead of what
-    /// they typed; `displayName` is derived from the resolved path's last
-    /// component for the same reason. That tradeoff favors correctness of
-    /// identity over preserving the user's literal input.
+    /// duplicate would corrupt).
+    ///
+    /// This *used* to also be what got displayed — `displayName` was derived
+    /// from this same resolved path — on the theory that the two concerns
+    /// were one. They are not: a user who adds `~/work/project` through a
+    /// symlinked home (iCloud Desktop/Documents does this, so does a `~/dev`
+    /// symlink to a second volume) would see a path they do not recognize in
+    /// the sidebar, forever, even though nothing about their input was wrong.
+    /// `add(path:)` now keeps this value for identity/dedup only and stores
+    /// what the user actually chose, separately, via
+    /// `standardizeForDisplay(_:)` — see `StoredProject.displayPath`.
     private static func normalize(_ path: String) -> String {
         URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+    }
+
+    /// Lexically standardizes `path` for *display*: makes it absolute and
+    /// collapses `.`/`..` components and a trailing slash, exactly like
+    /// `normalize(_:)` above — but, unlike `normalize(_:)`, never resolves a
+    /// symlink. `URL.standardizedFileURL` is documented to do the lexical
+    /// half without touching the filesystem (the same guarantee
+    /// `WorktreeResolver` relies on for the same reason), so a symlink
+    /// component the user's path passes through survives exactly as typed.
+    ///
+    /// This is why `add(path:)` needs two functions instead of one: this one
+    /// answers "what should the user see", `normalize(_:)` answers "what
+    /// identifies this directory regardless of how it was spelled" — and a
+    /// symlinked path is the one case where those two questions have
+    /// different honest answers.
+    private static func standardizeForDisplay(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.path
     }
 
     // MARK: - SopsHealth adapter

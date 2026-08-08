@@ -71,6 +71,25 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // has verified nothing, and "Everything checks out." would claim it did.
     case onboardingSummaryNothingChecked = "onboarding.summary.nothing-checked"
 
+    case actionAddProject = "action.add-project"
+    case actionRemoveProject = "action.remove-project"
+    case actionCancel = "action.cancel"
+    case projectsEmptyTitle = "projects.empty.title"
+    // Shown next to a project whose directory could not be found on disk
+    // right now — see `ProjectStore.isMissing(_:)`. The project stays in the
+    // sidebar rather than vanishing; this badge is why it's still there.
+    case projectsMissingBadge = "projects.missing-badge"
+    case projectsWorktreeLabel = "projects.worktree-label"
+    case projectsRemoveConfirmTitle = "projects.remove-confirm.title"
+    // Load-bearing per PROPOSAL.md and CLAUDE.md: removing a project must
+    // never be read as deleting it. This is the sentence that says so.
+    case projectsRemoveConfirmMessage = "projects.remove-confirm.message"
+    case projectsAddErrorTitle = "projects.add-error.title"
+    case projectsErrorNotDirectory = "projects.error.not-directory"
+    case projectsErrorDuplicate = "projects.error.duplicate"
+    case projectsErrorAddFailed = "projects.error.add-failed"
+    case projectsErrorRemoveFailed = "projects.error.remove-failed"
+
     /// The resolved English text. Used in views and asserted in tests.
     public var text: String {
         String(localized: String.LocalizationValue(rawValue), bundle: .module)
