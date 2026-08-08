@@ -1,4 +1,5 @@
 import Foundation
+import SopsEngine
 import SopsHealth
 import SopsProjects
 import SopsUI
@@ -246,6 +247,246 @@ enum Fixtures {
             _ = try store.add(path: dir.path)
         }
         return ProjectSidebarModel(store: store)
+    }
+
+    // MARK: - The editor (`SecretEditorView`)
+
+    /// A throwaway age identity from the real `age-keygen` binary. Mirrors
+    /// `SopsEngineTests/TestSupport.swift`'s `AgeKeyPair`, duplicated rather
+    /// than shared — that type lives in a test target this executable
+    /// target has no dependency path to. Nothing generated here is ever
+    /// written into the repository or reused between snapshot runs.
+    private struct SnapshotAgeKeyPair {
+        let `private`: String
+        let `public`: String
+
+        static func generate() throws -> SnapshotAgeKeyPair {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/age-keygen")
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            let output = String(decoding: data, as: UTF8.self)
+            var priv = "", pub = ""
+            for line in output.split(separator: "\n") {
+                if line.hasPrefix("AGE-SECRET-KEY-") {
+                    priv = String(line)
+                } else if line.hasPrefix("# public key: ") {
+                    pub = String(line.dropFirst("# public key: ".count))
+                }
+            }
+            guard !priv.isEmpty, !pub.isEmpty else {
+                throw SnapshotFixtureError("age-keygen produced no usable key pair")
+            }
+            return SnapshotAgeKeyPair(private: priv, public: pub)
+        }
+    }
+
+    private struct SnapshotFixtureError: Error, CustomStringConvertible {
+        let description: String
+        init(_ description: String) { self.description = description }
+    }
+
+    /// Every `SecretRow.Kind`, a merge key (`<<: *base` — Task 7's report:
+    /// "merge keys surface as a row with a literal `<<` path segment", the
+    /// exact shape `SecretRowViewLogic.isMergeKeyRow` and
+    /// `SecretEditorView`'s badge look for), and enough rows that the list
+    /// genuinely overflows the editor's frame — the same overflow shape
+    /// `scrollOverflowFade()` exists to signal.
+    private static let editorRichDocumentYAML = """
+        base: &base
+            region: us-east-1
+            timeout_seconds: 30
+        service:
+            <<: *base
+            name: checkout-api
+        db:
+            host: db.internal.example
+            port: 5432
+            password: correct-horse-battery-staple-EXAMPLE
+            enabled: true
+            ratio: 0.75
+            nothing: null
+            created: 2024-01-02T03:04:05Z
+        api_key: sk_live_EXAMPLEEXAMPLEEXAMPLEEXAMPLE0001
+        webhook_signing_secret: whsec_EXAMPLE_a_deliberately_long_value_meant_to_show_how_a_single_field_behaves_when_it_runs_past_a_comfortable_field_width_EXAMPLE
+        servers:
+            - name: primary
+              ip: 10.0.0.1
+            - name: secondary
+              ip: 10.0.0.2
+        feature_flags:
+            - beta_checkout
+            - dark_mode
+            - new_pricing
+        retry_policy:
+            max_attempts: 5
+            backoff: exponential
+        empty_map: {}
+        empty_list: []
+        """
+
+    /// A document this app can open and decrypt: real sops ciphertext (via
+    /// the in-process bridge, `SopsBridge.encryptYAML` — the same call
+    /// `CompatibilityTests` exercises), a real age identity imported into a
+    /// real `SessionKeyStore`, loaded through the same `SecretDocumentViewModel
+    /// .load()` the app calls. Nothing here is faked or hand-assembled —
+    /// this is the one state that must prove the whole path actually works,
+    /// not just that the view can render a shape of data.
+    static func editorLoadedViewModel() async throws -> SecretDocumentViewModel {
+        let key = try SnapshotAgeKeyPair.generate()
+        let encrypted = try SopsBridge.encryptYAML(editorRichDocumentYAML, recipients: [key.public])
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let model = SecretDocumentViewModel(
+            fileURL: URL(fileURLWithPath: "/dev/null/snapshot-loaded.yaml"),
+            keyStore: store,
+            readFile: { _ in encrypted })
+        await model.load()
+        return model
+    }
+
+    /// `sops -e` on `{}` — a legitimate, ordinary empty document (`Task 9`'s
+    /// brief is explicit this must not read like an error). Real ciphertext,
+    /// real key, same load path as above.
+    static func editorEmptyDocumentViewModel() async throws -> SecretDocumentViewModel {
+        let key = try SnapshotAgeKeyPair.generate()
+        let encrypted = try SopsBridge.encryptYAML("{}\n", recipients: [key.public])
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let model = SecretDocumentViewModel(
+            fileURL: URL(fileURLWithPath: "/dev/null/snapshot-empty.yaml"),
+            keyStore: store,
+            readFile: { _ in encrypted })
+        await model.load()
+        return model
+    }
+
+    /// No identity configured at all — `load()` reaches `.needsKey` before
+    /// ever attempting a decrypt. `readFile`'s return value is irrelevant
+    /// here (the key check happens before the content is used for
+    /// anything), so it is an obviously-inert placeholder, not real
+    /// ciphertext.
+    static func editorNeedsKeyViewModel() async -> SecretDocumentViewModel {
+        let store = SessionKeyStore()
+        let model = SecretDocumentViewModel(
+            fileURL: URL(fileURLWithPath: "/dev/null/snapshot-needs-key.yaml"),
+            keyStore: store,
+            readFile: { _ in "irrelevant — never reached with no key configured" })
+        await model.load()
+        return model
+    }
+
+    /// Real ciphertext, but the session holds a *different* real identity —
+    /// the same "wrong key" shape `SopsDocumentTests` covers at the bridge
+    /// layer, one level up: this is what the editor shows for it.
+    static func editorLoadFailedViewModel() async throws -> SecretDocumentViewModel {
+        let owner = try SnapshotAgeKeyPair.generate()
+        let intruder = try SnapshotAgeKeyPair.generate()
+        let encrypted = try SopsBridge.encryptYAML(
+            "database:\n    password: hunter2-EXAMPLE\n", recipients: [owner.public])
+        let store = SessionKeyStore()
+        try store.importKey(intruder.private)
+        let model = SecretDocumentViewModel(
+            fileURL: URL(fileURLWithPath: "/dev/null/snapshot-wrong-key.yaml"),
+            keyStore: store,
+            readFile: { _ in encrypted })
+        await model.load()
+        return model
+    }
+
+    // MARK: - The file list (`FileListView`)
+
+    /// Hand-written text carrying the same byte-level markers
+    /// `EncryptedFileMetadata`/`ProjectScanner` sniff for (`sops:` block,
+    /// `mac:` field) — mirrors `FileListModelTests.writeSopsLike`. What is
+    /// under test in the file-list snapshots is layout, sorting and
+    /// truncation/other-format disclosure, not sops's own file format,
+    /// which the bridge's and `SopsEngineTests`' real-binary fixtures
+    /// already hold to the real standard.
+    private static func writeSopsLikeYAML(_ root: URL, at relativePath: String) throws {
+        let url = root.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try """
+            key: ENC[AES256_GCM,data:Zm9v,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
+            sops:
+                age:
+                    - recipient: age1exampleexampleexampleexampleexampleexampleexampleexamplex
+                mac: ENC[AES256_GCM,data:AAAA,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
+            """.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// A dotenv-shaped sops file — `ProjectScanner.looksSopsEncryptedInAnotherFormat`
+    /// keys on the `sops_mac=`/`sops_version=` markers sops's own dotenv
+    /// store writes. This app is YAML-only for v1 (`Package.swift`,
+    /// `CLAUDE.md`), so this must surface as `otherFormatCount`, never as
+    /// an openable row in `files`.
+    private static func writeSopsLikeDotenv(_ root: URL, at relativePath: String) throws {
+        let url = root.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try """
+            API_KEY=ENC[AES256_GCM,data:Zm9v,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
+            sops_mac=ENC[AES256_GCM,data:AAAA,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
+            sops_version=3.9.4
+            """.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// Enough encrypted files, spread across a few directories, that the
+    /// list genuinely overflows the panel's frame — the same overflow shape
+    /// `scrollOverflowFade()` exists to signal — plus one dotenv-format sops
+    /// file so `otherFormatCount`'s footnote has something real to count.
+    /// Pre-`refresh()`ed before being handed to a `Snapshot`, the same
+    /// reason `Fixtures.healthViewModel(findings:)` pre-refreshes: nothing
+    /// in this tool's offscreen render drives a `.task` reliably enough to
+    /// depend on it alone (see `AppShellProjectSidebarModel`'s doc comment).
+    static func fileListModelWithFiles() async throws -> FileListModel {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("snapshot-files-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let services = ["billing", "checkout", "identity", "inventory", "notifications", "search"]
+        let environments = ["production", "staging", "development"]
+        for service in services {
+            for environment in environments {
+                try writeSopsLikeYAML(root, at: "services/\(service)/\(environment).secrets.yaml")
+            }
+        }
+        try writeSopsLikeYAML(root, at: ".sops-managed/root.secrets.yaml")
+        try writeSopsLikeDotenv(root, at: "legacy/.env.production")
+
+        let model = FileListModel(projectRoot: root)
+        await model.refresh()
+        return model
+    }
+
+    /// A project directory that exists but holds nothing this app
+    /// recognises as sops-encrypted — the ordinary "nothing here yet"
+    /// state, not `rootMissing`.
+    static func fileListModelEmpty() async throws -> FileListModel {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("snapshot-files-empty-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try "# nothing encrypted here yet\n".write(
+            to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+
+        let model = FileListModel(projectRoot: root)
+        await model.refresh()
+        return model
+    }
+
+    /// A project whose directory no longer exists — deleted or unmounted
+    /// after being added. `rootMissing`, never a silent "found nothing".
+    static func fileListModelMissingRoot() async -> FileListModel {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("snapshot-files-missing-" + UUID().uuidString)
+        let model = FileListModel(projectRoot: root)
+        await model.refresh()
+        return model
     }
 
     private static func git(_ arguments: [String], in directory: URL) throws {

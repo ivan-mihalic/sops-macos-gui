@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import SopsUI
 import SopsHealth
@@ -31,6 +32,13 @@ struct SopsGUIApp: App {
     @State private var health: HealthViewModel
     @State private var onboarding = OnboardingState()
     @State private var isShowingOnboarding = false
+    // Shared with `AppShell`'s editor so the app-level Quit command (below)
+    // can ask before discarding an open document — see
+    // `UnsavedChangesTracker`'s doc comment for why this can't just be a
+    // `@State` local to whichever view happens to own the open file.
+    @State private var unsavedChanges = UnsavedChangesTracker()
+    @State private var isShowingQuitConfirmation = false
+    @State private var quitSaveErrorMessage: String?
 
     init() {
         let store = projectStore
@@ -44,12 +52,42 @@ struct SopsGUIApp: App {
 
     var body: some Scene {
         WindowGroup {
-            AppShell(projects: projects)
+            AppShell(projects: projects, keyStore: keyStore, unsavedChanges: unsavedChanges)
                 .sheet(isPresented: $isShowingOnboarding) {
                     OnboardingWizard(health: health, state: onboarding)
                 }
                 .onAppear {
                     isShowingOnboarding = !onboarding.hasCompletedOnboarding
+                }
+                // The confirmation itself has to be attached to a view that's
+                // actually on screen — `.commands` closures below are not
+                // views and can't host an `.alert`/`.confirmationDialog` of
+                // their own.
+                .confirmationDialog(
+                    LocalizedKey.editorQuitUnsavedTitle.text,
+                    isPresented: $isShowingQuitConfirmation
+                ) {
+                    Button(LocalizedKey.editorSaveAndQuit.text) {
+                        Task { await saveAndQuit() }
+                    }
+                    Button(LocalizedKey.editorDiscardAndQuit.text, role: .destructive) {
+                        NSApp.terminate(nil)
+                    }
+                    Button(LocalizedKey.actionCancel.text, role: .cancel) {
+                        isShowingQuitConfirmation = false
+                    }
+                } message: {
+                    Text(.editorQuitUnsavedMessage)
+                }
+                .alert(
+                    LocalizedKey.editorSaveErrorTitle.text,
+                    isPresented: Binding(
+                        get: { quitSaveErrorMessage != nil },
+                        set: { isPresented in if !isPresented { quitSaveErrorMessage = nil } })
+                ) {
+                    Button(LocalizedKey.actionDone.text) { quitSaveErrorMessage = nil }
+                } message: {
+                    Text(quitSaveErrorMessage ?? "")
                 }
         }
         .commands {
@@ -69,6 +107,17 @@ struct SopsGUIApp: App {
                     Task { await health.refresh() }
                 }
             }
+            // PROPOSAL.md's editor is the one place in this app where
+            // quitting can destroy work — an open document with unsaved
+            // edits. Replacing the standard Quit item (rather than adding a
+            // second one) is what lets this also intercept ⌘Q itself, not
+            // just the menu click.
+            CommandGroup(replacing: .appTermination) {
+                Button(LocalizedKey.actionQuit.text) {
+                    requestQuit()
+                }
+                .keyboardShortcut("q", modifiers: .command)
+            }
         }
 
         // ⌘, is wired automatically by the Settings scene (PROPOSAL.md §4).
@@ -82,6 +131,34 @@ struct SopsGUIApp: App {
                     .tabItem { Label(.settingsTabUpdates, systemImage: "arrow.down.circle") }
             }
             .frame(width: 620, height: 480)
+        }
+    }
+
+    /// Quits immediately when nothing is unsaved; otherwise shows the
+    /// confirmation instead of terminating. `unsavedChanges.isDirty` is kept
+    /// current by whichever `SecretEditorView` is on screen — see
+    /// `UnsavedChangesTracker`.
+    private func requestQuit() {
+        if unsavedChanges.isDirty {
+            isShowingQuitConfirmation = true
+        } else {
+            NSApp.terminate(nil)
+        }
+    }
+
+    /// "Save and Quit": saves the open document through the tracker (which
+    /// forwards to the real `SecretDocumentViewModel.save()` — see
+    /// `UnsavedChangesTracker.save()`) and only terminates if that actually
+    /// succeeded. A failed save here must behave exactly like a failed save
+    /// from the editor's own Save button: the app stays open, the edit is
+    /// still sitting there unsaved, and the user sees why — never a quiet
+    /// termination over a write that didn't happen.
+    private func saveAndQuit() async {
+        switch await unsavedChanges.save() {
+        case .saved, nil:
+            NSApp.terminate(nil)
+        case .failed(let message):
+            quitSaveErrorMessage = message
         }
     }
 }

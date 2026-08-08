@@ -83,6 +83,7 @@ public struct OnboardingWizard: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         case .findings(let findings):
             List(findings) { HealthFindingRow(finding: $0) }
+                .scrollOverflowFade()
         }
     }
 
@@ -157,6 +158,7 @@ public struct OnboardingWizard: View {
                 Divider()
                 Text(.healthCategoryOther).font(.headline)
                 List(orphaned) { HealthFindingRow(finding: $0) }
+                    .scrollOverflowFade()
             }
         }
     }

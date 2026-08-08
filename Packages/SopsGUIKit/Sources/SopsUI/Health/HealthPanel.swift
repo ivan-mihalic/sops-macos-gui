@@ -39,6 +39,7 @@ public struct HealthPanel: View {
                     }
                 }
             }
+            .scrollOverflowFade()
 
             Divider()
 

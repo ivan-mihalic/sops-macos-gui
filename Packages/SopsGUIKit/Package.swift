@@ -38,14 +38,16 @@ let package = Package(
         // this, so it never reaches the shipped app. Depends on `SopsUI` for
         // the views themselves, and directly on `SopsHealth`/`SopsProjects`
         // for the fixture types (`HealthFinding`, `StoredProject`,
-        // `ProjectStore`, ...) the catalog builds fixtures out of. Deliberately
-        // does not depend on `SopsEngine`: nothing in the catalog renders
-        // `SecretEditorView`/`SecretDocumentViewModel`, so this target never
-        // needs to link `CSopsBridge`'s xcframework — keeping it buildable
-        // even when `Engine/build/SopsBridge.xcframework` hasn't been built.
+        // `ProjectStore`, ...) the catalog builds fixtures out of. Task 9
+        // added `SecretEditorView`/`SecretDocumentViewModel` to the catalog,
+        // which needs `SecretRow`/`SopsBridge` (`SopsEngine`) to build real
+        // decrypted fixtures — this target now links `CSopsBridge`'s
+        // xcframework too, so `Engine/build/SopsBridge.xcframework` must
+        // exist before `swift run snapshots` (as it already must for
+        // `swift test`; `Scripts/bootstrap.sh` builds it).
         .executableTarget(
             name: "snapshots",
-            dependencies: ["SopsUI", "SopsHealth", "SopsProjects"],
+            dependencies: ["SopsUI", "SopsEngine", "SopsHealth", "SopsProjects"],
             path: "Sources/SnapshotTool"
         ),
     ]

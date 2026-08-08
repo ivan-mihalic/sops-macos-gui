@@ -112,6 +112,66 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case projectsErrorAddFailed = "projects.error.add-failed"
     case projectsErrorRemoveFailed = "projects.error.remove-failed"
 
+    // MARK: Task 9 — file list
+
+    case filesNoProjectSelected = "files.no-project-selected"
+    case filesScanning = "files.scanning"
+    case filesEmptyTitle = "files.empty.title"
+    case filesProjectMissingTitle = "files.project-missing.title"
+    case filesTruncatedTitle = "files.truncated.title"
+    // Formatted with the comma-joined list of skipped directory names — see
+    // `FileListView.truncationBanner`.
+    case filesTruncatedDetail = "files.truncated.detail"
+    // Formatted with the count of sops files this build can't open (dotenv/
+    // JSON/INI — YAML-only for v1) — see `FileListModel.otherFormatCount`.
+    case filesOtherFormatNote = "files.other-format.note"
+
+    // MARK: Task 9 — editor
+
+    case editorNoFileSelected = "editor.no-file-selected"
+    case editorNeedsKeyTitle = "editor.needs-key.title"
+    case editorNeedsKeyBody = "editor.needs-key.body"
+    case editorLoadFailedTitle = "editor.load-failed.title"
+    // Deliberately distinct from `.editorLoadFailedTitle`: a `.loaded`
+    // document with zero rows is what `sops -e` on `{}` produces — a
+    // legitimate, ordinary file, not a failure. See `SecretEditorView`'s
+    // doc comment ("The property this view must not break").
+    case editorEmptyDocumentTitle = "editor.empty-document.title"
+    case editorEmptyDocumentBody = "editor.empty-document.body"
+    case editorUnsavedIndicator = "editor.unsaved-indicator"
+    case editorSaveButton = "editor.save-button"
+    case editorSaveErrorTitle = "editor.save-error.title"
+    case editorRevealValue = "editor.reveal-value"
+    case editorHideValue = "editor.hide-value"
+    // Task 9's brief: add/remove rows are shown disabled with an honest
+    // explanation rather than omitted outright or silently faked — see
+    // `SecretEditorView`'s doc comment ("Add/remove rows").
+    case editorAddRemoveDisabled = "editor.add-remove-disabled"
+    case editorMergeKeyBadge = "editor.merge-key-badge"
+    case editorMergeKeyExplanation = "editor.merge-key-explanation"
+    case editorValueEncrypted = "editor.value-encrypted"
+    case editorValueNotEncrypted = "editor.value-not-encrypted"
+    case editorKindString = "editor.kind.string"
+    case editorKindInt = "editor.kind.int"
+    case editorKindFloat = "editor.kind.float"
+    case editorKindBool = "editor.kind.bool"
+    case editorKindNull = "editor.kind.null"
+    case editorKindTimestamp = "editor.kind.timestamp"
+    case editorKindEmptyMap = "editor.kind.empty-map"
+    case editorKindEmptyList = "editor.kind.empty-list"
+
+    // MARK: Task 9 — unsaved-changes prompts (file/project switch and quit)
+
+    case editorUnsavedChangesTitle = "editor.unsaved-changes.title"
+    case editorUnsavedChangesMessage = "editor.unsaved-changes.message"
+    case editorSaveAndContinue = "editor.save-and-continue"
+    case editorDiscardChanges = "editor.discard-changes"
+    case actionQuit = "action.quit"
+    case editorQuitUnsavedTitle = "editor.quit-unsaved.title"
+    case editorQuitUnsavedMessage = "editor.quit-unsaved.message"
+    case editorSaveAndQuit = "editor.save-and-quit"
+    case editorDiscardAndQuit = "editor.discard-and-quit"
+
     /// The resolved English text. Used in views and asserted in tests.
     public var text: String {
         String(localized: String.LocalizationValue(rawValue), bundle: .module)

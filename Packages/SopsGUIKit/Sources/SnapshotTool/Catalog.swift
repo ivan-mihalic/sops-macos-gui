@@ -19,6 +19,8 @@ enum Catalog {
         snapshots += keyImportView()
         snapshots += updateSettingsPanel()
         snapshots += try projectSidebar()
+        snapshots += try await secretEditor()
+        snapshots += try await fileList()
         return snapshots
     }
 
@@ -162,6 +164,66 @@ enum Catalog {
             Snapshot("project-sidebar-worktree-group", size: CGSize(width: 300, height: 520)) {
                 ProjectSidebar(model: model)
             },
+        ]
+    }
+
+    // MARK: - SecretEditorView, all five load states
+
+    /// `.idle`/`.loading` are not snapshotted on their own: `SecretEditorView`
+    /// treats them identically (a bare `ProgressView`, see that type's doc
+    /// comment), and both are transient states a real load already passes
+    /// through in well under a second — there is nothing distinct for a
+    /// static image to show beyond what `editor-loading` below already
+    /// shows immediately after construction, before `load()` is awaited.
+    private static func secretEditor() async throws -> [Snapshot] {
+        let unloaded = SecretDocumentViewModel(
+            fileURL: URL(fileURLWithPath: "/dev/null/loading.yaml"),
+            keyStore: SessionKeyStore(),
+            readFile: { _ in "irrelevant" })
+        // Deliberately not awaited — this is what the view looks like the
+        // instant a file is selected, before `load()` (called by
+        // `ProjectWorkspaceView.activateFile` right after construction, per
+        // `AppShell.swift`) has resolved.
+
+        let loaded = try await Fixtures.editorLoadedViewModel()
+        let empty = try await Fixtures.editorEmptyDocumentViewModel()
+        let needsKey = await Fixtures.editorNeedsKeyViewModel()
+        let failed = try await Fixtures.editorLoadFailedViewModel()
+
+        let editorSize = CGSize(width: 760, height: 560)
+        func editor(_ name: String, _ model: SecretDocumentViewModel, fileName: String) -> Snapshot {
+            Snapshot(name, size: editorSize) {
+                SecretEditorView(viewModel: model, fileName: fileName, unsavedChanges: UnsavedChangesTracker())
+            }
+        }
+
+        return [
+            editor("editor-loading", unloaded, fileName: "loading.yaml"),
+            editor("editor-loaded", loaded, fileName: "production.secrets.yaml"),
+            editor("editor-empty-document", empty, fileName: "empty.secrets.yaml"),
+            editor("editor-needs-key", needsKey, fileName: "needs-key.secrets.yaml"),
+            editor("editor-load-failed", failed, fileName: "wrong-key.secrets.yaml"),
+        ]
+    }
+
+    // MARK: - FileListView, every content state
+
+    private static func fileList() async throws -> [Snapshot] {
+        let withFiles = try await Fixtures.fileListModelWithFiles()
+        let empty = try await Fixtures.fileListModelEmpty()
+        let missingRoot = await Fixtures.fileListModelMissingRoot()
+
+        let size = CGSize(width: 320, height: 480)
+        func list(_ name: String, _ model: FileListModel) -> Snapshot {
+            Snapshot(name, size: size) {
+                FileListView(model: model, selection: .constant(nil))
+            }
+        }
+
+        return [
+            list("file-list-with-files", withFiles),
+            list("file-list-empty", empty),
+            list("file-list-missing-root", missingRoot),
         ]
     }
 }

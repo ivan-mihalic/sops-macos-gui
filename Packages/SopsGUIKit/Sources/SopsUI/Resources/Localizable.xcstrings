@@ -90,6 +90,17 @@
         }
       }
     },
+    "action.quit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quit"
+          }
+        }
+      }
+    },
     "action.remove-project": {
       "extractionState": "manual",
       "localizations": {
@@ -130,6 +141,435 @@
           "stringUnit": {
             "state": "translated",
             "value": "No project selected"
+          }
+        }
+      }
+    },
+    "editor.add-remove-disabled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adding and removing keys isn't supported yet — only existing values can be edited."
+          }
+        }
+      }
+    },
+    "editor.discard-and-quit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Discard Changes and Quit"
+          }
+        }
+      }
+    },
+    "editor.discard-changes": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Discard Changes"
+          }
+        }
+      }
+    },
+    "editor.empty-document.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "It's a valid, empty sops document — there's nothing to show, and nothing was left out."
+          }
+        }
+      }
+    },
+    "editor.empty-document.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This file has no values yet"
+          }
+        }
+      }
+    },
+    "editor.hide-value": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hide value"
+          }
+        }
+      }
+    },
+    "editor.kind.bool": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "boolean"
+          }
+        }
+      }
+    },
+    "editor.kind.empty-list": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "empty list"
+          }
+        }
+      }
+    },
+    "editor.kind.empty-map": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "empty map"
+          }
+        }
+      }
+    },
+    "editor.kind.float": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "float"
+          }
+        }
+      }
+    },
+    "editor.kind.int": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "integer"
+          }
+        }
+      }
+    },
+    "editor.kind.null": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "null"
+          }
+        }
+      }
+    },
+    "editor.kind.string": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "string"
+          }
+        }
+      }
+    },
+    "editor.kind.timestamp": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "timestamp"
+          }
+        }
+      }
+    },
+    "editor.load-failed.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This file couldn't be opened"
+          }
+        }
+      }
+    },
+    "editor.merge-key-badge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Merge key"
+          }
+        }
+      }
+    },
+    "editor.merge-key-explanation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This value comes from a YAML merge key (<<:). Editing it changes this merged copy, not the shared anchor it was copied from."
+          }
+        }
+      }
+    },
+    "editor.needs-key.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add your age private key in Settings › Key to open this file."
+          }
+        }
+      }
+    },
+    "editor.needs-key.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No decryption key configured"
+          }
+        }
+      }
+    },
+    "editor.no-file-selected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select a file to view and edit its values."
+          }
+        }
+      }
+    },
+    "editor.quit-unsaved.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quitting now will lose any edits that haven't been saved."
+          }
+        }
+      }
+    },
+    "editor.quit-unsaved.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You have unsaved changes"
+          }
+        }
+      }
+    },
+    "editor.reveal-value": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reveal value"
+          }
+        }
+      }
+    },
+    "editor.save-and-continue": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save and Continue"
+          }
+        }
+      }
+    },
+    "editor.save-and-quit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save and Quit"
+          }
+        }
+      }
+    },
+    "editor.save-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save"
+          }
+        }
+      }
+    },
+    "editor.save-error.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't save this file"
+          }
+        }
+      }
+    },
+    "editor.unsaved-changes.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Switching away from this file will lose any edits that haven't been saved."
+          }
+        }
+      }
+    },
+    "editor.unsaved-changes.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You have unsaved changes"
+          }
+        }
+      }
+    },
+    "editor.unsaved-indicator": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unsaved changes"
+          }
+        }
+      }
+    },
+    "editor.value-encrypted": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Encrypted on disk"
+          }
+        }
+      }
+    },
+    "editor.value-not-encrypted": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not encrypted on disk"
+          }
+        }
+      }
+    },
+    "files.empty.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No encrypted files found in this project."
+          }
+        }
+      }
+    },
+    "files.no-project-selected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select a project to see its encrypted files."
+          }
+        }
+      }
+    },
+    "files.other-format.note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d file(s) use a sops format this app doesn't open yet (dotenv, JSON, or INI)."
+          }
+        }
+      }
+    },
+    "files.project-missing.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This project's folder can't be found. It may have been moved, renamed, or is on a volume that isn't currently mounted."
+          }
+        }
+      }
+    },
+    "files.scanning": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scanning for encrypted files…"
+          }
+        }
+      }
+    },
+    "files.truncated.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This project has more files than one scan checks. Directories skipped entirely: %@."
+          }
+        }
+      }
+    },
+    "files.truncated.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not every file in this project was scanned."
           }
         }
       }
