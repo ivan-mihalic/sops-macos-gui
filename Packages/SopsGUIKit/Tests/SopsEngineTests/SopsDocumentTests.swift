@@ -407,3 +407,152 @@ struct SopsDocumentTests {
         #expect(try cliDecrypt(current, key: key).contains("# who this file belongs to"))
     }
 }
+
+/// Captures everything written to the process's `stderr` (fd 2) while `body`
+/// runs. The Go runtime and sops's logrus loggers write there, and in a GUI
+/// that stream is collected by the crash reporter and the unified log — so
+/// "the returned error is clean" is only half the property worth asserting.
+private func capturingStandardError<R>(_ body: () throws -> R) throws -> (R, String) {
+    let path = FileManager.default.temporaryDirectory
+        .appendingPathComponent("stderr-\(UUID().uuidString).log").path
+    FileManager.default.createFile(atPath: path, contents: nil)
+
+    let captured = open(path, O_WRONLY)
+    #expect(captured >= 0)
+    let saved = dup(2)
+    #expect(saved >= 0)
+    dup2(captured, 2)
+
+    defer {
+        fflush(stderr)
+        dup2(saved, 2)
+        close(saved)
+        close(captured)
+    }
+
+    let result = try body()
+    fflush(stderr)
+    let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+    return (result, text)
+}
+
+@Suite("Decrypt failures never carry the decrypted value across the boundary")
+struct DocumentErrorHygieneTests {
+
+    /// The declared type inside `ENC[…,type:str]` is not covered by the GCM
+    /// additional data — the AAD is the key path — so rewriting it to
+    /// `type:int` leaves the value authenticating and failing to convert.
+    /// sops's `aes.Cipher.Decrypt` then hands back `strconv`'s error, which
+    /// quotes the plaintext it was given.
+    private func retyped(_ encrypted: String, key keyName: String, to newType: String) throws
+        -> String
+    {
+        var lines = encrypted.components(separatedBy: "\n")
+        guard
+            let index = lines.firstIndex(where: {
+                $0.trimmingCharacters(in: .whitespaces).hasPrefix("\(keyName): ENC[")
+            })
+        else { throw TestError("no encrypted value named \(keyName)") }
+        lines[index] = lines[index].replacingOccurrences(
+            of: ",type:str]", with: ",type:\(newType)]")
+        return lines.joined(separator: "\n")
+    }
+
+    @Test("a mistyped value never reaches the Swift error, or stderr, for any type tag")
+    func mistypedValueNeverLeaks() throws {
+        let canary = "SUPERSECRETCANARY9999"
+        let key = try AgeKeyPair.generate()
+        let encrypted = try encryptWithCLI("api_key: \(canary)\nother: fine\n", key: key)
+
+        for badType in ["int", "float", "bool", "time"] {
+            let corrupt = try retyped(encrypted, key: "api_key", to: badType)
+
+            let (readMessage, readStderr) = try capturingStandardError { () -> String in
+                do {
+                    let rows = try SopsBridge.decryptToRows(corrupt, agePrivateKey: key.private)
+                    Issue.record("decryptToRows accepted type:\(badType) and returned \(rows.count) rows")
+                    return ""
+                } catch let error as SopsBridgeError {
+                    return error.description
+                }
+            }
+            #expect(!readMessage.contains(canary), "type:\(badType) read error: \(readMessage)")
+            #expect(!readStderr.contains(canary), "type:\(badType) read stderr: \(readStderr)")
+            #expect(readMessage.contains("api_key"), "the error should still name the key")
+
+            let (writeMessage, writeStderr) = try capturingStandardError { () -> String in
+                do {
+                    _ = try SopsBridge.applyEdits(
+                        corrupt,
+                        edits: [SecretEdit(path: ["other"], value: "x", kind: .string)],
+                        agePrivateKey: key.private)
+                    Issue.record("applyEdits accepted type:\(badType)")
+                    return ""
+                } catch let error as SopsBridgeError {
+                    return error.description
+                }
+            }
+            #expect(!writeMessage.contains(canary), "type:\(badType) write error: \(writeMessage)")
+            #expect(!writeStderr.contains(canary), "type:\(badType) write stderr: \(writeStderr)")
+
+            let (plainMessage, plainStderr) = try capturingStandardError { () -> String in
+                do {
+                    _ = try SopsBridge.decryptYAML(corrupt, agePrivateKey: key.private)
+                    Issue.record("decryptYAML accepted type:\(badType)")
+                    return ""
+                } catch let error as SopsBridgeError {
+                    return error.description
+                }
+            }
+            #expect(!plainMessage.contains(canary), "type:\(badType) decryptYAML: \(plainMessage)")
+            #expect(!plainStderr.contains(canary), "type:\(badType) decryptYAML stderr: \(plainStderr)")
+        }
+    }
+
+    @Test("the three ways a decrypt fails are told apart, so the UI can say something true")
+    func failuresAreClassified() throws {
+        let key = try AgeKeyPair.generate()
+        let stranger = try AgeKeyPair.generate()
+        let encrypted = try encryptWithCLI("api_key: hunter2\n", key: key)
+
+        #expect(throws: SopsBridgeError.self) {
+            try SopsBridge.decryptToRows(encrypted, agePrivateKey: stranger.private)
+        }
+        do {
+            _ = try SopsBridge.decryptToRows(encrypted, agePrivateKey: stranger.private)
+        } catch let error as SopsBridgeError {
+            #expect(error.description.contains("none of the keys"), "\(error.description)")
+        }
+
+        let partial = try encryptWithCLI(
+            "host: localhost\napi_key: hunter2\n", key: key,
+            extraArgs: ["--encrypted-regex", "^api_key$"])
+        let tampered = partial.replacingOccurrences(
+            of: "host: localhost", with: "host: elsewhere")
+        do {
+            _ = try SopsBridge.decryptToRows(tampered, agePrivateKey: key.private)
+            Issue.record("a tampered document was accepted")
+        } catch let error as SopsBridgeError {
+            #expect(
+                error.description.contains("modified since it was encrypted"),
+                "\(error.description)")
+        }
+
+        let mistyped = try retyped(encrypted, key: "api_key", to: "int")
+        do {
+            _ = try SopsBridge.decryptToRows(mistyped, agePrivateKey: key.private)
+            Issue.record("a mistyped value was accepted")
+        } catch let error as SopsBridgeError {
+            #expect(error.description.contains("could not be read"), "\(error.description)")
+        }
+    }
+
+    /// The capture itself has to work, or the assertions above are vacuous.
+    @Test("the stderr capture used by these tests actually captures stderr")
+    func stderrCaptureWorks() throws {
+        let (_, text) = try capturingStandardError {
+            FileHandle.standardError.write(Data("CAPTURE-PROBE-12345\n".utf8))
+        }
+        #expect(text.contains("CAPTURE-PROBE-12345"))
+    }
+}

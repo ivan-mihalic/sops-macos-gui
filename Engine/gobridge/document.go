@@ -33,6 +33,7 @@ import (
 
 	"github.com/getsops/sops/v3"
 	"github.com/getsops/sops/v3/aes"
+	"github.com/getsops/sops/v3/cmd/sops/codes"
 	"github.com/getsops/sops/v3/cmd/sops/common"
 	"github.com/getsops/sops/v3/config"
 	"github.com/getsops/sops/v3/logging"
@@ -167,7 +168,7 @@ func loadAndDecrypt(encrypted []byte, agePrivateKey string) (*loadedDocument, er
 		KeyServices: ks.clients(),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("decrypt tree: %w", err)
+		return nil, describeDecryptFailure(tree, err)
 	}
 
 	return &loadedDocument{
@@ -183,13 +184,19 @@ func loadAndDecrypt(encrypted []byte, agePrivateKey string) (*loadedDocument, er
 // already hold rather than a path we have to hand it.
 //
 // The upstream helper only reads from a file or from stdin, and its
-// bug-fixing half is actively wrong for this app: FixAWSKMSEncryptionContextBug
-// prints a page of explanation to stdout and, when stdin is not a terminal —
-// which in a GUI it never is — repairs the file by re-wrapping every AWS KMS
-// data key. This build is age-only and re-wrapping data keys is `updatekeys`,
-// an operation the user asks for explicitly. So the detection is kept,
-// verbatim from sops, and the repair is refused with an explanation instead
-// of being performed behind the user's back.
+// bug-fixing half is actively wrong for this app. FixAWSKMSEncryptionContextBug
+// prints a page of explanation to stdout and then calls
+// UpdateMasterKeysWithKeyServices *unconditionally* — it re-wraps every AWS KMS
+// data key on every path through it. Its `term.IsTerminal(os.Stdout.Fd())`
+// check gates only `persistFix`, i.e. whether the repaired tree is written back
+// to the input path; the re-wrap itself is not optional. And an "in-memory
+// only" re-wrap would reach disk anyway here, because this app emits the tree
+// itself when the user saves.
+//
+// This build is age-only, and re-wrapping data keys is `updatekeys` — an
+// operation the user asks for explicitly (M4), not something a save may do
+// behind their back. So the detection is kept, called verbatim from sops, and
+// the repair is refused with an explanation instead of being performed.
 func loadEncryptedDocument(store common.Store, encrypted []byte) (*sops.Tree, error) {
 	tree, err := store.LoadEncryptedFile(encrypted)
 	if err != nil {
@@ -206,6 +213,80 @@ func loadEncryptedDocument(store common.Store, encrypted []byte) (*sops.Tree, er
 				"run the sops CLI on it first")
 	}
 	return &tree, nil
+}
+
+// describeDecryptFailure turns a common.DecryptTree error into one this app is
+// willing to show, and is the only way a decrypt failure may leave this
+// package.
+//
+// sops's decrypt error text cannot be propagated. aes.Cipher.Decrypt unwraps
+// the ciphertext first and converts second: it runs strconv.Atoi / ParseFloat /
+// ParseBool / time.UnmarshalText over the *already-decrypted plaintext*, and
+// hands strconv's error — which quotes its input — back to sops.Tree.Decrypt,
+// which wraps it as "Could not decrypt value: …". The result is a decrypted
+// secret inside an error string that the UI renders and the crash reporter
+// collects.
+//
+// That is not a theoretical path. The declared type inside ENC[…,type:str] is
+// not covered by the GCM additional data — the AAD is the key path — so
+// changing type:str to type:int leaves the value authenticating perfectly and
+// failing to convert. A corrupt file, a bad merge, or a hostile commit in a
+// shared repository all get there.
+//
+// So the message is rebuilt rather than wrapped. The classification comes from
+// sops's own exit codes, which cmd/sops/common attaches to every failure here,
+// so it tracks upstream's own idea of what went wrong rather than matching on
+// its prose.
+func describeDecryptFailure(tree *sops.Tree, err error) error {
+	// cli.ExitError, which common.NewExitError returns, satisfies this. Matched
+	// structurally so that urfave/cli does not become an import of this package.
+	coder, ok := err.(interface{ ExitCode() int })
+	if !ok {
+		return fmt.Errorf("this file could not be decrypted")
+	}
+	switch coder.ExitCode() {
+	case codes.CouldNotRetrieveKey:
+		return fmt.Errorf("none of the keys available to this app can decrypt this file")
+	case codes.MacMismatch, codes.ErrorDecryptingMac:
+		return fmt.Errorf("this file does not match its own message authentication code: " +
+			"it has been modified since it was encrypted, or it is damaged")
+	case codes.ErrorDecryptingTree:
+		if where := firstUnreadablePath(tree); where != "" {
+			return fmt.Errorf("a value in this file could not be read (%s); the file is damaged or was edited by hand", where)
+		}
+		return fmt.Errorf("a value in this file could not be read; the file is damaged or was edited by hand")
+	default:
+		return fmt.Errorf("this file could not be decrypted")
+	}
+}
+
+// firstUnreadablePath names the key whose value a failed decrypt stopped at.
+//
+// sops's error does not carry the path, and this is the piece of information a
+// user actually needs to repair a damaged file — so it is recovered from the
+// tree rather than from the message. sops.Tree.Decrypt replaces each value in
+// place as it goes and returns on the first failure, so everything before the
+// failure is plaintext and everything from it onwards is still ciphertext:
+// the first leaf that still looks encrypted is the one that failed.
+//
+// A key path is not a secret (CLAUDE.md permits naming a key, never a value),
+// and nothing but a path can come out of here.
+func firstUnreadablePath(tree *sops.Tree) string {
+	var found string
+	// A walk error (a non-string key) just means no path is available.
+	_ = walkLeaves(tree.Branches, func(document int, path []string, value interface{}) error {
+		if found != "" {
+			return nil
+		}
+		if text, isString := value.(string); isString && encValueRe.MatchString(text) {
+			found = pathLabel(path)
+			if document != 0 {
+				found = fmt.Sprintf("document %d, %s", document, found)
+			}
+		}
+		return nil
+	})
+	return found
 }
 
 // pathKey is an injective encoding of a document index and key path, used to
@@ -491,7 +572,9 @@ func ApplyEditsAndEncrypt(encrypted []byte, edits []Edit, agePrivateKey string) 
 
 	out, err := doc.store.EmitEncryptedFile(*doc.tree)
 	if err != nil {
-		return nil, fmt.Errorf("emit encrypted file: %w", err)
+		// The YAML encoder quotes what it could not marshal, and a file with
+		// an encrypted_regex still holds plaintext values at this point.
+		return nil, fmt.Errorf("the saved document could not be rendered")
 	}
 	return out, nil
 }

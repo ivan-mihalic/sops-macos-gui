@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -909,13 +910,18 @@ func TestInlineCommentsMoveExactlyAsTheSopsCLIMovesThem(t *testing.T) {
 		t.Fatalf("ApplyEditsAndEncrypt: %v", err)
 	}
 
-	cliInline := inlineCommentIsOnTheSameLineAs(string(cliOut), "api_key:")
-	ourInline := inlineCommentIsOnTheSameLineAs(string(ourOut), "api_key:")
-	if cliInline != ourInline {
-		t.Errorf("this bridge and `sops set` disagree about inline comments: cli=%v ours=%v\n"+
-			"cli output:\n%s\nour output:\n%s", cliInline, ourInline, cliOut, ourOut)
+	// Compared structurally rather than by a "was it inline?" boolean, which
+	// would also pass if the two outputs had diverged some *other* way. Every
+	// ciphertext and the timestamp are masked, because a fresh encryption of a
+	// value the stash has not seen picks a random IV — the point is that
+	// nothing else about the two documents differs: key order, indentation,
+	// comment placement, plaintext values, recipients, metadata.
+	if got, want := normaliseSopsDocument(string(ourOut)), normaliseSopsDocument(string(cliOut)); got != want {
+		t.Errorf("this bridge and `sops set` produced structurally different documents\n"+
+			"ours:\n%s\n`sops set`:\n%s", got, want)
 	}
-	if cliInline {
+
+	if inlineCommentIsOnTheSameLineAs(string(cliOut), "api_key:") {
 		t.Logf("upstream now preserves inline comments; the documented caveat can be retired")
 	}
 
@@ -924,6 +930,20 @@ func TestInlineCommentsMoveExactlyAsTheSopsCLIMovesThem(t *testing.T) {
 	if !strings.Contains(cliDecrypt(t, key, ourOut), "# rotate me") {
 		t.Errorf("the comment was lost entirely")
 	}
+}
+
+// normaliseSopsDocument masks the two things that legitimately differ between
+// two independent encryptions of the same tree — every ENC[…] payload (fresh
+// random IV) and the timestamp — leaving the document's whole structure intact
+// for comparison.
+var (
+	anyEncPayload   = regexp.MustCompile(`ENC\[AES256_GCM,[^\]]*\]`)
+	anyLastModified = regexp.MustCompile(`lastmodified: "[^"]*"`)
+)
+
+func normaliseSopsDocument(doc string) string {
+	doc = anyEncPayload.ReplaceAllString(doc, "ENC[…]")
+	return anyLastModified.ReplaceAllString(doc, `lastmodified: "…"`)
 }
 
 func inlineCommentIsOnTheSameLineAs(doc, prefix string) bool {
@@ -1003,4 +1023,134 @@ func runSopsCLIAllowFailDoc(t *testing.T, key ageKeyPair, args ...string) ([]byt
 		return out, fmt.Errorf("sops %v: %w: %s", args, err, out)
 	}
 	return out, nil
+}
+
+// -----------------------------------------------------------------------
+// Decrypt-path error hygiene
+// -----------------------------------------------------------------------
+
+// The `type:` tag inside ENC[…] is NOT part of the GCM additional data — the
+// AAD is the key path — so flipping `type:str` to `type:int` still
+// authenticates. sops decrypts the value successfully and then fails to
+// convert it, and aes.Cipher.Decrypt hands back strconv's error, which quotes
+// the plaintext it was given. Propagating that error puts a decrypted secret
+// into a string the UI renders and the crash reporter collects.
+//
+// A corrupt file, a bad merge, or a hostile commit in a shared repository all
+// reach this. Both entry points share loadAndDecrypt, so both are affected.
+const decryptCanary = "SUPERSECRETCANARY9999"
+
+// retypeEncryptedValue rewrites the declared type of one encrypted value,
+// leaving the ciphertext and its tag untouched — so the MAC over that value
+// still verifies and sops gets as far as converting the plaintext.
+func retypeEncryptedValue(t *testing.T, encrypted []byte, keyName, newType string) []byte {
+	t.Helper()
+	lines := strings.Split(string(encrypted), "\n")
+	found := false
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), keyName+": ENC[") {
+			lines[i] = strings.Replace(line, ",type:str]", ",type:"+newType+"]", 1)
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("no encrypted value named %q in the fixture", keyName)
+	}
+	return []byte(strings.Join(lines, "\n"))
+}
+
+func TestDecryptErrorsNeverCarryTheDecryptedValue(t *testing.T) {
+	key := newAgeKeyPair(t)
+	encrypted := encryptWithCLI(t, key, "api_key: "+decryptCanary+"\nother: fine\n")
+
+	for _, badType := range []string{"int", "float", "bool", "time"} {
+		t.Run(badType, func(t *testing.T) {
+			corrupt := retypeEncryptedValue(t, encrypted, "api_key", badType)
+
+			check := func(label string, err error) {
+				t.Helper()
+				if err == nil {
+					t.Fatalf("%s: a document with a mistyped value was accepted", label)
+				}
+				if strings.Contains(err.Error(), decryptCanary) {
+					t.Errorf("%s: the error carries the decrypted value: %v", label, err)
+				}
+				// It must still say something useful about which key failed.
+				if !strings.Contains(err.Error(), "api_key") {
+					t.Errorf("%s: the error does not name the key that failed: %v", label, err)
+				}
+			}
+
+			_, err := DecryptToRows(corrupt, key.Private)
+			check("DecryptToRows", err)
+
+			_, err = ApplyEditsAndEncrypt(corrupt,
+				[]Edit{{Path: []string{"other"}, Value: "x", Kind: KindString}}, key.Private)
+			check("ApplyEditsAndEncrypt", err)
+
+			_, err = Decrypt(corrupt, FormatYAML, key.Private)
+			if err == nil {
+				t.Fatalf("Decrypt accepted a mistyped document")
+			}
+			if strings.Contains(err.Error(), decryptCanary) {
+				t.Errorf("Decrypt carries the decrypted value: %v", err)
+			}
+		})
+	}
+}
+
+// The MAC's own value is stored as type:str too, so the same flip reaches the
+// MAC-decryption branch.
+func TestMACDecryptErrorsAreSanitised(t *testing.T) {
+	key := newAgeKeyPair(t)
+	encrypted := encryptWithCLI(t, key, "api_key: "+decryptCanary+"\n")
+	corrupt := retypeEncryptedValue(t, encrypted, "mac", "int")
+
+	if _, err := DecryptToRows(corrupt, key.Private); err == nil {
+		t.Fatalf("a document with an unreadable MAC was accepted")
+	} else if strings.Contains(err.Error(), decryptCanary) {
+		t.Errorf("the error carries a decrypted value: %v", err)
+	}
+}
+
+// The three ways a decrypt fails are distinguishable, so the UI can say
+// something true about which one happened.
+func TestDecryptFailuresAreClassified(t *testing.T) {
+	key := newAgeKeyPair(t)
+	stranger := newAgeKeyPair(t)
+	encrypted := encryptWithCLI(t, key, "api_key: "+decryptCanary+"\n")
+
+	if _, err := DecryptToRows(encrypted, stranger.Private); err == nil {
+		t.Fatal("an unrelated identity was accepted")
+	} else if !strings.Contains(err.Error(), "none of the keys") {
+		t.Errorf("a wrong-identity failure is not reported as one: %v", err)
+	}
+
+	// A real MAC mismatch: change a value the rules leave in plaintext, so
+	// every ciphertext still unwraps but the recomputed MAC no longer matches.
+	partial := encryptWithCLI(t, key, "host: localhost\napi_key: "+decryptCanary+"\n",
+		"--encrypted-regex", "^api_key$")
+	tampered := strings.Replace(string(partial), "host: localhost", "host: elsewhere", 1)
+	if _, err := DecryptToRows([]byte(tampered), key.Private); err == nil {
+		t.Fatal("a tampered document was accepted")
+	} else if !strings.Contains(err.Error(), "modified since it was encrypted") {
+		t.Errorf("a tampered document is not reported as one: %v", err)
+	}
+
+	mistyped := retypeEncryptedValue(t, encrypted, "api_key", "int")
+	if _, err := DecryptToRows(mistyped, key.Private); err == nil {
+		t.Fatal("a mistyped value was accepted")
+	} else if !strings.Contains(err.Error(), "could not be read") {
+		t.Errorf("an unreadable value is not reported as one: %v", err)
+	}
+
+	// Corrupted ciphertext is an unreadable value too, not a MAC mismatch:
+	// sops never gets far enough to compute a MAC.
+	garbled := strings.Replace(string(encrypted), "data:", "data:A", 1)
+	if _, err := DecryptToRows([]byte(garbled), key.Private); err == nil {
+		t.Fatal("a garbled document was accepted")
+	} else if !strings.Contains(err.Error(), "could not be read") {
+		t.Errorf("garbled ciphertext is not reported as an unreadable value: %v", err)
+	}
 }
