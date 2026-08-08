@@ -14,22 +14,31 @@ struct SopsGUIApp: App {
     // health check without a relaunch — the exact staleness bug
     // `reportBuilder` exists to avoid.
     private let projectStore = ProjectStore(fileURL: ProjectStore.defaultFileURL)
+    // One SessionKeyStore, shared by the Settings › Key panel and the health
+    // check, for the same reason `projectStore` is shared: an import made in
+    // the Key panel must be visible to the next health run without a
+    // relaunch, and two separate instances would silently desync.
+    private let keyStore = SessionKeyStore()
     @State private var projects: ProjectSidebarModel
     // Rebuilt from scratch on every refresh rather than captured once at
     // launch, so a project added through the sidebar mid-session is seen the
     // next time the report runs, not only after relaunching the app. Also
     // read live from UserDefaults on every run: Settings › Updates writes the
     // same key, and a captured Bool would ignore the toggle for the rest of
-    // the session.
+    // the session. The key store is read fresh for the same reason — an
+    // import or a Forget in Settings › Key must show up the next time the
+    // report runs, not only after relaunching.
     @State private var health: HealthViewModel
     @State private var onboarding = OnboardingState()
     @State private var isShowingOnboarding = false
 
     init() {
         let store = projectStore
+        let keys = keyStore
         _projects = State(initialValue: ProjectSidebarModel(store: store))
         _health = State(initialValue: HealthViewModel(reportBuilder: {
-            .standard(updateChecksEnabled: { UpdateCheckConsent.isEnabled() }, projects: store.healthSource)
+            .standard(updateChecksEnabled: { UpdateCheckConsent.isEnabled() },
+                      projects: store.healthSource, keyStore: keys.healthSource)
         }))
     }
 
@@ -67,6 +76,8 @@ struct SopsGUIApp: App {
             TabView {
                 HealthPanel(model: health)
                     .tabItem { Label(.settingsTabHealth, systemImage: "stethoscope") }
+                KeyImportView(store: keyStore)
+                    .tabItem { Label(.settingsTabKey, systemImage: "key") }
                 UpdateSettingsPanel()
                     .tabItem { Label(.settingsTabUpdates, systemImage: "arrow.down.circle") }
             }

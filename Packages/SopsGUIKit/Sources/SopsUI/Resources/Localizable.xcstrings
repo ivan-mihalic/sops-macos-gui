@@ -222,6 +222,160 @@
         }
       }
     },
+    "key.error.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That's empty. Paste your age key — it starts with AGE-SECRET-KEY-1."
+          }
+        }
+      }
+    },
+    "key.error.multiple-keys": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That file has %d keys in it. This app can only hold one at a time — trim the file to the one you want, or paste it directly instead."
+          }
+        }
+      }
+    },
+    "key.error.not-an-age-key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That doesn't look like an age key. An age private key starts with AGE-SECRET-KEY-1."
+          }
+        }
+      }
+    },
+    "key.error.read-failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That file couldn't be read."
+          }
+        }
+      }
+    },
+    "key.forget-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Forget"
+          }
+        }
+      }
+    },
+    "key.import.error-title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't import that key"
+          }
+        }
+      }
+    },
+    "key.import.legacy-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import from ~/.config/sops/age/keys.txt"
+          }
+        }
+      }
+    },
+    "key.import.legacy-footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This only reads that file when you press the button above — never automatically."
+          }
+        }
+      }
+    },
+    "key.import.legacy-success": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imported for this session. That file is still sitting on disk unprotected — this app can't import it out of harm's way, but you can narrow who can read it:"
+          }
+        }
+      }
+    },
+    "key.import.paste-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import"
+          }
+        }
+      }
+    },
+    "key.paste.footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Held in memory for this session only. Never written to disk, and forgotten when you quit the app or press Forget."
+          }
+        }
+      }
+    },
+    "key.paste.header": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paste your age key"
+          }
+        }
+      }
+    },
+    "key.status.configured": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A key is imported for this session."
+          }
+        }
+      }
+    },
+    "key.status.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No key is imported."
+          }
+        }
+      }
+    },
     "onboarding.engine.subtitle": {
       "extractionState": "manual",
       "localizations": {
@@ -537,6 +691,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Health"
+          }
+        }
+      }
+    },
+    "settings.tab.key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Key"
           }
         }
       }

@@ -36,9 +36,31 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case healthNothingChecked = "health.nothing-checked"
     case settingsTabHealth = "settings.tab.health"
     case settingsTabUpdates = "settings.tab.updates"
+    case settingsTabKey = "settings.tab.key"
     case settingsUpdatesToggle = "settings.updates.toggle"
     case settingsUpdatesExplanation = "settings.updates.explanation"
     case settingsUpdatesPrivacy = "settings.updates.privacy"
+
+    case keyStatusConfigured = "key.status.configured"
+    case keyStatusEmpty = "key.status.empty"
+    case keyPasteHeader = "key.paste.header"
+    case keyPasteFooter = "key.paste.footer"
+    case keyImportPasteButton = "key.import.paste-button"
+    case keyForgetButton = "key.forget-button"
+    case keyImportLegacyButton = "key.import.legacy-button"
+    case keyImportLegacyFooter = "key.import.legacy-footer"
+    // Shown after a successful import from the legacy keys.txt file,
+    // immediately above the same `chmod 600` remediation
+    // `SecurityPostureCheck`'s `security.legacy-key-file` finding offers —
+    // this is the moment the app can point at that advice, not invent its
+    // own. See `KeyImportView`.
+    case keyImportLegacySuccess = "key.import.legacy-success"
+    case keyImportErrorTitle = "key.import.error-title"
+    case keyErrorEmpty = "key.error.empty"
+    case keyErrorNotAnAgeKey = "key.error.not-an-age-key"
+    // Formatted with the number of keys found — see `KeyImportView.message(for:)`.
+    case keyErrorMultipleKeys = "key.error.multiple-keys"
+    case keyErrorReadFailed = "key.error.read-failed"
 
     case actionBack = "action.back"
     case actionContinue = "action.continue"

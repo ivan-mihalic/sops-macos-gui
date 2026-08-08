@@ -119,19 +119,29 @@ public struct SecurityPostureCheck: HealthCheck {
     private var keyStoreFinding: HealthFinding {
         switch keyStore.state {
         case .configured:
+            // "Stored in your Keychain" would overclaim: M2's key lives in
+            // memory for the running session only (`SessionKeyStore`), not
+            // in the Keychain — that's M3. Say what is actually true now.
             HealthFinding(id: "security.keystore", title: "Your age key", status: .ok,
-                          detail: "An age key is stored in your Keychain.")
+                          detail: "An age key is imported for this session.")
         case .empty:
             // Scoped to this app, deliberately. "nothing can be decrypted" is
             // a claim about the whole machine, and the app has no basis for
             // it: the user may well hold keys in a `keys.txt`, in a password
             // manager, on a YubiKey, or on another machine entirely, and
             // decrypt with the sops CLI perfectly happily. The only fact here
-            // is about this app's own Keychain entry.
+            // is about this app's own key store.
             HealthFinding(id: "security.keystore", title: "Your age key", status: .problem,
                           detail: "No age key is configured in this app, so this app cannot decrypt anything. Keys you hold elsewhere are unaffected — this says nothing about them.",
+                          // Was "Generate a new key, or import an existing
+                          // one, from the Keys section of this app." — wrong
+                          // on both counts: this app cannot generate a key
+                          // yet, and there was no "Keys section" for it to
+                          // point at (the sibling finding below had the same
+                          // defect before it was fixed). Settings › Key is
+                          // real as of this task, and only import exists.
                           remediation: Remediation(
-                              explanation: "Generate a new key, or import an existing one, from the Keys section of this app."))
+                              explanation: "Import an existing age key in Settings › Key — paste it directly, or import it from ~/.config/sops/age/keys.txt."))
         case .unavailable(let reason):
             // The row renders the skip reason and the detail back to back, so
             // printing the same sentence into both read as a stutter.
