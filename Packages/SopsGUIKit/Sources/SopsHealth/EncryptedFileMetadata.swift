@@ -77,10 +77,27 @@ enum EncryptedFileMetadata {
     /// file, is what stops a user's own plaintext field name (e.g.
     /// `recipient`, `kms`) from being mistaken for sops metadata; see the
     /// type-level doc comment.
+    ///
+    /// `LineEndings.lines(of:)`, not `split(separator: "\n")`. Swift treats
+    /// `"\r\n"` as a *single* `Character`, so splitting on the `Character`
+    /// `"\n"` does not split a CRLF document at all: the whole file came back
+    /// as one line, no line ever equalled `"sops:"`, this function returned
+    /// nothing, and `recipients(inEncryptedFile:)` reported *no recipients* —
+    /// which `ProjectHealthCheck` then rendered as a `.problem` saying the
+    /// file "does not list <key> among its recipients" about a file that
+    /// lists it perfectly well, with `sops updatekeys` offered as the fix for
+    /// a problem that did not exist. sops writes LF, but an editor round-trip
+    /// or `git config core.autocrlf=true` is enough to change that, and the
+    /// byte-level marker search that classifies the file in the first place
+    /// (`ProjectScanner.sopsBlockMarker`, a `Data` search where `\r\n` really
+    /// is two bytes) never cared — so a CRLF file reached this function
+    /// classified correctly and was then misread. Fourth occurrence of this
+    /// gotcha in the project; see `LineEndings` for the full list and for the
+    /// guard that now fails the build on the idiom.
     private static func sopsBlockLines(in text: String) -> [String] {
         var lines: [String] = []
         var inBlock = false
-        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
+        for rawLine in LineEndings.lines(of: text) {
             let line = String(rawLine)
             if line == "sops:" { inBlock = true; lines.append(line); continue }
             guard inBlock else { continue }

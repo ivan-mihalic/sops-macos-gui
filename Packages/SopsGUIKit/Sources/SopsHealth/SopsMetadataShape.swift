@@ -115,12 +115,21 @@ enum SopsMetadataShape {
     /// `{"sops": sopsVersion}` in Go — where the value is an identifier or a
     /// call, never a brace. The `mac`/`version` requirement is the same
     /// belt-and-braces as the YAML case.
+    ///
+    /// The whitespace skipped between the colon and the brace is
+    /// `Character.isWhitespace`, not an explicit `" "`/`"\t"`/`"\n"`/`"\r"`
+    /// list. The explicit list had the CRLF blind spot this file's `lines(of:)`
+    /// was already written to avoid: `"\r\n"` is one `Character` equal to
+    /// neither `"\n"` nor `"\r"`, so a CRLF-converted JSON file with the brace
+    /// on the next line stopped the skip dead and the store went unrecognised
+    /// — a false *negative*, the direction this type's doc comment names as
+    /// the worse one, because an unrecognised encrypted `.env`/`.json` becomes
+    /// a plaintext-leak alarm about a file that is not leaking anything.
     private static func isJSONMetadata(_ text: String) -> Bool {
         guard text.contains("\"mac\":"), text.contains("\"version\":") else { return false }
         var remainder = text[...]
         while let match = remainder.range(of: "\"sops\":") {
-            let afterColon = remainder[match.upperBound...]
-                .drop(while: { $0 == " " || $0 == "\t" || $0 == "\n" || $0 == "\r" })
+            let afterColon = remainder[match.upperBound...].drop(while: \.isWhitespace)
             if afterColon.first == "{" { return true }
             remainder = remainder[match.upperBound...]
         }
@@ -166,10 +175,15 @@ enum SopsMetadataShape {
     /// file comes back as one line and every structural check silently fails.
     /// Caught by `SopsMetadataShapeTests.crlfIsTolerated`, which failed
     /// against the first version of this function for exactly that reason.
+    ///
+    /// The three-way `$0 == "\n" || $0 == "\r\n" || $0 == "\r"` predicate this
+    /// replaced was correct; it is now `LineEndings.lines(of:)` so that this
+    /// package has exactly one answer to "what is a line", and so the
+    /// `Sources/`-wide guard against the `"\n"`-as-a-Character habit
+    /// (`CRLFToleranceTests.sourcesContainNoNewlineBlindIdioms`) has no
+    /// correct-but-indistinguishable exception to carve out.
     private static func lines(of text: String) -> [Substring] {
-        text.split(omittingEmptySubsequences: false) {
-            $0 == "\n" || $0 == "\r\n" || $0 == "\r"
-        }
+        LineEndings.lines(of: text)
     }
 
     /// The key of a `key: value` YAML line, trimmed of its indentation.

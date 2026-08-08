@@ -324,7 +324,14 @@ enum Fixtures {
             process.waitUntilExit()
             let output = String(decoding: data, as: UTF8.self)
             var priv = "", pub = ""
-            for line in output.split(separator: "\n") {
+            // `LineEndings.lines(of:)`, not `split(separator: "\n")` — see
+            // that type for why the `Character` `"\n"` is the wrong thing to
+            // split on. `age-keygen` writes LF, so this is consistency with
+            // the rest of the package rather than a bug being fixed; the
+            // `Sources/`-wide guard treats every occurrence the same way on
+            // purpose, because "this particular producer writes LF" is what
+            // was believed at three of the four real sites too.
+            for line in LineEndings.lines(of: output) {
                 if line.hasPrefix("AGE-SECRET-KEY-") {
                     priv = String(line)
                 } else if line.hasPrefix("# public key: ") {

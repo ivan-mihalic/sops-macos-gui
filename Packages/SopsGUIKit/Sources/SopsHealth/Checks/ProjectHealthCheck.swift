@@ -769,8 +769,17 @@ public struct ProjectHealthCheck: HealthCheck {
             || name.hasPrefix(" ") || name.hasSuffix(" ")
     }
 
+    /// Whether a filename contains a line break, and so cannot be named by
+    /// any single-line command this app offers.
+    ///
+    /// `Character.isNewline`, not `$0 == "\n" || $0 == "\r"`: a CRLF pair is
+    /// one `Character` equal to neither, so the explicit comparison missed
+    /// exactly the name it needed to catch and the note about renaming the
+    /// file first was never attached. Same fix, same reason, as
+    /// `ShellQuoting.singleQuoted` — and the two must agree, because this
+    /// predicate is what explains the `nil` that one returns.
     static func nameSpansLines(_ name: String) -> Bool {
-        name.contains(where: { $0 == "\n" || $0 == "\r" })
+        name.contains(where: \.isNewline)
     }
 
     static let newlineInNameNote =

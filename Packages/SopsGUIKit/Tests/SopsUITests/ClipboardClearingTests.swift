@@ -27,6 +27,41 @@ struct ClipboardClearingTests {
         #expect(NSPasteboard.general.string(forType: .string) == canary)
     }
 
+    /// Waits for `condition` to hold, polling until it does or `timeout`
+    /// elapses. Returns whether it ever held.
+    ///
+    /// This replaces a fixed `Task.sleep` followed by a single check. The
+    /// difference matters, and it is the same distinction Task 16 drew for
+    /// `ProjectHealthCheckLargeFileTests`: "the clear happened" is the
+    /// property; "the clear happened within 400ms" is a wall-clock proxy for
+    /// it that also measures how busy the machine is. `ClipboardClearing`
+    /// schedules its clear as a `@MainActor Task`, and under bare
+    /// `swift test` — one process, all 64 suites, many of them `@MainActor`
+    /// — the main actor can stay saturated well past any fixed margin. Two
+    /// of ten consecutive full-suite runs failed here for exactly that
+    /// reason, with the clear arriving late rather than not at all.
+    ///
+    /// The timeout is not a loosened margin: it is a hang detector, three
+    /// orders of magnitude past the 50ms interval under test. A clear that
+    /// never gets scheduled still fails this, which is the regression the
+    /// test exists to catch. Promptness was never the property — the shipped
+    /// interval is 30 seconds, and nothing anywhere asserts its accuracy.
+    ///
+    /// The `await` inside the loop is also what makes the poll *work* rather
+    /// than spin: it yields the main actor, which is precisely what the
+    /// pending clear task is waiting for.
+    private static func eventually(
+        within timeout: Duration, _ condition: @MainActor () -> Bool
+    ) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
+        while clock.now < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return condition()
+    }
+
     @Test("the pasteboard is cleared after the interval elapses")
     func pasteboardClearsAfterInterval() async throws {
         let canary = "clipboard-canary-\(UUID().uuidString)"
@@ -34,9 +69,11 @@ struct ClipboardClearingTests {
 
         #expect(NSPasteboard.general.string(forType: .string) == canary)
 
-        try await Task.sleep(for: .milliseconds(400))
-
-        #expect(NSPasteboard.general.string(forType: .string) != canary)
+        let cleared = await Self.eventually(within: .seconds(10)) {
+            NSPasteboard.general.string(forType: .string) != canary
+        }
+        #expect(cleared,
+                "the scheduled clear never ran: a value copied through ClipboardClearing stayed on the pasteboard for ten seconds after a 50ms interval")
     }
 
     // The property PROPOSAL.md and the task brief both care about: a stale

@@ -55,8 +55,33 @@ private func sopsBlock(recipient: String) -> String {
 @Suite("ProjectHealthCheck against oversized files")
 struct ProjectHealthCheckLargeFileTests {
 
-    @Test("a very large file with no sops content anywhere does not make the check slow")
-    func veryLargeIrrelevantFileDoesNotDominateRuntime() async throws {
+    /// The performance property, measured in bytes rather than seconds.
+    ///
+    /// This assertion used to read `#expect(elapsed < .seconds(3))`. It failed
+    /// roughly half the time under bare `swift test` — one process, all 63
+    /// suites, several of them scanning tens-of-thousands-of-files fixtures —
+    /// and never under `xcrun`, which gives each target its own process. The
+    /// code under test was identical in both; what differed was how busy the
+    /// machine was. Three of this file's assertions had already been through
+    /// that cycle (500ms → 3s → replaced), and raising the number a fourth
+    /// time would have kept the bad instrument and only moved where it next
+    /// tripped.
+    ///
+    /// So it measures the property directly instead. The claim behind
+    /// `ProjectScanner.maxSniffedFileBytes` is not "this finishes within three
+    /// seconds" — it is "a file's *size* is not this scanner's cost, because
+    /// only the last `maxSniffedFileBytes` are ever read". `TailReadLedger`
+    /// reports exactly that number. A regression to whole-file reads changes
+    /// it here by a factor of ~3,200, cannot be hidden by a fast disk or an
+    /// idle machine, and cannot be tripped by a busy one. See
+    /// `TailReadLedger`'s doc comment for why bytes beat both an absolute
+    /// ceiling and a same-run ratio for *this* property specifically.
+    ///
+    /// The wall clock is still printed. It is genuinely useful when a human
+    /// is looking at a regression; it is just not something to fail a build
+    /// on.
+    @Test("a very large file with no sops content anywhere is read only at its tail, never in full")
+    func veryLargeIrrelevantFileIsOnlyTailRead() async throws {
         let root = try makeProjectRoot()
         try "creation_rules:\n  - age: \(devKey)\n"
             .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
@@ -65,24 +90,29 @@ struct ProjectHealthCheckLargeFileTests {
         // of an accidentally-committed large asset (a dump, a checkpoint, a
         // bundled binary) this check must not choke on, sized well past the
         // 300 MB the original report measured at ~7s pre-fix.
-        try writeFileWithBulkPrefix(at: root.appendingPathComponent("huge-asset.bin"),
-                                   minBulkBytes: 200_000_000, trailer: "")
+        let hugeFile = root.appendingPathComponent("huge-asset.bin")
+        try writeFileWithBulkPrefix(at: hugeFile, minBulkBytes: 200_000_000, trailer: "")
+        let size = try FileManager.default.attributesOfItem(atPath: hugeFile.path)[.size] as? Int ?? 0
 
         let check = ProjectHealthCheck(source: FakeProjects(
             projects: [InspectedProject(name: "demo", rootPath: root.path)]))
 
         let clock = ContinuousClock()
         let start = clock.now
-        _ = await check.run()
+        let (_, reading) = await TailReadLedger.recording { await check.run() }
         let elapsed = clock.now - start
-        print("ProjectHealthCheck.run() with a 200 MB irrelevant file present: \(elapsed)")
+        let bytesRead = reading.bytes(for: hugeFile)
+        print("ProjectHealthCheck.run() with a \(size)-byte irrelevant file present: read \(bytesRead) bytes from it, elapsed \(elapsed)")
 
-        // Generous ceiling: a tail read of maxSniffedFileBytes should be
-        // near-instant regardless of the file's total size. 3s leaves
-        // headroom for slow CI disks while still failing hard if this ever
-        // regresses back to reading whole files (measured ~7s for a single
-        // 300 MB file before the fix).
-        #expect(elapsed < .seconds(3))
+        #expect(size > 100_000_000,
+                "test setup bug: the fixture must be far larger than the tail-read window to prove anything")
+        // Without this the assertion below passes just as happily over a file
+        // that was never opened at all — a scan that stopped finding things
+        // would look like a scan that got faster.
+        #expect(bytesRead > 0,
+                "the scan never read this file at all, so the byte bound below proves nothing")
+        #expect(bytesRead <= ProjectScanner.maxSniffedFileBytes,
+                "read \(bytesRead) bytes from a \(size)-byte file; the tail read is bounded at \(ProjectScanner.maxSniffedFileBytes) — file size has become this scanner's cost again")
     }
 
     @Test("a real stale-recipient mismatch inside a file far larger than the tail-read window is still caught")
@@ -115,15 +145,31 @@ struct ProjectHealthCheckLargeFileTests {
 
         let clock = ContinuousClock()
         let start = clock.now
-        let findings = await check.run()
+        let (findings, reading) = await TailReadLedger.recording { await check.run() }
         let elapsed = clock.now - start
-        print("ProjectHealthCheck.run() against a 20+ MB sops file (mismatch case): \(elapsed)")
+        let bytesRead = reading.bytes(for: fileURL)
+        print("ProjectHealthCheck.run() against a \(size)-byte sops file (mismatch case): read \(bytesRead) bytes from it, elapsed \(elapsed)")
 
+        // The correctness half, unchanged: a real mismatch beyond the tail
+        // window is still found. This is the assertion that fails if the
+        // *window* regresses — if the read moves off the end of the file, or
+        // the block stops being found where it lands.
         let stale = findings.first { $0.id.hasSuffix("stale-recipients") }!
         #expect(stale.status == .problem,
                 "a real mismatch inside an oversized file went undetected — the tail read regressed")
         #expect(stale.detail.contains(wrongKey))
-        #expect(elapsed < .seconds(3))
+
+        // The performance half, formerly `#expect(elapsed < .seconds(3))` —
+        // see `veryLargeIrrelevantFileIsOnlyTailRead` above for why a
+        // wall-clock ceiling was the wrong instrument, and `TailReadLedger`
+        // for what replaced it. Asserting both halves on the same fixture is
+        // the strongest form available: the scan reads 64 KiB of a 20 MB file
+        // *and* still catches the mismatch. Neither half alone rules out the
+        // failure the other covers.
+        #expect(bytesRead > 0,
+                "the scan never read this file at all, so the byte bound below proves nothing")
+        #expect(bytesRead <= ProjectScanner.maxSniffedFileBytes,
+                "read \(bytesRead) bytes from a \(size)-byte file; the tail read is bounded at \(ProjectScanner.maxSniffedFileBytes) — file size has become this scanner's cost again")
     }
 
     @Test("a genuinely healthy oversized sops file still reports .ok, not a false positive from the tail read")

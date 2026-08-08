@@ -691,6 +691,14 @@ public struct ProjectScanner {
     /// directly, so this is four raw syscalls (`open`, `fstat`, `pread`,
     /// `close`) with no Foundation/ObjC bridging layer between this
     /// function and the kernel.
+    ///
+    /// Every read is reported to `TailReadLedger`, which is inert unless a
+    /// test has a recording open. That is the instrument
+    /// `ProjectHealthCheckLargeFileTests` uses to assert the bound this
+    /// function's whole design exists to provide — that a file's *size* never
+    /// becomes this scanner's cost — without a wall-clock threshold, which
+    /// under bare `swift test`'s single-process parallel run measures ambient
+    /// machine load as much as it measures this code. See `TailReadLedger`.
     private static func tailBytes(of url: URL, maxBytes: Int) -> Data? {
         let fd = url.withUnsafeFileSystemRepresentation { path -> Int32 in
             guard let path else { return -1 }
@@ -710,6 +718,12 @@ public struct ProjectScanner {
         let bytesRead = buffer.withUnsafeMutableBytes { raw -> Int in
             pread(fd, raw.baseAddress, readSize, offset)
         }
+        // Reported before the `bytesRead > 0` guard so a read that came back
+        // empty is still visible as "this file was opened and read from" —
+        // the alternative silently looks identical to a file that was never
+        // visited, which is the vacuous-pass shape the ledger exists to make
+        // impossible to write by accident.
+        TailReadLedger.record(path: url.path, bytes: max(0, bytesRead))
         guard bytesRead > 0 else { return nil }
         return Data(bytes: buffer, count: bytesRead)
     }
