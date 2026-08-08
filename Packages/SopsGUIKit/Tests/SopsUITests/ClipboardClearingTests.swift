@@ -116,6 +116,73 @@ struct ClipboardClearingTests {
         #expect(NSPasteboard.general.string(forType: .string) != canary)
     }
 
+    // MARK: - The marker a clipboard manager actually reads
+
+    /// The ~30s clear cannot reach the consequences of a clipboard manager.
+    /// Raycast, Alfred, Maccy and Paste all record every pasteboard change
+    /// into a searchable, on-disk history the moment it happens; wiping
+    /// `NSPasteboard.general` half a minute later does nothing to the copy
+    /// they already took. `org.nspasteboard.ConcealedType` is the de-facto
+    /// opt-out (nspasteboard.org) and the only thing that reaches them.
+    ///
+    /// Asserted on `types` rather than on any value, because the marker's
+    /// payload is deliberately empty — its presence *is* the signal.
+    @Test("a copied secret is marked concealed so clipboard managers skip it")
+    func copyMarksTheValueConcealed() {
+        let canary = "clipboard-concealed-\(UUID().uuidString)"
+        ClipboardClearing.copy(canary, clearingAfter: .seconds(30))
+
+        let types = NSPasteboard.general.types ?? []
+        #expect(types.contains(ClipboardClearing.concealedType),
+                "a secret went onto the pasteboard without org.nspasteboard.ConcealedType; every clipboard manager on the machine just archived it permanently. Types present: \(types)")
+        #expect(types.contains(ClipboardClearing.transientType),
+                "no org.nspasteboard.TransientType either; managers that honour only that marker still recorded it. Types present: \(types)")
+        // And the value is still genuinely pasteable — the markers must not
+        // have displaced the string.
+        #expect(NSPasteboard.general.string(forType: .string) == canary)
+    }
+
+    // MARK: - What changeCount must do when a manager has touched the board
+
+    /// The guard used to be "clear only if `changeCount` is untouched", which
+    /// is the wrong way round in the one case that matters. A clipboard
+    /// manager that rewrites the pasteboard — normalising types, restoring a
+    /// history entry, re-copying on a hotkey — bumps `changeCount` while
+    /// leaving *the secret itself* sitting there. The old guard read that as
+    /// "somebody else owns this now" and skipped the clear entirely, so the
+    /// secret stayed on the pasteboard forever: the exact opposite of what
+    /// the ~30s window is for.
+    @Test("a manager rewriting the same secret does not buy it a permanent stay")
+    func rewrittenSecretIsStillCleared() async throws {
+        let canary = "clipboard-rewritten-\(UUID().uuidString)"
+        ClipboardClearing.copy(canary, clearingAfter: .milliseconds(50))
+
+        // A manager re-writing the identical value: changeCount moves, the
+        // secret does not.
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(canary, forType: .string)
+
+        let cleared = await Self.eventually(within: .seconds(10)) {
+            NSPasteboard.general.string(forType: .string) != canary
+        }
+        #expect(cleared,
+                "the secret was left on the pasteboard indefinitely because something else rewrote it with the same value")
+    }
+
+    /// Same hole, at the termination call site.
+    @Test("clearOnTermination wipes a secret a manager rewrote")
+    func terminationClearsRewrittenSecret() {
+        let canary = "clipboard-term-rewritten-\(UUID().uuidString)"
+        ClipboardClearing.copy(canary, clearingAfter: .seconds(30))
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(canary, forType: .string)
+
+        ClipboardClearing.clearOnTermination()
+
+        #expect(NSPasteboard.general.string(forType: .string) != canary)
+    }
+
     // The other half of the guard: something copied *after* the secret —
     // by this app or any other — must survive termination exactly as it
     // must survive the timer. Same guard, same property, proven at the

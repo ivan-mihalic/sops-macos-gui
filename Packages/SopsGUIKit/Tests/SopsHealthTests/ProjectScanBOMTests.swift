@@ -44,7 +44,14 @@ struct ProjectScanBOMTests {
         // should fail loudly here rather than silently stop testing what it
         // claims to.
         #expect(encrypted.hasPrefix("sops:"), "test setup bug: expected sops: at byte 0 of an empty-document encryption")
-        #expect(!encrypted.contains("\nsops:"), "test setup bug: expected no \\nsops: substring anywhere in an empty-document encryption")
+        // Over *bytes*, exactly as `ProjectScanner.sopsBlockMarker` searches.
+        // The Swift `String.contains("\nsops:")` this used to be is the Task 1b
+        // idiom itself: `"\r\n"` is one `Character`, so on a CRLF document the
+        // substring is not present and the precondition passed without
+        // establishing anything. Production would have found it; this would
+        // not have noticed.
+        #expect(Data(encrypted.utf8).range(of: Data("\nsops:".utf8)) == nil,
+                "test setup bug: expected no \\nsops: byte sequence anywhere in an empty-document encryption")
 
         var bomPrefixed = Data([0xEF, 0xBB, 0xBF])
         bomPrefixed.append(Data(encrypted.utf8))

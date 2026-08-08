@@ -21,14 +21,39 @@ import Foundation
 ///
 /// So the rule for this package is: **anything that reads a line out of text
 /// that came from a file, a pipe, or a filename uses this type or
-/// `Character.isNewline`, never a `"\n"` literal.** The guard that enforces it
-/// is `CRLFToleranceTests.sourcesContainNoNewlineBlindIdioms`, which greps
-/// `Sources/` for the banned idioms — a helper alone would not have prevented
-/// any of the four, because all four were written by someone reaching for
-/// `"\n"` out of habit rather than looking for a helper. Byte-level searches
-/// (`Data("\nsops:".utf8)` in `ProjectScanner`) are deliberately exempt and
-/// correct as they stand: over bytes, `\r\n` genuinely is two of them, so an
-/// LF-anchored byte marker matches a CRLF document.
+/// `Character.isNewline`, never a `"\n"` literal.** A helper alone would not
+/// have prevented any of the four, because all four were written by someone
+/// reaching for `"\n"` out of habit rather than looking for a helper, so the
+/// rule is enforced by a guard: `CRLFToleranceTests.sourcesContainNoNewlineBlindIdioms`,
+/// over every `.swift` file in `Sources/`, with no per-file exemption.
+///
+/// Byte-level searches (`Data("\nsops:".utf8)` in `ProjectScanner`) are
+/// deliberately outside the rule and correct as they stand: over bytes, `\r\n`
+/// genuinely is two of them, so an LF-anchored byte marker matches a CRLF
+/// document. So is `joined(separator: "\n")`, which writes line endings rather
+/// than reading them.
+///
+/// ## What the guard actually enforces, which is less than that sentence
+///
+/// The guard tokenises each file — comments dropped, string literals kept
+/// whole, interpolations re-entered as code — and then matches against source
+/// with all whitespace outside literals removed, so formatting cannot hide
+/// anything from it. What it recognises is a *written* line-ending literal:
+/// `"\n"`, `"\r"`, `"\r\n"` bound to a name or handed to a consuming API
+/// (`split`, `components`, `contains`, `hasPrefix`/`hasSuffix`, `firstIndex`,
+/// `lastIndex`, `range(of:)`, `==`/`!=`, a `case` label), plus
+/// `components(separatedBy: .newlines)`, which is not blind but does insert a
+/// phantom empty line after every CRLF-terminated one.
+///
+/// What it does not recognise is a line ending that is *constructed* rather
+/// than written — `"\u{0A}"`, `Character(UnicodeScalar(10))` — because that
+/// needs a real Swift parser with constant folding rather than a tokeniser.
+/// Nor does it look at `Tests/`, where `"\n"` in a fixture is ordinary and
+/// correct; two tests were nevertheless found asserting nothing under CRLF for
+/// exactly this reason, and that stays a reviewer's job. `NewlineBlindness`'s
+/// own header states the whole boundary, and `CRLFToleranceTests` pins both
+/// sides of it — the evasions it catches and the ones it does not — as cases
+/// in a test rather than as claims in a comment.
 public enum LineEndings {
 
     /// `text` split into lines on any line ending — LF, CRLF, CR, and the

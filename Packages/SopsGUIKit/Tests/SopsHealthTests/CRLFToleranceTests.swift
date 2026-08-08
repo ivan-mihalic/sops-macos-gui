@@ -241,7 +241,7 @@ struct CRLFToleranceTests {
 
     // MARK: - The standing guard against a fourth occurrence
 
-    /// Greps this package's own `Sources/` for the idioms that caused all
+    /// Scans this package's own `Sources/` for the idioms that caused all
     /// four occurrences, so the next one fails a test instead of shipping.
     ///
     /// A guard, not a helper, is the anti-recurrence measure that actually
@@ -251,53 +251,34 @@ struct CRLFToleranceTests {
     /// none of them. What stops the habit is the build going red at the
     /// moment the habit is exercised.
     ///
-    /// Comment lines are exempt: `SessionKeyStore` and `SopsMetadataShape`
-    /// both *describe* the wrong idiom at length in their doc comments,
-    /// which is exactly the documentation this guard wants to keep.
+    /// The scanning itself lives in `NewlineBlindness`, whose header explains
+    /// why this is a tokeniser and not the line-oriented grep it used to be:
+    /// thirteen ways of writing the same bug were injected into a copy of the
+    /// package, and the grep let twelve of them through — including one that
+    /// `swift-format` produces on its own, just by breaking a call across two
+    /// lines.
+    ///
+    /// Comments are removed before anything is matched, rather than skipped a
+    /// line at a time: `SessionKeyStore`, `SopsMetadataShape` and
+    /// `LineEndings` all *describe* the wrong idiom at length in their doc
+    /// comments, which is exactly the documentation this guard wants to keep.
+    /// That is also why there is no longer any per-file exemption — see
+    /// `NewlineBlindness.offences(in:named:)`.
     @Test("no newline-blind idiom survives anywhere in Sources/")
     func sourcesContainNoNewlineBlindIdioms() throws {
-        // …/Tests/SopsHealthTests/<this file> → …/Sources
-        let sources = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()   // SopsHealthTests
-            .deletingLastPathComponent()   // Tests
-            .deletingLastPathComponent()   // SopsGUIKit
-            .appendingPathComponent("Sources")
+        let sources = Self.packageSources
         #expect(FileManager.default.fileExists(atPath: sources.path),
                 "sanity: expected this package's Sources at \(sources.path)")
 
-        // Each of these treats `"\n"` (or `"\r"`) as a `Character`, which is
-        // the whole bug: on CRLF input the cluster is `"\r\n"` and none of
-        // them match. Byte-level equivalents (`Data("\nsops:".utf8)`) are not
-        // listed — a `Data` search is over bytes, where `\r\n` genuinely is
-        // two of them and `"\nsops:"` matches a CRLF document correctly.
-        let banned = [
-            #"split(separator: "\n""#,
-            #"split(separator: "\r""#,
-            #"components(separatedBy: "\n""#,
-            #"components(separatedBy: "\r""#,
-            #"== "\n""#,
-            #"== "\r""#,
-            #"contains("\n"#,
-            #"hasPrefix("\n"#,
-            #"hasSuffix("\n"#,
-        ]
-
         let enumerator = try #require(FileManager.default.enumerator(
             at: sources, includingPropertiesForKeys: [.isRegularFileKey]))
-        var offences: [String] = []
+        var offences: [NewlineBlindness.Offence] = []
         var filesScanned = 0
         for case let url as URL in enumerator where url.pathExtension == "swift" {
-            // The helper is the one place allowed to name the separators.
-            if url.lastPathComponent == "LineEndings.swift" { continue }
             filesScanned += 1
             let text = try String(contentsOf: url, encoding: .utf8)
-            for (offset, line) in LineEndings.lines(of: text).enumerated() {
-                let code = line.trimmingCharacters(in: .whitespaces)
-                if code.hasPrefix("//") || code.hasPrefix("///") || code.hasPrefix("*") { continue }
-                for pattern in banned where line.contains(pattern) {
-                    offences.append("\(url.lastPathComponent):\(offset + 1): \(pattern) — \(code)")
-                }
-            }
+            let relative = url.path.replacingOccurrences(of: sources.path + "/", with: "")
+            offences += NewlineBlindness.offences(in: text, named: relative)
         }
 
         #expect(filesScanned > 20, "sanity: the guard scanned only \(filesScanned) source files")
@@ -305,8 +286,170 @@ struct CRLFToleranceTests {
             Newline-blind idiom(s) found. Swift treats "\\r\\n" as ONE Character, so \
             comparing against the Character "\\n" silently does nothing on a CRLF file. \
             Use LineEndings.lines(of:), \\.isNewline or \\.isWhitespace instead.
-            \(offences.joined(separator: "\n"))
+            \(offences.map(\.description).joined(separator: "\n"))
             """)
+    }
+
+    /// …/Tests/SopsHealthTests/<this file> → …/Sources
+    static let packageSources = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()   // SopsHealthTests
+        .deletingLastPathComponent()   // Tests
+        .deletingLastPathComponent()   // SopsGUIKit
+        .appendingPathComponent("Sources")
+
+    /// The guard's own guard.
+    ///
+    /// Every case here is a way the *previous*, line-oriented guard was
+    /// actually evaded when thirteen variants of the bug were injected into a
+    /// copy of the package — twelve of which it passed. They are cases in a
+    /// test rather than a paragraph in a report, because the whole lesson of
+    /// that exercise is that "we checked by hand once" is not a property.
+    ///
+    /// Case 10 is the file-name evasion: the old guard skipped any file whose
+    /// *basename* was `LineEndings.swift`, so adding a second file with that
+    /// name anywhere in the tree bought a blanket exemption. It is asserted
+    /// here by passing that very name, which must make no difference at all.
+    @Test("the guard catches every evasion that got past the grep it replaced",
+          arguments: [
+            // 1 — the original, which the grep did catch.
+            (name: "Whatever.swift",
+             code: #"func f(_ text: String) { _ = text.split(separator: "\n") }"#),
+            // 2 — a CharacterSet that is not blind but invents a blank line
+            //     after every CRLF-terminated one.
+            (name: "Whatever.swift",
+             code: #"func f(_ text: String) { _ = text.components(separatedBy: .newlines) }"#),
+            (name: "Whatever.swift",
+             code: #"func f(_ text: String) { _ = text.components(separatedBy: CharacterSet.newlines) }"#),
+            // 3 — the same call, reformatted. swift-format defeats a
+            //     line-oriented guard on its own.
+            (name: "Whatever.swift",
+             code: """
+                func f(_ text: String) {
+                    _ = text.split(
+                        separator: "\\n")
+                }
+                """),
+            // 4 — one space short of the banned string.
+            (name: "Whatever.swift",
+             code: #"func f(_ text: String) { _ = text.components(separatedBy:"\n") }"#),
+            // 5 — the literal never appears next to the call.
+            (name: "Whatever.swift",
+             code: """
+                func f(_ text: String) {
+                    let sep: Character = "\\n"
+                    _ = text.split(separator: sep)
+                }
+                """),
+            // 5b — same trick without the type annotation.
+            (name: "Whatever.swift",
+             code: """
+                func f(_ text: String) {
+                    let sep = "\\r\\n"
+                    _ = text.components(separatedBy: sep)
+                }
+                """),
+            // 6, 7, 8 — consumers nobody had listed.
+            (name: "Whatever.swift",
+             code: #"func f(_ text: String) { _ = text.firstIndex(of: "\n") }"#),
+            (name: "Whatever.swift",
+             code: #"func f(_ text: String) { _ = text.lastIndex(of: "\n") }"#),
+            (name: "Whatever.swift",
+             code: #"func f(_ text: String) { _ = text.range(of: "\n") }"#),
+            // 9 — a predicate rather than a separator.
+            (name: "Whatever.swift",
+             code: #"func f(_ text: String) { _ = text.filter { $0 != "\n" } }"#),
+            (name: "Whatever.swift",
+             code: #"func f(_ text: String) { _ = text.split(whereSeparator: { $0 == "\n" }) }"#),
+            // 10 — the basename exemption. This name must buy nothing.
+            (name: "LineEndings.swift",
+             code: #"func f(_ text: String) { _ = text.split(separator: "\n") }"#),
+            // 11, 12 — prefix/suffix probes.
+            (name: "Whatever.swift",
+             code: ##"func f(_ text: String) -> Bool { text.hasSuffix("\r\n") }"##),
+            (name: "Whatever.swift",
+             code: #"func f(_ text: String) -> Bool { text.contains("\nsops:") }"#),
+            // 13 — argument order the grep's fixed string could not survive.
+            (name: "Whatever.swift",
+             code: #"func f(_ text: String) { _ = text.split(maxSplits: 2, separator: "\n") }"#),
+            // Extras: a `case` label, and the bug hidden inside an
+            // interpolation, which a text scan of the file never enters.
+            (name: "Whatever.swift",
+             code: """
+                func f(_ c: Character) -> Bool {
+                    switch c { case "\\n": return true; default: return false }
+                }
+                """),
+            (name: "Whatever.swift",
+             code: #"func f(_ text: String) -> String { "lines: \(text.split(separator: "\n").count)" }"#),
+          ])
+    func guardCatchesKnownEvasions(evasion: (name: String, code: String)) {
+        let offences = NewlineBlindness.offences(in: evasion.code, named: evasion.name)
+        #expect(!offences.isEmpty, """
+            this evasion was not caught:
+            \(evasion.code)
+            """)
+    }
+
+    /// The other half of a guard worth having: it must not cry wolf, or the
+    /// next person to hit it will add an exemption instead of a fix.
+    ///
+    /// Everything here is an idiom that is genuinely present in `Sources/`
+    /// today, or genuinely correct. `Data("\nsops:".utf8)` in particular is
+    /// the one this project must keep: over *bytes* `\r\n` really is two of
+    /// them, so an LF-anchored byte marker matches a CRLF document correctly.
+    @Test("the guard is silent on the writing and byte-level idioms Sources actually uses",
+          arguments: [
+            #"let detail = mismatches.joined(separator: "\n")"#,
+            #"let marker = Data("\nsops:".utf8)"#,
+            #"detail += "\n\nAlready tracked by git: \(names.joined(separator: ", "))""#,
+            #"print("\n\(count) snapshots written")"#,
+            ##"try "# nothing encrypted here yet\n".write(to: url, atomically: true, encoding: .utf8)"##,
+            #"let lines = LineEndings.lines(of: text)"#,
+            #"let parts = text.split(whereSeparator: \.isNewline)"#,
+            #"let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)"#,
+            #"let tokens = text.components(separatedBy: .whitespacesAndNewlines)"#,
+            // Comments describing the bug are documentation, not the bug.
+            #"// text.split(separator: "\n") is the mistake this file exists to prevent"#,
+            #"/// - `text.contains("\nsops:")` never matches on a CRLF document"#,
+            "/* text.split(separator: \"\\n\") */ let x = 1",
+          ])
+    func guardIsSilentOnLegitimateIdioms(line: String) {
+        let offences = NewlineBlindness.offences(in: line, named: "Whatever.swift")
+        #expect(offences.isEmpty, """
+            false positive on a legitimate idiom:
+            \(line)
+            \(offences.map(\.description).joined(separator: "\n"))
+            """)
+    }
+
+    /// Where the guarantee stops. Not aspirational notes — executable cases,
+    /// asserting the *current* behaviour, so that the boundary is visible and
+    /// a future change that moves it fails here and gets thought about.
+    ///
+    /// Both need the newline to be *constructed* rather than written, which is
+    /// a step past reaching for `"\n"` out of habit — the failure mode all four
+    /// historical occurrences shared and the only one this guard claims.
+    /// Closing them needs a real Swift parser with constant folding; see
+    /// `NewlineBlindness`'s header for why `swift-syntax` was not taken on.
+    ///
+    /// A third limit is structural rather than syntactic and has no case here:
+    /// the guard scans `Sources/` only. `Tests/` writes `"\n"` legitimately in
+    /// almost every fixture, so the same ban there would be all noise — and
+    /// that is exactly how two tests in this very suite came to assert nothing
+    /// under CRLF (`ExternalToolNetworkTests`' single-line check and
+    /// `ProjectScanBOMTests`' `!contains("\nsops:")` precondition). Those are
+    /// fixed by hand, at the source, and stay a reviewer's job.
+    @Test("known blind spots, stated rather than implied",
+          arguments: [
+            // A scalar escape spells the same character without spelling the
+            // same literal.
+            #"func f(_ t: String) { _ = t.split(separator: "\u{0A}") }"#,
+            // Built at runtime.
+            #"func f(_ t: String) { _ = t.split(separator: Character(UnicodeScalar(10))) }"#,
+          ])
+    func guardStillMissesTheseAndWeKnowIt(line: String) {
+        #expect(NewlineBlindness.offences(in: line, named: "Whatever.swift").isEmpty,
+                "this blind spot has been closed — good; delete the case and say so in NewlineBlindness's header")
     }
 }
 
