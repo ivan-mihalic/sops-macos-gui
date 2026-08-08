@@ -105,6 +105,14 @@ public struct AppShell: View {
 /// as a narrower hole in the one property this milestone says must not
 /// break.
 ///
+/// ## Where the decision actually lives
+/// Not here. `requestFileSwitch`/`requestProjectSwitch` below only *act* on
+/// `WorkspaceSwitchDecision.forSwitch(from:to:documentIsDirty:)`; the
+/// judgement is that pure function's, so it can be tested without a window.
+/// This type being `private`, and the prompt being a `.confirmationDialog`,
+/// is exactly why the decision was untestable before — see that type's doc
+/// comment.
+///
 /// ## How the guard works without fighting SwiftUI's selection bindings
 /// `FileListView`'s `selection` binding is owned by this type
 /// (`requestFileSwitch(to:)` intercepts every write), so refusing to commit
@@ -216,22 +224,30 @@ private struct ProjectWorkspaceView: View {
 
     // MARK: - Requesting a switch
 
+    /// Whether leaving the open document right now needs to ask first. Read
+    /// straight off the model — see `WorkspaceSwitchDecision`'s doc comment
+    /// for why this is the whole of "dirty" (values, additions and removals),
+    /// not just edited values.
+    private var openDocumentIsDirty: Bool { documentViewModel?.isDirty == true }
+
     private func requestProjectSwitch(to id: StoredProject.ID?) {
-        guard id != activeProjectID else { return }
-        guard documentViewModel?.isDirty == true else {
-            activateProject(id)
-            return
+        switch WorkspaceSwitchDecision.forSwitch(
+            from: activeProjectID, to: id, documentIsDirty: openDocumentIsDirty)
+        {
+        case .alreadyThere: return
+        case .proceed: activateProject(id)
+        case .askAboutUnsavedChanges: pendingSwitch = .project(id)
         }
-        pendingSwitch = .project(id)
     }
 
     private func requestFileSwitch(to url: URL?) {
-        guard url != selectedFileURL else { return }
-        guard documentViewModel?.isDirty == true else {
-            activateFile(url)
-            return
+        switch WorkspaceSwitchDecision.forSwitch(
+            from: selectedFileURL, to: url, documentIsDirty: openDocumentIsDirty)
+        {
+        case .alreadyThere: return
+        case .proceed: activateFile(url)
+        case .askAboutUnsavedChanges: pendingSwitch = .file(url)
         }
-        pendingSwitch = .file(url)
     }
 
     // MARK: - Resolving a pending switch

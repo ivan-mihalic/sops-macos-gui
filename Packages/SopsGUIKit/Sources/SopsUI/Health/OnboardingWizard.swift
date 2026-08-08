@@ -6,6 +6,10 @@ public struct OnboardingWizard: View {
     @Bindable private var state: OnboardingState
     @Environment(\.dismiss) private var dismiss
 
+    /// One per wizard, shared by every finding row it shows — see
+    /// `HealthPanel`'s own copy of this and `CopyFeedback`.
+    @State private var copyFeedback = CopyFeedback()
+
     public init(health: HealthViewModel, state: OnboardingState) {
         self.health = health
         self.state = state
@@ -82,7 +86,7 @@ public struct OnboardingWizard: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         case .findings(let findings):
-            List(findings) { HealthFindingRow(finding: $0) }
+            List(findings) { HealthFindingRow(finding: $0, copyFeedback: copyFeedback) }
                 .scrollOverflowFade()
         }
     }
@@ -157,7 +161,7 @@ public struct OnboardingWizard: View {
             if !orphaned.isEmpty {
                 Divider()
                 Text(.healthCategoryOther).font(.headline)
-                List(orphaned) { HealthFindingRow(finding: $0) }
+                List(orphaned) { HealthFindingRow(finding: $0, copyFeedback: copyFeedback) }
                     .scrollOverflowFade()
             }
         }

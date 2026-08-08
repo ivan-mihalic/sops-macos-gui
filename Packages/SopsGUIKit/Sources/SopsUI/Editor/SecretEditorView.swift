@@ -411,7 +411,26 @@ private struct SecretRowView: View {
                     if isRevealed {
                         TextField("", text: $text)
                     } else {
-                        SecureField("", text: $text)
+                        // Deliberately **not** a `SecureField` bound to
+                        // `$text`. A `SecureField` draws — and publishes to
+                        // the accessibility tree — one bullet per character
+                        // of the value behind it, which hands out the exact
+                        // length of every secret in the file to anything
+                        // reading either channel. See
+                        // `SecretRowViewLogic.maskWidth`.
+                        //
+                        // The cost of a fixed-width mask is that a masked row
+                        // is no longer typed into: the field shows a constant
+                        // that is not the value, so accepting keystrokes into
+                        // it would be editing something the user cannot see.
+                        // Reveal (the eye, right here) is one click, and
+                        // typing a replacement secret over one you were never
+                        // shown was never a good idea — this makes it
+                        // impossible rather than merely unwise. Copy still
+                        // works masked, which is the affordance PROPOSAL.md §4
+                        // actually asks not to be gated on revealing.
+                        TextField("", text: .constant(SecretRowViewLogic.maskedValue(for: text)))
+                            .disabled(true)
                     }
                 }
                 .textFieldStyle(.roundedBorder)
@@ -617,6 +636,37 @@ enum SecretRowViewLogic {
 
     static func displayPath(_ path: [String]) -> String {
         path.joined(separator: ".")
+    }
+
+    /// How many bullets a masked value shows — the same number for every
+    /// value, whatever its real length.
+    ///
+    /// A `SecureField` bound to the real value draws one bullet per
+    /// character, and that count is not only on screen: it is the field's
+    /// accessibility *value* too, so VoiceOver — or anything else attached to
+    /// the accessibility tree — can read the exact length of every secret in
+    /// the file without ever revealing one. Length is not nothing. It
+    /// separates a four-digit PIN from a 64-character token, it identifies a
+    /// credential by its format, and it collapses a brute-force search space
+    /// by orders of magnitude. `AccessibilityTreeTests` established that no
+    /// plaintext reaches the tree; this is the part of the value that was
+    /// still getting through.
+    ///
+    /// Eight is chosen only so the field reads as a value rather than as a
+    /// filled bar. Nothing depends on the number itself — only on it being
+    /// the same for every row.
+    static let maskWidth = 8
+
+    /// What a row shows in place of `value` while it is not revealed.
+    ///
+    /// Empty stays empty, deliberately. sops does not encrypt an empty string
+    /// at all (`SecretDocumentViewModel`'s "`isEncrypted` on empty strings and
+    /// nulls"), so there is no secret behind an empty value to hide — and
+    /// eight bullets over nothing would claim a value the file does not
+    /// contain. That is the same small lie `scrollOverflowFade()` avoids by
+    /// never fading when there is nothing more to see.
+    static func maskedValue(for value: String) -> String {
+        value.isEmpty ? "" : String(repeating: "•", count: maskWidth)
     }
 
     static func kindLabel(_ kind: SecretRow.Kind) -> LocalizedKey {

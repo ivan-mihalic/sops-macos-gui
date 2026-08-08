@@ -180,6 +180,16 @@ public struct ProjectSidebar: View {
                     }
                 }
                 .listStyle(.sidebar)
+                // Task 9 added this everywhere a `List` in this app can run
+                // past its frame and missed the one list that is *always*
+                // short of room — the sidebar is the narrowest, shortest
+                // column in the window, and a developer with a dozen projects
+                // overflows it before anything else. Without it, the last
+                // visible project row ends at a hard edge that reads exactly
+                // like the end of the list. Only ever drawn when there really
+                // is more (`scrollOverflowFade()`'s doc comment), so the
+                // ordinary two- or three-project sidebar is unchanged.
+                .scrollOverflowFade()
             }
 
             Divider()

@@ -11,15 +11,25 @@ import SopsHealth
 // requires this type — and its init — to be visible outside `SopsUI`.
 public struct HealthFindingRow: View {
     let finding: HealthFinding
-    @State private var didCopy = false
+
+    /// Shared by every row in a panel, not owned per row.
+    ///
+    /// Per-row `@State` gave the right answer for the wrong reason: rows did
+    /// not interfere because SwiftUI happened to give each one its own flag,
+    /// which is a fact about view identity rather than a property anything
+    /// could check. One object keyed by `finding.id` makes "only the row you
+    /// copied from says Copied" true by construction and reachable from a
+    /// test — see `CopyFeedback`.
+    private let copyFeedback: CopyFeedback
 
     // Explicit, non-private init: the compiler-synthesized memberwise init
-    // is private here because `_didCopy` (the `@State` property wrapper's
-    // backing storage) is private, which makes the whole synthesized init
-    // private too — unusable from any other file in this module, including
-    // `HealthPanel` and `OnboardingWizard`, which construct this view.
-    public init(finding: HealthFinding) {
+    // would be private here (it inherits the narrowest access of its stored
+    // properties), and is therefore unusable from any other file in this
+    // module — including `HealthPanel` and `OnboardingWizard`, which
+    // construct this view.
+    public init(finding: HealthFinding, copyFeedback: CopyFeedback) {
         self.finding = finding
+        self.copyFeedback = copyFeedback
     }
 
     public var body: some View {
@@ -59,10 +69,16 @@ public struct HealthFindingRow: View {
                             .padding(6)
                             .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
                         // The app shows the command; the user runs it. PROPOSAL.md §6.
-                        Button(didCopy ? LocalizedKey.actionCopied.text : LocalizedKey.actionCopy.text) {
+                        //
+                        // Straight to `NSPasteboard`, not through
+                        // `ClipboardClearing`: this is a shell command the
+                        // user is about to paste into a terminal, not a
+                        // secret, and wiping their clipboard 30 seconds later
+                        // would be taking away something they asked for.
+                        Button(copyFeedback.label(for: finding.id).text) {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(command, forType: .string)
-                            didCopy = true
+                            copyFeedback.confirmCopy(of: finding.id)
                         }
                     }
                 }

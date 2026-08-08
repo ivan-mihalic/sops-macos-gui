@@ -229,6 +229,59 @@ enum Fixtures {
         return ProjectSidebarModel(store: store)
     }
 
+    /// Enough projects that the sidebar's `List` genuinely runs past its own
+    /// frame — the overflow case `scrollOverflowFade()` exists to signal, and
+    /// the one `project-sidebar-worktree-group` (three projects in a 520pt
+    /// column) cannot show because it does not overflow.
+    ///
+    /// Plain directories, not git repositories: every project then forms its
+    /// own single-member group and renders without a header, which is the
+    /// densest, least distracting way to fill the column. Twenty is well past
+    /// what fits, so the fade cannot pass by being borderline.
+    ///
+    /// The pair matters as much as either half. A fade drawn over a list with
+    /// nothing below it is its own small lie, so both are rendered and both
+    /// are looked at.
+    static func manyProjectsSidebarModel() throws -> ProjectSidebarModel {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("snapshot-many-projects-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+
+        let storeURL = base.appendingPathComponent("projects.json")
+        let store = ProjectStore(fileURL: storeURL)
+        let names = [
+            "acme-web", "acme-api", "acme-worker", "billing-service", "checkout-service",
+            "identity-service", "inventory-service", "notifications", "search-service",
+            "internal-tools", "infra-terraform", "infra-ansible", "mobile-ios",
+            "mobile-android", "design-system", "docs-site", "data-pipeline",
+            "analytics-dbt", "partner-integrations", "ops-runbooks",
+        ]
+        for name in names {
+            let dir = base.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            _ = try store.add(path: dir.path)
+        }
+        return ProjectSidebarModel(store: store)
+    }
+
+    /// Two ordinary projects — comfortably fewer than fit the same 520pt
+    /// column. The negative half of the pair above: nothing is below the
+    /// fold, so nothing may be faded.
+    static func fewProjectsSidebarModel() throws -> ProjectSidebarModel {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("snapshot-few-projects-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+
+        let storeURL = base.appendingPathComponent("projects.json")
+        let store = ProjectStore(fileURL: storeURL)
+        for name in ["acme-web", "internal-tools"] {
+            let dir = base.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            _ = try store.add(path: dir.path)
+        }
+        return ProjectSidebarModel(store: store)
+    }
+
     /// A small, plain (non-git) set of projects for the full-`AppShell`
     /// snapshot — populated so the sidebar isn't empty, but with nothing
     /// selected, so the detail pane renders its deterministic "no

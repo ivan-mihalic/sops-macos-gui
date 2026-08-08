@@ -16,7 +16,10 @@ public struct KeyImportView: View {
     @State private var pastedText: String = ""
     @State private var errorMessage: String?
     @State private var justImportedFromLegacyFile = false
-    @State private var didCopyChmodCommand = false
+    /// Was a write-only `didCopyChmodCommand` flag that never went back to
+    /// "Copy" once pressed — the same defect `HealthFindingRow` carried, and
+    /// unreachable from a test for the same reason. See `CopyFeedback`.
+    @State private var copyFeedback = CopyFeedback()
 
     /// Not user-configurable — this is the one well-known path §2/§6 of
     /// PROPOSAL.md and `SecurityPostureCheck.legacyKeyFilePath` both name.
@@ -117,10 +120,10 @@ public struct KeyImportView: View {
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
                 // The app shows the command; the user runs it — this app
                 // never mutates the system (CLAUDE.md).
-                Button(didCopyChmodCommand ? LocalizedKey.actionCopied.text : LocalizedKey.actionCopy.text) {
+                Button(copyFeedback.label(for: Self.chmodCopyTarget).text) {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(Self.chmodCommand, forType: .string)
-                    didCopyChmodCommand = true
+                    copyFeedback.confirmCopy(of: Self.chmodCopyTarget)
                 }
             }
         }
@@ -128,6 +131,12 @@ public struct KeyImportView: View {
     }
 
     private static var chmodCommand: String { "chmod 600 \(legacyKeyFilePath)" }
+
+    /// This view has exactly one copy button, so its `CopyFeedback` target is
+    /// a constant rather than anything derived. It only ever has to be
+    /// distinct from other targets sharing the same `CopyFeedback` — and this
+    /// one is shared with nothing.
+    private static let chmodCopyTarget = "key.chmod"
 
     private func importPastedText() {
         do {
@@ -144,7 +153,7 @@ public struct KeyImportView: View {
         do {
             try store.importFromLegacyKeyFile(at: Self.legacyKeyFilePath)
             justImportedFromLegacyFile = true
-            didCopyChmodCommand = false
+            copyFeedback.reset()
             errorMessage = nil
         } catch {
             justImportedFromLegacyFile = false

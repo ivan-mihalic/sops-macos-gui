@@ -229,6 +229,63 @@ struct AccessibilityTreeTests {
         #expect(nodes.contains { $0.role == "AXTextField" && $0.value.allSatisfy { $0 == "•" } })
     }
 
+    /// The plaintext behind the length fixture. Two secrets whose lengths
+    /// could not be more different: a four-digit PIN and a 64-character
+    /// token.
+    private static let lengthPlaintext = """
+        pin: 1234
+        token: \(String(repeating: "T", count: 64))
+        """
+
+    /// The leak the mask itself still had.
+    ///
+    /// `maskedValuesNeverReachTheAccessibilityTree` proves no *character* of a
+    /// secret reaches the tree. It does not prove nothing about the secret
+    /// does: a `SecureField` bound to the real value publishes one bullet per
+    /// character as its accessibility value, so an assistive client — or
+    /// anything else attached to the tree, which is any process with the
+    /// accessibility entitlement — could read off the exact length of every
+    /// secret in the file. This is that property, stated as the only thing
+    /// that closes it: two secrets of very different lengths must be
+    /// indistinguishable in the tree.
+    @Test("two secrets of very different lengths present identically to the accessibility tree")
+    func maskDoesNotLeakTheLengthOfTheSecret() async throws {
+        let key = try AgeKey.generate()
+        let encrypted = try SopsBridge.encryptYAML(Self.lengthPlaintext, recipients: [key.public])
+        let model = try await MainActor.run {
+            let store = SessionKeyStore()
+            try store.importKey(key.private)
+            return SecretDocumentViewModel(
+                fileURL: URL(fileURLWithPath: "/dev/null/lengths.yaml"),
+                keyStore: store, readFile: { _ in encrypted })
+        }
+        await model.load()
+        #expect(await model.rows.count == 2, "the fixture must produce exactly the two value rows")
+
+        let nodes = await AXProbe.tree(size: CGSize(width: 760, height: 300)) {
+            SecretEditorView(viewModel: model, fileName: "lengths.yaml",
+                             unsavedChanges: UnsavedChangesTracker())
+        }
+
+        // Canary, same role as in the test above: an empty tree cannot leak
+        // anything and would make every assertion below pass by finding
+        // nothing.
+        #expect(nodes.contains { $0.value == "pin" }, "the tree did not populate — this test would be vacuous")
+
+        let fieldValues = nodes.filter { $0.role == "AXTextField" }.map(\.value)
+        #expect(fieldValues.count == 2,
+                "expected one value field per row, got \(fieldValues.count)")
+        #expect(Set(fieldValues).count == 1,
+                "the two rows' fields are distinguishable: \(fieldValues.map(\.count))")
+        // And stated the other way round, so a future mask that happened to
+        // be exactly 4 or exactly 64 characters wide could not pass the
+        // assertion above by coincidence.
+        for value in fieldValues {
+            #expect(value.count != 4 && value.count != 64,
+                    "a masked field's width still tracks its secret's length")
+        }
+    }
+
     // MARK: - HealthFindingRow, every status
 
     /// The expectation is a `LocalizedKey`, not English text, for the reason
@@ -250,7 +307,7 @@ struct AccessibilityTreeTests {
             id: "tool.sops", title: "sops", status: status,
             detail: "Found sops 3.9.4 at /opt/homebrew/bin/sops.")
         let nodes = AXProbe.tree(size: CGSize(width: 560, height: 170)) {
-            HealthFindingRow(finding: finding).padding()
+            HealthFindingRow(finding: finding, copyFeedback: CopyFeedback()).padding()
         }
 
         // The status is carried by a glyph, so it exists for a VoiceOver user

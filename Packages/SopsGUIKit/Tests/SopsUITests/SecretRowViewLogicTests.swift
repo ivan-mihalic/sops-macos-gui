@@ -33,6 +33,41 @@ struct SecretRowViewLogicTests {
         #expect(SecretRowViewLogic.displayPath(["db", "host"]) == "db.host")
     }
 
+    // MARK: - The mask
+
+    // `AccessibilityTreeTests.maskDoesNotLeakTheLengthOfTheSecret` is what
+    // proves the *view* stopped leaking length; these pin the rule itself, at
+    // sizes a rendered fixture would be silly to cover.
+
+    @Test("two secrets of very different lengths mask to exactly the same string")
+    func maskIsIdenticalForVeryDifferentLengths() {
+        let pin = SecretRowViewLogic.maskedValue(for: "1234")
+        let token = SecretRowViewLogic.maskedValue(for: String(repeating: "T", count: 64))
+        #expect(pin == token)
+    }
+
+    @Test("the mask's width never depends on the value's length",
+          arguments: [1, 2, 5, 13, 64, 512, 4096])
+    func maskWidthIsConstant(length: Int) {
+        let mask = SecretRowViewLogic.maskedValue(for: String(repeating: "s", count: length))
+        #expect(mask.count == SecretRowViewLogic.maskWidth)
+    }
+
+    @Test("the mask is bullets and nothing else")
+    func maskIsBulletsOnly() {
+        let mask = SecretRowViewLogic.maskedValue(for: "correct-horse-battery-staple-EXAMPLE")
+        #expect(!mask.isEmpty)
+        #expect(mask.allSatisfy { $0 == "•" })
+    }
+
+    // sops never encrypts an empty string, so there is no secret behind one
+    // to hide — and a mask over nothing would claim a value the file does not
+    // have. See `SecretRowViewLogic.maskedValue(for:)`.
+    @Test("an empty value masks to nothing rather than to a row of bullets")
+    func emptyValueIsNotMasked() {
+        #expect(SecretRowViewLogic.maskedValue(for: "").isEmpty)
+    }
+
     @Test("every SecretRow.Kind has a distinct localized label")
     func everyKindHasADistinctLabel() {
         // `SecretRow.Kind` (Task 7, `SopsEngine`) is not `CaseIterable` —

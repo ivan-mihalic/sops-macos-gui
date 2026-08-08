@@ -64,7 +64,7 @@ enum Catalog {
         ]
         return cases.map { name, finding in
             Snapshot("health-finding-row-\(name)", size: CGSize(width: 560, height: 170)) {
-                HealthFindingRow(finding: finding)
+                HealthFindingRow(finding: finding, copyFeedback: CopyFeedback())
                     .padding()
             }
         }
@@ -180,11 +180,29 @@ enum Catalog {
 
     // MARK: - Project sidebar, with a worktree group
 
+    /// Three snapshots, because the sidebar's overflow fade only means
+    /// something as a pair: `project-sidebar-many-projects` must show it and
+    /// `project-sidebar-few-projects` must not. A fade over a list with
+    /// nothing below it is a cue about content that does not exist, which is
+    /// exactly the kind of small untruth `scrollOverflowFade()`'s own doc
+    /// comment says it is built to avoid.
+    ///
+    /// All three at the same 300×520 column so the two overflow cases differ
+    /// only in how many projects they hold.
     private static func projectSidebar() throws -> [Snapshot] {
-        let model = try Fixtures.worktreeProjectSidebarModel()
+        let worktree = try Fixtures.worktreeProjectSidebarModel()
+        let many = try Fixtures.manyProjectsSidebarModel()
+        let few = try Fixtures.fewProjectsSidebarModel()
+        let size = CGSize(width: 300, height: 520)
         return [
-            Snapshot("project-sidebar-worktree-group", size: CGSize(width: 300, height: 520)) {
-                ProjectSidebar(model: model)
+            Snapshot("project-sidebar-worktree-group", size: size) {
+                ProjectSidebar(model: worktree)
+            },
+            Snapshot("project-sidebar-many-projects", size: size) {
+                ProjectSidebar(model: many)
+            },
+            Snapshot("project-sidebar-few-projects", size: size) {
+                ProjectSidebar(model: few)
             },
         ]
     }
