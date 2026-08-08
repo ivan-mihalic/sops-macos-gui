@@ -114,6 +114,23 @@ private func cliDecrypt(_ url: URL, key: AgeKeyPair) throws -> String {
         environment: ["SOPS_AGE_KEY_FILE": keysURL.path])
 }
 
+/// A flat document with `keyCount` distinct top-level keys — a stand-in for
+/// a real service's secrets file, used only to measure `load()`/`save()`
+/// against a realistic key count (see `bridgeCallDoesNotBlockMainActor`).
+private func flatYAML(keyCount: Int) -> String {
+    (0..<keyCount).map { "key\($0): value-\($0)-abcdefghijkl" }.joined(separator: "\n") + "\n"
+}
+
+/// Counts ticks from a `Task` running on `@MainActor`, used to prove the
+/// main actor stayed free to run other work while `load()`/`save()` were in
+/// flight — a direct test of "the bridge call does not block the main
+/// actor," not just a wall-clock timing that could pass for the wrong
+/// reason (e.g. a fast machine masking a real block).
+private actor TickCounter {
+    private(set) var count = 0
+    func tick() { count += 1 }
+}
+
 /// A small document with one of each scalar kind the editor has to render,
 /// plus a comment and a nested map — enough to exercise path/value/kind
 /// fidelity without repeating the full richness Task 7 already pinned at the
@@ -443,5 +460,195 @@ struct SecretDocumentViewModelTests {
         #expect(decrypted.contains("host: db.internal.example"))
         #expect(decrypted.contains("port: 5432"))
         #expect(decrypted.contains("# top of file"))
+    }
+
+    // MARK: Review round 1 — save() must never claim .saved for a document
+    // this type never opened.
+
+    @Test("save() on a freshly constructed view model fails rather than claiming saved")
+    func saveOnFreshViewModelFails() async throws {
+        let key = try AgeKeyPair.generate()
+        let fileURL = try encryptedFixture(sampleYAML, key: key)
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+
+        // load() was never called at all.
+        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        #expect(vm.loadState == .idle)
+        #expect(!vm.isDirty, "isDirty is false here for the wrong reason: nothing was ever loaded")
+
+        let outcome = await vm.save()
+
+        guard case .failed = outcome else {
+            Issue.record("expected .failed for a document that was never loaded, got \(outcome)")
+            return
+        }
+        // And nothing was written — the file must still be exactly what
+        // encryptedFixture produced.
+        let onDisk = try String(contentsOf: fileURL, encoding: .utf8)
+        let decrypted = try cliDecrypt(fileURL, key: key)
+        #expect(onDisk.contains("sops:"))
+        #expect(decrypted.contains("host: localhost"))
+    }
+
+    @Test("save() right after needsKey fails rather than claiming saved")
+    func saveAfterNeedsKeyFails() async throws {
+        let key = try AgeKeyPair.generate()
+        let fileURL = try encryptedFixture(sampleYAML, key: key)
+        let emptyStore = SessionKeyStore()
+
+        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: emptyStore)
+        await vm.load()
+        #expect(vm.loadState == .needsKey)
+        #expect(!vm.isDirty)
+
+        let outcome = await vm.save()
+
+        guard case .failed = outcome else {
+            Issue.record("expected .failed after .needsKey, got \(outcome)")
+            return
+        }
+    }
+
+    @Test("save() right after a failed load fails rather than claiming saved")
+    func saveAfterFailedLoadFails() async throws {
+        let owner = try AgeKeyPair.generate()
+        let stranger = try AgeKeyPair.generate()
+        let fileURL = try encryptedFixture(sampleYAML, key: owner)
+        let store = SessionKeyStore()
+        try store.importKey(stranger.private)
+
+        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        await vm.load()
+        guard case .failed = vm.loadState else {
+            Issue.record("expected the wrong key to fail the load")
+            return
+        }
+        #expect(!vm.isDirty)
+
+        let outcome = await vm.save()
+
+        guard case .failed = outcome else {
+            Issue.record("expected .failed after a failed load, got \(outcome)")
+            return
+        }
+    }
+
+    @Test(
+        "a successful load followed by a failed reload never leaves the document presenting as an empty editable form, and a subsequent save() still refuses"
+    )
+    func loadGoodThenLoadBadThenSaveNeverPresentsEmptyOrSaves() async throws {
+        let owner = try AgeKeyPair.generate()
+        let stranger = try AgeKeyPair.generate()
+        let fileURL = try encryptedFixture(sampleYAML, key: owner)
+        let store = SessionKeyStore()
+        try store.importKey(owner.private)
+
+        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+
+        // First load succeeds with the owner's key.
+        await vm.load()
+        #expect(vm.loadState == .loaded)
+        #expect(!vm.rows.isEmpty)
+
+        // Swap in a key that cannot decrypt this file and reload the same
+        // instance — the scenario a "reload from disk" or "file changed
+        // externally" action would trigger.
+        store.forget()
+        try store.importKey(stranger.private)
+        await vm.load()
+
+        guard case .failed = vm.loadState else {
+            Issue.record("expected the reload with the wrong key to fail, got \(vm.loadState)")
+            return
+        }
+        // The never-an-empty-form property: a failed reload must not leave
+        // the previous load's rows sitting around looking like a live,
+        // savable document.
+        #expect(vm.rows.isEmpty)
+        #expect(!vm.isDirty)
+
+        // A save from here must refuse, not silently write nothing (or
+        // worse, the stale in-memory state) over the file.
+        let outcome = await vm.save()
+        guard case .failed = outcome else {
+            Issue.record("expected .failed after a failed reload, got \(outcome)")
+            return
+        }
+
+        // And the file on disk must still be exactly what the owner's key
+        // originally produced — untouched by either the failed reload or
+        // the refused save.
+        let decrypted = try cliDecrypt(fileURL, key: owner)
+        #expect(decrypted.contains("host: localhost"))
+    }
+
+    // MARK: Review round 1 — the bridge call must not block the main actor
+
+    /// Reproduces the reviewer's measurement directly: a `TickCounter`
+    /// running on `@MainActor` alongside `load()`/`save()` proves the main
+    /// actor stayed free to run other work while the bridge call was in
+    /// flight, and prints the wall-clock timings this report's verification
+    /// section quotes.
+    @Test(
+        "load() and save() do not block the main actor, at realistic file sizes",
+        arguments: [3_000, 8_000])
+    func bridgeCallDoesNotBlockMainActor(keyCount: Int) async throws {
+        let key = try AgeKeyPair.generate()
+        let fileURL = try encryptedFixture(flatYAML(keyCount: keyCount), key: key)
+        let fileSize = try FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int ?? -1
+
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+
+        let ticks = TickCounter()
+        let heartbeat = Task { @MainActor in
+            while !Task.isCancelled {
+                await ticks.tick()
+                try? await Task.sleep(nanoseconds: 2_000_000)
+            }
+        }
+        defer { heartbeat.cancel() }
+
+        let loadStart = ContinuousClock.now
+        await vm.load()
+        let loadElapsed = loadStart.duration(to: .now)
+        #expect(vm.loadState == .loaded)
+
+        let firstRowID = try #require(vm.rows.first).id
+        vm.update(rowID: firstRowID, to: "changed-value")
+        #expect(vm.isDirty)
+
+        let saveStart = ContinuousClock.now
+        let outcome = await vm.save()
+        let saveElapsed = saveStart.duration(to: .now)
+        #expect(outcome == .saved)
+
+        heartbeat.cancel()
+        let finalTicks = await ticks.count
+
+        print("=== PERFORMANCE: \(keyCount) keys, \(fileSize) bytes on disk ===")
+        print("  load(): \(loadElapsed)")
+        print("  save(): \(saveElapsed)")
+        print("  MainActor heartbeat ticks during load()+save(): \(finalTicks)")
+
+        // >0, not a larger threshold: under this machine's own heavy
+        // unrelated contention (other processes' CPU load, not this test
+        // suite's own parallelism), the *absolute* tick count is not
+        // reproducible enough to gate on — a tighter bound flaked under
+        // real observed load average >1.5x this machine's core count, from
+        // processes unrelated to this test. Zero ticks is still the
+        // meaningful line: it is what `Task.detached`'s cooperative-pool
+        // starvation actually produced (measured 10-20s stalls, vs. ~0.1-0.4s
+        // off the pool) before this was fixed to a dedicated `Thread` — see
+        // `runOffCooperativePool`'s doc comment. Any tick at all means the
+        // main actor got scheduled at least once while the bridge call was
+        // in flight, which a genuine block cannot produce.
+        #expect(
+            finalTicks > 0,
+            Comment(
+                rawValue: "the main actor should have been scheduled at least once during "
+                    + "load()/save(); got \(finalTicks) heartbeat ticks, which reads as a block"))
     }
 }

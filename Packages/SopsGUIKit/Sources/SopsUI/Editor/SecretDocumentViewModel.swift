@@ -39,12 +39,13 @@ public enum SaveOutcome: Equatable, Sendable {
     case failed(String)
 }
 
-/// A same-actor outcome that carries a plain message on failure, instead of
+/// An outcome that carries a plain message on failure, instead of
 /// `Swift.Result`'s `Failure: Error` — `SopsBridgeError`'s only public
 /// surface this type needs is its `description`, and its initializer is
 /// internal to `SopsEngine`, so there is nothing to re-wrap as an `Error`
-/// here anyway.
-private enum Outcome<Success> {
+/// here anyway. `Sendable` because it crosses onto a dedicated `Thread` and
+/// back — see `SecretDocumentViewModel.runOffCooperativePool(_:)`.
+private enum Outcome<Success: Sendable>: Sendable {
     case success(Success)
     case failure(String)
 }
@@ -165,9 +166,7 @@ public final class SecretDocumentViewModel {
         do {
             contents = try readFile(fileURL)
         } catch {
-            rows = []
-            baselineValues = [:]
-            isDirty = false
+            resetToEmpty()
             // The path/filename is not a secret (CLAUDE.md); the underlying
             // read error (permissions, missing file) never carries document
             // content, so nothing more needs to be withheld here.
@@ -175,27 +174,17 @@ public final class SecretDocumentViewModel {
             return
         }
 
-        // The key is never copied out of the store — it only exists for the
-        // duration of this closure, per `SessionKeyStore.withKey`'s contract.
-        // The failure side carries only `String` — `SopsBridgeError`'s own
-        // initializer is internal to `SopsEngine`, and its public
-        // `description` is all this type needs.
-        let decrypted: Outcome<[SecretRow]>? = keyStore.withKey { key in
-            do {
-                return .success(try SopsBridge.decryptToRows(contents, agePrivateKey: key))
-            } catch let error as SopsBridgeError {
-                return .failure(error.description)
-            } catch {
-                return .failure("this file could not be decrypted")
-            }
+        // `body` receives the key and immediately hops off this actor itself
+        // (`Self.decrypt`, below) — the key is never copied out into a local
+        // variable here. See `SessionKeyStore.withKey(_:)`'s async overload.
+        let decrypted: Outcome<[SecretRow]>? = await keyStore.withKey { key in
+            await Self.decrypt(contents, agePrivateKey: key)
         }
 
         guard let decrypted else {
             // No key configured — `withKey` never called the closure, so no
             // bridge call and no risk of a stale rows/dirty state lingering.
-            rows = []
-            baselineValues = [:]
-            isDirty = false
+            resetToEmpty()
             loadState = .needsKey
             return
         }
@@ -208,10 +197,94 @@ public final class SecretDocumentViewModel {
             isDirty = false
             loadState = .loaded
         case .failure(let message):
-            rows = []
-            baselineValues = [:]
-            isDirty = false
+            resetToEmpty()
             loadState = .failed(message)
+        }
+    }
+
+    /// Clears everything a previous successful load left behind: `rows`,
+    /// `baselineValues`, `isDirty`, and — the part that matters even though
+    /// nothing can reach it today — `encryptedContents`.
+    ///
+    /// Without clearing `encryptedContents`, a failed *reload* after an
+    /// earlier successful load would leave this type holding the previous
+    /// load's ciphertext while `rows` reports empty. Nothing can set
+    /// `isDirty` against an empty `rows` array today, and `save()` now gates
+    /// on `loadState == .loaded` before it even looks at `encryptedContents`
+    /// (see `save()`), so this is not reachable as of this change. It is one
+    /// line against the exact property this type exists to hold, so it is
+    /// closed rather than left to depend on `save()`'s guard ordering never
+    /// changing.
+    private func resetToEmpty() {
+        rows = []
+        baselineValues = [:]
+        isDirty = false
+        encryptedContents = nil
+    }
+
+    /// Runs `SopsBridge.decryptToRows` off the main actor, via
+    /// `runOffCooperativePool` (below).
+    ///
+    /// A whole-document decrypt scales with key count — measured ~73ms for a
+    /// 3,000-key/447KB fixture and ~256ms for an 8,000-key/1.19MB fixture,
+    /// both realistic sizes for a real service's secrets file — long enough
+    /// to read as a stall if run inline on `@MainActor`, which is where
+    /// `load()` otherwise runs.
+    ///
+    /// `key` is a parameter, not something this function reaches into the
+    /// key store for — it is handed in by `SessionKeyStore.withKey(_:)`'s
+    /// async overload, which is the only place a caller ever sees the key at
+    /// all. It lives in this function's own local scope for the duration of
+    /// one call and is never stored in a property, logged, or retained past
+    /// this function returning.
+    private static func decrypt(_ contents: String, agePrivateKey key: String) async -> Outcome<[SecretRow]> {
+        await runOffCooperativePool {
+            do {
+                return .success(try SopsBridge.decryptToRows(contents, agePrivateKey: key))
+            } catch let error as SopsBridgeError {
+                return .failure(error.description)
+            } catch {
+                return .failure("this file could not be decrypted")
+            }
+        }
+    }
+
+    /// Runs a synchronous, blocking `body` on a dedicated OS thread instead
+    /// of Swift's cooperative thread pool, and bridges the result back into
+    /// `async`.
+    ///
+    /// **Not** `Task.detached` — the first version of this used it, and
+    /// measured *worse* than useless: on a 3,000-key/447KB fixture, `load()`
+    /// went from ~73ms (called inline on `@MainActor`) to over ten
+    /// *seconds*. `Task.detached` still schedules its closure onto Swift's
+    /// cooperative global executor, which is deliberately sized to the
+    /// core count on the assumption that everything running on it yields at
+    /// `await` points. The cgo call into the Go engine does not yield — it
+    /// blocks its thread synchronously for the whole decrypt/encrypt — so
+    /// under any concurrent load on that pool (this app's own health checks,
+    /// or, as measured, `swift test`'s own parallel test execution) it
+    /// starves out the pool for everything else sharing it, including,
+    /// self-defeatingly, the very call this function exists to speed up.
+    ///
+    /// `SopsHealth/ProjectScanner.swift`'s `runOffCooperativePool` already
+    /// diagnosed and solved the identical problem for the project directory
+    /// walk (Task 1b), including the sharper follow-up that
+    /// `DispatchQueue.global().async` — a shared elastic pool — does not
+    /// solve it either, because a caller can still queue behind other
+    /// long-held submissions on that shared pool. This is the same fix,
+    /// duplicated here rather than reused across modules: a genuinely new
+    /// `Thread`, started immediately, with nothing to queue behind. Called a
+    /// small, fixed number of times per `load()`/`save()` (once each), which
+    /// is exactly the usage profile `ProjectScanner`'s doc comment names as
+    /// the reason a whole new OS thread per call is the right tradeoff
+    /// rather than something that "would not scale."
+    private static func runOffCooperativePool<T: Sendable>(_ body: @escaping @Sendable () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            let thread = Thread {
+                continuation.resume(returning: body())
+            }
+            thread.qualityOfService = .userInitiated
+            thread.start()
         }
     }
 
@@ -233,43 +306,54 @@ public final class SecretDocumentViewModel {
 
     /// Writes the current rows back to `fileURL`.
     ///
+    /// ## Nothing loaded is a failure, never `.saved`
+    /// `.saved` means "your edits are safely on disk." Reporting it for a
+    /// document this type never opened — a fresh instance, or one that
+    /// reached `.needsKey` or `.failed` — would tell a caller (a future
+    /// "save all open documents" flow, say) that a file was written when
+    /// nothing was. This is checked *before* the `isDirty` no-op check
+    /// below, precisely because a never-loaded document also has
+    /// `isDirty == false`, and the earlier ordering let that case fall into
+    /// `.saved` by accident.
+    ///
     /// ## No-op when nothing changed
-    /// If `isDirty` is false — including when every edited value was set
-    /// back to its original — `save()` does nothing: no bridge call, no
-    /// write, `encryptedContents` untouched. The alternative (always calling
-    /// `applyEdits`, even with zero edits) is a real choice too — Task 7
-    /// proved it is a "clean rewrite" that only ever touches `lastmodified`
-    /// and `mac` — but it would mean every no-op Cmd-S rewrites the file's
-    /// MAC for no reason: needless git-diff noise on a file nothing actually
-    /// changed in. This type chooses the no-op, and
-    /// `SecretDocumentViewModelTests` pins it.
+    /// Past that gate, if `isDirty` is false — including when every edited
+    /// value was set back to its original — `save()` does nothing: no
+    /// bridge call, no write, `encryptedContents` untouched. The
+    /// alternative (always calling `applyEdits`, even with zero edits) is a
+    /// real choice too — Task 7 proved it is a "clean rewrite" that only
+    /// ever touches `lastmodified` and `mac` — but it would mean every
+    /// no-op Cmd-S rewrites the file's MAC for no reason: needless git-diff
+    /// noise on a file nothing actually changed in. This type chooses the
+    /// no-op, and `SecretDocumentViewModelTests` pins it.
     ///
     /// ## Failure leaves everything as the user left it
-    /// A failure — no key configured, a bridge refusal, a write error —
-    /// never touches `rows`, `baselineValues` or `encryptedContents`, and
-    /// `isDirty` stays exactly as it was. The caller must not be able to
-    /// read a failed save as "your edits are gone": they are still sitting
-    /// in `rows`, unsaved, exactly where the user left them.
+    /// A failure — no document loaded, no key configured, a bridge refusal,
+    /// a write error — never touches `rows`, `baselineValues` or
+    /// `encryptedContents`, and `isDirty` stays exactly as it was. The
+    /// caller must not be able to read a failed save as "your edits are
+    /// gone": they are still sitting in `rows`, unsaved, exactly where the
+    /// user left them.
     public func save() async -> SaveOutcome {
+        guard loadState == .loaded else {
+            return .failed("no document is loaded")
+        }
         guard isDirty else { return .saved }
         guard let contents = encryptedContents else {
-            return .failed("there is no loaded document to save")
+            // Not reachable given the `loadState == .loaded` guard above —
+            // the two are always set together — but this is the guard that
+            // makes that an invariant rather than an assumption.
+            return .failed("no document is loaded")
         }
 
         let edits = rows
             .filter { baselineValues[$0.id] != $0.value }
             .map { SecretEdit(row: $0) }
 
-        // Same reasoning as `load()`: only `SopsBridgeError`'s public
-        // `description` is needed, never the (module-internal) type itself.
-        let applied: Outcome<String>? = keyStore.withKey { key in
-            do {
-                return .success(try SopsBridge.applyEdits(contents, edits: edits, agePrivateKey: key))
-            } catch let error as SopsBridgeError {
-                return .failure(error.description)
-            } catch {
-                return .failure("this file could not be saved")
-            }
+        // Same reasoning as `load()`: `body` receives the key and hops off
+        // this actor itself; the key never lives in a local variable here.
+        let applied: Outcome<String>? = await keyStore.withKey { key in
+            await Self.applyEdits(contents, edits: edits, agePrivateKey: key)
         }
 
         guard let applied else {
@@ -289,6 +373,27 @@ public final class SecretDocumentViewModel {
             baselineValues = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0.value) })
             isDirty = false
             return .saved
+        }
+    }
+
+    /// Runs `SopsBridge.applyEdits` off the main actor via
+    /// `runOffCooperativePool` — the encrypt-side twin of
+    /// `decrypt(_:agePrivateKey:)` above, same reasoning and same measured
+    /// `Task.detached` failure mode: ~120ms for a 3,000-key/447KB fixture and
+    /// ~382ms for an 8,000-key/1.19MB fixture when run off the cooperative
+    /// pool; over nine seconds when it wasn't. `key`'s lifetime is exactly
+    /// this call.
+    private static func applyEdits(
+        _ contents: String, edits: [SecretEdit], agePrivateKey key: String
+    ) async -> Outcome<String> {
+        await runOffCooperativePool {
+            do {
+                return .success(try SopsBridge.applyEdits(contents, edits: edits, agePrivateKey: key))
+            } catch let error as SopsBridgeError {
+                return .failure(error.description)
+            } catch {
+                return .failure("this file could not be saved")
+            }
         }
     }
 }

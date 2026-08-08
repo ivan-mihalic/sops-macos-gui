@@ -209,6 +209,23 @@ public final class SessionKeyStore {
         return try body(key)
     }
 
+    /// The `async` twin of `withKey(_:)`, for a caller whose use of the key is
+    /// itself long-running enough to need to run off the main actor (a
+    /// whole-document decrypt/encrypt over a few thousand keys measures in
+    /// the hundreds of milliseconds — long enough to stall the UI if it runs
+    /// inline here).
+    ///
+    /// The lending guarantee is the same, just spanning an `await`: `body`
+    /// receives the key, is free to hop off this actor to do its work (e.g.
+    /// `Task.detached { ... }`), and nothing about the key is retained by
+    /// this store — or by the caller — past `body` returning. The caller
+    /// never holds the key itself; only `body`, which this store invokes
+    /// directly, ever sees it, exactly as with the synchronous overload.
+    public func withKey<R>(_ body: (String) async throws -> R) async rethrows -> R? {
+        guard let key else { return nil }
+        return try await body(key)
+    }
+
     // MARK: - SopsHealth adapter
 
     /// Adapts this store to `KeyStoreStatusProviding` so `SecurityPostureCheck`
