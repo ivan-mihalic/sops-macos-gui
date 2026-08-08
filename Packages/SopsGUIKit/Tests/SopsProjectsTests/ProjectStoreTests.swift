@@ -2,7 +2,10 @@ import Foundation
 import Testing
 @testable import SopsProjects
 
-@Suite("ProjectStore")
+// Serialized: the relative-path normalization test below transiently
+// changes the process's current working directory, which is global,
+// mutable state. Parallel test execution would make that unsafe.
+@Suite("ProjectStore", .serialized)
 @MainActor
 struct ProjectStoreTests {
 
@@ -80,7 +83,7 @@ struct ProjectStoreTests {
         let a = try store.add(path: try makeDirectory())
         _ = try store.add(path: try makeDirectory())
 
-        store.remove(id: a.id)
+        try store.remove(id: a.id)
 
         #expect(ProjectStore(fileURL: url).projects.count == 1)
     }
@@ -92,5 +95,119 @@ struct ProjectStoreTests {
 
         let source = store.healthSource
         #expect(source.projects.map(\.rootPath) == [p.rootPath])
+    }
+
+    // MARK: - Failure injection: in-memory state must never diverge from disk
+
+    @Test("a failed persist during add leaves the in-memory list unchanged")
+    func addDoesNotMutateOnPersistFailure() throws {
+        let storeDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("store-dir-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
+        let url = storeDir.appendingPathComponent("projects.json")
+        let store = ProjectStore(fileURL: url)
+
+        let first = try store.add(path: try makeDirectory())
+
+        // Read-only directory: the temp-file write inside persist() fails
+        // before replaceItemAt is ever reached.
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: storeDir.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: storeDir.path) }
+
+        let second = try makeDirectory()
+        #expect(throws: ProjectStore.Error.self) { try store.add(path: second) }
+
+        // The in-memory list must match what's actually on disk: only the
+        // first project, nothing appended for the failed add.
+        #expect(store.projects.map(\.id) == [first.id])
+        #expect(ProjectStore(fileURL: url).projects.map(\.id) == [first.id])
+
+        // No stray temp file left behind either.
+        let entries = try FileManager.default.contentsOfDirectory(atPath: storeDir.path)
+        #expect(entries == ["projects.json"])
+    }
+
+    @Test("a failed persist during remove leaves the in-memory list unchanged")
+    func removeDoesNotMutateOnPersistFailure() throws {
+        let (store, url) = makeStore()
+        let a = try store.add(path: try makeDirectory())
+        let b = try store.add(path: try makeDirectory())
+
+        // Immutable target file: the temp write succeeds, but replaceItemAt
+        // fails at the swap step because the destination can't be replaced.
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: url.path)
+        defer { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: url.path) }
+
+        #expect(throws: ProjectStore.Error.self) { try store.remove(id: a.id) }
+
+        // Both projects must still be present, in memory and on disk.
+        #expect(Set(store.projects.map(\.id)) == [a.id, b.id])
+
+        try FileManager.default.setAttributes([.immutable: false], ofItemAtPath: url.path)
+        #expect(Set(ProjectStore(fileURL: url).projects.map(\.id)) == [a.id, b.id])
+    }
+
+    // MARK: - Path normalization: the same directory must dedupe regardless of spelling
+
+    @Test("a trailing slash is recognized as the same project")
+    func dedupesTrailingSlash() throws {
+        let (store, _) = makeStore()
+        let path = try makeDirectory()
+        let first = try store.add(path: path)
+
+        #expect(throws: ProjectStore.Error.alreadyAdded(existing: first)) {
+            try store.add(path: path + "/")
+        }
+        #expect(store.projects.count == 1)
+    }
+
+    @Test("a path with .. components is recognized as the same project")
+    func dedupesDotDotComponents() throws {
+        let (store, _) = makeStore()
+        let path = try makeDirectory()
+        let first = try store.add(path: path)
+
+        let sibling = try makeDirectory()
+        let viaDotDot = sibling + "/../" + (path as NSString).lastPathComponent
+
+        #expect(throws: ProjectStore.Error.alreadyAdded(existing: first)) {
+            try store.add(path: viaDotDot)
+        }
+        #expect(store.projects.count == 1)
+    }
+
+    @Test("a symlink and the directory it points to are recognized as the same project")
+    func dedupesSymlinkAgainstTarget() throws {
+        let (store, _) = makeStore()
+        let path = try makeDirectory()
+        let first = try store.add(path: path)
+
+        let symlink = FileManager.default.temporaryDirectory
+            .appendingPathComponent("symlink-\(UUID().uuidString)")
+        try FileManager.default.createSymbolicLink(
+            at: symlink, withDestinationURL: URL(fileURLWithPath: path))
+
+        #expect(throws: ProjectStore.Error.alreadyAdded(existing: first)) {
+            try store.add(path: symlink.path)
+        }
+        #expect(store.projects.count == 1)
+    }
+
+    @Test("a relative path is recognized as the same project as its absolute form")
+    func dedupesRelativePath() throws {
+        let (store, _) = makeStore()
+        let path = try makeDirectory()
+        let first = try store.add(path: path)
+
+        let parent = (path as NSString).deletingLastPathComponent
+        let leaf = (path as NSString).lastPathComponent
+        let previousCWD = FileManager.default.currentDirectoryPath
+        #expect(FileManager.default.changeCurrentDirectoryPath(parent))
+        defer { FileManager.default.changeCurrentDirectoryPath(previousCWD) }
+
+        #expect(throws: ProjectStore.Error.alreadyAdded(existing: first)) {
+            try store.add(path: leaf)
+        }
+        #expect(store.projects.count == 1)
     }
 }

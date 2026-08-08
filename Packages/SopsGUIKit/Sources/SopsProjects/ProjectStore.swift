@@ -61,6 +61,16 @@ public final class ProjectStore {
     /// a project with the same path has already been added — in which case
     /// the existing entry is returned via the error so the caller can, say,
     /// select it instead of silently duplicating it.
+    ///
+    /// `path` is normalized (symlinks resolved, `..`/`.`, trailing slashes,
+    /// and relative components collapsed) before both the existence check
+    /// and the duplicate comparison, and the *normalized* path is what gets
+    /// stored — see `normalize(_:)` for why.
+    ///
+    /// Persist-then-mutate: the write to disk happens before `projects` is
+    /// updated, and only on success. If persisting fails, this throws and
+    /// `projects` is left exactly as it was — the in-memory list must never
+    /// claim something the file on disk does not back up.
     @discardableResult
     public func add(path: String) throws -> StoredProject {
         var isDirectory: ObjCBool = false
@@ -69,21 +79,34 @@ public final class ProjectStore {
             throw Error.notADirectory
         }
 
-        if let existing = projects.first(where: { $0.rootPath == path }) {
+        let normalizedPath = Self.normalize(path)
+
+        if let existing = projects.first(where: { $0.rootPath == normalizedPath }) {
             throw Error.alreadyAdded(existing: existing)
         }
 
-        let name = (path as NSString).lastPathComponent
-        let project = StoredProject(displayName: name, rootPath: path)
-        projects.append(project)
-        try persist()
+        let name = (normalizedPath as NSString).lastPathComponent
+        let project = StoredProject(displayName: name, rootPath: normalizedPath)
+        let candidate = projects + [project]
+        try persist(candidate)
+        projects = candidate
         return project
     }
 
     /// Forgets the project with the given id. Never deletes anything on disk.
-    public func remove(id: UUID) {
-        projects.removeAll { $0.id == id }
-        try? persist()
+    ///
+    /// Throws if the updated list cannot be persisted, leaving `projects`
+    /// unchanged. This is a deliberate deviation from the brief's
+    /// non-throwing `func remove(id: UUID)`: a signature that silently
+    /// swallows a failed write can only lie to its caller — the list would
+    /// show the project gone while the file on disk still has it, and it
+    /// would reappear on the next launch with no explanation. A thrown
+    /// error at least gives the caller (and eventually the UI) a chance to
+    /// say "removal failed, try again" instead.
+    public func remove(id: UUID) throws {
+        let candidate = projects.filter { $0.id != id }
+        try persist(candidate)
+        projects = candidate
     }
 
     /// Whether the project's directory can currently be found. Re-checks the
@@ -97,13 +120,17 @@ public final class ProjectStore {
 
     // MARK: - Persistence
 
-    private func persist() throws {
+    /// Writes `candidate` to disk. Does not touch `self.projects` — callers
+    /// decide whether to adopt `candidate` in memory based on whether this
+    /// throws, so the in-memory list can never diverge from what actually
+    /// made it to disk.
+    private func persist(_ candidate: [StoredProject]) throws {
         let data: Data
         do {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
             encoder.outputFormatting = [.sortedKeys]
-            data = try encoder.encode(projects)
+            data = try encoder.encode(candidate)
         } catch {
             throw Error.unreadable
         }
@@ -134,6 +161,36 @@ public final class ProjectStore {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return (try? decoder.decode([StoredProject].self, from: data)) ?? []
+    }
+
+    /// Canonicalizes a path so two different spellings of the same
+    /// directory — a trailing slash, `..` components, a relative path, or a
+    /// symlink versus the directory it points at — compare equal.
+    ///
+    /// Uses `URL.resolvingSymlinksInPath()` rather than `realpath(3)`
+    /// directly: Foundation's version deliberately leaves the handful of
+    /// `/etc`, `/tmp`, and `/var` compatibility symlinks alone (macOS
+    /// tradition — `/tmp` staying `/tmp` rather than becoming
+    /// `/private/tmp` is what most software, and this app's own tests using
+    /// `FileManager.default.temporaryDirectory`, expect), while still
+    /// resolving symlinks the user actually created themselves. Verified
+    /// empirically on this system: `realpath(3)` turns `/var` into
+    /// `/private/var`; `resolvingSymlinksInPath()` does not.
+    ///
+    /// The *normalized* (symlink-resolved) path is what gets stored, not
+    /// the path as typed. That is the deliberate choice here: storing the
+    /// canonical form is what makes duplicate detection actually work — a
+    /// project added once through a symlink and once through its target
+    /// must collapse to one entry, both at `add(path:)` time and for every
+    /// later consumer (`healthSource`, and anything wired to it later,
+    /// including `ForEach`-rendered `HealthFinding`s whose identity a
+    /// duplicate would corrupt). The cost is that a user who typed a
+    /// symlinked path may see the resolved path displayed instead of what
+    /// they typed; `displayName` is derived from the resolved path's last
+    /// component for the same reason. That tradeoff favors correctness of
+    /// identity over preserving the user's literal input.
+    private static func normalize(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().path
     }
 
     // MARK: - SopsHealth adapter
