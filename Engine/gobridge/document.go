@@ -23,7 +23,9 @@ package gobridge
 // user asks for (M4), not a side effect of pressing save.
 
 import (
+	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
@@ -200,11 +202,19 @@ func loadAndDecrypt(encrypted []byte, agePrivateKey string) (*loadedDocument, er
 func loadEncryptedDocument(store common.Store, encrypted []byte) (*sops.Tree, error) {
 	tree, err := store.LoadEncryptedFile(encrypted)
 	if err != nil {
-		return nil, fmt.Errorf("load encrypted file: %w", err)
+		// "This is not a SOPS file" is a different problem from "this does not
+		// parse", and saying which is worth more than either generic message.
+		if errors.Is(err, sops.MetadataNotFound) {
+			return nil, errors.New("this file is not a SOPS document: it has no sops metadata")
+		}
+		// Never `%w`: go-yaml quotes duplicate keys, anchor names and scalar
+		// values, and an encrypted file's keys are cleartext. See
+		// describeYAMLFailure.
+		return nil, describeYAMLFailure("this file could not be read as a SOPS document", err)
 	}
 	encCtxBug, err := common.DetectKMSEncryptionContextBug(&tree)
 	if err != nil {
-		return nil, fmt.Errorf("load encrypted file: %w", err)
+		return nil, errors.New("this file's sops metadata does not record a usable version")
 	}
 	if encCtxBug {
 		return nil, fmt.Errorf(
@@ -251,7 +261,7 @@ func describeDecryptFailure(tree *sops.Tree, err error) error {
 		return fmt.Errorf("this file does not match its own message authentication code: " +
 			"it has been modified since it was encrypted, or it is damaged")
 	case codes.ErrorDecryptingTree:
-		if where := firstUnreadablePath(tree); where != "" {
+		if where := firstUnreadablePath(tree, err); where != "" {
 			return fmt.Errorf("a value in this file could not be read (%s); the file is damaged or was edited by hand", where)
 		}
 		return fmt.Errorf("a value in this file could not be read; the file is damaged or was edited by hand")
@@ -260,33 +270,200 @@ func describeDecryptFailure(tree *sops.Tree, err error) error {
 	}
 }
 
+// sops's own wording for the two leaf failures where the damaged value is no
+// longer ciphertext. Matched to pick a search strategy — the result is a
+// boolean, and no part of sops's message is ever propagated. Pinned by
+// TestUpstreamDecryptFailureWordingIsUnchanged, so a change upstream is
+// reported rather than silently sending users to the wrong key.
+const (
+	// sops.Tree.Decrypt, when a key it must decrypt does not hold a string.
+	notCiphertextTypeMarker = "Expected encrypted value as string"
+	// aes.Cipher.Decrypt's parse, when the string is not sops ciphertext.
+	notSopsFormatMarker = "does not match sops' data format"
+)
+
 // firstUnreadablePath names the key whose value a failed decrypt stopped at.
 //
-// sops's error does not carry the path, and this is the piece of information a
-// user actually needs to repair a damaged file — so it is recovered from the
-// tree rather than from the message. sops.Tree.Decrypt replaces each value in
-// place as it goes and returns on the first failure, so everything before the
-// failure is plaintext and everything from it onwards is still ciphertext:
-// the first leaf that still looks encrypted is the one that failed.
+// sops's error does not carry the path, and it is the one thing a user needs
+// in order to repair a damaged file, so it is recovered from the tree. The
+// guarantee that makes this possible: sops.Tree.Decrypt walks leaves in order,
+// replaces each value in place, and returns on the first failure — so
+// everything before the failing leaf is plaintext and everything from it
+// onwards is untouched.
 //
-// A key path is not a secret (CLAUDE.md permits naming a key, never a value),
+// A leaf can fail in three ways, and they need different searches:
+//
+//  1. it is still ciphertext but will not convert (a rewritten `type:` tag).
+//     The leaf is still ENC[…], so it is the first such leaf. Nothing else is
+//     needed.
+//  2. it holds a non-string where ciphertext was expected (`beta: 42`), or
+//  3. it holds a string that is not sops ciphertext (`beta: plain`).
+//
+// Cases 2 and 3 are the ones a naive "first leaf that still looks encrypted"
+// scan gets wrong: the damaged leaf does not look encrypted, so the scan walks
+// past it and names the *next* key, which is healthy. Someone following that
+// advice edits the wrong thing.
+//
+// For those two, the damaged leaf is the last leaf sops meant to decrypt
+// before the first one that is still ciphertext — because everything from the
+// failure onwards is untouched. Which leaves sops meant to decrypt is decided
+// by the file's own rules (encrypted_regex, suffixes, comment regexes), and
+// those are not reimplemented here: the tree is handed to sops's own
+// Tree.Encrypt with a throwaway key, and whichever leaves come back as ENC[…]
+// are the ones its rules cover. That is what keeps a plaintext-by-rule key
+// from ever being named as the damaged one.
+//
+// The probe destroys the tree, which is why this is only ever called on a
+// failure path where the tree is about to be discarded.
+//
+// A key path is not a secret — CLAUDE.md permits naming a key, never a value —
 // and nothing but a path can come out of here.
-func firstUnreadablePath(tree *sops.Tree) string {
-	var found string
-	// A walk error (a non-string key) just means no path is available.
-	_ = walkLeaves(tree.Branches, func(document int, path []string, value interface{}) error {
-		if found != "" {
-			return nil
-		}
-		if text, isString := value.(string); isString && encValueRe.MatchString(text) {
-			found = pathLabel(path)
-			if document != 0 {
-				found = fmt.Sprintf("document %d, %s", document, found)
+func firstUnreadablePath(tree *sops.Tree, cause error) string {
+	leaves := encryptedLeafStates(tree)
+	if len(leaves) == 0 {
+		return ""
+	}
+
+	message := ""
+	if cause != nil {
+		message = cause.Error()
+	}
+	damagedLeafIsNoLongerCiphertext := strings.Contains(message, notCiphertextTypeMarker) ||
+		strings.Contains(message, notSopsFormatMarker)
+
+	if !damagedLeafIsNoLongerCiphertext {
+		// Case 1. The first leaf still holding ciphertext is the one that
+		// failed, because every earlier one was decrypted.
+		for _, leaf := range leaves {
+			if leaf.stillCiphertext {
+				return leaf.label
 			}
 		}
+		return ""
+	}
+
+	// Cases 2 and 3. Narrow to the leaves sops's own rules say are encrypted,
+	// then take the last one before the untouched ciphertext begins.
+	covered := leavesSopsWouldEncrypt(tree)
+	if covered == nil {
+		// Without the rules, any guess could name a healthy key. Say nothing.
+		return ""
+	}
+	var previous string
+	for _, leaf := range leaves {
+		if !covered[leaf.key] {
+			continue
+		}
+		if leaf.stillCiphertext {
+			return previous
+		}
+		previous = leaf.label
+	}
+	// No ciphertext left at all: the damage is at the last covered leaf.
+	return previous
+}
+
+// leafState is one leaf of a partially decrypted tree, in walk order.
+type leafState struct {
+	key             string
+	label           string
+	stillCiphertext bool
+}
+
+func encryptedLeafStates(tree *sops.Tree) []leafState {
+	var out []leafState
+	// A walk error (a non-string key) just truncates what is available.
+	_ = walkLeaves(tree.Branches, func(document int, path []string, value interface{}) error {
+		label := pathLabel(path)
+		if document != 0 {
+			label = fmt.Sprintf("document %d, %s", document, label)
+		}
+		text, isString := value.(string)
+		out = append(out, leafState{
+			key:             pathKey(document, path),
+			label:           label,
+			stillCiphertext: isString && encValueRe.MatchString(text),
+		})
 		return nil
 	})
-	return found
+	return out
+}
+
+// leavesSopsWouldEncrypt asks sops which leaves this file's rules cover, by
+// encrypting the tree with a throwaway key and seeing which values come back
+// as ciphertext. Returns nil if sops could not answer.
+//
+// Destroys the tree. Callers must be on their way out.
+func leavesSopsWouldEncrypt(tree *sops.Tree) map[string]bool {
+	probeKey := make([]byte, 32)
+	if _, err := rand.Read(probeKey); err != nil {
+		return nil
+	}
+	if _, err := tree.Encrypt(probeKey, aes.NewCipher()); err != nil {
+		return nil
+	}
+	covered := make(map[string]bool)
+	if err := walkLeaves(tree.Branches, func(document int, path []string, value interface{}) error {
+		if text, isString := value.(string); isString && encValueRe.MatchString(text) {
+			covered[pathKey(document, path)] = true
+		}
+		return nil
+	}); err != nil {
+		return nil
+	}
+	return covered
+}
+
+// describeYAMLFailure rebuilds a go-yaml error as a message that carries its
+// position and nothing else.
+//
+// go-yaml is not purely positional, which is easy to assume and wrong. Three
+// of its messages quote the document itself:
+//
+//	mapping key "…" already defined at line N   — the key text
+//	unknown anchor '…' referenced               — the anchor name
+//	cannot unmarshal !!str `…` into map…        — the value, truncated
+//
+// A key is a perfectly realistic place for a secret to sit — an allow-list or
+// a feature-flag map keyed by a token — and the duplicate-key check is not an
+// exotic path: stores/yaml.LoadPlainFile runs a pre-decode pass for it on
+// every single load, as a workaround for go-yaml/yaml#814.
+//
+// The line number is not secret and is the only thing in these messages worth
+// keeping, so it is the only thing kept. It is extracted by matching go-yaml's
+// own "line N:" prefix anchored at the start of a line — quoted text is
+// escaped by %#v and %q, so it can never contain a real newline and can never
+// masquerade as that prefix. Nothing but digits is copied out.
+func describeYAMLFailure(summary string, err error) error {
+	positions := yamlErrorPositions(err)
+	switch len(positions) {
+	case 0:
+		return errors.New(summary)
+	case 1:
+		return fmt.Errorf("%s (line %s)", summary, positions[0])
+	default:
+		return fmt.Errorf("%s (lines %s)", summary, strings.Join(positions, ", "))
+	}
+}
+
+var yamlErrorLineRe = regexp.MustCompile(`(?m)^[ \t]*(?:yaml: )?line (\d+):`)
+
+func yamlErrorPositions(err error) []string {
+	if err == nil {
+		return nil
+	}
+	var positions []string
+	seen := make(map[string]bool)
+	for _, match := range yamlErrorLineRe.FindAllStringSubmatch(err.Error(), -1) {
+		if number := match[1]; !seen[number] {
+			seen[number] = true
+			positions = append(positions, number)
+			if len(positions) == 5 {
+				break
+			}
+		}
+	}
+	return positions
 }
 
 // pathKey is an injective encoding of a document index and key path, used to

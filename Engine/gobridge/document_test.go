@@ -10,6 +10,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/getsops/sops/v3/aes"
+	"github.com/getsops/sops/v3/cmd/sops/common"
+	"github.com/getsops/sops/v3/cmd/sops/formats"
+	"github.com/getsops/sops/v3/config"
 	"github.com/getsops/sops/v3/logging"
 )
 
@@ -1153,4 +1157,254 @@ func TestDecryptFailuresAreClassified(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "could not be read") {
 		t.Errorf("garbled ciphertext is not reported as an unreadable value: %v", err)
 	}
+}
+
+// -----------------------------------------------------------------------
+// Load-path error hygiene
+// -----------------------------------------------------------------------
+
+// go-yaml is not purely positional, which an earlier version of this file
+// assumed. Three of its messages quote the document:
+//
+//	duplicate key    -> mapping key "…" already defined at line N   (the key text)
+//	unresolved alias -> unknown anchor '…' referenced                (the anchor name)
+//	scalar document  -> cannot unmarshal !!str `…` into map…         (the value, truncated)
+//
+// A key is a realistic place for a secret to sit — an allow-list or a
+// feature-flag map keyed by a token — and the duplicate-key check runs on
+// every load, because stores/yaml.LoadPlainFile does a pre-decode pass for it
+// as a workaround for go-yaml/yaml#814.
+//
+// The position is not secret and is the only useful thing in these messages,
+// so it is kept and everything else is dropped.
+func TestLoadErrorsNeverCarryDocumentText(t *testing.T) {
+	key := newAgeKeyPair(t)
+
+	for name, src := range map[string]string{
+		"duplicate key is the secret":        "a: 1\n" + decryptCanary + ": x\n" + decryptCanary + ": y\n",
+		"duplicate key nested":               "top:\n    " + decryptCanary + ": 1\n    " + decryptCanary + ": 2\n",
+		"anchor name is the secret":          "a: *" + decryptCanary + "\n",
+		"the whole document is the secret":   decryptCanary + "\n",
+		"unterminated quote around a secret": "a: \"" + decryptCanary + "\nb: 2\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := Encrypt([]byte(src), FormatYAML, EncryptOpts{AgeRecipients: []string{key.Public}})
+			if err == nil {
+				t.Fatalf("malformed YAML was accepted (%d bytes)", len(out))
+			}
+			if strings.Contains(err.Error(), decryptCanary) {
+				t.Errorf("the error carries the document's own text: %v", err)
+			}
+		})
+	}
+
+	// The same parser runs over the *encrypted* file, whose keys are cleartext.
+	corrupt := "a: 1\n" + decryptCanary + ": x\n" + decryptCanary + ": y\nsops:\n    version: 3.13.2\n"
+	if _, err := DecryptToRows([]byte(corrupt), key.Private); err == nil {
+		t.Fatalf("a malformed encrypted file was accepted")
+	} else if strings.Contains(err.Error(), decryptCanary) {
+		t.Errorf("the read path carries the document's own text: %v", err)
+	}
+}
+
+// Dropping the text must not drop the line number with it: it is not secret,
+// and without it a malformed file is far harder to repair.
+func TestLoadErrorsKeepTheirPosition(t *testing.T) {
+	key := newAgeKeyPair(t)
+
+	for name, tc := range map[string]struct{ src, wantPosition string }{
+		"tab indentation":    {"a:\n\tb: 1\n", "line 2"},
+		"unterminated quote": {"a: \"open\nb: 2\n", "line 3"},
+		"duplicate key":      {"a: 1\nk: x\nk: y\n", "line 3"},
+		"duplicate key deep": {"top:\n    k: 1\n    k: 2\n", "line 3"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Encrypt([]byte(tc.src), FormatYAML, EncryptOpts{AgeRecipients: []string{key.Public}})
+			if err == nil {
+				t.Fatalf("malformed YAML was accepted")
+			}
+			if !strings.Contains(err.Error(), tc.wantPosition) {
+				t.Errorf("the position was lost with the text: want %q in %v", tc.wantPosition, err)
+			}
+		})
+	}
+}
+
+// A file that parses but carries no sops block is a different problem from a
+// file that does not parse, and saying so is worth more than either generic
+// message.
+func TestAPlainYAMLFileIsReportedAsNotBeingASopsDocument(t *testing.T) {
+	key := newAgeKeyPair(t)
+	_, err := DecryptToRows([]byte("a: 1\nb: 2\n"), key.Private)
+	if err == nil {
+		t.Fatal("a plain YAML file was accepted as a SOPS document")
+	}
+	if !strings.Contains(err.Error(), "not a SOPS document") {
+		t.Errorf("unhelpful message for a non-SOPS file: %v", err)
+	}
+}
+
+// -----------------------------------------------------------------------
+// Naming the right damaged key
+// -----------------------------------------------------------------------
+
+// replaceEncryptedValue swaps a whole encrypted value for a literal, the way a
+// hand-edit or a bad merge would.
+func replaceEncryptedValue(t *testing.T, encrypted []byte, keyName, literal string) []byte {
+	t.Helper()
+	lines := strings.Split(string(encrypted), "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, keyName+": ENC[") {
+			indent := line[:len(line)-len(trimmed)]
+			lines[i] = indent + keyName + ": " + literal
+			return []byte(strings.Join(lines, "\n"))
+		}
+	}
+	t.Fatalf("no encrypted value named %q in the fixture", keyName)
+	return nil
+}
+
+// sops stops at the first value it cannot read, so the key it stopped at is
+// the one to send someone to. Finding it by scanning for the first value that
+// still looks like ciphertext is not enough: a key whose ciphertext was
+// replaced by a bare scalar is not a string, so that scan walks straight past
+// the damage and names the next — undamaged — key instead.
+func TestTheDamagedKeyIsNamedAndNotTheNextHealthyOne(t *testing.T) {
+	const src = "alpha: one\nbeta: two\ngamma: three\n"
+
+	for name, corrupt := range map[string]func(*testing.T, []byte) []byte{
+		"ciphertext replaced by a bare int": func(t *testing.T, e []byte) []byte {
+			return replaceEncryptedValue(t, e, "beta", "42")
+		},
+		"ciphertext replaced by a bare bool": func(t *testing.T, e []byte) []byte {
+			return replaceEncryptedValue(t, e, "beta", "true")
+		},
+		"ciphertext replaced by a plain string": func(t *testing.T, e []byte) []byte {
+			return replaceEncryptedValue(t, e, "beta", "just-some-text")
+		},
+		"ciphertext replaced by a list": func(t *testing.T, e []byte) []byte {
+			return replaceEncryptedValue(t, e, "beta", "[1, 2]")
+		},
+		"declared type rewritten": func(t *testing.T, e []byte) []byte {
+			return retypeEncryptedValue(t, e, "beta", "int")
+		},
+		"a bare scalar before a retyped value": func(t *testing.T, e []byte) []byte {
+			return replaceEncryptedValue(t, retypeEncryptedValue(t, e, "gamma", "int"), "beta", "42")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			key := newAgeKeyPair(t)
+			corrupted := corrupt(t, encryptWithCLI(t, key, src))
+
+			_, err := DecryptToRows(corrupted, key.Private)
+			if err == nil {
+				t.Fatalf("a damaged document was accepted")
+			}
+			if !strings.Contains(err.Error(), "beta") {
+				t.Errorf("the damaged key was not named: %v", err)
+			}
+			if strings.Contains(err.Error(), "gamma") || strings.Contains(err.Error(), "alpha") {
+				t.Errorf("an undamaged key was named, sending the user to the wrong place: %v", err)
+			}
+		})
+	}
+}
+
+// With an encrypted_regex most keys are plaintext by rule, and none of them is
+// damaged. Naming one would be the same mistake in a different shape.
+// The key ordering matters: a plaintext-by-rule key sits *between* the damaged
+// one and the next surviving ciphertext, so a locator that ignored the file's
+// rules would name it. An ordering where the damage happens to be last would
+// pass either way and prove nothing.
+func TestPlaintextByRuleKeysAreNeverNamedAsTheDamagedOne(t *testing.T) {
+	key := newAgeKeyPair(t)
+	encrypted := encryptWithCLI(t, key,
+		"password: hunter2\napi_key: sk-live\nhost: localhost\nport: 5432\ntoken: tok\n",
+		"--encrypted-regex", "^(password|api_key|token)$")
+
+	corrupted := replaceEncryptedValue(t, encrypted, "api_key", "42")
+	_, err := DecryptToRows(corrupted, key.Private)
+	if err == nil {
+		t.Fatal("a damaged document was accepted")
+	}
+	if !strings.Contains(err.Error(), "api_key") {
+		t.Errorf("the damaged key was not named: %v", err)
+	}
+	for _, healthy := range []string{"host", "port", "password", "token"} {
+		if strings.Contains(err.Error(), healthy) {
+			t.Errorf("the healthy key %q was named as damaged: %v", healthy, err)
+		}
+	}
+}
+
+// Damage inside a list must be located too.
+func TestDamageInsideAListIsLocated(t *testing.T) {
+	key := newAgeKeyPair(t)
+	encrypted := encryptWithCLI(t, key, "servers:\n    - name: alpha\n      ip: 10.0.0.1\n    - name: beta\n      ip: 10.0.0.2\n")
+
+	lines := strings.Split(string(encrypted), "\n")
+	replaced := false
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "ip: ENC[") {
+			lines[i] = line[:len(line)-len(strings.TrimSpace(line))] + "ip: 42"
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		t.Fatal("fixture has no encrypted ip")
+	}
+
+	_, err := DecryptToRows([]byte(strings.Join(lines, "\n")), key.Private)
+	if err == nil {
+		t.Fatal("a damaged document was accepted")
+	}
+	if !strings.Contains(err.Error(), "servers.0.ip") {
+		t.Errorf("the damaged list element was not located: %v", err)
+	}
+}
+
+// The two failure shapes are told apart by matching sops's own wording, and
+// nothing else in this package depends on upstream prose. If that wording
+// changes, this test says so — rather than the locator silently going back to
+// naming a healthy key.
+func TestUpstreamDecryptFailureWordingIsUnchanged(t *testing.T) {
+	key := newAgeKeyPair(t)
+	encrypted := encryptWithCLI(t, key, "alpha: one\nbeta: two\n")
+
+	for wanted, corrupted := range map[string][]byte{
+		notCiphertextTypeMarker: replaceEncryptedValue(t, encrypted, "beta", "42"),
+		notSopsFormatMarker:     replaceEncryptedValue(t, encrypted, "beta", "just-some-text"),
+	} {
+		raw := rawDecryptError(t, corrupted, key)
+		if raw == nil {
+			t.Fatalf("expected sops to reject the corrupted document")
+		}
+		if !strings.Contains(raw.Error(), wanted) {
+			t.Errorf("sops no longer says %q; firstUnreadablePath's shape detection needs updating.\ngot: %v",
+				wanted, raw)
+		}
+	}
+}
+
+// rawDecryptError reaches past this package's sanitisation to sops's own
+// error, which is the thing TestUpstreamDecryptFailureWordingIsUnchanged is
+// asserting about. It is the only place in the suite that sees that text.
+func rawDecryptError(t *testing.T, encrypted []byte, key ageKeyPair) error {
+	t.Helper()
+	store := common.StoreForFormat(formats.Yaml, config.NewStoresConfig())
+	tree, err := store.LoadEncryptedFile(encrypted)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	ids, err := parseDecryptionIdentities(key.Private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ks := &ageKeyService{identities: ids}
+	_, err = common.DecryptTree(common.DecryptTreeOpts{
+		Tree: &tree, Cipher: aes.NewCipher(), KeyServices: ks.clients(),
+	})
+	return err
 }

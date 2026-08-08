@@ -556,3 +556,101 @@ struct DocumentErrorHygieneTests {
         #expect(text.contains("CAPTURE-PROBE-12345"))
     }
 }
+
+@Suite("Malformed documents never echo their own text across the boundary")
+struct DocumentLoadHygieneTests {
+
+    /// go-yaml is not purely positional. A duplicate key is reported as
+    /// `mapping key "…" already defined at line N` — the literal key text — and
+    /// an unresolved alias echoes the anchor name. A key is a realistic place
+    /// for a secret to sit (an allow-list or feature-flag map keyed by a token),
+    /// and stores/yaml runs the duplicate-key check on every single load.
+    @Test("a secret used as a key, an anchor, or a whole document never reaches the error")
+    func malformedInputNeverEchoesItself() throws {
+        let canary = "SUPERSECRETCANARY9999"
+        let key = try AgeKeyPair.generate()
+
+        let malformed: [String: String] = [
+            "duplicate key": "a: 1\n\(canary): x\n\(canary): y\n",
+            "duplicate key nested": "top:\n    \(canary): 1\n    \(canary): 2\n",
+            "unresolved alias": "a: *\(canary)\n",
+            "scalar document": "\(canary)\n",
+            "unterminated quote": "a: \"\(canary)\nb: 2\n",
+        ]
+
+        for (name, source) in malformed {
+            let (message, capturedStderr) = try capturingStandardError { () -> String in
+                do {
+                    _ = try SopsBridge.encryptYAML(source, recipients: [key.public])
+                    Issue.record("\(name): malformed YAML was accepted")
+                    return ""
+                } catch let error as SopsBridgeError {
+                    return error.description
+                }
+            }
+            #expect(!message.contains(canary), "\(name): \(message)")
+            #expect(!capturedStderr.contains(canary), "\(name) stderr: \(capturedStderr)")
+        }
+
+        // The same parser runs over an encrypted file, whose keys are cleartext.
+        let corruptEncrypted = "a: 1\n\(canary): x\n\(canary): y\nsops:\n    version: 3.13.2\n"
+        do {
+            _ = try SopsBridge.decryptToRows(corruptEncrypted, agePrivateKey: key.private)
+            Issue.record("a malformed encrypted file was accepted")
+        } catch let error as SopsBridgeError {
+            #expect(!error.description.contains(canary), "\(error.description)")
+        }
+    }
+
+    @Test("dropping the text does not drop the line number with it")
+    func positionSurvives() throws {
+        let key = try AgeKeyPair.generate()
+        for (source, wanted) in [
+            ("a:\n\tb: 1\n", "line 2"),
+            ("a: 1\nk: x\nk: y\n", "line 3"),
+        ] {
+            do {
+                _ = try SopsBridge.encryptYAML(source, recipients: [key.public])
+                Issue.record("malformed YAML was accepted")
+            } catch let error as SopsBridgeError {
+                #expect(error.description.contains(wanted), "\(error.description)")
+            }
+        }
+    }
+
+    @Test("a damaged file names the damaged key, not the next healthy one")
+    func damagedKeyIsNamedCorrectly() throws {
+        let key = try AgeKeyPair.generate()
+        let encrypted = try encryptWithCLI("alpha: one\nbeta: two\ngamma: three\n", key: key)
+
+        // A hand-edit or a bad merge replacing beta's ciphertext with a bare
+        // scalar: beta is no longer a string, so a scan for "still looks
+        // encrypted" walks past it and lands on gamma, which is fine.
+        var lines = encrypted.components(separatedBy: "\n")
+        guard let index = lines.firstIndex(where: { $0.hasPrefix("beta: ENC[") }) else {
+            throw TestError("fixture has no encrypted beta")
+        }
+        lines[index] = "beta: 42"
+
+        do {
+            _ = try SopsBridge.decryptToRows(
+                lines.joined(separator: "\n"), agePrivateKey: key.private)
+            Issue.record("a damaged document was accepted")
+        } catch let error as SopsBridgeError {
+            #expect(error.description.contains("beta"), "\(error.description)")
+            #expect(!error.description.contains("gamma"), "\(error.description)")
+            #expect(!error.description.contains("alpha"), "\(error.description)")
+        }
+    }
+
+    @Test("a plain YAML file is reported as not being a SOPS document")
+    func plainFileIsDistinguished() throws {
+        let key = try AgeKeyPair.generate()
+        do {
+            _ = try SopsBridge.decryptToRows("a: 1\nb: 2\n", agePrivateKey: key.private)
+            Issue.record("a plain YAML file was accepted as a SOPS document")
+        } catch let error as SopsBridgeError {
+            #expect(error.description.contains("not a SOPS document"), "\(error.description)")
+        }
+    }
+}
