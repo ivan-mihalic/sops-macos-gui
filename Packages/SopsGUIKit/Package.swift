@@ -12,8 +12,8 @@ let package = Package(
         .library(name: "SopsProjects", targets: ["SopsProjects"]),
     ],
     targets: [
-        .target(name: "SopsUI", dependencies: ["SopsHealth", "SopsProjects"], resources: [.process("Resources")]),
-        .testTarget(name: "SopsUITests", dependencies: ["SopsUI"]),
+        .target(name: "SopsUI", dependencies: ["SopsEngine", "SopsHealth", "SopsProjects"], resources: [.process("Resources")]),
+        .testTarget(name: "SopsUITests", dependencies: ["SopsUI", "SopsEngine"]),
         .binaryTarget(
             name: "CSopsBridge",
             path: "../../Engine/build/SopsBridge.xcframework"
