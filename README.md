@@ -6,7 +6,7 @@ per-project organization, Touch ID protected age keys, producing files 100%
 compatible with the standard `sops` CLI. Working title; see
 [`PROPOSAL.md`](PROPOSAL.md) for the full spec, non-goals, and open questions.
 
-**Current state (M2 — core editing):** the app has a sidebar shell with About and
+**Current state (M2 — core editing, complete):** the app has a sidebar shell with About and
 Settings pinned at the bottom, and a re-runnable health check / onboarding wizard
 (PROPOSAL.md §6) that verifies the machine's tooling, the embedded engine's
 freshness, the app's own security posture, and per-project health. On top of that,
@@ -18,16 +18,14 @@ atomically. Every file the editor writes is round-tripped against the real `sops
 CLI in `EditorCompatibilityTests` — comments, key order, recipients and
 `encrypted_regex` all survive, and untouched values keep their exact ciphertext.
 
-Two things M2 aimed at are **not** done and are carried into M3:
-
-- A file declaring `type:bytes` **panics the process**. Vendored sops v3.13.3
-  panics on that shape and nothing calls `recover()` at the C boundary, so an
-  unexpected file crashes the app instead of reporting an error.
-- The project scan skips dependency and build directories (`node_modules`,
-  `.build`, `.worktrees`, …) and only says so when it *also* hits its file
-  budget. PROPOSAL.md §6 D requires the exclusion to be stated in the finding
-  either way, so on an ordinary repository the plaintext-leak check can report
-  "found none" about a tree it did not fully walk.
+Both items that blocked M2 at final verification are closed. A file declaring
+`type:bytes` used to panic vendored sops v3.13.3 and take the whole process
+down; every one of the nine cgo entry points now recovers and returns a
+described error, and no panic payload reaches the message. And the project scan
+states its own scope: it skips dependency and build directories
+(`node_modules`, `.build`, `.worktrees`, …), and now says which ones in the
+finding itself rather than only when it also exhausts its file budget — PROPOSAL.md
+§6 D forbids reporting OK about files the check did not look at.
 
 The age key lives in memory for the session only; Keychain and Touch ID are M3.
 YAML is the only format this build opens (PROPOSAL.md §10).

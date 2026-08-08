@@ -905,7 +905,14 @@ Written here rather than only in the SDD ledger because `.superpowers/` is
 gitignored — this file is the milestone's durable record. Full evidence for each
 item is in `.superpowers/sdd/2026-08-07-m2-core-editing/task-12-report.md`.
 
-**Blocking M2's ✅ — both inherited by M3:**
+> **Resolved the same day by Tasks 13–16.** Items 1–3 and 6–9 below are **closed**;
+> what remains open out of M2 is items 4 and 5, plus the two entries in
+> "Still open after the fix wave" at the end of this section. The list is kept
+> as written so the milestone's honest state at final verification stays legible
+> — Task 12 withheld the ✅ deliberately, and that judgement is the record worth
+> keeping, not a tidied-up version of it.
+
+**Blocking M2's ✅ — both inherited by M3:** ~~both closed, Tasks 13 and 14~~
 
 1. **`recover()` at the C boundary.** Vendored sops v3.13.3 panics (`hash of
    unhashable type []uint8`) on any value declaring `type:bytes`, and
@@ -958,3 +965,36 @@ containing `sops_mac=`/`sops_version=` are counted as "a format this app does
 not read". That follows from PROPOSAL §3's metadata sniffing plus the deliberate
 extension blindness, both of which are right; it is what the app looks like
 pointed at a repository *about* sops.
+
+> **Fixed after all (Task 14).** The discriminator turned out cheap: `SopsMetadataShape`
+> now requires the *structure* sops actually emits, verified against real-binary
+> output in YAML / dotenv / JSON / INI, behind the existing byte prefilter.
+> `encrypted(2)`/`otherFormat(9)` → **0 / 0**. The fix's own first draft made its
+> doc comment the twelfth false positive; a standing `ownSourceTreeIsNotEncrypted`
+> test now scans the package's own `Sources/`.
+
+---
+
+## Still open after the fix wave (Tasks 13–16, 2026-08-08)
+
+Everything below is genuinely carried into M3. Items 4 and 5 above are unchanged
+and still open; these are the two additions the fix wave itself surfaced.
+
+10. **`ClipboardClearingTests.laterCopySurvivesEarlierClear` is vacuous under
+    load.** Task 16's sabotage exposed it: with the clearing timer removed
+    entirely, the test still passed. Establishing non-vacuity needs an
+    observable signal that the stale timer ran, which `ClipboardClearing` does
+    not expose. Pre-existing, not introduced by the fix wave — recorded so
+    nobody rediscovers it as a *passing* test.
+11. **The CRLF guard scans `Sources/` only.** Test helpers such as
+    `ProjectFixture.ageKeyPair` still split on `"\n"`. Extending
+    `sourcesContainNoNewlineBlindIdioms` to `Tests/` needs a sizeable allow-list,
+    because fixtures legitimately pin exact LF-only bytes, and no test helper
+    reads a file whose line endings the app does not control.
+
+Also unverified rather than untrue: the `.confirmationDialog`'s three buttons
+render nowhere a test or a headless snapshot can reach — the *decision* behind
+them is now a pure function with 13 tests, but the buttons themselves are
+verified by reading only. And `ScrollOverflowFadeCoverageTests` asserts that the
+modifier is *called*, not that anything is drawn; the drawing was confirmed once,
+by eye, from the PNGs.
