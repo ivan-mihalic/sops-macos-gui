@@ -272,11 +272,33 @@ Ranked by value/effort; ✦ = recommended for v1:
 |---|---|---|
 | M0 | **Spike** ✅ | Go xcframework bridge; CLI-compatibility round-trip proof. Verdict: in-process, [ADR 0001](docs/adr/0001-in-process-go-bridge.md) |
 | M1 | **Shell & onboarding** ✅ | App scaffold (sidebar, About, Settings, String Catalogs), engine integration, the whole of §6 |
-| M2 | Core editing | Project add (incl. worktrees), file list, form editor, encrypt/decrypt, atomic save. Plan: [2026-08-07](docs/superpowers/plans/2026-08-07-m2-core-editing.md). Its Task 1 is the §6 D tree-walk constraint; Task 6 holds the age key in memory for the session only, which M3 replaces with the Keychain behind the same protocol |
-| M3 | Keys & security | Keychain + Touch ID, session TTL, key generate/import/reveal, clipboard hygiene |
+| M2 | Core editing — **feature-complete, not closed** | Project add (incl. worktrees), file list, form editor, encrypt/decrypt, atomic save all shipped and CLI-round-tripped. Plan: [2026-08-07](docs/superpowers/plans/2026-08-07-m2-core-editing.md). Task 6 holds the age key in memory for the session only, which M3 replaces with the Keychain behind the same protocol. **Two items block the ✅ and are carried into M3** — see the note below |
+| M3 | Keys & security | Keychain + Touch ID, session TTL, key generate/import/reveal, clipboard hygiene. **Plus M2's two carried items:** `recover()` at the C boundary, and the §6 D exclusion disclosure |
 | M4 | Recipients & help | `.sops.yaml` editing, updatekeys, recipient add/remove + rotate reminder, Help section with snippets |
 | M5 | Polish & release | Liquid Glass pass, Sparkle, notarized release pipeline, first public release → **repo goes public** |
 | M6 | DX extras | Items from §8 by priority |
+
+> **Why M2 has no ✅** (final verification, 2026-08-08). Everything in its Content column
+> works and is under test — 386 Swift tests across both compilers on this machine, 140 Go
+> tests, clean Release build, and a five-fixture round trip against the real `sops` CLI. Two
+> things it undertook did not land, and neither is cosmetic:
+>
+> 1. **`recover()` at the C boundary.** Vendored sops v3.13.3 panics (`hash of unhashable
+>    type []uint8`) on any value declaring `type:bytes`, and nothing recovers at the cgo
+>    boundary — so a hand-crafted or foreign-tool file **crashes the whole app** rather than
+>    producing an error. Found during Task 7, marked "required before M2 closes, fold into
+>    Task 11"; Task 11 turned out to be test-only and never did it.
+> 2. **The §6 D exclusion is not stated in the finding.** The tree-walk constraint above was
+>    solved with a dependency/build-directory exclusion list, and the cost this section
+>    demanded be paid — *"it must be stated in the finding, not buried in a constant"* — is
+>    paid only on the branch where the scan **also** exhausts its 20,000-file budget.
+>    Measured on this repository: `.build` and `.swiftpm` skipped, budget not hit, and the
+>    plaintext-leak check reports `.ok` — *"Looked through &lt;root&gt; … and found none"* —
+>    naming no exclusion at all. That is this section's own "may not report OK about files it
+>    did not look at", in the check written to enforce it.
+>
+> The tree-walk cost itself **is** solved: 170s → **0.126s** on this repository, measured
+> through the real `ProjectHealthCheck`.
 
 Onboarding comes first because several of its checks (§6 D, §6 C) are the natural consumers of
 the project model and the key store, and writing them first pins down those interfaces before

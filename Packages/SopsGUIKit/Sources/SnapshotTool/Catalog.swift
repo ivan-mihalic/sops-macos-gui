@@ -102,10 +102,32 @@ enum Catalog {
         // .welcome -> .tools -> .engine -> .security -> .projects
         for _ in 0..<4 { longFindingState.advance() }
 
+        // The four category steps, all fed the *same* finding set that
+        // `health-panel` is fed. Task 12 asks for two things a single wizard
+        // snapshot cannot answer: that all six steps render (welcome and
+        // summary were the only ones ever snapshotted), and that the wizard's
+        // per-category steps agree with Settings › Health. Sharing
+        // `realisticFindings` across both is what makes the second one a
+        // comparison rather than an assertion of faith — a finding visible in
+        // `health-panel`'s "Tools" section must appear on `onboarding-tools`
+        // and nowhere else.
+        var categorySteps: [Snapshot] = []
+        for (index, name) in ["tools", "engine", "security", "projects"].enumerated() {
+            let health = await Fixtures.healthViewModel(findings: Fixtures.realisticFindings)
+            let state = Fixtures.onboardingState()
+            // .welcome is step 0; .tools is one advance past it.
+            for _ in 0...index { state.advance() }
+            categorySteps.append(
+                Snapshot("onboarding-\(name)", size: wizardSize) {
+                    OnboardingWizard(health: health, state: state)
+                })
+        }
+
         return [
             Snapshot("onboarding-welcome", size: wizardSize) {
                 OnboardingWizard(health: welcomeHealth, state: welcomeState)
             },
+        ] + categorySteps + [
             Snapshot("onboarding-summary", size: wizardSize) {
                 OnboardingWizard(health: summaryHealth, state: summaryState)
             },
