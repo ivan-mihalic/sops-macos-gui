@@ -322,16 +322,44 @@ public final class ProjectStore {
     }
 
     /// A sibling path for `url`'s quarantined backup:
-    /// `projects-corrupt-<timestamp>.json` next to `projects.json`. No
-    /// colons in the timestamp — `:` is legal in a raw POSIX filename on
-    /// APFS, but Finder still renders it as `/` and some tooling still
-    /// balks, and nothing here needs a colon to be unambiguous.
+    /// `projects-corrupt-<timestamp>-<uuid>.json` next to `projects.json`.
+    ///
+    /// Review finding: the timestamp alone (`yyyyMMdd'T'HHmmss'Z'`, second
+    /// resolution, no PID, no counter) was not actually unique — three
+    /// corrupt writes to the same path within one wall-clock second (a sync
+    /// client restoring a conflicted copy, a restore script, or simply two
+    /// `load()` calls landing in the same second) collide, and
+    /// `FileManager.moveItem` fails with `NSCocoaErrorDomain` 516 ("an item
+    /// with the same name already exists"). That failure lands in
+    /// `quarantine(_:reason:)`'s `catch` branch exactly like a genuine
+    /// can't-move failure does, setting `unsafeToWrite` and refusing every
+    /// write — for a name collision with nothing actually wrong on disk.
+    /// Reviewer-reproduced: three corrupt writes to the same path in a tight
+    /// loop; the second and third both collided and both set
+    /// `unsafeToWrite`. That is precisely the refuse-until-a-human-intervenes
+    /// trap quarantine was chosen over gating to avoid — reintroduced here
+    /// by a naming detail, not by the design.
+    ///
+    /// Fixed with a `UUID`, the same choice `persist(_:)`'s own temp-file
+    /// naming already makes one call above this (`.\(UUID().uuidString).tmp`)
+    /// for the identical reason: a UUID's collision probability is low
+    /// enough to treat as zero, which neither a counter (needs somewhere to
+    /// keep count, and *that* state can itself race) nor a PID (recycled by
+    /// the OS, and says nothing across separate corruption events from the
+    /// same process) actually guarantees. The timestamp stays, prefixed —
+    /// it costs nothing and makes the backups sort chronologically and read
+    /// as "when" at a glance in Finder or `ls`; the UUID suffix is what
+    /// actually carries the uniqueness guarantee. No colons in the
+    /// timestamp — `:` is legal in a raw POSIX filename on APFS, but Finder
+    /// still renders it as `/` and some tooling still balks, and nothing
+    /// here needs a colon to be unambiguous.
     private static func quarantinedURL(for url: URL) -> URL {
         let directory = url.deletingLastPathComponent()
         let base = url.deletingPathExtension().lastPathComponent
         let ext = url.pathExtension
         let stamp = Self.quarantineTimestampFormatter.string(from: Date())
-        let name = ext.isEmpty ? "\(base)-corrupt-\(stamp)" : "\(base)-corrupt-\(stamp).\(ext)"
+        let unique = UUID().uuidString
+        let name = ext.isEmpty ? "\(base)-corrupt-\(stamp)-\(unique)" : "\(base)-corrupt-\(stamp)-\(unique).\(ext)"
         return directory.appendingPathComponent(name)
     }
 

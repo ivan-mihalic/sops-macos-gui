@@ -259,6 +259,44 @@ struct ProjectStoreTests {
         #expect(entries == ["projects.json"], "no quarantine file should appear in the normal case: \(entries)")
     }
 
+    // Review finding: the quarantine backup name used a second-resolution
+    // timestamp with nothing else to make it unique, so two corruption
+    // events landing within the same wall-clock second collided —
+    // `FileManager.moveItem` failed with "an item with the same name
+    // already exists", which fell into the quarantine-*failure* branch and
+    // set `unsafeToWrite`, refusing every write for a name collision with
+    // nothing actually wrong on disk. Reproduced with the reviewer's own
+    // method: three corrupt writes to the same path in a tight loop, no
+    // sleep between them — on any real machine this comfortably lands
+    // inside one second, which is exactly the scenario that broke.
+    @Test("repeated corruptions at the same path within one second each get their own backup, and writes are never refused")
+    func repeatedQuarantinesWithinOneSecondDoNotCollide() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("store-dir-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("projects.json")
+
+        for attempt in 0..<3 {
+            try "not json, attempt \(attempt)".write(to: url, atomically: true, encoding: .utf8)
+            let store = ProjectStore(fileURL: url)
+            #expect(store.loadError != nil)
+
+            // Before the fix, the second and third iterations here threw
+            // `ProjectStore.Error.unreadable` — not because anything failed
+            // to persist, but because `unsafeToWrite` was wrongly set by a
+            // name collision in the quarantine step that ran moments
+            // earlier in this same loop.
+            _ = try store.add(path: try makeDirectory())
+        }
+
+        // Every one of the 3 corruption events must have left its own,
+        // distinct backup — none silently overwritten by the next.
+        let entries = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        let backups = entries.filter { $0 != "projects.json" && $0.contains("corrupt") }
+        #expect(backups.count == 3, "expected 3 distinct backups, found \(backups)")
+        #expect(Set(backups).count == 3, "backup names must be unique: \(backups)")
+    }
+
     @Test("removing leaves the rest intact and persists")
     func removePersists() throws {
         let (store, url) = makeStore()
