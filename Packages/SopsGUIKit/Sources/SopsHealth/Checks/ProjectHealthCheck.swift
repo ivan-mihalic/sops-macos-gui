@@ -100,18 +100,28 @@ public struct ProjectHealthCheck: HealthCheck {
         // and result shape are otherwise unchanged.
         var allFindings: [HealthFinding] = []
         for (index, project) in projects.enumerated() {
-            allFindings.append(contentsOf: await findings(for: project, idScope: String(index), gitPath: gitPath))
+            let scoped = await findings(for: project, idScope: String(index), gitPath: gitPath)
+            allFindings.append(contentsOf: scoped.map(\.finding))
         }
         return allFindings
     }
 
+    /// Returns `ScopedFinding`, not `HealthFinding`, and that is the whole
+    /// point: a `ScopedFinding` can only be obtained from a
+    /// `ProjectScopeAccountant`, which appends the scope disclosure and applies
+    /// the status floor. A future branch added here cannot forget to account
+    /// for what the walk missed, because a branch that forgets does not
+    /// compile. See `ScopedFinding` for what this replaced and why the previous
+    /// shape — a local `withScope(_:)` helper called by convention at each
+    /// `return` — rotted.
     private func findings(for project: InspectedProject, idScope: String,
-                          gitPath: String?) async -> [HealthFinding] {
+                          gitPath: String?) async -> [ScopedFinding] {
         let root = URL(fileURLWithPath: project.rootPath)
         let configURL = root.appendingPathComponent(".sops.yaml")
 
         // One walk of the tree feeds both findings below.
         let tree = await ProjectScanner.scan(root: root)
+        let scope = ProjectScopeAccountant(tree: tree, rootPath: project.rootPath)
 
         // The directory this project points to is gone — deleted, unmounted,
         // renamed. Nothing below this point ran against anything: the walk
@@ -129,7 +139,8 @@ public struct ProjectHealthCheck: HealthCheck {
         // `InspectedProject` that every other call site would then have to
         // keep in sync with the filesystem too.
         guard !tree.rootMissing else {
-            return [HealthFinding(
+            return [scope.finding(
+                about: .oneKnownPath(project.rootPath),
                 id: "project.\(idScope).missing", title: "\(project.name): project directory",
                 status: .warning,
                 detail: "The directory this project points to, \(project.rootPath), could not be found. Nothing here was checked — not .sops.yaml, not encrypted files, not gitignore status — because there was nothing to look at.",
@@ -137,15 +148,35 @@ public struct ProjectHealthCheck: HealthCheck {
                     explanation: "If the directory was moved or renamed, remove this project and re-add it at the new location. If it was deleted or is on an unmounted volume, removing it here only stops tracking it — nothing on disk is touched either way."))]
         }
 
+        // The directory is there and this process cannot read it. Everything
+        // below would answer from the same blindness the walk just hit — and
+        // did, before this guard existed: `FileManager.fileExists` on
+        // `<root>/.sops.yaml` returns `false` for want of search permission on
+        // the root, so the check accused the user of having no `.sops.yaml`
+        // while the file sat right there. One honest finding, exactly as for a
+        // root that is gone.
+        guard !tree.rootUnreadable else {
+            let command = ShellQuoting.singleQuoted(project.rootPath).map { "ls -ld " + $0 }
+            return [scope.finding(
+                about: .oneKnownPath(project.rootPath),
+                id: "project.\(idScope).unreadable", title: "\(project.name): project directory",
+                status: .warning,
+                detail: "The directory this project points to, \(project.rootPath), could not be read. Nothing here was checked — not .sops.yaml, not encrypted files, not gitignore status — because this app could not list what is in it.",
+                remediation: Remediation(
+                    explanation: "This is a permissions problem, not a problem with the project: something in the path is not readable by the account running this app, or the volume it lives on is mounted without access. Check the ownership and mode of the directory and of every directory above it. This app does not change permissions itself.",
+                    command: command))]
+        }
+
         let leak = gitignoreFinding(for: project, idScope: idScope, root: root,
-                                    tree: tree, gitPath: gitPath)
+                                    tree: tree, scope: scope, gitPath: gitPath)
 
         guard FileManager.default.fileExists(atPath: configURL.path) else {
             // The plaintext-leak finding is emitted even here. A project with
             // no .sops.yaml is the *most* likely one to have secrets sitting
             // in plaintext, so suppressing that finding until a config exists
             // would hide it exactly when it matters most.
-            return [HealthFinding(
+            return [scope.finding(
+                about: .oneKnownPath(configURL.path),
                 id: "project.\(idScope).sops-yaml", title: "\(project.name): .sops.yaml",
                 status: .warning,
                 detail: "No .sops.yaml in \(project.rootPath). Without it, sops has no rules for which keys to encrypt new files to.",
@@ -174,7 +205,8 @@ public struct ProjectHealthCheck: HealthCheck {
         do {
             _ = try SopsBridge.lookupCreationRule(configPath: configURL.path, targetFilePath: probeTarget)
         } catch {
-            return [HealthFinding(
+            return [scope.finding(
+                about: .oneKnownPath(configURL.path),
                 id: "project.\(idScope).sops-yaml", title: "\(project.name): .sops.yaml",
                 status: .problem,
                 detail: "The .sops.yaml in \(project.rootPath) could not be parsed: \(error).",
@@ -183,104 +215,38 @@ public struct ProjectHealthCheck: HealthCheck {
         }
 
         return [
-            HealthFinding(id: "project.\(idScope).sops-yaml",
+            scope.finding(about: .oneKnownPath(configURL.path),
+                          id: "project.\(idScope).sops-yaml",
                           title: "\(project.name): .sops.yaml", status: .ok,
                           detail: "The .sops.yaml in \(project.rootPath) parses successfully."),
             recipientFinding(for: project, idScope: idScope, root: root,
-                             configPath: configURL.path, tree: tree),
+                             configPath: configURL.path, tree: tree, scope: scope),
             leak,
         ]
     }
 
-    /// How many excluded directory names a scope sentence spells out before it
-    /// switches to "and N more".
-    ///
-    /// `ProjectScanner.skippedDirectoryNames` has twenty entries, so an
-    /// unsummarised worst case is a twenty-item comma list in the middle of a
-    /// paragraph — a wall nobody reads, which is the same "the user cannot
-    /// actually act on this" failure as saying nothing at all, dressed up as
-    /// diligence. Eight covers every realistic project outright: this
-    /// repository hits three (`.git`, `.build`, `.swiftpm`), a JS monorepo
-    /// four or five (`.git`, `node_modules`, `dist`, `.next`), and reaching
-    /// nine means a tree that is simultaneously a JS, Swift, Rust, Go, Ruby,
-    /// Python and Terraform project — at which point the individual names
-    /// have stopped being the information and the *count* has started being
-    /// it.
-    ///
-    /// What is never summarised away is the count itself: the sentence always
-    /// states exactly how many names are not shown, so the size of the
-    /// exclusion is never hidden, only the tail of an alphabetical list.
-    static let excludedNamesShown = 8
+    // MARK: - Scope disclosure, as this suite's tests still name it
 
-    /// The opening clause every scope disclosure starts with, and the only
-    /// one. Factored out because it is the structural guarantee, not just a
-    /// string: exactly one of these appears per finding, so the excluded-only,
-    /// truncated-only and both-at-once cases read as one account of what was
-    /// missed rather than as two paragraphs a reader has to reconcile.
-    static let scopeLeadIn = "Not everything under this project was looked at"
+    /// The scope disclosure itself now lives in `ProjectScopeDisclosure.swift`,
+    /// behind `ProjectScopeAccountant`, because a helper this type could choose
+    /// *not* to call was the thing that failed twice. These three forwarders
+    /// exist so the disclosure suite keeps naming the behaviour where a reader
+    /// looks for it — on the check that produces the findings — while the only
+    /// implementation lives with the type that cannot be bypassed.
 
-    /// What this walk deliberately or unavoidably did not cover, as one
-    /// paragraph — or `nil` when it covered the whole tree and there is
-    /// nothing to disclose.
-    ///
-    /// PROPOSAL.md §6 D makes this mandatory for the exclusion route in as
-    /// many words: the exclusion "must be *stated in the finding*, not buried
-    /// in a constant", and "the check may not report OK about files it did not
-    /// look at". Before this existed, the exclusion was disclosed in exactly
-    /// one place — inside `recipientFinding`'s `tree.wasTruncated` branch — so
-    /// a scan that skipped `.build` and `.swiftpm` and never came near the
-    /// 20,000-file budget disclosed nothing whatsoever, and the plaintext
-    /// finding announced "Looked through <root> … and found none" over a tree
-    /// it had declined to enter parts of. Reproduced against this app's own
-    /// repository, which is exactly the shape that triggers it.
-    ///
-    /// Nothing here is excused from disclosure, `.git` included. It is
-    /// tempting to treat VCS internals as too obvious to mention, but a
-    /// carve-out list of "exclusions that don't count" is the silent constant
-    /// this whole function exists to abolish, re-created one level down — and
-    /// `.git/config` holding a remote URL with an embedded token is an
-    /// ordinary way to leak a credential, not a hypothetical.
-    ///
-    /// The names, not paths: `ProjectScanner` skips by directory *name*
-    /// anywhere in the tree, so "this scan never enters `.build`" is the
-    /// accurate statement and a list of the specific paths it declined would
-    /// be both longer and less true.
-    static func scanScopeSentence(tree: ScannedTree) -> String? {
-        let excluded = tree.skippedDirectoryNames.sorted()
-        let budget = "it stopped at its scan budget of \(ProjectScanner.maxScannedFiles) files, so an unknown number of the files past that point were never opened"
+    /// See `ProjectScopeAccountant.namesShown`.
+    static var excludedNamesShown: Int { ProjectScopeAccountant.namesShown }
 
-        switch (excluded.isEmpty, tree.wasTruncated) {
-        case (true, false):
-            return nil
-        case (true, true):
-            return "\(scopeLeadIn): \(budget). Nothing above is a statement about them."
-        case (false, false):
-            let plural = excluded.count == 1
-            return "\(scopeLeadIn): this scan never enters \(excludedDirectoryList(excluded)), "
-                + "\(plural ? "a directory name" : "directory names") this app always skips as dependency, build or version-control output. "
-                + "Nothing above is a statement about what is inside \(plural ? "it" : "them"), so treat this as a verdict on the rest of the tree only."
-        case (false, true):
-            // Both at once, said once. Two separate paragraphs — one about the
-            // exclusion, one about the budget — read as two competing accounts
-            // of the same walk; a reader has to work out whether they overlap.
-            // One sentence with two clauses does not have that problem.
-            return "\(scopeLeadIn), for two reasons at once: this scan never enters "
-                + "\(excludedDirectoryList(excluded)) — \(excluded.count == 1 ? "a directory name" : "directory names") this app always skips as dependency, build or version-control output — and then \(budget) either. "
-                + "Nothing above is a statement about either group."
-        }
-    }
+    /// See `ProjectScopeAccountant.leadIn`.
+    static var scopeLeadIn: String { ProjectScopeAccountant.leadIn }
 
-    /// Excluded directory names as a sentence fragment, summarised past
-    /// `excludedNamesShown` — see that constant for why, and for what is
-    /// deliberately never summarised away.
-    private static func excludedDirectoryList(_ sorted: [String]) -> String {
-        guard sorted.count > excludedNamesShown else {
-            guard let last = sorted.last else { return "" }
-            guard sorted.count > 1 else { return last }
-            return sorted.dropLast().joined(separator: ", ") + " and " + last
-        }
-        return sorted.prefix(excludedNamesShown).joined(separator: ", ")
-            + " and \(sorted.count - excludedNamesShown) more"
+    /// See `ProjectScopeAccountant.scopeSentence(tree:relativeTo:)`.
+    ///
+    /// `relativeTo` defaults to `nil`, which prints absolute paths — fine for
+    /// a unit test asserting on wording, never how a real finding is built
+    /// (`ProjectScopeAccountant` always has the project root).
+    static func scanScopeSentence(tree: ScannedTree, relativeTo rootPath: String? = nil) -> String? {
+        ProjectScopeAccountant.scopeSentence(tree: tree, relativeTo: rootPath)
     }
 
     /// Human-readable label for a sops master-key type identifier
@@ -322,10 +288,7 @@ public struct ProjectHealthCheck: HealthCheck {
     /// `resolvingSymlinksInPath()` *removes* a leading `/private`, it does not
     /// add one, so it alone does not reconcile the two. Normalizing both sides
     /// the same way — resolve, then drop a leading `/private` — does.
-    private static func canonicalPath(_ path: String) -> String {
-        let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
-        return resolved.hasPrefix("/private/") ? String(resolved.dropFirst("/private".count)) : resolved
-    }
+    private static func canonicalPath(_ path: String) -> String { CanonicalPath.of(path) }
 
     /// Compares each encrypted file's actual key list against the rule that
     /// governs it. This is a comparison of two lists of public keys read from
@@ -378,22 +341,13 @@ public struct ProjectHealthCheck: HealthCheck {
     /// cannot be hidden behind an informational status. It also keeps one
     /// vocabulary for all three signals above, which already used `.unknown`.
     private func recipientFinding(for project: InspectedProject, idScope: String, root: URL,
-                                  configPath: String, tree: ScannedTree) -> HealthFinding {
+                                  configPath: String, tree: ScannedTree,
+                                  scope: ProjectScopeAccountant) -> ScopedFinding {
         var mismatches: [String] = []
         var sawStaleRecipient = false
         var unverifiable: [String] = []
         var unreadableBackends: Set<String> = []
         var verifiedFileCount = 0
-
-        // Signal 4: the scan itself. It does not go into `unverifiable` with
-        // the per-file signals, because it is not a fact about any file — it
-        // is the scope of the whole walk, and it applies to every branch
-        // below including the affirmative one. It is appended, once, to
-        // whatever detail this method ends up returning.
-        let scope = Self.scanScopeSentence(tree: tree)
-        func withScope(_ detail: String) -> String {
-            scope.map { detail + "\n\n" + $0 } ?? detail
-        }
 
         // Signal 1: the whole config, independent of which files exist.
         do {
@@ -408,7 +362,10 @@ public struct ProjectHealthCheck: HealthCheck {
 
         let rootPrefix = Self.canonicalPath(root.path) + "/"
         func relativeName(_ url: URL) -> String {
-            let path = Self.canonicalPath(url.path)
+            // `ofLeaf`, not `of`: a `.env` reachable through a symbolic link
+            // must be named by the link inside the project, not by the target
+            // outside it. See `CanonicalPath.ofLeaf`.
+            let path = CanonicalPath.ofLeaf(url.path)
             return path.hasPrefix(rootPrefix) ? String(path.dropFirst(rootPrefix.count)) : path
         }
 
@@ -495,10 +452,11 @@ public struct ProjectHealthCheck: HealthCheck {
             if !unverifiable.isEmpty {
                 detail += "\n\nThis app also could not fully check:\n" + unverifiable.joined(separator: "\n")
             }
-            return HealthFinding(
+            return scope.finding(
+                about: .theWholeTree,
                 id: "project.\(idScope).stale-recipients",
                 title: "\(project.name): recipients", status: .problem,
-                detail: withScope(detail),
+                detail: detail,
                 remediation: Remediation(
                     explanation: "Run updatekeys to re-wrap these files for the recipients .sops.yaml declares." + rotateNote,
                     command: "sops updatekeys <file>"))
@@ -543,11 +501,12 @@ public struct ProjectHealthCheck: HealthCheck {
                 detail += "\n\nDeliberately not checked:\n"
                     + unverifiable.map { "• " + $0 }.joined(separator: "\n")
             }
-            return HealthFinding(
+            return scope.finding(
+                about: .theWholeTree,
                 id: "project.\(idScope).stale-recipients",
                 title: "\(project.name): recipients",
                 status: .unknown(reason: reason),
-                detail: withScope(detail),
+                detail: detail,
                 remediation: Remediation(
                     explanation: "Nothing here needs fixing on this app's account — it reports only what it read. To check the rest, use the tooling for that backend: `gpg --list-keys` for PGP, or your cloud provider's console for KMS, Key Vault or Vault. This app only manages age keys."))
         }
@@ -571,7 +530,8 @@ public struct ProjectHealthCheck: HealthCheck {
             // `HealthStatus`'s own vocabulary, and it names the fact rather
             // than implying a verdict.
             guard !tree.encrypted.isEmpty || !tree.encryptedInOtherFormats.isEmpty else {
-                return HealthFinding(
+                return scope.finding(
+                about: .theWholeTree,
                     id: "project.\(idScope).stale-recipients",
                     title: "\(project.name): recipients",
                     // "under", not "anywhere under": the walk behind this has
@@ -580,25 +540,27 @@ public struct ProjectHealthCheck: HealthCheck {
                     // places, and this reason no longer overstates what the
                     // one-liner covers.
                     status: .skipped(reason: "No sops-encrypted files were found under \(project.rootPath)."),
-                    detail: withScope("The .sops.yaml here parses and uses age keys only, but there are no encrypted files yet, so no recipient list was compared against it. This app is not vouching for this project's recipients either way."))
+                    detail: "The .sops.yaml here parses and uses age keys only, but there are no encrypted files yet, so no recipient list was compared against it. This app is not vouching for this project's recipients either way.")
             }
             // Files exist, every one of them resolved to a rule, and not one
             // comparison had an age key on either side. The check ran and
             // reached no verdict.
-            return HealthFinding(
+            return scope.finding(
+                about: .theWholeTree,
                 id: "project.\(idScope).stale-recipients",
                 title: "\(project.name): recipients",
                 status: .unknown(reason: "No encrypted file here declares an age recipient, and neither does the rule governing it, so there was nothing to compare."),
-                detail: withScope("Encrypted files were found under \(project.rootPath), but none of them — and none of the rules governing them — names a single age recipient. This app reads age recipients, so it has not verified anything about how these files are protected."))
+                detail: "Encrypted files were found under \(project.rootPath), but none of them — and none of the rules governing them — names a single age recipient. This app reads age recipients, so it has not verified anything about how these files are protected.")
         }
 
         let checked = verifiedFileCount == 1
             ? "Checked 1 encrypted file's recipient key list against the rule that governs it — it matches."
             : "Checked \(verifiedFileCount) encrypted files' recipient key lists against the rules that govern them — they all match."
-        return HealthFinding(
+        return scope.finding(
+                about: .theWholeTree,
             id: "project.\(idScope).stale-recipients",
             title: "\(project.name): recipients", status: .ok,
-            detail: withScope(checked + " Every rule in .sops.yaml uses age keys only, so there is nothing here this app could not read."))
+            detail: checked + " Every rule in .sops.yaml uses age keys only, so there is nothing here this app could not read.")
     }
 
     /// Reports only that a plaintext secret file exists and is not
@@ -656,19 +618,18 @@ public struct ProjectHealthCheck: HealthCheck {
     /// `.swiftpm`, never came near the budget, and reported "Looked through
     /// <root> … and found none" naming no exclusion at all.
     private func gitignoreFinding(for project: InspectedProject, idScope: String, root: URL,
-                                  tree: ScannedTree, gitPath: String?) -> HealthFinding {
+                                  tree: ScannedTree, scope: ProjectScopeAccountant,
+                                  gitPath: String?) -> ScopedFinding {
         let findingID = "project.\(idScope).gitignore"
         let title = "\(project.name): plaintext files"
         let candidates = tree.plaintextCandidates
 
-        let scope = Self.scanScopeSentence(tree: tree)
-        func withScope(_ detail: String) -> String {
-            scope.map { detail + "\n\n" + $0 } ?? detail
-        }
-
         let rootPrefix = Self.canonicalPath(root.path) + "/"
         func relativeName(_ url: URL) -> String {
-            let path = Self.canonicalPath(url.path)
+            // `ofLeaf`, not `of`: a `.env` reachable through a symbolic link
+            // must be named by the link inside the project, not by the target
+            // outside it. See `CanonicalPath.ofLeaf`.
+            let path = CanonicalPath.ofLeaf(url.path)
             return path.hasPrefix(rootPrefix) ? String(path.dropFirst(rootPrefix.count)) : path
         }
 
@@ -683,14 +644,16 @@ public struct ProjectHealthCheck: HealthCheck {
         // demoted; see `scanScopeSentence`.
         guard !candidates.isEmpty else {
             guard !tree.wasTruncated else {
-                return HealthFinding(
+                return scope.finding(
+                about: .theWholeTree,
                     id: findingID, title: title,
                     status: .unknown(reason: "This project has more files than this app's scan budget, so part of the tree was never searched for plaintext secret files."),
-                    detail: withScope("No plaintext files whose names conventionally hold secrets (.env and its variants) turned up in the part of \(project.rootPath) this scan reached — but it did not reach all of it, so this app is not telling you there are none."))
+                    detail: "No plaintext files whose names conventionally hold secrets (.env and its variants) turned up in the part of \(project.rootPath) this scan reached — but it did not reach all of it, so this app is not telling you there are none.")
             }
-            return HealthFinding(
+            return scope.finding(
+                about: .theWholeTree,
                 id: findingID, title: title, status: .ok,
-                detail: withScope("Looked through \(project.rootPath) for plaintext files whose names conventionally hold secrets (.env and its variants) and found none."))
+                detail: "Looked through \(project.rootPath) for plaintext files whose names conventionally hold secrets (.env and its variants) and found none.")
         }
 
         let names = candidates.map(relativeName).sorted()
@@ -703,9 +666,10 @@ public struct ProjectHealthCheck: HealthCheck {
             let explanation = command != nil
                 ? "Check them yourself with the command below, and make sure anything holding a real secret is either ignored or moved into a file this app encrypts."
                 : "Check them yourself with `git check-ignore -v`, and make sure anything holding a real secret is either ignored or moved into a file this app encrypts. \(Self.newlineInNameNote)"
-            return HealthFinding(
+            return scope.finding(
+                about: .theWholeTree,
                 id: findingID, title: title, status: .unknown(reason: reason),
-                detail: withScope("These files under \(project.rootPath) have names that conventionally hold plaintext secrets: \(names.joined(separator: ", ")). Whether they are ignored could not be established, so this app is not telling you either way."),
+                detail: "These files under \(project.rootPath) have names that conventionally hold plaintext secrets: \(names.joined(separator: ", ")). Whether they are ignored could not be established, so this app is not telling you either way.",
                 remediation: Remediation(explanation: explanation, command: command))
 
         case .answered(let exposed, let tracked):
@@ -718,14 +682,16 @@ public struct ProjectHealthCheck: HealthCheck {
                 // project, for the same reason the empty-candidate branch
                 // above is not.
                 guard !tree.wasTruncated else {
-                    return HealthFinding(
+                    return scope.finding(
+                about: .theWholeTree,
                         id: findingID, title: title,
                         status: .unknown(reason: "This project has more files than this app's scan budget, so part of the tree was never searched for plaintext secret files."),
-                        detail: withScope("Found \(count) in the part of \(project.rootPath) this scan reached (\(names.joined(separator: ", "))), and git ignores every one of those. The scan did not reach the whole project, so this app is not telling you that is all of them."))
+                        detail: "Found \(count) in the part of \(project.rootPath) this scan reached (\(names.joined(separator: ", "))), and git ignores every one of those. The scan did not reach the whole project, so this app is not telling you that is all of them.")
                 }
-                return HealthFinding(
+                return scope.finding(
+                about: .theWholeTree,
                     id: findingID, title: title, status: .ok,
-                    detail: withScope("Found \(count) under \(project.rootPath) (\(names.joined(separator: ", "))). git ignores all of them, so none can be committed by accident."))
+                    detail: "Found \(count) under \(project.rootPath) (\(names.joined(separator: ", "))). git ignores all of them, so none can be committed by accident.")
             }
 
             let exposedNames = exposed.map(relativeName).sorted()
@@ -749,9 +715,10 @@ public struct ProjectHealthCheck: HealthCheck {
             }
             explanation += rotationNote
 
-            return HealthFinding(
+            return scope.finding(
+                about: .theWholeTree,
                 id: findingID, title: title, status: .problem,
-                detail: withScope(detail),
+                detail: detail,
                 // No command. See this method's doc comment: a `.gitignore`
                 // line needs pattern escaping as well as shell escaping, and a
                 // string correct in both is one nobody can read before running.

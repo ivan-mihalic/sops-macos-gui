@@ -214,7 +214,7 @@ struct ProjectScanDisclosureTests {
     @Test("a single excluded directory is named in full")
     func singleExclusionIsNamedInFull() throws {
         var tree = ScannedTree()
-        tree.skippedDirectoryNames = ["node_modules"]
+        tree.limitations = [.excludedDirectoryName("node_modules")]
 
         let scope = try #require(ProjectHealthCheck.scanScopeSentence(tree: tree))
 
@@ -228,7 +228,7 @@ struct ProjectScanDisclosureTests {
     @Test("a handful of excluded directories are all named")
     func severalExclusionsAreAllNamed() throws {
         var tree = ScannedTree()
-        tree.skippedDirectoryNames = ["node_modules", ".build", ".git", "vendor"]
+        tree.limitations = ["node_modules", ".build", ".git", "vendor"].map(ScanLimitation.excludedDirectoryName)
 
         let scope = try #require(ProjectHealthCheck.scanScopeSentence(tree: tree))
 
@@ -249,7 +249,7 @@ struct ProjectScanDisclosureTests {
                 "sanity: this test needs the real list to be longer than the cap")
 
         var tree = ScannedTree()
-        tree.skippedDirectoryNames = all
+        tree.limitations = all.map(ScanLimitation.excludedDirectoryName)
 
         let scope = try #require(ProjectHealthCheck.scanScopeSentence(tree: tree))
 
@@ -271,8 +271,9 @@ struct ProjectScanDisclosureTests {
     @Test("excluded and truncated is one statement, not two")
     func scopeIsOneStatementNotTwo() throws {
         var tree = ScannedTree()
-        tree.skippedDirectoryNames = [".build", "node_modules"]
-        tree.wasTruncated = true
+        tree.limitations = [.excludedDirectoryName(".build"),
+                            .excludedDirectoryName("node_modules"),
+                            .budgetExhausted]
 
         let scope = try #require(ProjectHealthCheck.scanScopeSentence(tree: tree))
 

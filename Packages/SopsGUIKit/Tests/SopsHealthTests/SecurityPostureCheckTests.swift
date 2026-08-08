@@ -17,7 +17,7 @@ private func makeCheck(
     keyStore: KeyStoreState = .configured,
     biometry: BiometryState = .available,
     updates: AppUpdateState = .upToDate(version: "1.0.0"),
-    legacyKeyFilePath: String = "/nonexistent/keys.txt"
+    legacyKeyFilePaths: [String] = ["/nonexistent/keys.txt"]
 ) -> SecurityPostureCheck {
     SecurityPostureCheck(
         osVersion: os,
@@ -25,7 +25,7 @@ private func makeCheck(
         keyStore: FakeKeyStore(state: keyStore),
         biometry: FakeBiometry(state: biometry),
         appUpdates: FakeUpdates(state: updates),
-        legacyKeyFilePath: legacyKeyFilePath)
+        legacyKeyFilePaths: legacyKeyFilePaths)
 }
 
 @Suite("SecurityPostureCheck")
@@ -60,7 +60,7 @@ struct SecurityPostureCheckTests {
         let keyFile = dir.appendingPathComponent("keys.txt")
         try "# created by age-keygen\n".write(to: keyFile, atomically: true, encoding: .utf8)
 
-        let legacy = finding(await makeCheck(legacyKeyFilePath: keyFile.path).run(),
+        let legacy = finding(await makeCheck(legacyKeyFilePaths: [keyFile.path]).run(),
                              "security.legacy-key-file")
         #expect(legacy.status == .warning)
         #expect(legacy.detail.contains(keyFile.path))
@@ -85,7 +85,7 @@ struct SecurityPostureCheckTests {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        let legacy = finding(await makeCheck(legacyKeyFilePath: dir.path).run(),
+        let legacy = finding(await makeCheck(legacyKeyFilePaths: [dir.path]).run(),
                              "security.legacy-key-file")
         #expect(legacy.status == .ok)
     }
@@ -171,7 +171,7 @@ struct SecurityPostureCheckTests {
         let keyFile = dir.appendingPathComponent("keys.txt")
         try "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQ\n".write(to: keyFile, atomically: true, encoding: .utf8)
 
-        for finding in await makeCheck(legacyKeyFilePath: keyFile.path).run() {
+        for finding in await makeCheck(legacyKeyFilePaths: [keyFile.path]).run() {
             let text = finding.detail + finding.title + (finding.remediation?.explanation ?? "")
             #expect(!text.contains("AGE-SECRET-KEY-1QQQ"))
         }
@@ -202,7 +202,7 @@ struct SecurityPostureCheckTests {
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyFile.path)
         }
 
-        let legacy = finding(await makeCheck(legacyKeyFilePath: keyFile.path).run(),
+        let legacy = finding(await makeCheck(legacyKeyFilePaths: [keyFile.path]).run(),
                              "security.legacy-key-file")
         #expect(legacy.status == .warning)
         #expect(legacy.detail.contains(keyFile.path))

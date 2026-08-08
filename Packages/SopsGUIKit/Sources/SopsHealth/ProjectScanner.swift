@@ -22,15 +22,30 @@ public struct ScannedTree: Sendable {
     /// Files whose *names* conventionally hold plaintext secrets and
     /// which carry no sops metadata at all.
     public var plaintextCandidates: [URL] = []
+    /// Every way this walk fell short of covering the whole tree, in walk
+    /// order, deduplicated. The single record of "places this scan did not
+    /// look" — see `ScanLimitation` for why it is one closed enum rather than
+    /// a growing set of booleans, and `ProjectScopeAccountant` for the
+    /// disclosure and the status floor it drives.
+    public var limitations: [ScanLimitation] = []
+
     /// `true` once the walk stopped early because it reached
     /// `maxScannedFiles`. A scan that stops early has only looked at part
     /// of the tree, so nothing downstream may treat its result as
     /// covering the whole project — see `ProjectHealthCheck.recipientFinding`.
-    public var wasTruncated = false
+    ///
+    /// Derived from `limitations` rather than stored: two places recording the
+    /// same fact is two places for it to disagree.
+    public var wasTruncated: Bool { limitations.contains(.budgetExhausted) }
+
     /// Names of directories this walk declined to enter (deduplicated,
     /// not in walk order). Disclosed to the user rather than left as a
     /// silent constant — see `ProjectScanner.skippedDirectoryNames`.
-    public var skippedDirectoryNames: [String] = []
+    public var skippedDirectoryNames: [String] {
+        limitations.compactMap {
+            if case .excludedDirectoryName(let name) = $0 { name } else { nil }
+        }
+    }
     /// `true` when `root` itself could not be found as a directory —
     /// deleted, unmounted, or renamed after the project was added to the
     /// store.
@@ -49,6 +64,57 @@ public struct ScannedTree: Sendable {
     /// `ProjectHealthCheck.findings(for:)` checks this flag before treating
     /// an empty tree as a real answer about anything.
     public var rootMissing = false
+
+    /// `true` when `root` exists and is a directory, but this process cannot
+    /// read it — a `chmod 000` project root, a volume mounted without
+    /// permission, a directory owned by another user.
+    ///
+    /// Its own flag rather than a `ScanLimitation`, for the same reason
+    /// `rootMissing` is: when the root itself is the thing that could not be
+    /// read, *nothing* ran, so there is no finding for a scope paragraph to
+    /// qualify. One honest finding replaces all three project findings.
+    ///
+    /// Reproduced before this existed: `chmod 000` on a real project root
+    /// produced `[warning] "No .sops.yaml in <root>."` about a file that is
+    /// right there (`FileManager.fileExists` needs search permission on the
+    /// containing directory, which it did not have), an `.ok` gitignore
+    /// finding with no scope paragraph at all, and no recipients finding
+    /// whatsoever. The walk's own comment admitted this gap; no finding did.
+    public var rootUnreadable = false
+
+    /// Records one way this walk fell short, at most once. Deduplicated
+    /// because the disclosure is a sentence a human reads: "it could not list
+    /// vault" twice is noise, and a directory name skipped in forty places is
+    /// still one exclusion.
+    mutating func note(_ limitation: ScanLimitation) {
+        guard !limitations.contains(limitation) else { return }
+        limitations.append(limitation)
+    }
+}
+
+/// Somewhere for `FileManager.enumerator`'s error handler to put what it is
+/// told, since the handler is a closure and the walk it belongs to is a
+/// `for` loop over local `var`s.
+///
+/// A plain reference type with a lock rather than an `actor` or a `var`
+/// capture: the handler is called synchronously, on the enumerating thread,
+/// from inside a synchronous function — the lock costs nothing here and makes
+/// the type safe to hold across the `@Sendable` boundary `runOffCooperativePool`
+/// puts the whole walk behind.
+private final class EnumerationErrorLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [String] = []
+
+    func record(_ path: String) {
+        lock.lock(); defer { lock.unlock() }
+        guard !recorded.contains(path) else { return }
+        recorded.append(path)
+    }
+
+    func paths() -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        return recorded
+    }
 }
 
 /// Walks a project tree once, classifying every regular file as
@@ -78,22 +144,56 @@ public struct ProjectScanner {
     /// finds it regardless of how large the file's own plaintext-derived
     /// `ENC[...]` values are before it, at a *constant* cost per file.
     ///
-    /// 64 KiB, not the 8 MiB an earlier version of this check used: a real
-    /// sops metadata block is a handful of small per-key entries (~200-400
-    /// bytes each for age/pgp/kms), so even a file with a few hundred
-    /// recipients stays well under 64 KiB. 8 MiB was measured to cost
-    /// ~0.5s per matching file — fine for one file, ~7.7s across 15 files
-    /// and ~10.3s across 20 in a real-sized repository, i.e. the exact
-    /// "large tree is slow" regression this cap exists to prevent, just
-    /// re-introduced at the per-file, per-tree-size level instead of the
-    /// per-single-large-file level the original version fixed. 64 KiB
-    /// removes that scaling: see the fix report for before/after timing
-    /// across 15- and 20-file trees. The residual edge case — a `sops:`
-    /// block itself exceeding 64 KiB, needing on the order of a hundred-plus
-    /// recipients on a single file — falls back to being invisible to this
-    /// check, the same direction of limitation as before, at a threshold
-    /// closer to what real files actually look like.
+    /// 64 KiB, not the 8 MiB an earlier version of this check used. 8 MiB was
+    /// measured to cost ~0.5s per matching file — fine for one file, ~7.7s
+    /// across 15 files and ~10.3s across 20 in a real-sized repository, i.e.
+    /// the exact "large tree is slow" regression this cap exists to prevent,
+    /// just re-introduced at the per-file, per-tree-size level instead of the
+    /// per-single-large-file level the original version fixed. 64 KiB removes
+    /// that scaling: see the fix report for before/after timing across 15- and
+    /// 20-file trees.
+    ///
+    /// **What this comment used to claim, and what is actually true.** It said
+    /// "even a file with a few hundred recipients stays well under 64 KiB".
+    /// That was wrong, and measured wrong against real
+    /// `SopsBridge.encryptYAML` output: an age entry costs roughly 570 bytes
+    /// (a 62-character recipient, a ~230-character `ENC[...]` wrapped key, and
+    /// a `created_at`), so 64 KiB is reached at about **112 recipients** — a
+    /// 200-recipient file measures 114,535 bytes. Past that threshold the
+    /// `sops:` key at the head of the metadata block sits further back than
+    /// the tail read reaches, the file stops being recognised as encrypted at
+    /// all, and the check reported `.skipped("No sops-encrypted files were
+    /// found under <root>.")` about a directory that demonstrably has one.
+    ///
+    /// The comment is corrected above; the cap is *not* simply raised, because
+    /// raising it puts the cost back on every file in the tree to buy
+    /// correctness for a handful. `maxEscalatedSniffBytes` buys it instead, at
+    /// a cost paid only by the files that actually need it — see there.
     static let maxSniffedFileBytes = 64 * 1024
+
+    /// The second, much larger tail read, used only for a file whose first
+    /// tail looks like the *inside* of a sops metadata block whose head lies
+    /// further back than `maxSniffedFileBytes` reached.
+    ///
+    /// The escalation is what makes a 112-plus-recipient file visible again
+    /// without charging every other file in the tree for it. It is safe to be
+    /// generous here precisely because it is so rarely triggered: the gate is
+    /// two byte-level searches, run only on files that are *both* larger than
+    /// the first cap *and* did not classify, and the markers it looks for
+    /// (`lastmodified: `, `mac: ` and `version: ` together) are what sops's own
+    /// serializer unconditionally writes at the very end of every YAML
+    /// document it produces. Metadata keys are emitted in sorted order —
+    /// verified in the pinned v3.13.3 source, `stores/metadata.go`'s
+    /// `goToSops` sorts map keys by name — so `age` comes before
+    /// `lastmodified`, `mac` and `version`, and a huge recipient list pushes
+    /// the block's *head* out of reach while leaving its *tail* squarely
+    /// inside the first 64 KiB read. That is exactly the signature this gate
+    /// keys on.
+    ///
+    /// 8 MiB allows on the order of 14,000 recipients. A file that still does
+    /// not resolve after this read is not silently dropped: it is recorded as
+    /// `ScanLimitation.metadataBlockTooLarge` and disclosed.
+    static let maxEscalatedSniffBytes = 8 * 1024 * 1024
 
     /// Directories that hold dependencies, build output, or a tool's own
     /// storage rather than the user's own files. Walking them is what turned
@@ -280,12 +380,17 @@ public struct ProjectScanner {
         // it stays cheap regardless of file count. Iterating in the walk's
         // own fixed order (not completion order) is what keeps the result
         // deterministic.
-        for classification in classifications {
-            switch classification {
+        for classified in classifications {
+            switch classified.classification {
             case .encrypted(let sniffed): tree.encrypted.append(sniffed)
             case .otherFormat(let url): tree.encryptedInOtherFormats.append(url)
             case .plaintextCandidate(let url): tree.plaintextCandidates.append(url)
             case .none: break
+            }
+            // Appended after the walk's own limitations and in walk order, so
+            // the disclosure a user reads is the same on every run.
+            if let limitation = classified.limitation, !tree.limitations.contains(limitation) {
+                tree.limitations.append(limitation)
             }
         }
         return tree
@@ -299,6 +404,18 @@ public struct ProjectScanner {
         case otherFormat(URL)
         case plaintextCandidate(URL)
         case none
+    }
+
+    /// What one file's unit of work produced: what it is, and — separately —
+    /// whether looking at it fell short of actually reading it.
+    ///
+    /// The two are independent, which is the whole point. A `.env` this process
+    /// cannot open is still a plaintext-secret candidate by *name*, and still a
+    /// file whose contents were never seen. The pre-fix code had nowhere to put
+    /// the second half, so it kept the first and dropped the second silently.
+    private struct ClassifiedFile: Sendable {
+        let classification: Classification
+        let limitation: ScanLimitation?
     }
 
     /// Reads `url`'s tail and classifies it — the full per-file unit of work
@@ -334,11 +451,56 @@ public struct ProjectScanner {
     /// `sops:`, and `tail.starts(with: sopsBlockPrefix)` — a byte comparison
     /// with no BOM-awareness of its own — would silently stop matching it.
     /// Regression test: `ProjectScanBOMTests`.
-    private static func classify(url: URL, maxBytes: Int) -> Classification {
-        guard let rawTail = Self.tailBytes(of: url, maxBytes: maxBytes) else {
-            return Self.isPlaintextSecretCandidate(url.lastPathComponent)
-                ? .plaintextCandidate(url) : .none
+    private static func classify(url: URL, maxBytes: Int) -> ClassifiedFile {
+        let byName = Self.isPlaintextSecretCandidate(url.lastPathComponent)
+            ? Classification.plaintextCandidate(url) : .none
+
+        switch Self.tailBytes(of: url, maxBytes: maxBytes) {
+        case .unreadable:
+            // The name was seen; the contents were not. Both facts are kept —
+            // see `ClassifiedFile`. Before this, the second one was dropped and
+            // a `chmod 000` stale-recipient file produced `.ok`, "it matches".
+            return ClassifiedFile(classification: byName,
+                                  limitation: .unreadableFile(path: url.path))
+        case .empty:
+            // A zero-byte file cannot carry a sops block and there is nothing
+            // in it that went unread. Not a limitation.
+            return ClassifiedFile(classification: byName, limitation: nil)
+        case .bytes(let rawTail, let truncated):
+            if let decided = Self.classify(tail: rawTail, url: url) {
+                return ClassifiedFile(classification: decided, limitation: nil)
+            }
+            // The first tail did not decide. Escalate only for a file that is
+            // both larger than the first read *and* carries the signature of a
+            // sops metadata block whose head lies further back than that read
+            // reached — see `maxEscalatedSniffBytes`.
+            guard truncated, Self.looksLikeTruncatedSopsBlock(Self.stripLeadingUTF8BOM(rawTail)) else {
+                return ClassifiedFile(classification: byName, limitation: nil)
+            }
+            switch Self.tailBytes(of: url, maxBytes: Self.maxEscalatedSniffBytes) {
+            case .unreadable:
+                return ClassifiedFile(classification: byName,
+                                      limitation: .unreadableFile(path: url.path))
+            case .empty:
+                return ClassifiedFile(classification: byName, limitation: nil)
+            case .bytes(let wider, let stillTruncated):
+                if let decided = Self.classify(tail: wider, url: url) {
+                    return ClassifiedFile(classification: decided, limitation: nil)
+                }
+                // Still nothing, and still not the whole file: this app cannot
+                // say what protects it, so it says that rather than counting
+                // the file as absent.
+                return ClassifiedFile(classification: byName,
+                                      limitation: stillTruncated
+                                          ? .metadataBlockTooLarge(path: url.path) : nil)
+            }
         }
+    }
+
+    /// The classification decision for one already-read tail, or `nil` when
+    /// this tail carries no sops metadata the scanner recognises — which the
+    /// caller reads as "not decided yet", not as "this file is nothing".
+    private static func classify(tail rawTail: Data, url: URL) -> Classification? {
         let tail = Self.stripLeadingUTF8BOM(rawTail)
         // Two stages on purpose. The byte-level marker searches below are the
         // cheap filter that runs on every file in the tree; the structural
@@ -381,10 +543,23 @@ public struct ProjectScanner {
            SopsMetadataShape.isNonYAMLMetadata(text) {
             return .otherFormat(url)
         }
-        if Self.isPlaintextSecretCandidate(url.lastPathComponent) {
-            return .plaintextCandidate(url)
-        }
-        return .none
+        return nil
+    }
+
+    /// Whether a tail looks like the *inside* of a sops YAML metadata block
+    /// whose opening `sops:` key lies further back than this read reached.
+    ///
+    /// Byte-level and cheap, and gated by the caller on "the read was truncated
+    /// and nothing else matched", so in a real project it runs on almost
+    /// nothing. `lastmodified`, `mac` and `version` are written by every sops
+    /// YAML document unconditionally and sort after `age`, so they are exactly
+    /// the part of an oversized block that stays inside a 64 KiB tail. All
+    /// three are required together because any one of them alone is an ordinary
+    /// word to find in an arbitrary 64 KiB of text.
+    private static func looksLikeTruncatedSopsBlock(_ tail: Data) -> Bool {
+        tail.range(of: Self.lastModifiedMarker) != nil
+            && tail.range(of: Self.macKeyMarker) != nil
+            && tail.range(of: Self.versionKeyMarker) != nil
     }
 
     /// The synchronous directory walk: decides which directories are
@@ -407,19 +582,22 @@ public struct ProjectScanner {
             return (tree, [])
         }
 
-        // `root` does exist as a directory at this point, so a `nil`
-        // enumerator here is some other failure (most likely a permissions
-        // problem) rather than a missing directory. That is a narrower,
-        // pre-existing gap this fix does not close: the walk still falls
-        // back to an empty-but-not-`rootMissing` tree in that case, which
-        // `ProjectHealthCheck` still cannot distinguish from "genuinely
-        // empty". Worth another pass, but it is not the deleted-directory
-        // case this fix addresses, and conflating the two would mislabel a
-        // permissions problem as a missing project. Reviewer-verified:
-        // `chmod 000` on a real project directory reproduces this — the
-        // gitignore/sops-yaml findings come back false-`.ok`/false-`.warning`
-        // exactly as `rootMissing` was meant to prevent, just for a
-        // different underlying cause.
+        // `root` does exist as a directory at this point, so a failure to
+        // enumerate it is some other problem — in practice, permissions.
+        // Measured, not assumed: `chmod 000` on a real project root does
+        // **not** make `enumerator(at:)` return `nil`. It returns a perfectly
+        // valid enumerator that yields zero entries, and reports the failure
+        // exactly once through the `errorHandler` below, naming the root
+        // itself. Both outcomes are handled — `nil` and "the handler named the
+        // root" — because only the second one actually occurs on this platform
+        // and relying on the first is how this gap survived a whole milestone.
+        //
+        // What it produced before: `[warning] "No .sops.yaml in <root>."` about
+        // a file sitting right there (`fileExists` needs search permission on
+        // the containing directory and did not have it), an `.ok` gitignore
+        // finding with no scope paragraph at all, and no recipients finding
+        // whatsoever. `rootUnreadable` replaces all three with one honest
+        // finding, the same way `rootMissing` does.
         //
         // A second, narrower gap sits between the `fileExists` check above
         // and the `enumerator(at:)` call below: two separate syscalls, not
@@ -436,37 +614,135 @@ public struct ProjectScanner {
         // does not have today. Far narrower than the deleted-before-scan
         // case above, and a materially different fix than either of the
         // gaps already named here.
-        guard let enumerator = FileManager.default.enumerator(
-            at: root, includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
-            options: [.skipsPackageDescendants]) else { return (ScannedTree(), []) }
+        // `options: []`, and specifically **not** `.skipsPackageDescendants`,
+        // which is what this option list used to carry.
+        //
+        // That flag was a second exclusion mechanism sitting silently beside
+        // `skippedDirectoryNames` — no comment, no entry in `ScannedTree`, no
+        // sentence in any finding. It is the literal shape PROPOSAL.md §6 D
+        // forbids: an exclusion "buried in a constant". Everything inside every
+        // macOS package in the tree — `.xcodeproj`, `.app`, `.bundle`,
+        // `.framework`, `.playground` — was invisible, and both project
+        // findings reported in the affirmative over it. Reproduced end to end:
+        // a git repository with a live `sk_live_…` in `App.xcodeproj/.env` and
+        // an encrypted file there on an undeclared key produced two `.ok`
+        // findings, "Checked 1 encrypted file's recipient key list … it
+        // matches" and "Looked through <root> … and found none", with a scope
+        // sentence naming only `.git`. It reproduced on this very repository:
+        // `SopsGUI.xcodeproj/project.pbxproj` was never opened and nothing
+        // said so.
+        //
+        // Removed rather than disclosed. The disclosure route is for exclusions
+        // that buy something — `node_modules` buys the 170s → 0.025s win this
+        // scan's whole design rests on. A package directory buys nothing: an
+        // `.xcodeproj` holds a handful of files, and a `.env` inside one is a
+        // plaintext secret in the repository exactly like a `.env` anywhere
+        // else. Re-measured on this repository after removing it: no
+        // detectable change (see the task report). A package big enough to
+        // matter is a build product, and build products are already excluded
+        // by name.
+        let errors = EnumerationErrorLog()
+        let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey],
+            options: [],
+            errorHandler: { url, _ in errors.record(url.path); return true })
 
         var tree = ScannedTree()
+        guard let enumerator else {
+            tree.rootUnreadable = true
+            return (tree, [])
+        }
+
         var seenSkippedNames: Set<String> = []
         var visitedFileCount = 0
         var candidates: [URL] = []
         for case let url as URL in enumerator {
-            let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey])
-            if values?.isDirectory == true {
+            // An entry whose very *type* could not be read. Previously a bare
+            // `continue`, which dropped the entry with no trace at all — the
+            // same silence as every other path this task closes.
+            guard let values = try? url.resourceValues(
+                forKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey]) else {
+                tree.note(.unreadableFile(path: url.path))
+                continue
+            }
+
+            // Symlinks first, because `URLResourceValues` resolves neither
+            // `isDirectory` nor `isRegularFile` through one — measured: a
+            // symlink to a directory *and* a symlink to a regular file both
+            // come back `isDirectory == false, isRegularFile == false`. So the
+            // pre-existing `guard values.isRegularFile` dropped every symlink
+            // in the tree, of either kind, in silence.
+            if values.isSymbolicLink == true {
+                var linkTargetIsDirectory: ObjCBool = false
+                // `fileExists` *does* follow the link, which is what makes it
+                // the right probe here. A link that resolves to nothing is a
+                // broken link: there is no content behind it that went
+                // unexamined, so it is not a limitation, just an absence.
+                guard FileManager.default.fileExists(atPath: url.path,
+                                                     isDirectory: &linkTargetIsDirectory) else { continue }
+                if linkTargetIsDirectory.boolValue {
+                    // Not followed, deliberately: following directory symlinks
+                    // is how a project scan loops forever, or escapes the
+                    // project entirely and walks the user's whole disk on the
+                    // strength of one `ln -s /`. Not following is the right
+                    // behaviour; not *saying so* was the defect. A link whose
+                    // name is on the exclusion list is reported as the
+                    // exclusion it is (pnpm's symlinked `node_modules` is the
+                    // common case) rather than as a second, different thing.
+                    let name = url.lastPathComponent
+                    if Self.skippedDirectoryNames.contains(name) {
+                        if seenSkippedNames.insert(name).inserted {
+                            tree.note(.excludedDirectoryName(name))
+                        }
+                    } else {
+                        tree.note(.directorySymlinkNotFollowed(path: url.path))
+                    }
+                    continue
+                }
+                // A symlink to a regular file needs no disclosure at all: the
+                // tail read `open`s the path, and `open` follows the link, so
+                // the file behind it is read exactly like any other.
+            } else if values.isDirectory == true {
                 let name = url.lastPathComponent
                 if Self.skippedDirectoryNames.contains(name) {
                     enumerator.skipDescendants()
                     if seenSkippedNames.insert(name).inserted {
-                        tree.skippedDirectoryNames.append(name)
+                        tree.note(.excludedDirectoryName(name))
                     }
                 }
                 continue
+            } else if values.isRegularFile != true {
+                // Sockets, FIFOs, device nodes. Nothing to read and nothing a
+                // secret can be sitting in.
+                continue
             }
-            guard values?.isRegularFile == true else { continue }
 
             // The budget bounds how many files this walk *visits*, not just
             // how many it classifies — checked before any work is done on
             // this file, so the count reflects files actually looked at.
             guard visitedFileCount < Self.maxScannedFiles else {
-                tree.wasTruncated = true
+                tree.note(.budgetExhausted)
                 break
             }
             visitedFileCount += 1
             candidates.append(url)
+        }
+
+        // Directories the enumerator could not descend into. Collected through
+        // the error handler rather than inferred, because the enumerator yields
+        // such a directory as an ordinary entry and simply produces none of its
+        // children — indistinguishable, from inside the loop, from a directory
+        // that is genuinely empty.
+        let rootPath = CanonicalPath.of(root.path)
+        for path in errors.paths() {
+            if CanonicalPath.of(path) == rootPath {
+                // Nothing was walked, so nothing this tree holds is an answer
+                // about anything. Discard it rather than let a half-populated
+                // one downstream.
+                return (ScannedTree(rootUnreadable: true), [])
+            }
+            tree.note(.unreadableDirectory(path: path))
         }
         return (tree, candidates)
     }
@@ -638,6 +914,9 @@ public struct ProjectScanner {
     private static let jsonMarker = Data("\"sops\":".utf8)
     private static let iniMarker = Data("\n[sops]".utf8)
     private static let utf8BOM = Data([0xEF, 0xBB, 0xBF])
+    private static let lastModifiedMarker = Data("lastmodified: ".utf8)
+    private static let macKeyMarker = Data("mac: ".utf8)
+    private static let versionKeyMarker = Data("version: ".utf8)
 
     /// Drops a leading UTF-8 byte-order mark, if present, from a tail read.
     /// See `classify`'s doc comment for why this has to happen before any
@@ -699,16 +978,34 @@ public struct ProjectScanner {
     /// becomes this scanner's cost — without a wall-clock threshold, which
     /// under bare `swift test`'s single-process parallel run measures ambient
     /// machine load as much as it measures this code. See `TailReadLedger`.
-    private static func tailBytes(of url: URL, maxBytes: Int) -> Data? {
+    /// The outcome of one tail read.
+    ///
+    /// Three cases, not an `Optional`, because the pre-fix `Data?` collapsed
+    /// two facts a finding has to tell apart: a file with nothing in it, and a
+    /// file this process was not allowed to look inside. `nil` meant both, so
+    /// an `EACCES` on `open`/`fstat`/`pread` made the file vanish from every
+    /// count and the check reported `.ok` over it.
+    ///
+    /// `truncated` says whether the read stopped short of the file's start,
+    /// which is what tells `classify` an unresolved tail might be the back end
+    /// of a metadata block rather than the whole story.
+    private enum TailRead {
+        case bytes(Data, truncated: Bool)
+        case empty
+        case unreadable
+    }
+
+    private static func tailBytes(of url: URL, maxBytes: Int) -> TailRead {
         let fd = url.withUnsafeFileSystemRepresentation { path -> Int32 in
             guard let path else { return -1 }
             return open(path, O_RDONLY)
         }
-        guard fd >= 0 else { return nil }
+        guard fd >= 0 else { return .unreadable }
         defer { close(fd) }
 
         var info = stat()
-        guard fstat(fd, &info) == 0, info.st_size > 0 else { return nil }
+        guard fstat(fd, &info) == 0 else { return .unreadable }
+        guard info.st_size > 0 else { return .empty }
         let size = Int(info.st_size)
 
         let readSize = min(maxBytes, size)
@@ -724,8 +1021,12 @@ public struct ProjectScanner {
         // visited, which is the vacuous-pass shape the ledger exists to make
         // impossible to write by accident.
         TailReadLedger.record(path: url.path, bytes: max(0, bytesRead))
-        guard bytesRead > 0 else { return nil }
-        return Data(bytes: buffer, count: bytesRead)
+        // `pread` returning a negative value is an error; returning zero on a
+        // file `fstat` just said is non-empty is the file changing underneath
+        // this read. Neither is "there was nothing here" — both are "this app
+        // did not see what is in it".
+        guard bytesRead > 0 else { return .unreadable }
+        return .bytes(Data(bytes: buffer, count: bytesRead), truncated: bytesRead < size)
     }
 
     /// Decodes a tail already known to match the `sops:` marker into the
