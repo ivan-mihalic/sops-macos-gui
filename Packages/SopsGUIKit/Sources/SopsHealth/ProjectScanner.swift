@@ -385,7 +385,27 @@ public struct ProjectScanner {
         // `ProjectHealthCheck` still cannot distinguish from "genuinely
         // empty". Worth another pass, but it is not the deleted-directory
         // case this fix addresses, and conflating the two would mislabel a
-        // permissions problem as a missing project.
+        // permissions problem as a missing project. Reviewer-verified:
+        // `chmod 000` on a real project directory reproduces this — the
+        // gitignore/sops-yaml findings come back false-`.ok`/false-`.warning`
+        // exactly as `rootMissing` was meant to prevent, just for a
+        // different underlying cause.
+        //
+        // A second, narrower gap sits between the `fileExists` check above
+        // and the `enumerator(at:)` call below: two separate syscalls, not
+        // one atomic check. Reviewer-verified that `enumerator(at:)` does
+        // *not* return `nil` for a root deleted in that exact window — it
+        // returns a valid enumerator that simply yields zero items, so
+        // `rootMissing` stays `false` and the old dishonest empty-tree pair
+        // (`.ok` gitignore, `.warning` sops-yaml, both describing a walk
+        // that saw nothing because there was nothing left to see) comes
+        // back for that one race. Left open: this needs an adversary timing
+        // a deletion or an unmount to land inside a window this narrow, and
+        // closing it would mean replacing two `FileManager` calls with a
+        // single atomic directory-open-and-enumerate primitive this type
+        // does not have today. Far narrower than the deleted-before-scan
+        // case above, and a materially different fix than either of the
+        // gaps already named here.
         guard let enumerator = FileManager.default.enumerator(
             at: root, includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
             options: [.skipsPackageDescendants]) else { return (ScannedTree(), []) }

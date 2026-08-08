@@ -138,6 +138,127 @@ struct ProjectStoreTests {
         #expect(store.loadError == nil)
     }
 
+    // MARK: - Quarantine: a write after a failed load must not destroy what it couldn't read
+
+    // Critical review finding, reproduced by the reviewer exactly this way:
+    // write a corrupt projects.json, construct a store (loadError is set,
+    // projects == []), call add(path:). Before this fix, `add` built
+    // `candidate` from the false-empty `projects` and persisted it through
+    // the normal atomic-replace path — silently overwriting bytes that
+    // started with `{"id":` and might have been recoverable by hand. This
+    // proves the original bytes survive `add`, land intact at a named
+    // backup path, and that `add` itself still succeeds normally — the
+    // escape from this state is automatic, not something the user has to
+    // do anything for.
+    @Test("add after a failed load quarantines the original bytes instead of overwriting them")
+    func quarantinesUnreadableFileBeforeAddCanDestroyIt() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("store-dir-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("projects.json")
+        let originalBytes = "this is not json, but might be salvageable by hand: {\"id\":"
+        try originalBytes.write(to: url, atomically: true, encoding: .utf8)
+
+        let store = ProjectStore(fileURL: url)
+        #expect(store.projects.isEmpty)
+        #expect(store.loadError != nil)
+
+        // The write that used to destroy the original bytes.
+        let project = try store.add(path: try makeDirectory())
+        #expect(store.projects.map(\.id) == [project.id])
+
+        // The original bytes must still exist, verbatim, in a file this
+        // test never created itself — proof `ProjectStore` preserved them,
+        // not merely that nothing crashed.
+        let entries = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        let backupName = try #require(entries.first { $0 != "projects.json" && $0.contains("corrupt") },
+                                       "no quarantine backup found among \(entries)")
+        let backupContents = try String(contentsOf: dir.appendingPathComponent(backupName), encoding: .utf8)
+        #expect(backupContents == originalBytes)
+
+        // And the escape path leads somewhere real: a fresh ProjectStore
+        // pointed at the same original url sees the project add() just made.
+        let reloaded = ProjectStore(fileURL: url)
+        #expect(reloaded.projects.map(\.id) == [project.id])
+        #expect(reloaded.loadError == nil)
+    }
+
+    // Same incident, `remove` side — `persist(_:)` is the one choke point
+    // both `add` and `remove` share, so this proves the fix covers both
+    // rather than assuming symmetry.
+    @Test("remove after a failed load quarantines the original bytes instead of overwriting them")
+    func quarantinesUnreadableFileBeforeRemoveCanDestroyIt() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("store-dir-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("projects.json")
+        let originalBytes = "also not json — second scenario, remove instead of add"
+        try originalBytes.write(to: url, atomically: true, encoding: .utf8)
+
+        let store = ProjectStore(fileURL: url)
+        #expect(store.loadError != nil)
+
+        // Nothing to remove; the point is only that persist() doesn't write
+        // an empty list over ground it never actually secured.
+        try store.remove(id: UUID())
+
+        let entries = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        let backupName = try #require(entries.first { $0 != "projects.json" && $0.contains("corrupt") },
+                                       "no quarantine backup found among \(entries)")
+        let backupContents = try String(contentsOf: dir.appendingPathComponent(backupName), encoding: .utf8)
+        #expect(backupContents == originalBytes)
+    }
+
+    // The one case quarantine-on-load can't make safe by itself: the move
+    // aside fails too (here, the file is `chflags uchg`'d — verified
+    // empirically to make `FileManager.moveItem` fail with "Operation not
+    // permitted", the same way it would for a directory this process can't
+    // write to). Every write must be refused rather than risk the original
+    // bytes — the user's escape here is outside the app: move, rename, or
+    // delete the file by hand, which this test's `defer` does to clean up,
+    // exactly as a real user would to get unstuck.
+    @Test("when quarantining itself fails, every write is refused rather than risking the original bytes")
+    func writesAreRefusedWhenQuarantineItselfFails() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("store-dir-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("projects.json")
+        let originalBytes = "not json, and this file cannot even be moved aside"
+        try originalBytes.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: url.path)
+        defer { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: url.path) }
+
+        let store = ProjectStore(fileURL: url)
+        #expect(store.projects.isEmpty)
+        #expect(store.loadError != nil)
+
+        #expect(throws: ProjectStore.Error.self) { try store.add(path: try makeDirectory()) }
+        #expect(throws: ProjectStore.Error.self) { try store.remove(id: UUID()) }
+
+        // The original bytes are exactly where they were — nothing this
+        // app did touched them, even after two attempted writes.
+        let stillThere = try String(contentsOf: url, encoding: .utf8)
+        #expect(stillThere == originalBytes)
+    }
+
+    // The normal case must stay untouched by any of the above: a healthy
+    // store's ordinary add still writes straight to `url`, with no
+    // quarantine file appearing alongside it.
+    @Test("a healthy store's add is not affected by the quarantine path")
+    func normalAddDoesNotQuarantineAnything() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("store-dir-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("projects.json")
+        let store = ProjectStore(fileURL: url)
+        #expect(store.loadError == nil)
+
+        _ = try store.add(path: try makeDirectory())
+
+        let entries = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        #expect(entries == ["projects.json"], "no quarantine file should appear in the normal case: \(entries)")
+    }
+
     @Test("removing leaves the rest intact and persists")
     func removePersists() throws {
         let (store, url) = makeStore()

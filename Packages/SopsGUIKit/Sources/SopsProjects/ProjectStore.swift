@@ -99,6 +99,25 @@ public final class ProjectStore {
     /// read"). `ProjectSidebarModel` surfaces this through its own
     /// `lastError` at construction time.
     public private(set) var loadError: String?
+    /// `true` only in the narrow case where the store file existed, could not
+    /// be read, and this app also failed to move it out of the way (see
+    /// `quarantine(_:reason:)`). `add`/`remove` refuse to persist anything
+    /// while this is `true` — see `persist(_:)`'s first guard.
+    ///
+    /// This exists to close a specific incident: `add`/`remove` used to
+    /// build `candidate` from `self.projects`, which is the *false empty*
+    /// list a failed load produces, and persist it through the same
+    /// atomic-replace path a normal write uses — silently overwriting a
+    /// store file that was unreadable, not empty. A user or a support
+    /// conversation could have recovered bytes that started with `{"id":`
+    /// by hand; the moment `add` or `remove` ran, they couldn't, because
+    /// nothing before this ever asked whether the load had actually
+    /// succeeded. `load(from:)` now tries to move the bad file aside first
+    /// (see `quarantine(_:reason:)`), which is enough to make normal writes
+    /// safe again — this flag only matters in the case where even *that*
+    /// failed, and the original bytes are still sitting where the next
+    /// write would land.
+    private let unsafeToWrite: Bool
 
     private let fileURL: URL
     private let fileManager = FileManager.default
@@ -117,6 +136,7 @@ public final class ProjectStore {
         let loaded = Self.load(from: fileURL)
         self.projects = loaded.projects
         self.loadError = loaded.error
+        self.unsafeToWrite = loaded.unsafeToWrite
     }
 
     /// Adds `path` as a project. Fails if `path` is not a directory, or if
@@ -192,6 +212,14 @@ public final class ProjectStore {
     /// throws, so the in-memory list can never diverge from what actually
     /// made it to disk.
     private func persist(_ candidate: [StoredProject]) throws {
+        // Refuse outright rather than risk destroying a store file this
+        // process could not read *and* could not move out of the way at
+        // load time. See `unsafeToWrite`'s doc comment for the incident this
+        // closes. Checked first, before encoding even starts — there is
+        // nothing safe to do with `candidate` in this state, encoding it
+        // would just be wasted work on the way to the same refusal.
+        guard !unsafeToWrite else { throw Error.unreadable }
+
         let data: Data
         do {
             let encoder = JSONEncoder()
@@ -229,26 +257,90 @@ public final class ProjectStore {
     ///   `error` is `nil` — an empty list is the honest, complete answer.
     /// - A file exists but its bytes can't be read, or its JSON doesn't
     ///   decode as `[StoredProject]` even through the migrating
-    ///   `StoredProject.init(from:)` — `error` is set, and `projects` comes
-    ///   back empty *not because that is true*, but because there is nothing
-    ///   else this method can safely return. The caller (`ProjectStore`,
-    ///   then `ProjectSidebarModel`) is responsible for telling the user
-    ///   `error` rather than rendering the empty list as if it were real.
-    private static func load(from url: URL) -> (projects: [StoredProject], error: String?) {
-        guard FileManager.default.fileExists(atPath: url.path) else { return ([], nil) }
+    ///   `StoredProject.init(from:)` — this is a **recoverable** failure: the
+    ///   bytes on disk might still be salvageable by hand (a truncated write,
+    ///   a hand-edited file with a typo, anything short of physical media
+    ///   failure). `load` tries to move the file out of the way of any
+    ///   future write before returning — see `quarantine(_:reason:)` — so
+    ///   the *next* thing this app does is never "silently overwrite the one
+    ///   copy of data the user might still recover." `error` is set either
+    ///   way, and `projects` comes back empty *not because that is true*,
+    ///   but because there is nothing else this method can safely return.
+    ///   The caller (`ProjectStore`, then `ProjectSidebarModel`) is
+    ///   responsible for telling the user `error` rather than rendering the
+    ///   empty list as if it were real.
+    private static func load(from url: URL) -> (projects: [StoredProject], error: String?, unsafeToWrite: Bool) {
+        guard FileManager.default.fileExists(atPath: url.path) else { return ([], nil, false) }
 
         guard let data = try? Data(contentsOf: url) else {
-            return ([], "Your saved project list at \(url.path) could not be read.")
+            return quarantine(url, reason: "could not be read")
         }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         do {
             let projects = try decoder.decode([StoredProject].self, from: data)
-            return (projects, nil)
+            return (projects, nil, false)
         } catch {
-            return ([], "Your saved project list at \(url.path) could not be read: \(error).")
+            return quarantine(url, reason: "could not be read: \(error)")
         }
     }
+
+    /// Moves a store file this app could not read out of the way, so the
+    /// very next `add`/`remove` — which writes a fresh, correctly-shaped
+    /// file to the same `url` — cannot silently overwrite it.
+    ///
+    /// This is the fix for the incident named in `unsafeToWrite`'s doc
+    /// comment, and the "move it aside" choice over "just refuse every write
+    /// until the user fixes it by hand" is deliberate: it lets the user keep
+    /// using the app immediately — `projects` comes back `[]`, which is now
+    /// *actually* true at `url`, not a lie — while the original bytes wait,
+    /// untouched, at a sibling path named in the error text, in case they're
+    /// worth recovering by hand or over a support conversation. A pure
+    /// refuse-until-fixed store is its own trap: it has no way to say "I
+    /// accept the loss, start fresh" short of the user finding and deleting
+    /// the file outside the app anyway — which this achieves automatically,
+    /// with nothing thrown away.
+    ///
+    /// The one case this can't make safe on its own is the move itself
+    /// failing — an immutable flag on the file, or a directory this process
+    /// can't write to. `unsafeToWrite` exists for exactly that case: the
+    /// original bytes are still sitting at `url`, so every write is refused
+    /// (`persist(_:)`'s guard) until the user resolves it — by hand, outside
+    /// this app, since this app could not even move the file without the
+    /// same permission a write would need. `error`, returned either way,
+    /// names the exact path so that resolution is possible.
+    private static func quarantine(
+        _ url: URL, reason: String
+    ) -> (projects: [StoredProject], error: String?, unsafeToWrite: Bool) {
+        let backupURL = quarantinedURL(for: url)
+        do {
+            try FileManager.default.moveItem(at: url, to: backupURL)
+            return ([], "Your saved project list at \(url.path) \(reason), so it has been moved aside to \(backupURL.path) in case it can be recovered by hand. Starting fresh from here — nothing was deleted, and nothing was added automatically.", false)
+        } catch {
+            return ([], "Your saved project list at \(url.path) \(reason), and this app could not move it aside to protect it either (\(error)). To avoid losing it, this app will not save any project changes until the file at that path is moved, renamed, or deleted by hand.", true)
+        }
+    }
+
+    /// A sibling path for `url`'s quarantined backup:
+    /// `projects-corrupt-<timestamp>.json` next to `projects.json`. No
+    /// colons in the timestamp — `:` is legal in a raw POSIX filename on
+    /// APFS, but Finder still renders it as `/` and some tooling still
+    /// balks, and nothing here needs a colon to be unambiguous.
+    private static func quarantinedURL(for url: URL) -> URL {
+        let directory = url.deletingLastPathComponent()
+        let base = url.deletingPathExtension().lastPathComponent
+        let ext = url.pathExtension
+        let stamp = Self.quarantineTimestampFormatter.string(from: Date())
+        let name = ext.isEmpty ? "\(base)-corrupt-\(stamp)" : "\(base)-corrupt-\(stamp).\(ext)"
+        return directory.appendingPathComponent(name)
+    }
+
+    private static let quarantineTimestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        return formatter
+    }()
 
     /// Canonicalizes a path so two different spellings of the same
     /// directory — a trailing slash, `..` components, a relative path, or a
