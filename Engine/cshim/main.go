@@ -77,6 +77,43 @@ func sops_inspect_config_backends(confPath *C.char, out **C.char) C.int {
 	return result(out, payload, err)
 }
 
+// sops_decrypt_to_rows decrypts a SOPS YAML document into the ordered list of
+// editable rows the editor renders. On success *out carries the JSON encoding
+// of a []gobridge.Row (see gobridge/document.go) — always an array, never
+// null. The document is parsed and emitted only by sops's own stores; nothing
+// on the Swift side ever re-parses the user's YAML.
+//
+// agePrivateKey must be a native AGE-SECRET-KEY-1… identity. An argument that
+// yields no identity is an error, never a signal to consult the environment.
+//
+//export sops_decrypt_to_rows
+func sops_decrypt_to_rows(encrypted *C.char, agePrivateKey *C.char, out **C.char) C.int {
+	payload, err := gobridge.DecryptToRowsJSON(
+		[]byte(C.GoString(encrypted)),
+		C.GoString(agePrivateKey),
+	)
+	return result(out, payload, err)
+}
+
+// sops_apply_edits applies edited values to an existing SOPS YAML document and
+// returns the re-encrypted file in *out. editsJSON is the JSON encoding of a
+// []gobridge.Edit.
+//
+// The saved file keeps its own metadata — recipients, encrypted_regex, MAC
+// settings, shamir_threshold. Nothing here reads .sops.yaml: re-deriving a
+// file's recipients from the project config during a save would change who can
+// read it without saying so, which is `updatekeys`' job (M4).
+//
+//export sops_apply_edits
+func sops_apply_edits(encrypted *C.char, editsJSON *C.char, agePrivateKey *C.char, out **C.char) C.int {
+	payload, err := gobridge.ApplyEditsJSON(
+		[]byte(C.GoString(encrypted)),
+		[]byte(C.GoString(editsJSON)),
+		C.GoString(agePrivateKey),
+	)
+	return result(out, payload, err)
+}
+
 //export sops_free
 func sops_free(p *C.char) {
 	C.free(unsafe.Pointer(p))

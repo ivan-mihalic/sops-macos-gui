@@ -134,7 +134,11 @@ public enum SopsBridge {
     /// Shared calling convention: 0 means *out holds the result, anything else
     /// means *out holds an error message. Either way the buffer is Go-allocated
     /// and must go back through sops_free.
-    private static func call(
+    ///
+    /// Internal rather than private so that the entry points which live in
+    /// their own files (`SopsDocument.swift`) share this one `defer`, instead
+    /// of each re-implementing the ownership rule.
+    static func call(
         _ body: (UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) -> Int32
     ) throws -> String {
         var out: UnsafeMutablePointer<CChar>?
@@ -156,7 +160,7 @@ public enum SopsBridge {
 extension String {
     /// The generated header takes non-const `char*`, so hand it a mutable copy.
     /// The pointer is valid only for the duration of `body`.
-    fileprivate func withGoString<R>(_ body: (UnsafeMutablePointer<CChar>) -> R) -> R {
+    func withGoString<R>(_ body: (UnsafeMutablePointer<CChar>) -> R) -> R {
         var bytes = Array(utf8CString)
         return bytes.withUnsafeMutableBufferPointer { body($0.baseAddress!) }
     }
