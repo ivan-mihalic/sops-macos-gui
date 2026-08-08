@@ -175,17 +175,27 @@ public final class SecretDocumentViewModel {
     ///     later task can swap in whatever `AtomicFileWriter`'s companion
     ///     read path turns out to be without changing this type's logic.
     ///   - writeFile: How the re-encrypted bytes are persisted. Defaults to
-    ///     a plain `String.write(to:atomically:encoding:)`. Atomic
-    ///     replacement (encrypt to a temp file beside the target, `fsync`,
-    ///     `replaceItemAt`) is Task 10's `AtomicFileWriter` — this
-    ///     injection point is what lets that land without this type
-    ///     changing.
+    ///     `AtomicFileWriter.write(_:to:)`: stage in a temp file *beside* the
+    ///     target, `F_FULLFSYNC`, preserve the original's mode, then
+    ///     `replaceItemAt`. See that type's doc comment for exactly what it
+    ///     guarantees and what it does not.
+    ///
+    ///     It replaced a plain `String.write(to:atomically:encoding:)`, which
+    ///     was atomic in the "no reader sees a partial file" sense but wrong
+    ///     in two others, both established empirically: it **destroys a
+    ///     symlink**, leaving a regular file where the link was while the real
+    ///     target keeps the stale secrets, and it never `fsync`s, so a crash
+    ///     shortly after a save could lose a write the app had already
+    ///     reported as succeeded.
+    ///
+    ///     Still overridable so tests can force a write failure without
+    ///     filesystem permission tricks.
     public init(
         fileURL: URL,
         keyStore: SessionKeyStore,
         readFile: @escaping (URL) throws -> String = { try String(contentsOf: $0, encoding: .utf8) },
         writeFile: @escaping (String, URL) throws -> Void = { contents, url in
-            try contents.write(to: url, atomically: true, encoding: .utf8)
+            try AtomicFileWriter.write(contents, to: url)
         }
     ) {
         self.fileURL = fileURL
@@ -721,6 +731,18 @@ public final class SecretDocumentViewModel {
         case .success(let newEncrypted):
             do {
                 try writeFile(newEncrypted, fileURL)
+            } catch let error as AtomicFileWriter.Error {
+                // Surfaced verbatim, and *only* for this one error type.
+                // `AtomicFileWriter.Error`'s cases are built from a path and
+                // an `errno` string and never see the document's bytes at
+                // all, so it is safe to show — and it is materially more
+                // useful than the generic line below: "…is not writable" and
+                // "could not create a temporary file next to …" send the user
+                // to two entirely different places. Any other error (an
+                // injected one in tests, anything a future `writeFile` throws)
+                // falls through to the generic message rather than being
+                // interpolated on trust.
+                return .failed("the saved file could not be written to disk: \(error.description)")
             } catch {
                 return .failed("the saved file could not be written to disk: \(fileURL.lastPathComponent)")
             }

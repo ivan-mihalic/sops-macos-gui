@@ -780,7 +780,7 @@ Switching files or quitting with `isDirty` prompts. This is the one place in the
 - Create: `Sources/SopsProjects/AtomicFileWriter.swift`
 - Create: `Tests/SopsProjectsTests/AtomicFileWriterTests.swift`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```swift
 @Test("the file is replaced atomically — no partial content is ever observable")
@@ -792,7 +792,7 @@ Switching files or quitting with `isDirty` prompts. This is the one place in the
 
 The last one matters: a temp file in `/tmp` and a cross-device rename is a copy, not an atomic replace, and can leave a half-written secrets file.
 
-- [ ] **Step 2: Implement, run, commit**
+- [x] **Step 2: Implement, run, commit**
 
 Encrypt to a temp file beside the target, `fsync`, then `replaceItemAt`. Preserve permissions explicitly.
 

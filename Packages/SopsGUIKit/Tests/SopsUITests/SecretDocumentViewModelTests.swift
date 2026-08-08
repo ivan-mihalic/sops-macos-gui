@@ -1093,3 +1093,109 @@ struct SecretDocumentSaveIntegrityTests {
         #expect(!after.contains("- 8080"))
     }
 }
+
+/// Task 10's writer, exercised through the app's *real* save path — no
+/// injected `writeFile`.
+///
+/// This suite exists because a writer nobody calls is not the task. Each test
+/// here is chosen so that the placeholder `String.write(to:atomically:)` this
+/// replaced would fail it, which is what makes them evidence of the wiring
+/// rather than a second copy of `AtomicFileWriterTests`.
+@Suite("SecretDocumentViewModel — the default save path is the atomic writer")
+@MainActor
+struct SecretDocumentViewModelAtomicSaveTests {
+
+    private func row(_ vm: SecretDocumentViewModel, _ path: String...) throws -> SecretRow {
+        guard let found = vm.rows.first(where: { $0.path == path }) else {
+            throw FixtureError("no row at \(path); present: \(vm.rows.map { $0.path.joined(separator: ".") })")
+        }
+        return found
+    }
+
+    /// Open the document *through a symlink* and save. The link must still be
+    /// a link and its target must hold the new ciphertext.
+    ///
+    /// The old default (`String.write(to:atomically:encoding:)`) replaces the
+    /// link with a regular file and leaves the target on the old contents —
+    /// verified directly on this machine — so this test failing red is the
+    /// signal that the default writer went back to being the placeholder.
+    @Test("saving through a symlink updates the target and leaves the link a link")
+    func saveThroughSymlinkKeepsTheLink() async throws {
+        let key = try AgeKeyPair.generate()
+        let target = try encryptedFixture(sampleYAML, key: key)
+        let linkDirectory = try scratchDirectory("symlinked-project")
+        let link = linkDirectory.appendingPathComponent("secrets.yaml")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let vm = SecretDocumentViewModel(fileURL: link, keyStore: store)
+        await vm.load()
+        #expect(vm.loadState == .loaded)
+        vm.update(rowID: try row(vm, "db", "host").id, to: "db.internal")
+
+        #expect(await vm.save() == .saved)
+
+        let type = try FileManager.default.attributesOfItem(atPath: link.path)[.type] as? FileAttributeType
+        #expect(type == .typeSymbolicLink, "the save replaced the symlink with a regular file")
+        let stillPointsAt = try FileManager.default.destinationOfSymbolicLink(atPath: link.path)
+        #expect(stillPointsAt == target.path)
+        // The real file — the one everything else on the machine sees —
+        // actually changed.
+        #expect(try cliDecrypt(target, key: key).contains("db.internal"))
+    }
+
+    @Test("saving preserves the document's POSIX permissions")
+    func savePreservesPermissions() async throws {
+        let key = try AgeKeyPair.generate()
+        let fileURL = try encryptedFixture(sampleYAML, key: key)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        await vm.load()
+        vm.update(rowID: try row(vm, "db", "host").id, to: "db.internal")
+        #expect(await vm.save() == .saved)
+
+        let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+        let resulting = (attributes[.posixPermissions] as? NSNumber)?.intValue
+        #expect(resulting == 0o600, "the save widened or narrowed the file's permissions")
+    }
+
+    /// A read-only document fails the save with the writer's own message, the
+    /// bytes on disk are untouched, and the user's edit is still sitting in
+    /// `rows` marked dirty.
+    ///
+    /// Also pins the message routing: `save()` forwards
+    /// `AtomicFileWriter.Error.description` verbatim precisely because it is
+    /// built from a path and an `errno` and can never contain a value, and
+    /// "not writable" versus "could not create a temporary file next to" send
+    /// the user to two different places.
+    @Test("a read-only document fails the save and says why, leaving the file alone")
+    func readOnlyDocumentFailsTheSave() async throws {
+        let key = try AgeKeyPair.generate()
+        let fileURL = try encryptedFixture(sampleYAML, key: key)
+        let before = try String(contentsOf: fileURL, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: fileURL.path)
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+        }
+
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        await vm.load()
+        vm.update(rowID: try row(vm, "db", "host").id, to: "never-lands")
+
+        guard case .failed(let message) = await vm.save() else {
+            Issue.record("a read-only file must not report a successful save")
+            return
+        }
+        #expect(message.contains("is not writable"), Comment(rawValue: message))
+        #expect(!message.contains("never-lands"), "the error must not carry the edited value")
+        #expect(vm.isDirty, "the edit must still be reported as unsaved")
+        #expect(try String(contentsOf: fileURL, encoding: .utf8) == before, "the file was modified")
+    }
+}
