@@ -2,7 +2,14 @@ import AppKit
 import SwiftUI
 import SopsHealth
 
-struct HealthFindingRow: View {
+// `public`, not merely internal: `SnapshotTool` renders this view directly,
+// in isolation, from outside this module — the whole reason it needs its own
+// snapshots (see M2's brief) is that `HealthPanel`/`OnboardingWizard` never
+// exercised anything past a `.ok` finding, so the four other statuses (and
+// the multi-line reason/remediation text they carry) went unverified through
+// M1. A cross-module snapshot target is exactly what closes that gap, which
+// requires this type — and its init — to be visible outside `SopsUI`.
+public struct HealthFindingRow: View {
     let finding: HealthFinding
     @State private var didCopy = false
 
@@ -11,11 +18,11 @@ struct HealthFindingRow: View {
     // backing storage) is private, which makes the whole synthesized init
     // private too — unusable from any other file in this module, including
     // `HealthPanel` and `OnboardingWizard`, which construct this view.
-    init(finding: HealthFinding) {
+    public init(finding: HealthFinding) {
         self.finding = finding
     }
 
-    var body: some View {
+    public var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: glyph)

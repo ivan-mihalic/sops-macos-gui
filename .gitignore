@@ -4,6 +4,9 @@ Engine/build/
 DerivedData/
 *.xcframework
 
+# Headless UI snapshots (Scripts/snapshots.sh) — build output, never committed
+.snapshots/
+
 # Release credentials — never commit
 release.local.env
 *.p8

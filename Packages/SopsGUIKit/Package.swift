@@ -32,5 +32,21 @@ let package = Package(
         .testTarget(name: "SopsHealthTests", dependencies: ["SopsHealth", "SopsEngine"]),
         .target(name: "SopsProjects", dependencies: ["SopsHealth"]),
         .testTarget(name: "SopsProjectsTests", dependencies: ["SopsProjects"]),
+
+        // MARK: SnapshotTool — headless visual snapshots (`swift run snapshots`).
+        // Dev tool only: nothing in `App/` or `SopsGUI.xcodeproj` depends on
+        // this, so it never reaches the shipped app. Depends on `SopsUI` for
+        // the views themselves, and directly on `SopsHealth`/`SopsProjects`
+        // for the fixture types (`HealthFinding`, `StoredProject`,
+        // `ProjectStore`, ...) the catalog builds fixtures out of. Deliberately
+        // does not depend on `SopsEngine`: nothing in the catalog renders
+        // `SecretEditorView`/`SecretDocumentViewModel`, so this target never
+        // needs to link `CSopsBridge`'s xcframework — keeping it buildable
+        // even when `Engine/build/SopsBridge.xcframework` hasn't been built.
+        .executableTarget(
+            name: "snapshots",
+            dependencies: ["SopsUI", "SopsHealth", "SopsProjects"],
+            path: "Sources/SnapshotTool"
+        ),
     ]
 )
