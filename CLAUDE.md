@@ -23,6 +23,23 @@ the worktree outside the repo where it is easy to lose track of.
 | `Packages/SopsGUIKit/` | All app logic. `swift test` here is the fast loop. |
 | `App/` | Thin Xcode app target; exists for archiving and notarization. |
 
+## Toolchains — this machine has three Swift compilers
+
+`swift build` / `swift test` resolve through `PATH` to a **swiftly-managed open-source
+toolchain**, which is *not* the one `xcodebuild` uses. They disagree: source that compiles
+under Xcode's bundled compiler can fail under the open-source one, and vice versa. A defect
+present since M1 (`HealthFindingRow`'s synthesized init being private) surfaced only after a
+restart changed which compiler `PATH` found first.
+
+So "the suite is green" is only meaningful with the compiler named. Run both before believing
+a build result, and say which one produced a number you are reporting.
+
+Related: SwiftPM's native build system **copies `Localizable.xcstrings` uncompiled** — it never
+produces `en.lproj/Localizable.strings`, so under `swift test` every `LocalizedKey` resolves to
+its own raw key. `xcodebuild` compiles it correctly and the shipped app is fine. The catalog
+guard therefore reads the `.xcstrings` JSON directly rather than the bundle; the bundle-based
+assertions are gated with `.enabled(if:)` and skip with a stated reason where they cannot pass.
+
 ## Hard constraints
 
 - **arm64-only.** One slice, everywhere.
