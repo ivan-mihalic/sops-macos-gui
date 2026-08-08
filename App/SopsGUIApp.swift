@@ -4,8 +4,22 @@ import SopsUI
 import SopsHealth
 import SopsProjects
 
+/// Runs the pasteboard's termination-time guard on the way out. AppKit calls
+/// `applicationWillTerminate(_:)` for an ordinary quit — Cmd-Q, the app's
+/// Quit menu item, "Quit and Keep Windows" — never for a force-quit or a
+/// crash, so this closes the specific gap where a secret was copied and the
+/// ~30s auto-clear timer (`ClipboardClearing.copy`) hadn't fired yet when the
+/// user quit. See `ClipboardClearing.clearOnTermination()` for the guard
+/// itself and the same limit stated where it's enforced.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillTerminate(_ notification: Notification) {
+        ClipboardClearing.clearOnTermination()
+    }
+}
+
 @main
 struct SopsGUIApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     // One ProjectStore, shared by the sidebar and the health check, backed
     // by the app's real Application Support location. The sidebar mutates it
     // (add/remove); the health report reads it fresh on every refresh — see
