@@ -109,6 +109,13 @@ public final class SecretDocumentViewModel {
     public private(set) var loadState: LoadState = .idle
     public private(set) var isDirty = false
 
+    /// Whether a `save()` is in flight.
+    ///
+    /// Exposed because the editor must disable its editing affordances while
+    /// it is true, and because the view having its own copy of this is how
+    /// the two can disagree. See `save()`.
+    public private(set) var isSaving = false
+
     private let fileURL: URL
     private let keyStore: SessionKeyStore
     private let readFile: (URL) throws -> String
@@ -344,6 +351,9 @@ public final class SecretDocumentViewModel {
     /// editable (`SecretRow.Kind.isEditable` — an empty map or list has no
     /// value of its own to type into).
     public func update(rowID: String, to newValue: String) {
+        // See `save()`: a change made while a save is in flight has no
+        // baseline it can be expressed against once that save lands.
+        guard !isSaving else { return }
         guard let row = rows.first(where: { $0.id == rowID }), row.kind.isEditable else { return }
 
         if let index = pendingAdditionIndexByRowID[rowID] {
@@ -379,7 +389,24 @@ public final class SecretDocumentViewModel {
         case duplicateKey
         /// The kind has no value to type into (`emptyMap`/`emptyList`).
         case unsupportedKind
+        /// The name is one a new key may not have. `<<` is YAML's merge key
+        /// and a document that uses it for an ordinary value cannot be read
+        /// back at all — by this app or by the sops CLI — so a two-character
+        /// typo would cost the user every other secret in the file. `sops` at
+        /// the top level is where SOPS keeps its own metadata. The bridge
+        /// refuses both; this mirrors it so the sheet can say so before the
+        /// user commits.
+        case reservedKey
+        /// A save is in flight. See `save()`.
+        case saveInProgress
     }
+
+    /// Names a new key may not have, mirroring `refuseReservedKey` in
+    /// `Engine/gobridge/documentchanges.go`. The bridge is the authority —
+    /// this is here so the sheet can refuse before the user presses Add, not
+    /// instead of the bridge's check.
+    private static let yamlMergeKey = "<<"
+    private static let sopsMetadataKey = "sops"
 
     public enum AddRowOutcome: Equatable, Sendable {
         /// The id of the new row, as it now appears in `rows`.
@@ -444,14 +471,11 @@ public final class SecretDocumentViewModel {
     ) -> AddRowOutcome {
         guard loadState == .loaded else { return .refused(.notLoaded) }
         guard kind.isEditable else { return .refused(.unsupportedKind) }
+        if let refusal = refusalForAdding(key, in: destination) { return .refused(refusal) }
 
         // Trimmed here rather than trusted from the caller: a key that is
         // only spaces is not a name, and YAML would happily accept it as one.
         let name = destination.isList ? "" : key.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !destination.isList {
-            if name.isEmpty { return .refused(.emptyKey) }
-            if isNameTaken(name, in: destination) { return .refused(.duplicateKey) }
-        }
 
         pendingAdditions.append(
             PendingAddition(
@@ -470,15 +494,36 @@ public final class SecretDocumentViewModel {
         return .added(id)
     }
 
-    /// Whether a map key by that name is already present at `destination` —
-    /// as a value, as an empty container, or as a whole subtree.
-    public func isNameTaken(_ key: String, in destination: AddDestination) -> Bool {
-        let candidate = destination.parent + [key]
-        return rows.contains { row in
+    /// Why adding `key` at `destination` would be refused, or `nil` if it
+    /// would be accepted. Used both by `addRow` and by the `+` sheet, so the
+    /// two cannot answer differently.
+    ///
+    /// The duplicate check reads `rows`, which **excludes rows the user has
+    /// already removed**. That is deliberate and it is what makes "remove
+    /// this key, then add it back with a different type" work: the bridge
+    /// applies removals before additions and accepts exactly that pair
+    /// (`documentchanges.go`, `planChanges`). Reading the baseline here
+    /// instead would refuse on screen something the bridge is happy to do,
+    /// or — worse, and what an earlier version of this did — accept it on
+    /// screen and have the save refuse it with a message contradicting what
+    /// the user is looking at.
+    public func refusalForAdding(_ key: String, in destination: AddDestination) -> AddRowRefusal? {
+        if isSaving { return .saveInProgress }
+        if loadState != .loaded { return .notLoaded }
+        if destination.isList { return nil }
+
+        let name = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty { return .emptyKey }
+        if name == Self.yamlMergeKey { return .reservedKey }
+        if name == Self.sopsMetadataKey && destination.parent.isEmpty { return .reservedKey }
+
+        let candidate = destination.parent + [name]
+        let taken = rows.contains { row in
             row.document == destination.document
                 && row.path.count >= candidate.count
                 && Array(row.path.prefix(candidate.count)) == candidate
         }
+        return taken ? .duplicateKey : nil
     }
 
     /// Removes a row from the document in memory. Nothing reaches disk until
@@ -490,6 +535,8 @@ public final class SecretDocumentViewModel {
     ///
     /// A no-op for an id that is not in `rows`.
     public func removeRow(id: String) {
+        // See `save()`.
+        guard !isSaving else { return }
         if let index = pendingAdditionIndexByRowID[id] {
             pendingAdditions.remove(at: index)
         } else if baselineRows.contains(where: { $0.id == id }), !removedRowIDs.contains(id) {
@@ -606,6 +653,28 @@ public final class SecretDocumentViewModel {
     /// noise on a file nothing actually changed in. This type chooses the
     /// no-op, and `SecretDocumentViewModelTests` pins it.
     ///
+    /// ## A save is not interruptible
+    /// `isSaving` is set for the whole of this method, and `update`,
+    /// `addRow` and `removeRow` refuse while it is. A save snapshots the
+    /// pending changes and then spends 120–380 ms encrypting; anything the
+    /// user did in that window used to be adopted as though it had been
+    /// saved, so it vanished from the file while the editor showed it as
+    /// clean.
+    ///
+    /// The alternative — rebasing what is left onto the snapshot instead of
+    /// refusing — was rejected, and the reason is worth stating. It is sound
+    /// only for a value-only save. A save that changed the document's shape
+    /// renumbers list paths, so a mid-save pending change, expressed against
+    /// the *old* baseline, may afterwards point at a different element than
+    /// the user meant. A fix that is right for one branch and quietly wrong
+    /// for the other is the plausible-instead-of-certain pattern this
+    /// project keeps paying for. Refusing is certain, and it closes the same
+    /// hole in `update` that predates this method.
+    ///
+    /// The editor disables the affordances too, so in practice nothing
+    /// reaches these guards; they are what makes that a property of the type
+    /// rather than of one view remembering to.
+    ///
     /// ## Failure leaves everything as the user left it
     /// A failure — no document loaded, no key configured, a bridge refusal,
     /// a write error — never touches `rows`, `baselineValues` or
@@ -614,6 +683,9 @@ public final class SecretDocumentViewModel {
     /// gone": they are still sitting in `rows`, unsaved, exactly where the
     /// user left them.
     public func save() async -> SaveOutcome {
+        guard !isSaving else {
+            return .failed("a save of this document is already in progress")
+        }
         guard loadState == .loaded else {
             return .failed("no document is loaded")
         }
@@ -626,6 +698,12 @@ public final class SecretDocumentViewModel {
         }
 
         let changes = pendingChangeSet()
+
+        // From here until this function returns, `update`, `addRow` and
+        // `removeRow` all refuse. See the "A save is not interruptible"
+        // section of this method's doc comment.
+        isSaving = true
+        defer { isSaving = false }
 
         // Same reasoning as `load()`: `body` receives the key and hops off
         // this actor itself; the key never lives in a local variable here.

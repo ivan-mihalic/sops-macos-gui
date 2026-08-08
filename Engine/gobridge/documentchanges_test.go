@@ -2,6 +2,7 @@ package gobridge
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -468,14 +469,21 @@ func TestABatchMixingAListRemovalWithAShiftedPathIsRefused(t *testing.T) {
 	encrypted := encryptWithCLI(t, key, listPlainYAML)
 
 	cases := map[string]ChangeSet{
-		"a set at a later index": {
+		// Adjacent, not a gap of two: an off-by-one in refuseShiftedPaths
+		// (>= instead of >, or the wrong side of the comparison) survives a
+		// gap and does not survive this.
+		"a set at the very next index": {
+			Sets:    []Edit{{Path: []string{"ports", "2"}, Value: "1234", Kind: KindInt}},
+			Removes: []Removal{{Path: []string{"ports", "1"}}},
+		},
+		"a set further along": {
 			Sets:    []Edit{{Path: []string{"ports", "3"}, Value: "1234", Kind: KindInt}},
 			Removes: []Removal{{Path: []string{"ports", "1"}}},
 		},
-		"another removal at a later index": {
+		"another removal at the very next index": {
 			Removes: []Removal{
 				{Path: []string{"ports", "1"}},
-				{Path: []string{"ports", "3"}},
+				{Path: []string{"ports", "2"}},
 			},
 		},
 		"an add under a later index": {
@@ -964,5 +972,245 @@ func TestAStructuralSavePreservesCommentsOrderAndQuoting(t *testing.T) {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("a structural save lost %q:\n%s", want, plain)
 		}
+	}
+}
+
+// -----------------------------------------------------------------------
+// Key names a new key may not have
+// -----------------------------------------------------------------------
+
+// The one that destroys a file. go-yaml tags a key named `<<` as `!!merge`,
+// and a merge key whose value is not a map is invalid YAML — so a scalar
+// under that name makes every other secret in the file unreadable, by the
+// sops CLI and by this app, while the save reports success.
+//
+// This test drives the real CLI on the result rather than trusting the
+// bridge, because the bridge is not the thing that breaks.
+func TestAKeyNamedAsYAMLsMergeKeyIsRefused(t *testing.T) {
+	key := newAgeKeyPair(t)
+	encrypted := encryptWithCLI(t, key, richPlainYAML)
+
+	for _, parent := range [][]string{nil, {"db"}, {"empty_map"}} {
+		message := applyChangesExpectingRefusal(t, encrypted, key, ChangeSet{
+			Adds: []Add{{Parent: parent, Key: "<<", Value: "anything", Kind: KindString}},
+		})
+		if !strings.Contains(message, "<<") {
+			t.Fatalf("the refusal does not name the key: %q", message)
+		}
+		if strings.Contains(message, "anything") {
+			t.Fatalf("the refusal carries the value: %q", message)
+		}
+	}
+}
+
+// The proof the refusal is worth having: without it, this is what the file
+// becomes. Built by writing the broken document the old code would have
+// produced and asking the real CLI to read it.
+func TestUpstreamStillRejectsAMergeKeyHoldingAScalar(t *testing.T) {
+	key := newAgeKeyPair(t)
+	broken := "db:\n    host: localhost\n    <<: not-a-map\n"
+	path := writeTemp(t, "broken.yaml", []byte(broken))
+	if _, err := runSopsCLIAllowFailDoc(t, key, "--encrypt", "--age", key.Public, path); err == nil {
+		t.Fatalf("sops accepted a merge key holding a scalar; the refusal in " +
+			"refuseReservedKey may no longer be needed — re-derive it before removing it")
+	}
+}
+
+// An existing merge key is untouched by that refusal. Its children are
+// ordinary rows, and emptying it leaves `<<: {}`, which is a map and
+// therefore still valid — verified through the real CLI.
+func TestAnExistingMergeKeyStillEditsRemovesAndEmptiesCleanly(t *testing.T) {
+	key := newAgeKeyPair(t)
+	encrypted := encryptWithCLI(t, key,
+		"base: &base\n    a: one\n    b: two\nderived:\n    <<: *base\n    c: three\n")
+
+	current := encrypted
+	current = applyChanges(t, current, key, ChangeSet{
+		Sets: []Edit{{Path: []string{"derived", "<<", "a"}, Value: "edited", Kind: KindString}},
+	})
+	if !strings.Contains(cliDecrypt(t, key, current), "edited") {
+		t.Fatalf("editing under a merge key did not take")
+	}
+	for _, path := range [][]string{{"derived", "<<", "a"}, {"derived", "<<", "b"}} {
+		current = applyChanges(t, current, key, ChangeSet{Removes: []Removal{{Path: path}}})
+	}
+	plain := cliDecrypt(t, key, current)
+	if !strings.Contains(plain, "<<: {}") {
+		t.Fatalf("an emptied merge key is not `<<: {}`:\n%s", plain)
+	}
+	// And it can be filled back in, and removed outright.
+	current = applyChanges(t, current, key, ChangeSet{
+		Adds: []Add{{Parent: []string{"derived", "<<"}, Key: "a", Value: "back", Kind: KindString}},
+	})
+	if !strings.Contains(cliDecrypt(t, key, current), "back") {
+		t.Fatalf("adding back into an emptied merge key did not take")
+	}
+}
+
+// `sops` at a document root is where SOPS keeps its own metadata. The emitter
+// already failed on it, but with a message that told the user nothing.
+func TestAKeyNamedSopsAtTheDocumentRootIsRefused(t *testing.T) {
+	key := newAgeKeyPair(t)
+	encrypted := encryptWithCLI(t, key, richPlainYAML)
+
+	message := applyChangesExpectingRefusal(t, encrypted, key, ChangeSet{
+		Adds: []Add{{Parent: nil, Key: "sops", Value: "anything", Kind: KindString}},
+	})
+	if !strings.Contains(message, "sops") || !strings.Contains(message, "metadata") {
+		t.Fatalf("the refusal does not explain what is wrong: %q", message)
+	}
+
+	// Nested, it is an ordinary key and must not be refused.
+	out := applyChanges(t, encrypted, key, ChangeSet{
+		Adds: []Add{{Parent: []string{"db"}, Key: "sops", Value: "fine", Kind: KindString}},
+	})
+	rows, err := DecryptToRows(out, key.Private)
+	if err != nil {
+		t.Fatalf("DecryptToRows: %v", err)
+	}
+	if got := rowByPath(t, rows, "db", "sops").Value; got != "fine" {
+		t.Fatalf("db.sops = %q", got)
+	}
+}
+
+// Everything else this project could think of round-trips, so the two
+// refusals above are two missing refusals and not general fragility. Each
+// name is checked through the real CLI *and* read back through the bridge.
+func TestHostileKeyNamesRoundTripThroughTheRealCLI(t *testing.T) {
+	key := newAgeKeyPair(t)
+	encrypted := encryptWithCLI(t, key, richPlainYAML)
+
+	names := []string{
+		"!!str", "!custom", "&anchor", "*alias", "? question", "- dash", ": colon",
+		"#hash", "%TAG", "---", "...", "null", "~", "true", "false", "no", "on", "y",
+		"0", "007", ".inf", ".nan", "1.2", "2024-01-02", "a: b", "[a]", "{a}",
+		"\"quoted\"", "'single'", " leading", "trailing ", "with\nnewline",
+		"with\ttab", "üñí🎉", "a.b", "0x1F", "=", "<<<", "<< ", " <<", "sops",
+	}
+	for _, name := range names {
+		t.Run(fmt.Sprintf("%q", name), func(t *testing.T) {
+			// `sops` is only reserved at a document root, so everything here
+			// goes into `db`, which is also the harder case for the emitter.
+			out, err := ApplyChangesAndEncrypt(encrypted, ChangeSet{
+				Adds: []Add{{Parent: []string{"db"}, Key: name, Value: "probe-value", Kind: KindString}},
+			}, key.Private)
+			if err != nil {
+				t.Fatalf("refused: %v", err)
+			}
+			if !strings.Contains(cliDecrypt(t, key, out), "probe-value") {
+				t.Fatalf("the sops CLI cannot see the added value")
+			}
+			rows, rowErr := DecryptToRows(out, key.Private)
+			if rowErr != nil {
+				t.Fatalf("the bridge cannot read back its own output: %v", rowErr)
+			}
+			if got := rowByPath(t, rows, "db", name).Value; got != "probe-value" {
+				t.Fatalf("db.%q = %q", name, got)
+			}
+		})
+	}
+}
+
+// -----------------------------------------------------------------------
+// Replacing a key: remove it and add it again in one save
+// -----------------------------------------------------------------------
+
+// The natural gesture for "rename this key" or "change this key's type".
+// Removals run before adds, so by the time the add runs the key is gone —
+// the outcome is one key, at the end of its map, with the new value.
+func TestAKeyCanBeRemovedAndAddedAgainInOneSave(t *testing.T) {
+	key := newAgeKeyPair(t)
+	encrypted := encryptWithCLI(t, key, richPlainYAML)
+
+	out := applyChanges(t, encrypted, key, ChangeSet{
+		Adds:    []Add{{Parent: []string{"db"}, Key: "port", Value: "6432", Kind: KindString}},
+		Removes: []Removal{{Path: []string{"db", "port"}}},
+	})
+
+	rows, err := DecryptToRows(out, key.Private)
+	if err != nil {
+		t.Fatalf("DecryptToRows: %v", err)
+	}
+	replaced := rowByPath(t, rows, "db", "port")
+	if replaced.Kind != KindString || replaced.Value != "6432" {
+		t.Fatalf("the replaced key came back as %+v", replaced)
+	}
+	// Exactly one of it, and it moved to the end of the map, which is what
+	// the editor shows while the change is pending.
+	count := 0
+	for _, path := range rowPaths(rows) {
+		if path == "db.port" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("db.port appears %d times", count)
+	}
+	plain := cliDecrypt(t, key, out)
+	if strings.Index(plain, "special:") > strings.Index(plain, "port: \"6432\"") {
+		t.Fatalf("the replaced key did not move to the end of its map:\n%s", plain)
+	}
+}
+
+// Every other same-key pair is still a contradiction.
+func TestReplacingIsTheOnlySameKeyPairAllowed(t *testing.T) {
+	key := newAgeKeyPair(t)
+	encrypted := encryptWithCLI(t, key, richPlainYAML)
+
+	for name, changes := range map[string]ChangeSet{
+		"set and removed": {
+			Sets:    []Edit{{Path: []string{"api_key"}, Value: "x", Kind: KindString}},
+			Removes: []Removal{{Path: []string{"api_key"}}},
+		},
+		"set and re-created": {
+			Sets:    []Edit{{Path: []string{"api_key"}, Value: "x", Kind: KindString}},
+			Adds:    []Add{{Parent: nil, Key: "api_key", Value: "y", Kind: KindString}},
+			Removes: []Removal{{Path: []string{"api_key"}}},
+		},
+		"added twice after one removal": {
+			Adds: []Add{
+				{Parent: nil, Key: "api_key", Value: "x", Kind: KindString},
+				{Parent: nil, Key: "api_key", Value: "y", Kind: KindString},
+			},
+			Removes: []Removal{{Path: []string{"api_key"}}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			applyChangesExpectingRefusal(t, encrypted, key, changes)
+		})
+	}
+}
+
+// -----------------------------------------------------------------------
+// Non-canonical list indices
+// -----------------------------------------------------------------------
+
+// Every guard here compares paths as text, so "servers.1" and "servers.01"
+// would be two names for one element and a conflict between them would go
+// unseen — defeating the shift rule. A non-canonical index resolves to
+// nothing instead.
+func TestANonCanonicalListIndexResolvesToNothing(t *testing.T) {
+	key := newAgeKeyPair(t)
+	encrypted := encryptWithCLI(t, key, listPlainYAML)
+
+	for _, segment := range []string{"01", "+1", " 1", "1 ", "0x1"} {
+		if _, err := ApplyChangesAndEncrypt(encrypted, ChangeSet{
+			Sets: []Edit{{Path: []string{"ports", segment}, Value: "1", Kind: KindInt}},
+		}, key.Private); err == nil {
+			t.Fatalf("a set at ports.%q was accepted", segment)
+		}
+		if _, err := ApplyChangesAndEncrypt(encrypted, ChangeSet{
+			Removes: []Removal{{Path: []string{"ports", segment}}},
+		}, key.Private); err == nil {
+			t.Fatalf("a removal at ports.%q was accepted", segment)
+		}
+	}
+
+	// And so the shift guard cannot be walked around with one.
+	if _, err := ApplyChangesAndEncrypt(encrypted, ChangeSet{
+		Sets:    []Edit{{Path: []string{"ports", "01"}, Value: "1", Kind: KindInt}},
+		Removes: []Removal{{Path: []string{"ports", "1"}}},
+	}, key.Private); err == nil {
+		t.Fatalf("a batch addressing one element by two different strings was accepted")
 	}
 }

@@ -109,6 +109,36 @@ type ChangeSet struct {
 	Removes []Removal `json:"removes"`
 }
 
+// Key names a new key may not have.
+//
+// Both were found by adding every hostile name this project could think of to
+// a real sops file and running `sops --decrypt` on the result. Everything else
+// tried — leading `!`, `&`, `*`, `%`, `#`, `---`, `...`, `null`, `~`, booleans,
+// numbers, dates, embedded newlines and tabs, unicode, `<<<`, `<< `, ` <<` —
+// round-trips cleanly, because the emitter quotes what it must. These two do
+// not.
+const (
+	// yamlMergeKey is YAML's merge key. go-yaml's encoder special-cases this
+	// exact string and tags the emitted key `!!merge`, and a merge key whose
+	// value is not a map (or a sequence of maps) is invalid YAML. Adding a
+	// scalar under that name therefore produces a file that *nothing* can read
+	// back — not `sops --decrypt`, not this app — with every other secret in it
+	// still inside. Two characters in a free-text field, and the file is gone
+	// but for version control.
+	//
+	// Note this refuses only *creating* the name. An existing `<<` from a real
+	// merge (`<<: *anchor`) is untouched: sops inlines the merged map and its
+	// children are ordinary rows, editing and removing them is safe, and
+	// emptying one leaves `<<: {}`, which is a map and therefore still valid.
+	// Verified against the real CLI.
+	yamlMergeKey = "<<"
+	// sopsMetadataKey is where SOPS keeps its own metadata, at the root of
+	// every document. A data key of that name collides with it; the emitter
+	// already fails, but with a generic message that tells the user nothing.
+	// Nested `sops` keys are fine and are not refused.
+	sopsMetadataKey = "sops"
+)
+
 // errPathNotFound is internal: callers turn it into a message naming the path
 // they were resolving, because this type has no idea which one that was.
 var errPathNotFound = errors.New("path not found")
@@ -213,22 +243,40 @@ func planChanges(branches sops.TreeBranches, changes ChangeSet) (*changePlan, er
 		removes: append([]Removal(nil), changes.Removes...),
 	}
 
-	// targets is the set of document locations this batch writes to, so that
-	// two changes for one location are refused rather than silently
-	// resolved. Two edits for one row mean the caller lost track of its own
-	// state; picking one would write a value nobody chose.
-	targets := make(map[string]bool)
-	claim := func(document int, path []string) error {
+	// Each kind of change claims the location it touches, so that two changes
+	// for one location are refused rather than silently resolved: two edits
+	// for one row mean the caller lost track of its own state, and picking one
+	// would write a value nobody chose.
+	//
+	// The claims are kept per kind rather than in one set, because exactly one
+	// combination is *not* a conflict: a removal and an add of the same key.
+	// That pair is a replacement — remove the key, then create it again — and
+	// it is the natural shape of "rename this key" or "change this key's
+	// type" in an editor that has no other way to express either. Removals are
+	// applied before adds, so by the time the add runs the key really is gone.
+	sets := make(map[string]bool)
+	adds := make(map[string]bool)
+	removes := make(map[string]bool)
+	claim := func(into map[string]bool, document int, path []string) error {
 		key := pathKey(document, path)
-		if targets[key] {
+		if into[key] {
 			return fmt.Errorf("%s: the same key is changed twice in one save", pathText(document, path))
 		}
-		targets[key] = true
+		into[key] = true
 		return nil
 	}
 
+	for _, removal := range changes.Removes {
+		if err := claim(removes, removal.Document, removal.Path); err != nil {
+			return nil, err
+		}
+		if err := validateRemoval(branches, removal); err != nil {
+			return nil, err
+		}
+	}
+
 	for _, edit := range changes.Sets {
-		if err := claim(edit.Document, edit.Path); err != nil {
+		if err := claim(sets, edit.Document, edit.Path); err != nil {
 			return nil, err
 		}
 		value, err := parseEditValue(edit)
@@ -241,28 +289,28 @@ func planChanges(branches sops.TreeBranches, changes ChangeSet) (*changePlan, er
 		plan.sets = append(plan.sets, plannedSet{edit: edit, value: value})
 	}
 
-	for _, removal := range changes.Removes {
-		if err := claim(removal.Document, removal.Path); err != nil {
-			return nil, err
-		}
-		if err := validateRemoval(branches, removal); err != nil {
-			return nil, err
-		}
-	}
-
 	for _, add := range changes.Adds {
-		value, err := validateAdd(branches, add)
+		value, err := validateAdd(branches, add, removes)
 		if err != nil {
 			return nil, err
 		}
 		if add.Key != "" {
 			// Only a map add has a nameable destination to collide over; two
 			// appends to one list are two different new entries.
-			if err := claim(add.Document, append(append([]string{}, add.Parent...), add.Key)); err != nil {
+			if err := claim(adds, add.Document, append(append([]string{}, add.Parent...), add.Key)); err != nil {
 				return nil, err
 			}
 		}
 		plan.adds = append(plan.adds, plannedAdd{add: add, value: value})
+	}
+
+	for key := range sets {
+		if removes[key] {
+			return nil, fmt.Errorf("this save both changes and removes the same key; those two changes contradict each other")
+		}
+		if adds[key] {
+			return nil, fmt.Errorf("this save both changes and creates the same key; those two changes contradict each other")
+		}
 	}
 
 	if err := refuseChangesUnderARemovedKey(changes); err != nil {
@@ -319,7 +367,7 @@ func validateRemoval(branches sops.TreeBranches, removal Removal) error {
 
 // validateAdd checks that an add has somewhere to go and returns the parsed
 // value it would write.
-func validateAdd(branches sops.TreeBranches, add Add) (interface{}, error) {
+func validateAdd(branches sops.TreeBranches, add Add, beingRemoved map[string]bool) (interface{}, error) {
 	parentWhere := pathText(add.Document, add.Parent)
 	parent, ok := valueAtPath(branches, add.Document, add.Parent)
 	if !ok {
@@ -331,9 +379,16 @@ func validateAdd(branches sops.TreeBranches, add Add) (interface{}, error) {
 		if add.Key == "" {
 			return nil, fmt.Errorf("%s: a new key in a map needs a name", parentWhere)
 		}
-		if branchIndex(container, add.Key) >= 0 {
+		if err := refuseReservedKey(add); err != nil {
+			return nil, err
+		}
+		newPath := append(append([]string{}, add.Parent...), add.Key)
+		// An existing key is normally not an addition — but it is when the
+		// same save removes it first. See planChanges for why that pair is
+		// allowed and every other same-key pair is not.
+		if branchIndex(container, add.Key) >= 0 && !beingRemoved[pathKey(add.Document, newPath)] {
 			return nil, fmt.Errorf("%s: this key is already in the document; changing its value is an edit, not an addition",
-				pathText(add.Document, append(append([]string{}, add.Parent...), add.Key)))
+				pathText(add.Document, newPath))
 		}
 	case []interface{}:
 		if add.Key != "" {
@@ -348,6 +403,24 @@ func validateAdd(branches sops.TreeBranches, add Add) (interface{}, error) {
 		return nil, err
 	}
 	return value, nil
+}
+
+// refuseReservedKey rejects the two names a new key may not have. See the
+// constants for what each one does to a file and how that was established.
+func refuseReservedKey(add Add) error {
+	newPath := append(append([]string{}, add.Parent...), add.Key)
+	if add.Key == yamlMergeKey {
+		return fmt.Errorf("%s: %q is YAML's merge key and means \"copy another map in here\"; "+
+			"a document that uses it for an ordinary value cannot be read back, by this app or by the sops CLI — "+
+			"choose a different name",
+			pathText(add.Document, newPath), yamlMergeKey)
+	}
+	if add.Key == sopsMetadataKey && len(add.Parent) == 0 {
+		return fmt.Errorf("%s: %q at the top level of a document is where SOPS keeps its own metadata — "+
+			"choose a different name, or put this key inside a map",
+			pathText(add.Document, newPath), sopsMetadataKey)
+	}
+	return nil
 }
 
 // parseAddValue is parseEditValue for an add: same vocabulary, same refusal
@@ -420,8 +493,9 @@ func refuseShiftedPaths(branches sops.TreeBranches, changes ChangeSet) error {
 		if _, isList := parent.([]interface{}); !isList {
 			continue // a map key: nothing is renumbered by removing it
 		}
-		removedIndex, err := strconv.Atoi(removal.Path[len(removal.Path)-1])
-		if err != nil {
+		list, _ := parent.([]interface{})
+		removedIndex, ok := listIndex(removal.Path[len(removal.Path)-1], len(list))
+		if !ok {
 			continue
 		}
 
@@ -434,8 +508,8 @@ func refuseShiftedPaths(branches sops.TreeBranches, changes ChangeSet) error {
 			if len(other.path) <= len(listPath) || !hasPrefix(other.path, listPath) {
 				continue
 			}
-			index, err := strconv.Atoi(other.path[len(listPath)])
-			if err != nil || index <= removedIndex {
+			index, ok := listIndex(other.path[len(listPath)], len(list))
+			if !ok || index <= removedIndex {
 				continue
 			}
 			return fmt.Errorf(
@@ -501,8 +575,8 @@ func removeAtPath(branches sops.TreeBranches, removal Removal) error {
 				// be sharing.
 				return append(container[:index:index], container[index+1:]...), nil
 			case []interface{}:
-				index, convErr := strconv.Atoi(last)
-				if convErr != nil || index < 0 || index >= len(container) {
+				index, ok := listIndex(last, len(container))
+				if !ok {
 					return nil, errPathNotFound
 				}
 				return append(container[:index:index], container[index+1:]...), nil
@@ -583,8 +657,8 @@ func mutateIn(current interface{}, path []string, mutate func(interface{}) (inte
 		container[index].Value = child
 		return container, nil
 	case []interface{}:
-		index, err := strconv.Atoi(path[0])
-		if err != nil || index < 0 || index >= len(container) {
+		index, ok := listIndex(path[0], len(container))
+		if !ok {
 			return nil, errPathNotFound
 		}
 		if _, isComment := container[index].(sops.Comment); isComment {
@@ -618,8 +692,8 @@ func valueAtPath(branches sops.TreeBranches, document int, path []string) (inter
 			}
 			current = container[index].Value
 		case []interface{}:
-			index, err := strconv.Atoi(segment)
-			if err != nil || index < 0 || index >= len(container) {
+			index, ok := listIndex(segment, len(container))
+			if !ok {
 				return nil, false
 			}
 			if _, isComment := container[index].(sops.Comment); isComment {
@@ -631,6 +705,29 @@ func valueAtPath(branches sops.TreeBranches, document int, path []string) (inter
 		}
 	}
 	return current, true
+}
+
+// listIndex parses a path segment that indexes a list, and accepts only the
+// canonical decimal form of the number.
+//
+// Rejecting "01" matters beyond tidiness. Every guard in this file compares
+// paths as text: pathKey for the same-key claims, and refuseShiftedPaths for
+// the index-shift rule. A caller that wrote "remove servers.1" and
+// "set servers.01" would be addressing one element by two different strings,
+// so both guards would look straight past a real conflict and the two
+// readings of the batch would disagree — the exact thing the shift rule
+// exists to make impossible. Since sops's own walk only ever produces
+// canonical indices, nothing legitimate is refused: a non-canonical segment
+// simply resolves to nothing and is reported as "no such value".
+func listIndex(segment string, length int) (int, bool) {
+	n, err := strconv.Atoi(segment)
+	if err != nil || n < 0 || n >= length {
+		return 0, false
+	}
+	if strconv.Itoa(n) != segment {
+		return 0, false
+	}
+	return n, true
 }
 
 // branchIndex finds a map key. Comment entries carry a sops.Comment key, so

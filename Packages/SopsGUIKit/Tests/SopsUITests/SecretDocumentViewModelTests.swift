@@ -716,11 +716,13 @@ struct SecretDocumentStructuralTests {
         #expect(vm.rows == before, "the row list must be exactly what it was before the addition")
     }
 
-    @Test("removing a row and re-adding a key of the same name is still dirty")
-    func removeAndReAddIsStillDirty() async throws {
-        // Not the same thing as undoing an addition: the file really does
-        // change (the value differs), so the document must stay dirty.
-        let (vm, _, _) = try await loaded(structuralYAML)
+    @Test("removing a key and adding it back is accepted on screen and by the save")
+    func removeAndReAddSurvivesTheSave() async throws {
+        // The natural gesture for "rename in place" or "change this key's
+        // type". The editor used to accept it and the save used to refuse it
+        // with a message contradicting the screen — the two layers now agree,
+        // and this asserts the agreement end to end rather than either half.
+        let (vm, key, fileURL) = try await loaded(structuralYAML)
         let hostID = try row(vm, "db", "host").id
 
         vm.removeRow(id: hostID)
@@ -728,11 +730,24 @@ struct SecretDocumentStructuralTests {
         #expect(!paths(vm).contains("db.host"))
 
         let destination = vm.addDestination(forSelectedRowID: try row(vm, "db", "password").id)
+        #expect(vm.refusalForAdding("host", in: destination) == nil,
+                "the sheet must not refuse a name the save will accept")
         if case .refused(let reason) = vm.addRow(
-            in: destination, key: "host", kind: .string, value: "elsewhere") {
+            in: destination, key: "host", kind: .int, value: "5432") {
             Issue.record("re-adding a removed key was refused: \(reason)")
         }
         #expect(vm.isDirty)
+
+        #expect(await vm.save() == .saved)
+
+        // One key, the new type, and it moved to the end of its map — which
+        // is exactly what the editor showed while the change was pending.
+        #expect(paths(vm).filter { $0 == "db.host" }.count == 1)
+        #expect(try row(vm, "db", "host").kind == .int)
+        #expect(try row(vm, "db", "host").value == "5432")
+        let after = try cliDecrypt(fileURL, key: key)
+        #expect(after.contains("host: 5432"))
+        #expect(!after.contains("host: localhost"))
     }
 
     // MARK: Where a new row goes
@@ -799,6 +814,7 @@ struct SecretDocumentStructuralTests {
         let inDB = vm.addDestination(forSelectedRowID: try row(vm, "db", "host").id)
         #expect(vm.addRow(in: inDB, key: "host", kind: .string, value: "x")
             == .refused(.duplicateKey))
+        #expect(vm.refusalForAdding("host", in: inDB) == .duplicateKey)
 
         // `db` has no row of its own — it is a subtree — and adding a second
         // `db` at the root must still be refused.
@@ -941,5 +957,139 @@ struct SecretDocumentStructuralTests {
         let before = try String(contentsOf: fileURL, encoding: .utf8)
         #expect(await vm.save() == .saved)
         #expect(try String(contentsOf: fileURL, encoding: .utf8) == before)
+    }
+}
+
+
+@Suite("SecretDocumentViewModel — the two ways a save can be undermined")
+@MainActor
+struct SecretDocumentSaveIntegrityTests {
+
+    private func loaded(_ yaml: String) async throws -> (SecretDocumentViewModel, AgeKeyPair, URL) {
+        let key = try AgeKeyPair.generate()
+        let fileURL = try encryptedFixture(yaml, key: key)
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        await vm.load()
+        #expect(vm.loadState == .loaded)
+        return (vm, key, fileURL)
+    }
+
+    private func row(_ vm: SecretDocumentViewModel, _ path: String...) throws -> SecretRow {
+        guard let found = vm.rows.first(where: { $0.path == path }) else {
+            throw FixtureError("no row at \(path); present: \(vm.rows.map { $0.path.joined(separator: ".") })")
+        }
+        return found
+    }
+
+    // MARK: A key that would destroy the file
+
+    @Test("a new key named as YAML's merge key is refused, on screen and by the bridge")
+    func theMergeKeyNameIsRefused() async throws {
+        let (vm, key, fileURL) = try await loaded(structuralYAML)
+        let before = try String(contentsOf: fileURL, encoding: .utf8)
+
+        let destination = vm.addDestination(forSelectedRowID: try row(vm, "db", "host").id)
+        #expect(vm.refusalForAdding("<<", in: destination) == .reservedKey)
+        #expect(vm.addRow(in: destination, key: "<<", kind: .string, value: "anything")
+            == .refused(.reservedKey))
+        #expect(!vm.isDirty)
+        #expect(try String(contentsOf: fileURL, encoding: .utf8) == before)
+
+        // And the file is still readable by the standard tool, which is the
+        // property the refusal exists to protect.
+        #expect(try cliDecrypt(fileURL, key: key).contains("host: localhost"))
+    }
+
+    @Test("a top-level key named sops is refused; a nested one is not")
+    func theSopsMetadataNameIsRefusedOnlyAtTheRoot() async throws {
+        let (vm, _, _) = try await loaded(structuralYAML)
+
+        let root = vm.addDestination(forSelectedRowID: nil)
+        #expect(vm.refusalForAdding("sops", in: root) == .reservedKey)
+
+        let inDB = vm.addDestination(forSelectedRowID: try row(vm, "db", "host").id)
+        #expect(vm.refusalForAdding("sops", in: inDB) == nil)
+        if case .refused(let reason) = vm.addRow(in: inDB, key: "sops", kind: .string, value: "fine") {
+            Issue.record("a nested key named sops was refused: \(reason)")
+        }
+        #expect(await vm.save() == .saved)
+        #expect(try row(vm, "db", "sops").value == "fine")
+    }
+
+    // MARK: Editing while a save is in flight
+
+    @Test("changes attempted during a save are refused, not swallowed")
+    func editingDuringASaveIsRefused() async throws {
+        // A big enough document that the encrypt genuinely takes time, so the
+        // window this tests is the real one and not a scheduling accident.
+        let key = try AgeKeyPair.generate()
+        let fileURL = try encryptedFixture(flatYAML(keyCount: 3_000), key: key)
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        await vm.load()
+
+        let firstID = try #require(vm.rows.first).id
+        vm.update(rowID: firstID, to: "saved-value")
+        let rowsBeforeSave = vm.rows
+
+        let saving = Task { await vm.save() }
+        // Wait for the save to actually be in flight before interfering.
+        while !vm.isSaving { await Task.yield() }
+
+        let secondID = vm.rows[1].id
+        vm.update(rowID: secondID, to: "typed-mid-save")
+        vm.removeRow(id: vm.rows[2].id)
+        let destination = vm.addDestination(forSelectedRowID: nil)
+        #expect(vm.addRow(in: destination, key: "added_mid_save", kind: .string, value: "x")
+            == .refused(.saveInProgress))
+        #expect(await vm.save() == .failed("a save of this document is already in progress"))
+
+        #expect(await saving.value == .saved)
+        #expect(!vm.isSaving)
+
+        // Nothing attempted mid-save was adopted: no ghost row claiming to be
+        // saved, no swallowed removal, and the value that *was* sent is the
+        // only thing that changed.
+        #expect(vm.rows.count == rowsBeforeSave.count)
+        #expect(!vm.rows.contains { $0.path == ["added_mid_save"] })
+        #expect(vm.rows[1].value == rowsBeforeSave[1].value)
+        #expect(!vm.isDirty)
+
+        let onDisk = try cliDecrypt(fileURL, key: key)
+        #expect(onDisk.contains("saved-value"))
+        #expect(!onDisk.contains("typed-mid-save"))
+        #expect(!onDisk.contains("added_mid_save"))
+    }
+
+    @Test("a removal attempted during a shape-changing save cannot desynchronise the paths")
+    func removalDuringAStructuralSaveIsRefused() async throws {
+        let (vm, key, fileURL) = try await loaded(structuralYAML)
+
+        vm.removeRow(id: try row(vm, "ports", "0").id)
+        let saving = Task { await vm.save() }
+        while !vm.isSaving { await Task.yield() }
+        // The dangerous one: had this been swallowed, `changedShape` came
+        // from the snapshot and the resync would still have run — but a
+        // *second* removal adopted silently would leave the in-memory paths
+        // off by one against the file.
+        if let second = vm.rows.first(where: { $0.path == ["ports", "1"] }) {
+            vm.removeRow(id: second.id)
+        }
+        // Refused, so the row is still there. Without the guard it would
+        // disappear from the editor and then be discarded by the reload —
+        // a user action silently undone with nothing said.
+        #expect(vm.rows.contains { $0.path == ["ports", "1"] },
+                "a removal attempted mid-save must be refused, not accepted and then lost")
+        #expect(await saving.value == .saved)
+
+        // Two entries left, renumbered by the reload, matching the file.
+        #expect(vm.rows.filter { $0.path.first == "ports" }.map(\.value) == ["8443", "9090"])
+        let after = try cliDecrypt(fileURL, key: key)
+        #expect(after.contains("- 8443"))
+        #expect(after.contains("- 9090"))
+        #expect(!after.contains("- 8080"))
     }
 }

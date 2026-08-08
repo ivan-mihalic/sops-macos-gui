@@ -172,6 +172,10 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // Saying so is what stops a user looking for the field that isn't there.
     case editorAddListNote = "editor.add.list-note"
     case editorAddDuplicateKey = "editor.add.duplicate-key"
+    // `<<` is YAML's merge key and `sops` at the top level is SOPS's own
+    // metadata; a document that misuses either cannot be read back at all.
+    // Mirrors `refuseReservedKey` in the bridge — see `AddRowRefusal`.
+    case editorAddReservedKey = "editor.add.reserved-key"
     // Shown instead of a padlock on a row added in this session — see
     // `SecretEditorView`'s doc comment for why neither padlock would be true.
     case editorNewRowBadge = "editor.new-row-badge"

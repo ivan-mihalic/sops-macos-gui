@@ -222,6 +222,17 @@
         }
       }
     },
+    "editor.add.reserved-key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "YAML reserves this name, and a file that uses it for an ordinary value cannot be read back. Choose a different name."
+          }
+        }
+      }
+    },
     "editor.add.title": {
       "extractionState": "manual",
       "localizations": {

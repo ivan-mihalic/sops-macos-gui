@@ -434,7 +434,7 @@ enum Fixtures {
         EditorAddRowSheet(
             destination: SecretDocumentViewModel.AddDestination(
                 document: 0, parent: isList ? ["feature_flags"] : ["db"], isList: isList),
-            isNameTaken: { $0 == "host" },
+            refusal: { $0 == "host" ? .duplicateKey : nil },
             onCancel: {},
             onAdd: { _, _, _ in })
     }

@@ -164,6 +164,43 @@ struct SopsDocumentChangesTests {
         }
     }
 
+    @Test("a new key named as YAML's merge key is refused at the boundary")
+    func theMergeKeyNameIsRefused() throws {
+        let key = try AgeKeyPair.generate()
+        let encrypted = try encryptWithCLI(structuralYAML, key: key)
+
+        do {
+            _ = try SopsBridge.applyChanges(
+                encrypted,
+                changes: SecretChangeSet(adds: [
+                    SecretAddition(parent: ["db"], key: "<<", value: "anything", kind: .string)
+                ]),
+                agePrivateKey: key.private)
+            Issue.record("a key named << was added; the file it produces cannot be read back at all")
+        } catch let error as SopsBridgeError {
+            #expect(error.description.contains("<<"), Comment(rawValue: error.description))
+            #expect(!error.description.contains("anything"))
+        }
+    }
+
+    @Test("a key removed and added again in one save is a replacement, not a conflict")
+    func aKeyCanBeReplacedInOneSave() throws {
+        let key = try AgeKeyPair.generate()
+        let encrypted = try encryptWithCLI(structuralYAML, key: key)
+
+        let saved = try SopsBridge.applyChanges(
+            encrypted,
+            changes: SecretChangeSet(
+                adds: [SecretAddition(parent: ["db"], key: "host", value: "5432", kind: .int)],
+                removes: [SecretRemoval(path: ["db", "host"])]),
+            agePrivateKey: key.private)
+
+        let rows = try SopsBridge.decryptToRows(saved, agePrivateKey: key.private)
+        #expect(rows.filter { $0.path == ["db", "host"] }.count == 1)
+        #expect(try row(rows, "db", "host").kind == .int)
+        #expect(try cliDecrypt(saved, key: key).contains("host: 5432"))
+    }
+
     @Test("the set-only entry point is unchanged")
     func applyEditsStillWorks() throws {
         let key = try AgeKeyPair.generate()

@@ -64,7 +64,6 @@ public struct SecretEditorView: View {
 
     @State private var revealedRowIDs: Set<String> = []
     @State private var saveErrorMessage: String?
-    @State private var isSaving = false
     @State private var selectedRowID: String?
     @State private var addRequest: AddRowRequest?
 
@@ -114,7 +113,7 @@ public struct SecretEditorView: View {
         .sheet(item: $addRequest) { request in
             EditorAddRowSheet(
                 destination: request.destination,
-                isNameTaken: { viewModel.isNameTaken($0, in: request.destination) },
+                refusal: { viewModel.refusalForAdding($0, in: request.destination) },
                 onCancel: { addRequest = nil },
                 onAdd: { key, kind, value in
                     let outcome = viewModel.addRow(
@@ -184,7 +183,7 @@ public struct SecretEditorView: View {
             } label: {
                 Image(systemName: "minus")
             }
-            .disabled(!canRemoveSelection)
+            .disabled(!canRemoveSelection || isSaving)
             .help(canRemoveSelection
                 ? LocalizedKey.editorRemoveRow.text
                 : LocalizedKey.editorRemoveRowDisabled.text)
@@ -196,7 +195,7 @@ public struct SecretEditorView: View {
             } label: {
                 Image(systemName: "plus")
             }
-            .disabled(viewModel.loadState != .loaded)
+            .disabled(viewModel.loadState != .loaded || isSaving)
             .help(LocalizedKey.editorAddRow.text)
             .accessibilityLabel(LocalizedKey.editorAddRow.text)
 
@@ -219,10 +218,14 @@ public struct SecretEditorView: View {
         return viewModel.rows.contains { $0.id == selectedRowID }
     }
 
+    /// Read from the model rather than tracked here. A view-local copy is how
+    /// the two come to disagree, and what has to be true while a save is in
+    /// flight — that nothing can be edited — is a property of the document,
+    /// not of this view.
+    private var isSaving: Bool { viewModel.isSaving }
+
     private func save() async {
-        isSaving = true
         let outcome = await viewModel.save()
-        isSaving = false
         if case .failed(let message) = outcome {
             saveErrorMessage = message
         }
@@ -312,6 +315,12 @@ public struct SecretEditorView: View {
                 onToggleReveal: { toggleReveal(row.id) },
                 onChange: { newValue in viewModel.update(rowID: row.id, to: newValue) })
         }
+        // A save snapshots the pending changes and then spends a few hundred
+        // milliseconds encrypting. An edit made in that window has no
+        // baseline it can be expressed against afterwards, so the model
+        // refuses it — and a field that silently ignores what is typed into
+        // it is worse than one that is plainly unavailable.
+        .disabled(isSaving)
         .listStyle(.inset)
         .scrollOverflowFade()
     }
@@ -460,7 +469,7 @@ private struct SecretRowView: View {
 /// It is masked like any other row the moment the sheet closes.
 public struct EditorAddRowSheet: View {
     let destination: SecretDocumentViewModel.AddDestination
-    let isNameTaken: (String) -> Bool
+    let refusal: (String) -> SecretDocumentViewModel.AddRowRefusal?
     let onCancel: () -> Void
     let onAdd: (String, SecretRow.Kind, String) -> Void
 
@@ -475,12 +484,12 @@ public struct EditorAddRowSheet: View {
     /// which is the same defect CLAUDE.md records for `HealthFindingRow`.
     public init(
         destination: SecretDocumentViewModel.AddDestination,
-        isNameTaken: @escaping (String) -> Bool,
+        refusal: @escaping (String) -> SecretDocumentViewModel.AddRowRefusal?,
         onCancel: @escaping () -> Void,
         onAdd: @escaping (String, SecretRow.Kind, String) -> Void
     ) {
         self.destination = destination
-        self.isNameTaken = isNameTaken
+        self.refusal = refusal
         self.onCancel = onCancel
         self.onAdd = onAdd
     }
@@ -493,11 +502,17 @@ public struct EditorAddRowSheet: View {
         .string, .int, .float, .bool, .null, .timestamp,
     ]
 
-    private var isDuplicate: Bool { !destination.isList && !key.isEmpty && isNameTaken(key) }
+    /// The model's own answer, so the sheet and the save can never disagree
+    /// about whether a name is allowed. `nil` while the field is still empty:
+    /// "you have not typed anything yet" is not an error worth shouting.
+    private var currentRefusal: SecretDocumentViewModel.AddRowRefusal? {
+        guard !destination.isList, !key.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        return refusal(key)
+    }
 
     private var canAdd: Bool {
         if destination.isList { return true }
-        return !key.trimmingCharacters(in: .whitespaces).isEmpty && !isDuplicate
+        return !key.trimmingCharacters(in: .whitespaces).isEmpty && refusal(key) == nil
     }
 
     public var body: some View {
@@ -521,8 +536,8 @@ public struct EditorAddRowSheet: View {
                         .foregroundStyle(.secondary)
                 } else {
                     TextField(LocalizedKey.editorAddKeyField.text, text: $key)
-                    if isDuplicate {
-                        Text(.editorAddDuplicateKey)
+                    if let currentRefusal, let explanation = Self.explanation(for: currentRefusal) {
+                        Text(explanation)
                             .font(.caption)
                             .foregroundStyle(.red)
                     }
@@ -556,6 +571,17 @@ public struct EditorAddRowSheet: View {
         .frame(width: 420)
         .onChange(of: kind) { _, newKind in
             value = Self.defaultValue(for: newKind)
+        }
+    }
+
+    /// Only the reasons a *name* can be refused get a message here; the
+    /// others cannot be reached from this sheet (it is not even presented
+    /// without a loaded document, and the `+` is disabled during a save).
+    static func explanation(for refusal: SecretDocumentViewModel.AddRowRefusal) -> LocalizedKey? {
+        switch refusal {
+        case .duplicateKey: .editorAddDuplicateKey
+        case .reservedKey: .editorAddReservedKey
+        case .emptyKey, .notLoaded, .unsupportedKind, .saveInProgress: nil
         }
     }
 

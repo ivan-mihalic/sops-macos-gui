@@ -775,8 +775,10 @@ func setValueAtPath(branches sops.TreeBranches, edit Edit, value interface{}) er
 			}
 			current = container[index].Value
 		case []interface{}:
-			n, err := strconv.Atoi(segment)
-			if err != nil || n < 0 || n >= len(container) {
+			// Canonical indices only — see listIndex in documentchanges.go for
+			// why "01" must not resolve to element 1.
+			n, ok := listIndex(segment, len(container))
+			if !ok {
 				return notFound()
 			}
 			if _, isComment := container[n].(sops.Comment); isComment {
