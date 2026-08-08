@@ -187,6 +187,61 @@ struct WorktreeResolverTests {
         #expect(root == wt)
         #expect(mainRepo == main)
     }
+
+    // A `.git` file may point at *any* existing directory — a corrupted
+    // pointer, or a stale one left behind by tooling (SPM- and CocoaPods-
+    // style checkouts have been observed doing this) can point at a
+    // directory that is not a git admin directory at all: no HEAD, no
+    // objects, no config. Reporting that as `.mainRepository` would be
+    // indistinguishable from a genuine submodule while being nothing of the
+    // kind. This is the review round-2 finding: the shape-mismatch fallback
+    // must additionally verify the target actually looks like a git admin
+    // directory before trusting it.
+    @Test("a .git file pointing at an ordinary empty directory is not a repository")
+    func gitdirPointsAtEmptyDirectory() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("emptytarget-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+
+        let repo = base.appendingPathComponent("repo")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+
+        let target = base.appendingPathComponent("just-an-empty-folder")
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+
+        try "gitdir: \(target.path)"
+            .write(toFile: repo.appendingPathComponent(".git").path, atomically: true, encoding: .utf8)
+
+        #expect(WorktreeResolver.kind(of: repo.path) == .notAGitRepository)
+    }
+
+    // The shape check for a worktree gitdir (`…/.git/worktrees/<name>`) is
+    // purely lexical, on path component names — it does not by itself prove
+    // the target directory is a genuine worktree admin directory. Build a
+    // directory that *lexically* matches that shape (literal path
+    // components `.git`, `worktrees`, `<name>`) but is hollow — no HEAD, no
+    // commondir, none of what git actually writes there — and confirm it is
+    // rejected rather than trusted on shape alone. `FileManager` resolves
+    // symlinks transparently for existence checks, so this also covers the
+    // symlink variant of the same attack (a `worktrees` or `<name>`
+    // component that is a symlink to a hollow directory rather than a real
+    // one): the content check applies identically either way.
+    @Test("a directory that merely looks like a worktree admin dir by name is not a worktree")
+    func hollowDirectoryShapedLikeAWorktreeIsRejected() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shapeattack-" + UUID().uuidString)
+        let hollowWorktreeDir = base
+            .appendingPathComponent("fake-main/.git/worktrees/fake-name")
+        try FileManager.default.createDirectory(at: hollowWorktreeDir, withIntermediateDirectories: true)
+        // Deliberately nothing inside hollowWorktreeDir: no HEAD, no commondir.
+
+        let victim = base.appendingPathComponent("victim")
+        try FileManager.default.createDirectory(at: victim, withIntermediateDirectories: true)
+        try "gitdir: \(hollowWorktreeDir.path)"
+            .write(toFile: victim.appendingPathComponent(".git").path, atomically: true, encoding: .utf8)
+
+        #expect(WorktreeResolver.kind(of: victim.path) == .notAGitRepository)
+    }
 }
 
 private func git(_ args: [String], in dir: URL) throws {
