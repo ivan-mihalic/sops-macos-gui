@@ -164,8 +164,20 @@ public struct SecurityPostureCheck: HealthCheck {
         return HealthFinding(
             id: "security.legacy-key-file", title: "Plaintext key file", status: .warning,
             detail: "An age key file sits unencrypted at \(legacyKeyFilePath). Anything that can read your home directory — including any process you run — can read that key.",
+            // Was "Import it into the Keychain from the Keys section of this
+            // app." — a sibling of the .sops.yaml wizard defect found
+            // elsewhere in this task, and the more serious of the two: that
+            // one only fires on a project with no .sops.yaml, this one fires
+            // on any machine that actually has a legacy key file, which is
+            // true of the machine this was found on. There is no Keys
+            // section — Keychain key storage is `UnshippedKeyStore` until
+            // M3 (see HealthReport+Standard.swift). Say what's actually
+            // true today: this app cannot import it yet, and the one thing
+            // the user can do without this app's help is narrow who can
+            // read the file in the meantime.
             remediation: Remediation(
-                explanation: "Import it into the Keychain from the Keys section of this app. Once the import is verified, delete the file yourself; this app will not delete it for you."))
+                explanation: "This app can't import it into the Keychain yet — key management arrives in a later update. Until then, make sure only you can read the file.",
+                command: "chmod 600 \(legacyKeyFilePath)"))
     }
 
     /// The provider states a fact; this decides what it is worth. See

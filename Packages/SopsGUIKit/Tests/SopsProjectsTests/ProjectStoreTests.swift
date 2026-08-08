@@ -74,7 +74,68 @@ struct ProjectStoreTests {
             .appendingPathComponent("projects-\(UUID().uuidString).json")
         try "not json at all".write(to: url, atomically: true, encoding: .utf8)
 
-        #expect(ProjectStore(fileURL: url).projects.isEmpty)
+        let store = ProjectStore(fileURL: url)
+        #expect(store.projects.isEmpty)
+        // Review finding: an empty list here used to be indistinguishable
+        // from a new user's — the store must say the file could not be
+        // read, not silently pretend there was nothing to read.
+        #expect(store.loadError != nil)
+    }
+
+    @Test("a missing store file is not an error — it's what a new user's Application Support looks like")
+    func missingFileIsNotAnError() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("projects-\(UUID().uuidString).json")
+
+        let store = ProjectStore(fileURL: url)
+
+        #expect(store.projects.isEmpty)
+        #expect(store.loadError == nil)
+    }
+
+    // MARK: - Migration: a projects.json written before displayPath existed
+
+    // Reviewer-verified defect: `displayPath` is a non-optional stored
+    // property, so the compiler-synthesized `Decodable` this type would
+    // otherwise get treats it as a required key — a `projects.json` written
+    // by a Task 3/4 build (id, displayName, rootPath, addedAt only, no
+    // displayPath) failed to decode at all, and `load(from:)`'s old
+    // `(try? ...) ?? []` swallowed that into a silently empty list. Every
+    // project the user had added was forgotten on first launch of this
+    // build. This is a literal old-format string, not a re-encoded new one
+    // — the point is to decode a file this code never wrote.
+    private static let preDisplayPathJSON = """
+    [{"id":"11111111-1111-1111-1111-111111111111","displayName":"demo","rootPath":"/tmp/demo","addedAt":"2026-01-01T00:00:00Z"}]
+    """
+
+    @Test("a StoredProject encoded before displayPath existed decodes, defaulting displayPath to rootPath")
+    func decodesPreDisplayPathFormat() throws {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let projects = try decoder.decode([StoredProject].self, from: Data(Self.preDisplayPathJSON.utf8))
+
+        let project = try #require(projects.first)
+        #expect(project.rootPath == "/tmp/demo")
+        // Migrated default: before this task, rootPath *was* the display
+        // value (see ProjectStore.normalize(_:)'s doc comment), so a
+        // decoded old project shows exactly what it always showed.
+        #expect(project.displayPath == "/tmp/demo")
+        #expect(project.displayName == "demo")
+    }
+
+    @Test("a projects.json written before displayPath existed still loads through ProjectStore, not silently emptied")
+    func loadsPreDisplayPathStoreFile() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("projects-\(UUID().uuidString).json")
+        try Self.preDisplayPathJSON.write(to: url, atomically: true, encoding: .utf8)
+
+        let store = ProjectStore(fileURL: url)
+
+        #expect(store.projects.count == 1)
+        #expect(store.projects.first?.rootPath == "/tmp/demo")
+        #expect(store.projects.first?.displayPath == "/tmp/demo")
+        // A successful migration is not a read failure.
+        #expect(store.loadError == nil)
     }
 
     @Test("removing leaves the rest intact and persists")

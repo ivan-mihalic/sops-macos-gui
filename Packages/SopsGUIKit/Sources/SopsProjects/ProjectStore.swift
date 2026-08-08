@@ -34,6 +34,36 @@ public struct StoredProject: Codable, Identifiable, Equatable, Sendable {
         self.displayPath = displayPath ?? rootPath
         self.addedAt = addedAt
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, displayName, rootPath, displayPath, addedAt
+    }
+
+    /// Migrating decoder. `displayPath` did not exist before this task — a
+    /// `projects.json` written by a Task 3 or Task 4 build has `id`,
+    /// `displayName`, `rootPath` and `addedAt` only. The compiler-synthesized
+    /// `Decodable` this type would otherwise get treats `displayPath` as a
+    /// required key like any other non-optional stored property, so decoding
+    /// such a file fails outright — and `ProjectStore.load(from:)` used to
+    /// swallow that failure into an empty list indistinguishable from a new
+    /// user's, silently forgetting every project the file actually named.
+    /// Reviewer-verified: fed a literal pre-`displayPath` JSON string and
+    /// got `projects.count == 0` back.
+    ///
+    /// `displayPath` missing from the payload defaults to `rootPath` —
+    /// exactly what it was before this task existed, since `rootPath` *was*
+    /// the display value then (see `ProjectStore.normalize(_:)`'s doc
+    /// comment for that history). A project decoded this way shows exactly
+    /// what it always showed; it only gets a *distinct* `displayPath` again
+    /// if it's removed and re-added.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        rootPath = try container.decode(String.self, forKey: .rootPath)
+        displayPath = try container.decodeIfPresent(String.self, forKey: .displayPath) ?? rootPath
+        addedAt = try container.decode(Date.self, forKey: .addedAt)
+    }
 }
 
 /// Persisted list of projects the user has added.
@@ -55,6 +85,20 @@ public final class ProjectStore {
     }
 
     public private(set) var projects: [StoredProject] = []
+    /// Set at `init` when the store file exists but could not be read —
+    /// unreadable data, or JSON that doesn't decode as `[StoredProject]` even
+    /// after the migration `StoredProject.init(from:)` allows for. `nil` in
+    /// every other case, *including* "no file exists yet", which is not an
+    /// error — it is what a new user's Application Support directory looks
+    /// like before they add a first project. Conflating the two used to mean
+    /// an unreadable file and an empty project list were the same fact as
+    /// far as anything downstream could tell; they are not, and this app's
+    /// standing rule is that it never claims more than it established — an
+    /// empty sidebar is a claim ("you have no projects"), and it must not be
+    /// shown in place of the true one ("your saved projects could not be
+    /// read"). `ProjectSidebarModel` surfaces this through its own
+    /// `lastError` at construction time.
+    public private(set) var loadError: String?
 
     private let fileURL: URL
     private let fileManager = FileManager.default
@@ -70,7 +114,9 @@ public final class ProjectStore {
 
     public init(fileURL: URL) {
         self.fileURL = fileURL
-        self.projects = Self.load(from: fileURL)
+        let loaded = Self.load(from: fileURL)
+        self.projects = loaded.projects
+        self.loadError = loaded.error
     }
 
     /// Adds `path` as a project. Fails if `path` is not a directory, or if
@@ -174,14 +220,34 @@ public final class ProjectStore {
         }
     }
 
-    /// Loads the store from disk. A missing or corrupt file yields an empty
-    /// list rather than throwing at launch — a project list is not worth
-    /// crashing over, and the user can re-add projects.
-    private static func load(from url: URL) -> [StoredProject] {
-        guard let data = try? Data(contentsOf: url) else { return [] }
+    /// Loads the store from disk. Never throws at launch — a project list is
+    /// not worth crashing the app over — but a file that exists and could
+    /// not be read is a materially different fact from no file existing at
+    /// all, and the two are kept apart in the returned `error`:
+    ///
+    /// - No file at `url`: brand new user, or every project was removed.
+    ///   `error` is `nil` — an empty list is the honest, complete answer.
+    /// - A file exists but its bytes can't be read, or its JSON doesn't
+    ///   decode as `[StoredProject]` even through the migrating
+    ///   `StoredProject.init(from:)` — `error` is set, and `projects` comes
+    ///   back empty *not because that is true*, but because there is nothing
+    ///   else this method can safely return. The caller (`ProjectStore`,
+    ///   then `ProjectSidebarModel`) is responsible for telling the user
+    ///   `error` rather than rendering the empty list as if it were real.
+    private static func load(from url: URL) -> (projects: [StoredProject], error: String?) {
+        guard FileManager.default.fileExists(atPath: url.path) else { return ([], nil) }
+
+        guard let data = try? Data(contentsOf: url) else {
+            return ([], "Your saved project list at \(url.path) could not be read.")
+        }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return (try? decoder.decode([StoredProject].self, from: data)) ?? []
+        do {
+            let projects = try decoder.decode([StoredProject].self, from: data)
+            return (projects, nil)
+        } catch {
+            return ([], "Your saved project list at \(url.path) could not be read: \(error).")
+        }
     }
 
     /// Canonicalizes a path so two different spellings of the same

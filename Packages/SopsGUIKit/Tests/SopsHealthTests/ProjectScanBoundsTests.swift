@@ -131,6 +131,43 @@ struct ProjectScanBoundsTests {
         #expect(recipients.detail.contains("Checked"))
         #expect(recipients.detail.contains("they all match"))
     }
+
+    // Review finding: `FileManager.enumerator(at:)` returns `nil` for a
+    // missing root exactly as it would for other reasons, so the previous
+    // `walk` collapsed both into the same empty `ScannedTree` — a caller had
+    // no way to tell "there was nothing to walk" from "I looked and there
+    // was nothing here". `rootMissing` is the distinction; this proves the
+    // scanner sets it, and does not also set `wasTruncated` or invent
+    // `skippedDirectoryNames` for a walk that never started.
+    @Test("scanning a root that does not exist is reported as missing, not as an empty tree")
+    func missingRootIsReportedNotSilentlyEmpty() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("does-not-exist-" + UUID().uuidString)
+        // Deliberately never created.
+
+        let scanned = await ProjectScanner.scan(root: root)
+
+        #expect(scanned.rootMissing)
+        #expect(scanned.encrypted.isEmpty)
+        #expect(scanned.encryptedInOtherFormats.isEmpty)
+        #expect(scanned.plaintextCandidates.isEmpty)
+        #expect(!scanned.wasTruncated)
+        #expect(scanned.skippedDirectoryNames.isEmpty)
+    }
+
+    // A root that exists as an ordinary directory must not be misreported —
+    // proves the new check doesn't accidentally widen to "anything empty".
+    @Test("scanning a root that exists and is genuinely empty is not reported as missing")
+    func genuinelyEmptyRootIsNotReportedAsMissing() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("empty-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let scanned = await ProjectScanner.scan(root: root)
+
+        #expect(!scanned.rootMissing)
+    }
 }
 
 private struct FixedProjects: ProjectSourceProviding {

@@ -31,6 +31,24 @@ public struct ScannedTree: Sendable {
     /// not in walk order). Disclosed to the user rather than left as a
     /// silent constant — see `ProjectScanner.skippedDirectoryNames`.
     public var skippedDirectoryNames: [String] = []
+    /// `true` when `root` itself could not be found as a directory —
+    /// deleted, unmounted, or renamed after the project was added to the
+    /// store.
+    ///
+    /// This exists because a walk that never ran and a walk that ran and
+    /// genuinely found nothing produce the *same* empty `ScannedTree`
+    /// otherwise: `encrypted == []`, `plaintextCandidates == []`,
+    /// `wasTruncated == false`. `FileManager.enumerator(at:)` returns `nil`
+    /// for a missing root exactly as it would for other reasons, with no way
+    /// for a caller to tell "there was nothing to walk" from "I looked and
+    /// there was nothing here" — and `ProjectHealthCheck` used to report the
+    /// second, confident answer in both cases: `.ok`, "Looked through
+    /// <path> ... and found none" about a directory that no longer exists,
+    /// and a matching "No .sops.yaml in <path>" warning right below it, as
+    /// if both checks had actually run. Neither had anything to look at.
+    /// `ProjectHealthCheck.findings(for:)` checks this flag before treating
+    /// an empty tree as a real answer about anything.
+    public var rootMissing = false
 }
 
 /// Walks a project tree once, classifying every regular file as
@@ -346,6 +364,28 @@ public struct ProjectScanner {
     /// tree pre-populated with `skippedDirectoryNames`/`wasTruncated` and the
     /// list of regular-file URLs still needing a tail read.
     private static func walk(root: URL) -> (tree: ScannedTree, candidates: [URL]) {
+        // Checked explicitly, before ever asking for an enumerator, so the
+        // resulting `ScannedTree` can say *why* it's empty rather than just
+        // being empty — see `ScannedTree.rootMissing`'s doc comment. A path
+        // that exists but isn't a directory (the project's root replaced by
+        // a plain file after being added, however unlikely) is the same
+        // "nothing to walk" situation as a path that doesn't exist at all.
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            var tree = ScannedTree()
+            tree.rootMissing = true
+            return (tree, [])
+        }
+
+        // `root` does exist as a directory at this point, so a `nil`
+        // enumerator here is some other failure (most likely a permissions
+        // problem) rather than a missing directory. That is a narrower,
+        // pre-existing gap this fix does not close: the walk still falls
+        // back to an empty-but-not-`rootMissing` tree in that case, which
+        // `ProjectHealthCheck` still cannot distinguish from "genuinely
+        // empty". Worth another pass, but it is not the deleted-directory
+        // case this fix addresses, and conflating the two would mislabel a
+        // permissions problem as a missing project.
         guard let enumerator = FileManager.default.enumerator(
             at: root, includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
             options: [.skipsPackageDescendants]) else { return (ScannedTree(), []) }

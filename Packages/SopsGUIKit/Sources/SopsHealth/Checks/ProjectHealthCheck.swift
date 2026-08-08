@@ -112,6 +112,31 @@ public struct ProjectHealthCheck: HealthCheck {
 
         // One walk of the tree feeds both findings below.
         let tree = await ProjectScanner.scan(root: root)
+
+        // The directory this project points to is gone — deleted, unmounted,
+        // renamed. Nothing below this point ran against anything: the walk
+        // never visited a single file, and `configURL`'s own existence check
+        // would report "No .sops.yaml" as if it had actually looked, which is
+        // exactly the same false confidence as the gitignore finding's
+        // "found none" over a scan that never happened. One honest finding
+        // replaces all three project findings — sops-yaml, recipients,
+        // gitignore — rather than three separately-worded ways of not
+        // admitting the same thing. `ProjectSidebar` already surfaces this
+        // exact fact today (`ProjectStore.isMissing`, badge in the sidebar);
+        // this is the same signal reaching the health report, computed the
+        // same way sops-yaml's own existence check below is: reading the
+        // filesystem this check already walks, without adding a field to
+        // `InspectedProject` that every other call site would then have to
+        // keep in sync with the filesystem too.
+        guard !tree.rootMissing else {
+            return [HealthFinding(
+                id: "project.\(idScope).missing", title: "\(project.name): project directory",
+                status: .warning,
+                detail: "The directory this project points to, \(project.rootPath), could not be found. Nothing here was checked — not .sops.yaml, not encrypted files, not gitignore status — because there was nothing to look at.",
+                remediation: Remediation(
+                    explanation: "If the directory was moved or renamed, remove this project and re-add it at the new location. If it was deleted or is on an unmounted volume, removing it here only stops tracking it — nothing on disk is touched either way."))]
+        }
+
         let leak = gitignoreFinding(for: project, idScope: idScope, root: root,
                                     candidates: tree.plaintextCandidates, gitPath: gitPath)
 

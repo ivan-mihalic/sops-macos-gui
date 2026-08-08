@@ -36,6 +36,13 @@ public final class ProjectSidebarModel {
 
     public init(store: ProjectStore) {
         self.store = store
+        // Surfaced immediately, not just after the first failed add/remove:
+        // `ProjectStore.loadError` is set once, at the store's own `init`,
+        // if the file on disk existed but could not be read. Without this,
+        // the sidebar would open on an empty list with no explanation —
+        // which reads as "you have no projects", a claim the store never
+        // actually established. See `ProjectStore.loadError`'s doc comment.
+        self.lastError = store.loadError
         rebuildGroups()
     }
 

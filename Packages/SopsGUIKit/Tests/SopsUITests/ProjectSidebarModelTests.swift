@@ -229,6 +229,36 @@ struct ProjectSidebarModelTests {
         #expect(model.groups.first?.members.map(\.id) == [project.id])
         #expect(model.isMissing(project))
     }
+
+    // MARK: - Unreadable store file
+
+    // Review finding: a store file that exists but fails to decode used to
+    // come up as an empty, unremarkable sidebar — the user had no way to
+    // tell "you have no projects" from "your projects couldn't be read".
+    // `ProjectStore.loadError` carries the distinction; this proves the
+    // sidebar model surfaces it immediately, at construction, not only after
+    // some later action.
+    @Test("a store that could not be read surfaces an error immediately, not an empty sidebar")
+    func unreadableStoreSurfacesErrorAtConstruction() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sidebar-projects-\(UUID().uuidString).json")
+        try "not json at all".write(to: url, atomically: true, encoding: .utf8)
+        let store = ProjectStore(fileURL: url)
+
+        let model = ProjectSidebarModel(store: store)
+
+        #expect(model.lastError != nil)
+        #expect(model.groups.isEmpty)
+    }
+
+    @Test("a store with no file yet surfaces no error")
+    func freshStoreSurfacesNoError() throws {
+        let (store, _) = makeStore()
+
+        let model = ProjectSidebarModel(store: store)
+
+        #expect(model.lastError == nil)
+    }
 }
 
 private func git(_ args: [String], in dir: URL) throws {
