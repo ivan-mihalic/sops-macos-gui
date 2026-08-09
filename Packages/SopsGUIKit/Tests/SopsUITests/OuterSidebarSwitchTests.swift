@@ -147,6 +147,41 @@ struct OuterSidebarWiringTests {
     /// text too. The suite's own doc comment had warned that checking the name
     /// and not the body is how a source-level test becomes decoration; checking
     /// the body as *text* was one step better and still not enough.
+    /// Removes `/* */` blocks as well as `//` line comments.
+    ///
+    /// The `//`-only version was defeated one round later in the obvious way:
+    /// wrap the guarded form in `/* */` above the gutted code and every check
+    /// passed while a click on About discarded a dirty document. Still naive —
+    /// it does not know about string literals containing `//` — which is one
+    /// more reason the real guard is behavioural.
+    static func strippingComments(_ source: String) -> String {
+        var out = ""
+        var index = source.startIndex
+        var inBlock = false
+        while index < source.endIndex {
+            let rest = source[index...]
+            if inBlock {
+                guard let close = rest.range(of: "*/") else { break }
+                index = close.upperBound
+                inBlock = false
+                continue
+            }
+            if rest.hasPrefix("/*") {
+                inBlock = true
+                index = source.index(index, offsetBy: 2)
+                continue
+            }
+            if rest.hasPrefix("//") {
+                guard let newline = rest.firstIndex(of: "\n") else { break }
+                index = newline
+                continue
+            }
+            out.append(source[index])
+            index = source.index(after: index)
+        }
+        return out
+    }
+
     private static var appShellSource: String {
         get throws {
             let raw = try String(
@@ -156,13 +191,7 @@ struct OuterSidebarWiringTests {
                     .deletingLastPathComponent()
                     .appendingPathComponent("Sources/SopsUI/AppShell.swift").path,
                 encoding: .utf8)
-            return raw
-                .split(separator: "\n", omittingEmptySubsequences: false)
-                .map { line -> Substring in
-                    guard let marker = line.range(of: "//") else { return line }
-                    return line[line.startIndex..<marker.lowerBound]
-                }
-                .joined(separator: "\n")
+            return Self.strippingComments(raw)
         }
     }
 
@@ -200,28 +229,75 @@ struct OuterSidebarWiringTests {
             "the outer sidebar stays live during a save")
     }
 
-    /// The rule the two tests above do not state: the binding must **ask**.
+    /// That the controls are wired to the guarded binding at all.
     ///
-    /// A review gutted `guardedSelection`'s setter to `selection = requested`,
-    /// left the name alone, and all 583 tests stayed green — including the two
-    /// above, which only check that something called `guardedSelection` is
-    /// passed to the two controls. Checking the name and not the body is how
-    /// a source-level test becomes decoration.
+    /// This is the one claim still made about source text, and it is the
+    /// weakest kind: it says the binding is built from the request handler,
+    /// not what happens when someone writes to it. What happens is now checked
+    /// by running it — see `GuardedSelectionBindingTests` at the end of this
+    /// file, which exists because three rounds of increasingly clever string
+    /// matching were each defeated by a slightly cleverer comment.
     ///
-    /// Still weaker than driving the binding, which `@State` does not allow
-    /// from a test. It pins the one line that carries the decision.
-    @Test("the guarded binding routes its setter through the decision")
-    func setterAsksTheDecision() throws {
+    /// Kept anyway: the behavioural test cannot see whether anyone hands the
+    /// binding to the `List`. Between them they cover both halves.
+    @Test("the guarded binding is built from the request handler")
+    func bindingIsBuiltFromTheRequestHandler() throws {
         let source = try Self.appShellSource
-
-        // The setter is the only place `requestSectionSwitch` is called, and
-        // `requestSectionSwitch` is the only caller of the decision function.
-        // Both links have to be present for the click to reach the guard.
         #expect(
-            source.contains("set: { requested in requestSectionSwitch(to: requested) }"),
-            "guardedSelection's setter no longer calls requestSectionSwitch — a click on About writes selection directly and the open document dies unasked")
+            source.contains("Self.makeGuardedSelection("),
+            "guardedSelection no longer goes through makeGuardedSelection")
+        #expect(
+            source.contains("request: { requested in requestSectionSwitch(to: requested) }"),
+            "the binding's request handler no longer calls requestSectionSwitch — a click on About writes selection directly and the open document dies unasked")
         #expect(
             source.contains("switch Self.sectionSwitchDecision("),
             "requestSectionSwitch no longer consults sectionSwitchDecision")
+    }
+}
+
+
+/// The binding, driven rather than read.
+///
+/// Three rounds of source-text tests each answered the previous attack and
+/// invited the next: check the name → gut the setter; check the setter's text
+/// → move the literal into a `//` comment; strip `//` → use `/* */`. The last
+/// of those left every assertion in this file green while a click on About
+/// discarded a dirty document without asking.
+///
+/// A `Binding` can be written to from a test. That closes the whole family.
+@MainActor
+@Suite("The guarded binding routes writes, verified by writing to it")
+struct GuardedSelectionBindingTests {
+
+    @Test("every write goes to the request handler, never straight to selection")
+    func writesAreRouted() {
+        var currentValue = AppShell.Section.projects
+        var requested: [AppShell.Section] = []
+
+        let binding = AppShell.makeGuardedSelection(
+            current: { currentValue },
+            request: { requested.append($0) })
+
+        binding.wrappedValue = .about
+        binding.wrappedValue = .settings
+
+        #expect(
+            requested == [.about, .settings],
+            "a write bypassed the request handler — that write is a dirty document dying unasked")
+        #expect(
+            currentValue == .projects,
+            "the binding mutated the selection directly instead of asking; the guard can no longer refuse")
+    }
+
+    @Test("the getter reflects the live value rather than a captured copy")
+    func getterIsLive() {
+        var currentValue = AppShell.Section.projects
+        let binding = AppShell.makeGuardedSelection(current: { currentValue }, request: { _ in })
+
+        #expect(binding.wrappedValue == .projects)
+        currentValue = .settings
+        #expect(
+            binding.wrappedValue == .settings,
+            "the binding captured the value once, so a refused switch would not visually revert")
     }
 }

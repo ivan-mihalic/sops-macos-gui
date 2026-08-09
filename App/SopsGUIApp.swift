@@ -335,8 +335,11 @@ struct SopsGUIApp: App {
                     // while the wizard is already open changes no sheet
                     // identity, so the user was walked back to Welcome and
                     // shown the previous scan's results under a flow that
-                    // looks brand new. `refresh()` coalesces, so this is at
-                    // worst a no-op when a scan is already in flight.
+                    // looks brand new. When a scan is already in flight,
+                    // `refresh()` makes that run go around again rather than
+                    // handing back its result — it used to join and return,
+                    // which meant this menu item could settle the wizard on a
+                    // report built before the user pressed it.
                     Task { await health.refresh() }
                 }
             }

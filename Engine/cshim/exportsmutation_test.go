@@ -358,7 +358,7 @@ func TestResultRecoveryCatchesMutations(t *testing.T) {
 	// TODO: restore the recover() here before shipping.
 	return statusOK
 }`,
-			expected: "does not defer a closure that calls recover()",
+			expected: "not the required shape",
 		},
 		{
 			name: "no defer at all, recover called inline",
@@ -368,7 +368,7 @@ func TestResultRecoveryCatchesMutations(t *testing.T) {
 	}
 	return statusOK
 }`,
-			expected: "does not defer a closure that calls recover()",
+			expected: "not the required shape",
 		},
 		{
 			// Swallows the panic and falls off the end, returning a zero
@@ -380,7 +380,7 @@ func TestResultRecoveryCatchesMutations(t *testing.T) {
 	}()
 	return statusOK
 }`,
-			expected: "does not defer a closure that calls recover()",
+			expected: "not the required shape",
 		},
 		{
 			// The one the hand-run mutations missed. recover() returns nil
@@ -398,7 +398,7 @@ func TestResultRecoveryCatchesMutations(t *testing.T) {
 	}()
 	return statusOK
 }`,
-			expected: "does not defer a closure that calls recover()",
+			expected: "not the required shape",
 		},
 		{
 			// Notices the panic and returns success anyway.
@@ -410,7 +410,7 @@ func TestResultRecoveryCatchesMutations(t *testing.T) {
 	}()
 	return statusOK
 }`,
-			expected: "never assigns to a named result",
+			expected: "not the required shape",
 		},
 		{
 			name: "the recover branch is empty",
@@ -421,7 +421,7 @@ func TestResultRecoveryCatchesMutations(t *testing.T) {
 	}()
 	return statusOK
 }`,
-			expected: "never assigns to a named result",
+			expected: "not the required shape",
 		},
 		{
 			// `:=` shadows rather than sets. Looks right, does nothing.
@@ -435,7 +435,7 @@ func TestResultRecoveryCatchesMutations(t *testing.T) {
 	}()
 	return statusOK
 }`,
-			expected: "never assigns to a named result",
+			expected: "not the required shape",
 		},
 	}
 
@@ -578,5 +578,91 @@ func TestResultRecoveryAcceptsTheOnlyRightAnswer(t *testing.T) {
 		if len(complaints) != 0 {
 			t.Fatalf("rejected the correct shape %q: %v", branch, complaints)
 		}
+	}
+}
+
+// TestResultRecoveryRejectsWrittenButUnreachedFailures covers the round of
+// attacks that the value check could not see.
+//
+// Rule 5 asked whether `status = statusFailure` was *written*. A review pointed
+// out that says nothing about whether it *runs*, and produced six shapes that
+// wrote it and still returned success. The rule now requires the one canonical
+// shape instead of describing wrong ones; these are its regression cases.
+func TestResultRecoveryRejectsWrittenButUnreachedFailures(t *testing.T) {
+	bodies := []struct{ name, body string }{
+		{
+			name: "a later assignment overwrites the failure",
+			body: `	defer func() {
+		if recover() != nil {
+			status = statusFailure
+			status = statusOK
+		}
+	}()`,
+		},
+		{
+			// The nastiest of the set: reads as tidying up, and makes
+			// `statusFailure` mean success inside this closure only.
+			name: "statusFailure is shadowed by a local constant",
+			body: `	defer func() {
+		const statusFailure C.int = 0
+		if recover() != nil {
+			status = statusFailure
+		}
+	}()`,
+		},
+		{
+			name: "a second defer undoes the first by LIFO",
+			body: `	defer func() {
+		if recover() != nil {
+			status = statusFailure
+		}
+	}()
+	defer func() {
+		status = statusOK
+	}()`,
+		},
+		{
+			name: "the condition is inverted",
+			body: `	defer func() {
+		if recover() == nil {
+			status = statusFailure
+		}
+	}()`,
+		},
+		{
+			name: "the assignment sits in an unreachable branch",
+			body: `	defer func() {
+		if recover() != nil {
+			if false {
+				status = statusFailure
+			}
+		}
+	}()`,
+		},
+		{
+			name: "the assignment sits in a loop that never runs",
+			body: `	defer func() {
+		if recover() != nil {
+			for i := 0; i < 0; i++ {
+				status = statusFailure
+			}
+		}
+	}()`,
+		},
+	}
+
+	for _, shape := range bodies {
+		t.Run(shape.name, func(t *testing.T) {
+			source := "func result(out **C.char, payload []byte, err error) (status C.int) {\n" +
+				shape.body + "\n\treturn statusOK\n}"
+			complaints, err := inspectResultRecovery(resultFixture(source))
+			if err != nil {
+				t.Fatalf("parse fixture: %v", err)
+			}
+			if len(complaints) == 0 {
+				t.Fatalf("accepted a shape that writes statusFailure but never reaches it:\n%s",
+					shape.body)
+			}
+		})
 	}
 }

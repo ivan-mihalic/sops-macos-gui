@@ -97,16 +97,45 @@ public final class HealthViewModel {
     /// A caller that arrives mid-refresh awaits the same run and observes its
     /// result; it never starts a second one, and `isRunning` stays true until
     /// that shared run actually finishes.
+    /// Set when someone asks for a refresh while one is already running.
+    ///
+    /// Joining the in-flight run and returning was wrong, and measurably so: a
+    /// caller who arrives mid-scan gets a report **built from inputs captured
+    /// before they asked**. The sequence that matters is Settings › Health
+    /// starting a scan, the user adding a project or importing a key while it
+    /// runs, then App menu › "Run setup check" — the wizard would settle on a
+    /// verdict about the old inputs and schedule nothing further, because the
+    /// sheet's identity does not change and the wizard has no re-run of its
+    /// own. Measured: one builder call, `hasCompletedRefresh == true`, one
+    /// finding, against two live projects.
+    ///
+    /// `init(reportBuilder:)` exists to forbid exactly this — "a stale result
+    /// standing in for one nobody actually checked".
+    private var rerunRequested = false
+
     public func refresh() async {
         if let inFlightRefresh {
+            // Ask the running scan to go around once more, then wait for the
+            // whole chain — the task does not finish until it stops looping,
+            // so awaiting it is awaiting the fresh answer, not the stale one.
+            rerunRequested = true
             await inFlightRefresh.value
             return
         }
+        await startRefresh()
+    }
+
+    private func startRefresh() async {
         isRunning = true
-        let task = Task {
-            let results = await self.reportBuilder().run()
-            self.findings = results
-            self.hasCompletedRefresh = true
+        let task = Task { @MainActor in
+            repeat {
+                // Cleared before the run, not after: a request that arrives
+                // *during* this iteration has to survive into the next check.
+                self.rerunRequested = false
+                let results = await self.reportBuilder().run()
+                self.findings = results
+                self.hasCompletedRefresh = true
+            } while self.rerunRequested
             self.isRunning = false
             self.inFlightRefresh = nil
         }

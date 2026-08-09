@@ -175,3 +175,71 @@ struct HealthViewModelTests {
         #expect(Set(rendered.map(\.id)) == Set(model.findings.map(\.id)))
     }
 }
+
+/// A refresh must not answer with a report built before it was asked for.
+@MainActor
+@Suite("A joined refresh still reflects state as of the request")
+struct HealthRefreshFreshnessTests {
+
+    @Test("a refresh arriving mid-scan causes another run, not a stale answer")
+    func midScanRefreshRerunsTheBuilder() async {
+        var builderCalls = 0
+        var liveInputs = ["p1"]
+        let gate = AsyncGate()
+
+        let model = HealthViewModel(reportBuilder: {
+            builderCalls += 1
+            let snapshot = liveInputs
+            return HealthReport(checks: [SnapshotCheck(ids: snapshot, gate: gate)])
+        })
+
+        // First refresh starts and blocks inside the check.
+        async let first: Void = model.refresh()
+        await gate.waitUntilEntered()
+
+        // The user changes the world, then explicitly asks for a check.
+        liveInputs = ["p1", "p2"]
+        async let second: Void = model.refresh()
+
+        await gate.release()
+        _ = await (first, second)
+
+        #expect(
+            builderCalls == 2,
+            "the second request was answered by the run already in flight, so the report describes inputs captured before the user asked")
+        #expect(model.findings.count == 2, "the settled report is the stale one")
+        #expect(!model.isRunning)
+    }
+}
+
+/// A check that parks until released, so a second `refresh()` can arrive
+/// while the first is genuinely mid-flight.
+private actor AsyncGate {
+    private var entered = false
+    private var released = false
+
+    func markEntered() { entered = true }
+    func waitUntilEntered() async {
+        while !entered { await Task.yield() }
+    }
+    func release() { released = true }
+    func waitForRelease() async {
+        while !released { await Task.yield() }
+    }
+}
+
+private struct SnapshotCheck: HealthCheck {
+    let ids: [String]
+    let gate: AsyncGate
+
+    var id: String { "snapshot" }
+    var category: HealthCategory { .projects }
+
+    func run() async -> [HealthFinding] {
+        await gate.markEntered()
+        await gate.waitForRelease()
+        return ids.map {
+            HealthFinding(id: "project.\($0)", title: $0, status: .ok, detail: "")
+        }
+    }
+}

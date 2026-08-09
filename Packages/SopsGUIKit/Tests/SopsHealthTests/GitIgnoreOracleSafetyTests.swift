@@ -162,14 +162,39 @@ struct GitIgnoreOracleSafetyTests {
 
     /// Removes `//` line comments so a matched literal cannot be satisfied by
     /// a comment sitting above the very code it is supposed to describe.
+    /// Removes `/* */` blocks as well as `//` line comments.
+    ///
+    /// The `//`-only version was defeated one round later in the obvious way:
+    /// wrap the guarded form in `/* */` above the gutted code and every check
+    /// passed while a click on About discarded a dirty document. Still naive —
+    /// it does not know about string literals containing `//` — which is one
+    /// more reason the real guard is behavioural.
     static func strippingComments(_ source: String) -> String {
-        source
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { line -> Substring in
-                guard let marker = line.range(of: "//") else { return line }
-                return line[line.startIndex..<marker.lowerBound]
+        var out = ""
+        var index = source.startIndex
+        var inBlock = false
+        while index < source.endIndex {
+            let rest = source[index...]
+            if inBlock {
+                guard let close = rest.range(of: "*/") else { break }
+                index = close.upperBound
+                inBlock = false
+                continue
             }
-            .joined(separator: "\n")
+            if rest.hasPrefix("/*") {
+                inBlock = true
+                index = source.index(index, offsetBy: 2)
+                continue
+            }
+            if rest.hasPrefix("//") {
+                guard let newline = rest.firstIndex(of: "\n") else { break }
+                index = newline
+                continue
+            }
+            out.append(source[index])
+            index = source.index(after: index)
+        }
+        return out
     }
 
     private func run(_ tool: String, _ arguments: [String]) {

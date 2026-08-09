@@ -154,9 +154,30 @@ public struct AppShell: View {
     /// to ask it from outside the view for the same reason — so this reads the
     /// same two flags ⌘Q does, rather than inventing a second notion of dirty.
     private var guardedSelection: Binding<Section> {
-        Binding(
-            get: { selection },
-            set: { requested in requestSectionSwitch(to: requested) })
+        Self.makeGuardedSelection(
+            current: { selection },
+            request: { requested in requestSectionSwitch(to: requested) })
+    }
+
+    /// The binding itself, built from two closures so a test can drive it.
+    ///
+    /// This exists because the source-text tests kept losing. Round one
+    /// checked that something *named* `guardedSelection` reached the two
+    /// controls — a review gutted the setter and left 583 tests green. Round
+    /// two checked the setter's text — a review moved the matched literal into
+    /// a `//` comment above the gutted code. Round three stripped `//`
+    /// comments — a review used `/* */`. Each fix answered the last attack and
+    /// invited the next, because none of them observed behaviour.
+    ///
+    /// So: a free function returning the `Binding`, which a test can actually
+    /// write to. `AppShell`'s own property is now two lines with nothing to
+    /// get wrong, and the property that matters — a write goes through
+    /// `request`, never straight to `selection` — is checked by running it.
+    static func makeGuardedSelection(
+        current: @escaping () -> Section,
+        request: @escaping (Section) -> Void
+    ) -> Binding<Section> {
+        Binding(get: current, set: request)
     }
 
     /// The question `guardedSelection` asks, as a pure function so a test can

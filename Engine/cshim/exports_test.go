@@ -122,85 +122,162 @@ func inspectResultRecovery(src any) (complaints []string, err error) {
 		if !ok || fn.Name.Name != "result" || fn.Body == nil {
 			continue
 		}
+		return complaintsAboutResultRecovery(fn), nil
+	}
+	return []string{"no function named result in main.go"}, nil
+}
 
-		var recoversAndActs bool
-		for _, stmt := range fn.Body.List {
-			deferred, ok := stmt.(*ast.DeferStmt)
-			if !ok {
-				continue
-			}
-			lit, ok := deferred.Call.Fun.(*ast.FuncLit)
-			if !ok || lit.Body == nil {
-				continue
-			}
-			// Rule 4: no nested function literal inside the deferred closure.
-			//
-			// `defer func() { go func() { recover() }() }()` satisfied every
-			// other rule here and is **worse than having no recover at all**:
-			// `recover` returns nil anywhere except directly inside the
-			// deferred function, so the panic escapes and terminates the host
-			// — while the test reports OK. A review found this after rules 1–3
-			// had been written specifically to stop the swallow shapes.
-			//
-			// Nothing legitimate in this position needs a closure, so refusing
-			// all of them costs nothing and does not rest on my guessing which
-			// nestings preserve the recover.
-			var nestedLiteral bool
-			ast.Inspect(lit.Body, func(n ast.Node) bool {
-				if n == ast.Node(lit) {
-					return true
-				}
-				if _, ok := n.(*ast.FuncLit); ok {
-					nestedLiteral = true
-					return false
-				}
-				return true
-			})
-			if nestedLiteral {
-				continue
-			}
-
-			// Rules 2 and 3 together: the recover call has to feed something —
-			// a condition, an assignment, a comparison — not stand alone as an
-			// expression statement.
-			ast.Inspect(lit.Body, func(n ast.Node) bool {
-				if stmt, ok := n.(*ast.ExprStmt); ok && isRecoverCall(stmt.X) {
-					// A bare `recover()` statement: rule 3 violated. Do not
-					// descend — the call underneath is this same call, and
-					// counting it would let the swallow-everything shape pass.
-					return false
-				}
-				if isRecoverCall(n) {
-					recoversAndActs = true
-					return false
-				}
-				return true
-			})
-			// Rule 5: the closure must assign to one of the function's named
-			// results. Without this, every rule above can be satisfied by a
-			// closure that observes the panic and then lets `result` return
-			// its zero `status` — success, for a call that panicked.
-			if recoversAndActs && !assignsToNamedResult(fn, lit.Body) {
-				recoversAndActs = false
-				complaints = append(complaints,
-					"result recovers but never assigns to a named result: the panic is "+
-						"observed and then reported as success")
-			}
-			if recoversAndActs {
-				break
-			}
-		}
-
-		if !recoversAndActs && len(complaints) == 0 {
-			complaints = append(complaints,
-				"result does not defer a closure that calls recover() and acts on its value; "+
-					"a panic in C.CString, or a nil out-parameter from Swift, would then "+
-					"terminate the host application")
-		}
-		return complaints, nil
+// complaintsAboutResultRecovery requires the one canonical shape rather than
+// trying to name the wrong ones.
+//
+// Three rounds of this rule each described a *shape* and each was walked
+// around. "Assigns to a named result" fell to `status = status`. "Assigns
+// something other than itself" fell to seven more, `status = statusOK` worst
+// among them because it reads like error handling. "Assigns statusFailure"
+// then fell to a review that pointed out the rule only asked whether the
+// statement was *written*, not whether it *runs*: a later `status = statusOK`
+// overwriting it, a locally shadowed `const statusFailure C.int = 0`, a second
+// `defer` winning by LIFO, an inverted `if recover() == nil`, or the donor
+// sitting in `if false`.
+//
+// Enumerating attacks loses. There is exactly one correct implementation of
+// this function's recover, so this asserts that and nothing else:
+//
+//	defer func() {
+//	    if recover() != nil {
+//	        …optional statements…
+//	        status = statusFailure
+//	    }
+//	}()
+//
+// Exactly one `defer` in the body; a function literal; whose body is exactly
+// one `if`; whose condition is `recover() != nil`; whose final statement
+// assigns the package-level `statusFailure` to a named result; and no other
+// assignment to a named result anywhere in the closure. A legitimate refactor
+// will fail this, and should — it is the one line deciding whether a panicking
+// call is reported as a failure.
+func complaintsAboutResultRecovery(fn *ast.FuncDecl) []string {
+	say := func(reason string) []string {
+		return []string{"result's recover is not the required shape: " + reason +
+			". A panic here reaches the Swift caller as a success"}
 	}
 
-	return []string{"no function named result in main.go"}, nil
+	var defers []*ast.DeferStmt
+	for _, stmt := range fn.Body.List {
+		if deferred, ok := stmt.(*ast.DeferStmt); ok {
+			defers = append(defers, deferred)
+		}
+	}
+	if len(defers) != 1 {
+		return say(fmt.Sprintf("expected exactly 1 defer, found %d (deferred functions run "+
+			"last-in-first-out, so a second one can undo the first)", len(defers)))
+	}
+
+	lit, ok := defers[0].Call.Fun.(*ast.FuncLit)
+	if !ok || lit.Body == nil {
+		return say("the deferred call is not a function literal")
+	}
+
+	// recover() only works called directly by the deferred function.
+	var nested bool
+	ast.Inspect(lit.Body, func(n ast.Node) bool {
+		if _, ok := n.(*ast.FuncLit); ok {
+			nested = true
+			return false
+		}
+		return true
+	})
+	if nested {
+		return say("it contains a nested function literal, and recover() returns nil " +
+			"anywhere but directly inside the deferred function")
+	}
+
+	if len(lit.Body.List) != 1 {
+		return say(fmt.Sprintf("its body has %d statements, expected exactly 1 `if`",
+			len(lit.Body.List)))
+	}
+	ifStmt, ok := lit.Body.List[0].(*ast.IfStmt)
+	if !ok {
+		return say("its body is not a single `if`")
+	}
+	if ifStmt.Else != nil {
+		return say("the `if` has an else branch")
+	}
+	if !isRecoverIsNotNil(ifStmt.Cond) {
+		return say("the condition is not `recover() != nil` (an inverted comparison " +
+			"is a one-character change that disables the whole guard)")
+	}
+	if len(ifStmt.Body.List) == 0 {
+		return say("the recover branch is empty")
+	}
+
+	// The failure assignment must be last, so nothing after it can overwrite.
+	last, ok := ifStmt.Body.List[len(ifStmt.Body.List)-1].(*ast.AssignStmt)
+	if !ok || !assignsFailureToResult(fn, last) {
+		return say("its last statement is not `<named result> = statusFailure`")
+	}
+
+	// And nothing else in the closure may write a named result, so the value
+	// that reaches the caller is the one this branch chose.
+	names := namedResults(fn)
+	var extra bool
+	ast.Inspect(lit.Body, func(n ast.Node) bool {
+		assign, ok := n.(*ast.AssignStmt)
+		if !ok || assign == last {
+			return true
+		}
+		for _, lhs := range assign.Lhs {
+			if ident, ok := lhs.(*ast.Ident); ok && names[ident.Name] {
+				extra = true
+				return false
+			}
+		}
+		return true
+	})
+	if extra {
+		return say("another statement also assigns a named result, so the failure status " +
+			"can be overwritten before the function returns")
+	}
+
+	return nil
+}
+
+// isRecoverIsNotNil matches `recover() != nil` exactly.
+func isRecoverIsNotNil(expr ast.Expr) bool {
+	binary, ok := expr.(*ast.BinaryExpr)
+	if !ok || binary.Op != token.NEQ {
+		return false
+	}
+	ident, ok := binary.Y.(*ast.Ident)
+	return isRecoverCall(binary.X) && ok && ident.Name == "nil"
+}
+
+// namedResults returns fn's named result parameters.
+func namedResults(fn *ast.FuncDecl) map[string]bool {
+	names := map[string]bool{}
+	if fn.Type.Results == nil {
+		return names
+	}
+	for _, field := range fn.Type.Results.List {
+		for _, ident := range field.Names {
+			if ident.Name != "_" {
+				names[ident.Name] = true
+			}
+		}
+	}
+	return names
+}
+
+// assignsFailureToResult matches `<named result> = statusFailure`.
+func assignsFailureToResult(fn *ast.FuncDecl, assign *ast.AssignStmt) bool {
+	if assign.Tok != token.ASSIGN || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
+		return false
+	}
+	lhs, ok := assign.Lhs[0].(*ast.Ident)
+	if !ok || !namedResults(fn)[lhs.Name] {
+		return false
+	}
+	return assignsFailure(assign.Rhs[0])
 }
 
 // assignsToNamedResult reports whether body assigns to any of fn's named

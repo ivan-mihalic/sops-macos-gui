@@ -1,7 +1,29 @@
 #!/usr/bin/env bash
-# Runs SopsHealthTests with all networking denied at the OS sandbox level, to
-# verify GitHubReleaseSource (the app's only network call) never touches the
-# network outside of its own explicit, consent-gated request.
+# Runs SopsHealthTests with all networking denied at the OS sandbox level.
+#
+# WHAT THIS ESTABLISHES, precisely — the wording above this line used to claim
+# more, and a review proved the claim false by inserting an unconditional,
+# consent-ignoring URLSession call into the app's only networking function and
+# watching this script exit 0.
+#
+#   It establishes: with the network genuinely unreachable, the health suite
+#   still passes. No check hangs, crashes, or reports a wrong verdict because
+#   a request failed. That is worth having and it is all this proves.
+#
+#   It does NOT establish that the app never *attempts* a request. Failures are
+#   swallowed into `.lookupFailed` by design, the consent tests drive a
+#   `RecordingURLProtocol` on their own session, and the one test that touches
+#   a real socket skips under this profile. So an unwanted request is invisible
+#   here.
+#
+#   Worse, the sandboxed run asserts a strict subset of the unsandboxed one:
+#   231 tests with 5 skipped versus 231 with 2. Anything gated on a resource
+#   the sandbox denies is silently absent from the very run meant to be
+#   strictest.
+#
+# Closing that gap needs an observation point inside the process — a protocol
+# registered on every session the app can use, asserting zero requests during a
+# full report with consent off. Recorded as M3 work rather than half-built here.
 #
 # Positive control: also confirms the profile actually blocks networking by
 # running curl against a real host first — if that unexpectedly succeeds, the
