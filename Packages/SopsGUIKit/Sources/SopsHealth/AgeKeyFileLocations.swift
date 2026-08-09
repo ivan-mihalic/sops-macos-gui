@@ -82,6 +82,30 @@ public enum AgeKeyFileLocations {
                       ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh")
     }
 
+    /// `loginShellPathVariables()`, asked once per process.
+    ///
+    /// Spawning a login shell costs ~95 ms — measured for `ToolLocator`, which
+    /// pays it for `PATH` — and `candidates()`'s default caller list includes
+    /// `LegacyKeyFileImportOptions.resolve()`, which `KeyImportView` calls from
+    /// its `init`. SwiftUI runs `init` on every rebuild, so an uncached probe
+    /// would put a shell spawn in the render path. Measured before and after:
+    /// see `AgeKeyFileEnvironmentTests.theProbeIsAskedOncePerProcess`.
+    ///
+    /// A profile edited while the app is running is not picked up until
+    /// relaunch. That is the same freshness the `PATH` probe has, and the
+    /// alternative is worse.
+    public static func cachedLoginShellPathVariables() -> [String: String] {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if let cached = cachedShellVariables { return cached }
+        let fresh = loginShellPathVariables()
+        cachedShellVariables = fresh
+        return fresh
+    }
+
+    private static let cacheLock = NSLock()
+    nonisolated(unsafe) private static var cachedShellVariables: [String: String]?
+
     /// Asks `shell` for each name, NUL-separated so a path containing a newline
     /// survives. `-lc`, never `-lic`: an interactive shell can block on prompts
     /// or plugins. Same reasoning, same flags, as `ToolLocator`.
@@ -129,7 +153,7 @@ public enum AgeKeyFileLocations {
     public static func candidates(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         homeDirectory: String = NSHomeDirectory(),
-        loginShellEnvironment: () -> [String: String] = { loginShellPathVariables() }
+        loginShellEnvironment: () -> [String: String] = { cachedLoginShellPathVariables() }
     ) -> [String] {
         var paths: [String] = []
         let shellEnvironment = loginShellEnvironment()

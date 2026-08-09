@@ -116,3 +116,32 @@ struct AgeKeyFileEnvironmentTests {
         return String(decoding: data, as: UTF8.self)
     }
 }
+
+/// The probe spawns a login shell, and `KeyImportView` resolves its key-file
+/// options from `init` — which SwiftUI runs on every rebuild. An uncached probe
+/// would put a ~95 ms process spawn in the render path.
+@Suite("The login shell is asked once, not once per view rebuild", .serialized)
+struct AgeKeyFileProbeCostTests {
+
+    @Test("repeated calls do not repeatedly spawn a shell")
+    func theProbeIsAskedOncePerProcess() {
+        // Warm it, so the measurement below is of the cached path and not of
+        // whichever call happened to be first in the whole test run.
+        _ = AgeKeyFileLocations.cachedLoginShellPathVariables()
+
+        let started = ContinuousClock.now
+        for _ in 0..<200 { _ = AgeKeyFileLocations.cachedLoginShellPathVariables() }
+        let elapsed = ContinuousClock.now - started
+
+        // One spawn is ~95 ms; 200 of them would be ~19 s. A generous ceiling
+        // that still cannot be met by spawning even once per call.
+        #expect(elapsed < .milliseconds(500),
+                "200 lookups took \(elapsed) — the login shell is being spawned per call")
+    }
+
+    @Test("the cached answer is the same one the uncached probe gives")
+    func cacheDoesNotChangeTheAnswer() {
+        #expect(AgeKeyFileLocations.cachedLoginShellPathVariables()
+            == AgeKeyFileLocations.loginShellPathVariables())
+    }
+}
