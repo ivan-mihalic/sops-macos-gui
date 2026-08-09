@@ -63,6 +63,8 @@ extension HealthReport {
 
         let os = ProcessInfo.processInfo.operatingSystemVersion
 
+        let legacyKeyFiles = AgeKeyFileLocations.resolved()
+
         return HealthReport(checks: [
             ExternalToolCheck(locator: ToolLocator(), embeddedSopsVersion: embeddedSops),
             EngineFreshnessCheck(
@@ -87,7 +89,8 @@ extension HealthReport {
                 // from, not the one path this used to hardcode — which was
                 // `~/.config/sops/age/keys.txt`, a location sops does not read
                 // on macOS at all. See `AgeKeyFileLocations`.
-                legacyKeyFilePaths: AgeKeyFileLocations.candidates()),
+                legacyKeyFilePaths: legacyKeyFiles.paths,
+                legacyKeyFileProbeFailed: legacyKeyFiles.loginShellUnavailable),
             ProjectHealthCheck(source: projects),
         ])
     }

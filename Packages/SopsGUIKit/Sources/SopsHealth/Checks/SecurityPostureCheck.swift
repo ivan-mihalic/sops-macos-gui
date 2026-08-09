@@ -73,19 +73,24 @@ public struct SecurityPostureCheck: HealthCheck {
     private let biometry: any BiometryStatusProviding
     private let appUpdates: any AppUpdateStatusProviding
     private let legacyKeyFilePaths: [String]
+    /// The login shell could not be asked where else sops would look, so the
+    /// path list below is short by an unknown amount.
+    private let legacyKeyFileProbeFailed: Bool
 
     public init(osVersion: SemanticVersion,
                 minimumOSVersion: SemanticVersion,
                 keyStore: any KeyStoreStatusProviding,
                 biometry: any BiometryStatusProviding,
                 appUpdates: any AppUpdateStatusProviding,
-                legacyKeyFilePaths: [String]) {
+                legacyKeyFilePaths: [String],
+                legacyKeyFileProbeFailed: Bool = false) {
         self.osVersion = osVersion
         self.minimumOSVersion = minimumOSVersion
         self.keyStore = keyStore
         self.biometry = biometry
         self.appUpdates = appUpdates
         self.legacyKeyFilePaths = legacyKeyFilePaths
+        self.legacyKeyFileProbeFailed = legacyKeyFileProbeFailed
     }
 
     public func run() async -> [HealthFinding] {
@@ -206,6 +211,25 @@ public struct SecurityPostureCheck: HealthCheck {
         let found = AgeKeyFileLocations.existingFiles(among: legacyKeyFilePaths)
 
         guard !found.isEmpty else {
+            // An all-clear is a claim about *every* place sops reads a key
+            // from, and `SOPS_AGE_KEY_FILE` moves that set. When the login
+            // shell could not be asked, the paths below are the ones this app
+            // can name unaided, and they may not be the ones sops would use.
+            //
+            // Saying `.ok` here is the defect two rounds running: the probe was
+            // made to distinguish failure from silence, and then the failure
+            // was flattened back to "no variables set" before it reached this
+            // sentence. Same machine, same plaintext key file on disk, opposite
+            // verdict depending on whether a shell spawn happened to time out.
+            guard !legacyKeyFileProbeFailed else {
+                return HealthFinding(
+                    id: "security.legacy-key-file", title: "Plaintext key file",
+                    status: .unknown(reason: "This app could not ask your login shell whether "
+                        + "SOPS_AGE_KEY_FILE points somewhere else, so it does not know every place "
+                        + "sops would look."),
+                    detail: "Nothing was found at " + Self.pathList(legacyKeyFilePaths)
+                        + ", which is not the same as there being nothing.")
+            }
             return HealthFinding(
                 id: "security.legacy-key-file", title: "Plaintext key file", status: .ok,
                 detail: "No unprotected age key file was found at any of the places sops reads one from: "

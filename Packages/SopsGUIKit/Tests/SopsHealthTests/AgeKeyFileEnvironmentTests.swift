@@ -89,17 +89,28 @@ struct AgeKeyFileEnvironmentTests {
 
     /// The real machine, end to end: whatever this Mac's login shell says, the
     /// probe must return the same answer as asking that shell directly.
-    @Test("against this machine's real login shell")
+    /// Against a real shell, named explicitly.
+    ///
+    /// **Not** `$SHELL`: `ToolLocatorTests` calls `setenv("SHELL", …)` with a
+    /// path that does not exist, process-wide, and Swift Testing runs suites in
+    /// one process in parallel — so a test that reads `$SHELL` is reading
+    /// whichever sibling wrote to it last. That is the same class of defect as
+    /// the login-shell probe itself and it made this test fail against a shell
+    /// nobody chose.
+    @Test("against a real login shell",
+          .enabled(if: FileManager.default.isExecutableFile(atPath: "/bin/zsh"), "zsh is required"))
     func realLoginShellAgrees() throws {
-        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-        try #require(FileManager.default.isExecutableFile(atPath: shell), "no login shell to ask")
-
-        let probed = AgeKeyFileLocations.loginShellPathVariables()
+        let shell = "/bin/zsh"
+        guard let probed = AgeKeyFileLocations.readFromLoginShell(
+            ["SOPS_AGE_KEY_FILE", "XDG_CONFIG_HOME"], shell) else {
+            Issue.record(Comment(rawValue:
+                "inconclusive: the login-shell probe did not finish inside its timeout on this run"))
+            return
+        }
 
         for name in ["SOPS_AGE_KEY_FILE", "XDG_CONFIG_HOME"] {
-            let direct = Self.ask(shell, name)
-            #expect((probed ?? [:])[name] ?? "" == direct,
-                    "the probe and the login shell disagree about \(name)")
+            #expect(probed[name] ?? "" == Self.ask(shell, name),
+                    Comment(rawValue: "the probe and the login shell disagree about \(name)"))
         }
     }
 
@@ -145,9 +156,18 @@ struct AgeKeyFileProbeCostTests {
     /// answer against a timed-out fresh one proves nothing about the cache.
     @Test("the cached answer is the same one the uncached probe gives")
     func cacheDoesNotChangeTheAnswer() throws {
-        let fresh = try #require(AgeKeyFileLocations.loginShellPathVariables(),
-                                 "the login-shell probe did not complete; nothing to compare against")
-        #expect(AgeKeyFileLocations.cachedLoginShellPathVariables() == fresh)
+        guard let fresh = AgeKeyFileLocations.loginShellPathVariables(
+            runLoginShell: { names, _ in
+                AgeKeyFileLocations.readFromLoginShell(names, "/bin/zsh") }) else {
+            Issue.record(Comment(rawValue:
+                "inconclusive: the login-shell probe did not finish inside its timeout on this run"))
+            return
+        }
+        let storage = AgeKeyFileLocations.Storage()
+        #expect(AgeKeyFileLocations.cachedLoginShellPathVariables(
+            probe: { AgeKeyFileLocations.readFromLoginShell(
+                ["SOPS_AGE_KEY_FILE", "XDG_CONFIG_HOME"], "/bin/zsh") },
+            storage: storage) == fresh)
     }
 
     /// A probe that failed must not be remembered as "no variables set" — that
@@ -179,32 +199,16 @@ struct AgeKeyFileNoisyShellTests {
 
     /// `ZDOTDIR` makes zsh read our `.zprofile` instead of the machine's, so
     /// this exercises a real login shell without touching the user's own.
-    private func probe(in directory: URL, keyFile: String) -> [String: String] {
-        let script = "printf %s '\(AgeKeyFileLocations.probeMarker)'; "
-            + "printf %s \"${SOPS_AGE_KEY_FILE-}\"; printf '\\0'; "
-            + "printf %s \"${XDG_CONFIG_HOME-}\"; printf '\\0'"
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: Self.zsh)
-        process.arguments = ["-lc", script]
-        process.environment = ["ZDOTDIR": directory.path, "SOPSGUI_KEYFILE": keyFile]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        guard (try? process.run()) != nil else { return [:] }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        let output = String(decoding: data, as: UTF8.self)
-
-        guard let markerEnd = output.range(of: AgeKeyFileLocations.probeMarker)?.upperBound
-        else { return [:] }
-        let fields = output[markerEnd...].split(separator: "\0", omittingEmptySubsequences: false)
-        guard fields.count > 2 else { return [:] }
-        var found: [String: String] = [:]
-        for (index, name) in ["SOPS_AGE_KEY_FILE", "XDG_CONFIG_HOME"].enumerated()
-        where !fields[index].isEmpty {
-            found[name] = String(fields[index])
-        }
-        return found
+    ///
+    /// **Calls `readFromLoginShell`.** The version this replaces built its own
+    /// `Process`, its own script and its own copy of the marker-strip — so the
+    /// test named after the defect asserted against a private reimplementation
+    /// of the fix, and deleting the entire marker mechanism from production
+    /// left it, and all 26 tests in this file, green.
+    private func probe(in directory: URL) -> [String: String]? {
+        AgeKeyFileLocations.readFromLoginShell(
+            ["SOPS_AGE_KEY_FILE", "XDG_CONFIG_HOME"], Self.zsh,
+            environment: ["ZDOTDIR": directory.path, "HOME": directory.path])
     }
 
     @Test("a profile that greets the user does not become part of the key path",
@@ -218,10 +222,10 @@ struct AgeKeyFileNoisyShellTests {
             """)
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let found = probe(in: directory, keyFile: keyFile)
+        let found = probe(in: directory)
 
-        #expect(found["SOPS_AGE_KEY_FILE"] == keyFile,
-                "the profile's greeting was read as part of the key file path: \(found)")
+        #expect(found?["SOPS_AGE_KEY_FILE"] == keyFile,
+                "the profile's greeting was read as part of the key file path: \(found as Any)")
     }
 
     /// A shell that cannot run the script at all must yield nothing, not turn
@@ -239,5 +243,62 @@ struct AgeKeyFileNoisyShellTests {
     func missingShellYieldsNothing() {
         #expect(AgeKeyFileLocations.readFromLoginShell(
             ["SOPS_AGE_KEY_FILE"], "/no/such/shell") == nil)
+    }
+
+    /// The marker was a fixed constant and `range(of:)` takes the **first**
+    /// match, so a profile that printed it took over every field — verified
+    /// with a real zsh, which returned the profile's decoy paths and never saw
+    /// the genuinely exported value. `.backwards` is not the fix; a nonce the
+    /// profile cannot know is.
+    @Test("a profile that prints the marker cannot hijack the fields",
+          .enabled(if: FileManager.default.isExecutableFile(atPath: AgeKeyFileNoisyShellTests.zsh),
+                   "zsh is required"))
+    func markerCannotBeSpoofed() throws {
+        let real = "/Users/probe/keys/REAL-prod.txt"
+        let guessed = AgeKeyFileLocations.freshProbeMarker()
+        let directory = try sandbox(profile: """
+            printf %s '\(guessed)'
+            printf %s '/Users/probe/keys/DECOY.txt'; printf '\\0'
+            printf %s '/Users/probe/DECOY-XDG'; printf '\\0'
+            export SOPS_AGE_KEY_FILE="\(real)"
+            """)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let found = probe(in: directory)
+
+        #expect(found?["SOPS_AGE_KEY_FILE"] == real,
+                "a profile printing a marker took over the probe's fields: \(found as Any)")
+    }
+}
+
+/// The cache, reached through its injection seam. Without one, its failure
+/// branch is unreachable from any test and reverting the successes-only rule
+/// leaves the suite green.
+@Suite("The login-shell cache remembers successes only")
+struct AgeKeyFileCacheTests {
+
+    @Test("a failed probe is not stored as an answer")
+    func failureIsNotStored() {
+        let storage = AgeKeyFileLocations.Storage()
+        var calls = 0
+        let first = AgeKeyFileLocations.cachedLoginShellPathVariables(
+            probe: { calls += 1; return nil }, storage: storage)
+        #expect(first == nil, "a failed probe was reported as an answer")
+
+        let second = AgeKeyFileLocations.cachedLoginShellPathVariables(
+            probe: { calls += 1; return ["SOPS_AGE_KEY_FILE": "/Users/probe/late.txt"] }, storage: storage)
+        #expect(second?["SOPS_AGE_KEY_FILE"] == "/Users/probe/late.txt",
+                "the failure was remembered, so a single unlucky probe holds a false all-clear for the session")
+        #expect(calls == 2)
+    }
+
+    @Test("a successful probe is stored")
+    func successIsStored() {
+        let storage = AgeKeyFileLocations.Storage()
+        var calls = 0
+        _ = AgeKeyFileLocations.cachedLoginShellPathVariables(
+            probe: { calls += 1; return ["XDG_CONFIG_HOME": "/Users/probe/xdg"] }, storage: storage)
+        _ = AgeKeyFileLocations.cachedLoginShellPathVariables(probe: { calls += 1; return [:] }, storage: storage)
+        #expect(calls == 1, "the cache re-probed after a success")
     }
 }

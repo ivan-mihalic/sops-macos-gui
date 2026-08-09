@@ -62,9 +62,16 @@ enum CommandRunner {
         _ executable: String,
         arguments: [String],
         standardInput: Data? = nil,
+        environment: [String: String]? = nil,
         timeout: TimeInterval
     ) -> CommandOutcome? {
         let process = Process()
+        // Passed to the child, never to this process. A test that needs a
+        // different environment must not reach for `setenv`: it is
+        // process-wide, and under Swift Testing's parallelism it leaks into
+        // every suite running beside it — which is exactly how a login-shell
+        // test that passed in isolation started failing in the full run.
+        if let environment { process.environment = environment }
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
 

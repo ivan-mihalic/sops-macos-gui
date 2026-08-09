@@ -111,8 +111,11 @@ public struct ToolLocator: ToolLocating {
     /// variables and must do it the same way — same `-lc`, same timeout, same
     /// single `CommandRunner` chokepoint — rather than growing a second,
     /// divergent copy of "spawn a login shell and read its answer".
-    static func capture(_ launchPath: String, _ arguments: [String], timeout: TimeInterval) throws -> String {
-        guard let outcome = CommandRunner.run(launchPath, arguments: arguments, timeout: timeout) else {
+    static func capture(_ launchPath: String, _ arguments: [String],
+                        environment: [String: String]? = nil,
+                        timeout: TimeInterval) throws -> String {
+        guard let outcome = CommandRunner.run(
+            launchPath, arguments: arguments, environment: environment, timeout: timeout) else {
             throw CocoaError(.fileNoSuchFile)
         }
         return outcome.standardOutputText + outcome.standardErrorText

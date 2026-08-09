@@ -76,7 +76,7 @@ public enum AgeKeyFileLocations {
     /// `runLoginShell` is injected so the merge logic is testable without a
     /// process spawn; the default is the real login shell.
     public static func loginShellPathVariables(
-        runLoginShell: ([String], String) -> [String: String]? = readFromLoginShell
+        runLoginShell: ([String], String) -> [String: String]? = { readFromLoginShell($0, $1) }
     ) -> [String: String]? {
         runLoginShell(["SOPS_AGE_KEY_FILE", "XDG_CONFIG_HOME"],
                       ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh")
@@ -94,24 +94,43 @@ public enum AgeKeyFileLocations {
     /// A profile edited while the app is running is not picked up until
     /// relaunch. That is the same freshness the `PATH` probe has, and the
     /// alternative is worse.
-    public static func cachedLoginShellPathVariables() -> [String: String] {
-        cacheLock.lock()
-        defer { cacheLock.unlock() }
-        if let cached = cachedShellVariables { return cached }
-        // **Successes only.** A probe can fail transiently — the 3 s timeout is
-        // reachable on a loaded machine, and was reached under ThreadSanitizer
-        // — and a failure caches as "no variables set", which is
-        // indistinguishable from a clean answer and would hold a false security
-        // all-clear for the rest of the session. Retrying costs a shell spawn
-        // on a machine where the probe is genuinely broken; holding a wrong
-        // all-clear costs the user their secret.
-        guard let fresh = loginShellPathVariables() else { return [:] }
-        cachedShellVariables = fresh
-        return fresh
+    public static func cachedLoginShellPathVariables() -> [String: String]? {
+        cachedLoginShellPathVariables(probe: { loginShellPathVariables() })
     }
 
-    private static let cacheLock = NSLock()
-    nonisolated(unsafe) private static var cachedShellVariables: [String: String]?
+    /// The cache with its probe injected, and the only way any test can reach
+    /// the failure branch: `cachedShellVariables` is private with no reset, so
+    /// "a failed probe is not cached" was asserted against a function that
+    /// never touched the cache — reverting the whole successes-only rule left
+    /// the suite green.
+    /// Storage a test can own. The process-wide cache is not a test seam: a
+    /// test that wrote into it would hand `/Users/probe/…` to every other suite
+    /// running beside it under Swift Testing's parallelism, which is how this
+    /// helper's first version broke two unrelated tests.
+    final class Storage: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: [String: String]?
+
+        func resolve(_ probe: () -> [String: String]?) -> [String: String]? {
+            lock.lock()
+            defer { lock.unlock() }
+            if let value { return value }
+            // Successes only — see `cachedLoginShellPathVariables()`.
+            guard let fresh = probe() else { return nil }
+            value = fresh
+            return fresh
+        }
+    }
+
+    private static let sharedStorage = Storage()
+
+    static func cachedLoginShellPathVariables(
+        probe: () -> [String: String]?, storage: Storage = sharedStorage
+    ) -> [String: String]? {
+        storage.resolve(probe)
+    }
+
+
 
     /// Asks `shell` for each name, NUL-separated so a path containing a newline
     /// survives. `-lc`, never `-lic`: an interactive shell can block on prompts
@@ -136,15 +155,28 @@ public enum AgeKeyFileLocations {
     /// drops whatever `capture` appended from stderr. A shell that cannot run
     /// the script at all (`/bin/tcsh` does not accept `-lc`) emits no marker,
     /// and its usage text becomes nothing rather than becoming a path.
-    static let probeMarker = "\u{1}sops-gui-env\u{1}"
+    /// A fresh marker per invocation.
+    ///
+    /// It was a fixed constant, and `range(of:)` takes the **first** match, so
+    /// a `.zprofile` that printed the constant took over every field — verified
+    /// with a real zsh: the probe came back with the profile's decoy paths and
+    /// the genuinely exported value was never seen. `.backwards` is not the fix
+    /// (a *value* containing the marker would then win). A nonce the profile
+    /// cannot know defeats both directions.
+    static func freshProbeMarker() -> String {
+        "\u{1}sops-gui-env-\(UUID().uuidString)\u{1}"
+    }
 
-    public static func readFromLoginShell(_ names: [String], _ shell: String) -> [String: String]? {
+    public static func readFromLoginShell(_ names: [String], _ shell: String,
+                                         environment: [String: String]? = nil) -> [String: String]? {
+        let probeMarker = freshProbeMarker()
         // Only parameter expansions of the two names, never `env` or `export
         // -p`: `SOPS_AGE_KEY` holds an age private key and must not enter this
         // process as a side effect of looking for file paths.
         let script = "printf %s '\(probeMarker)'; "
             + names.map { "printf %s \"${\($0)-}\"; printf '\\0'" }.joined(separator: "; ")
-        guard let output = try? ToolLocator.capture(shell, ["-lc", script], timeout: 3),
+        guard let output = try? ToolLocator.capture(
+                  shell, ["-lc", script], environment: environment, timeout: 10),
               let markerEnd = output.range(of: probeMarker)?.upperBound
         else { return nil }
 
@@ -186,10 +218,34 @@ public enum AgeKeyFileLocations {
     public static func candidates(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         homeDirectory: String = NSHomeDirectory(),
-        loginShellEnvironment: () -> [String: String] = { cachedLoginShellPathVariables() }
+        loginShellEnvironment: () -> [String: String]? = { cachedLoginShellPathVariables() }
     ) -> [String] {
+        resolved(environment: environment, homeDirectory: homeDirectory,
+                 loginShellEnvironment: loginShellEnvironment).paths
+    }
+
+    /// The paths **and** whether the login shell could be asked.
+    ///
+    /// The two have to travel together, and the version that returned only
+    /// paths is why iteration 14's fix never reached a user: the cache stopped
+    /// *remembering* a failed probe, and then handed the failure on as `[:]`,
+    /// which is indistinguishable from "you have no such variables set". So
+    /// `SecurityPostureCheck` still printed "No unprotected age key file was
+    /// found at any of the places sops reads one from" over a machine where a
+    /// plaintext key sat at the path the probe failed to read. Driven end to
+    /// end against a hanging shell: same machine, same key file, opposite
+    /// verdict, and nothing in the `.ok` detail mentioned a failed probe.
+    ///
+    /// What that commit bought was that the wrong answer is no longer
+    /// permanent. Not that it is no longer given.
+    public static func resolved(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        homeDirectory: String = NSHomeDirectory(),
+        loginShellEnvironment: () -> [String: String]? = { cachedLoginShellPathVariables() }
+    ) -> (paths: [String], loginShellUnavailable: Bool) {
         var paths: [String] = []
-        let shellEnvironment = loginShellEnvironment()
+        let probed = loginShellEnvironment()
+        let shellEnvironment = probed ?? [:]
 
         func add(_ path: String) {
             guard !path.isEmpty, !paths.contains(path) else { return }
@@ -211,7 +267,7 @@ public enum AgeKeyFileLocations {
         // The conventional location, whether or not this sops build reads it.
         add((homeDirectory as NSString).appendingPathComponent(".config/" + userConfigRelativePath))
 
-        return paths
+        return (paths, probed == nil)
     }
 
     /// Does a regular file sit at `path` right now?
