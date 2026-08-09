@@ -94,13 +94,28 @@ enum EncryptedFileMetadata {
     /// classified correctly and was then misread. Fourth occurrence of this
     /// gotcha in the project; see `LineEndings` for the full list and for the
     /// guard that now fails the build on the idiom.
+    /// The **last** top-level `sops:` block, not the first.
+    ///
+    /// This used to take the first, while `SopsMetadataShape.isYAMLMetadata`
+    /// — the type that decides whether a file is a SOPS document at all —
+    /// takes the last. A file with a user key literally named `sops` at the
+    /// top level therefore split the two apart: the shape check found the real
+    /// metadata and said "encrypted", this function parsed the user's block and
+    /// found no recipients, and `ProjectHealthCheck` then reported
+    /// `.problem` — "does not list &lt;key&gt; among its recipients" — with a
+    /// `sops updatekeys` remediation, about a file whose recipients are
+    /// perfectly correct.
+    ///
+    /// sops writes its metadata block last, so the last one is the right
+    /// answer. Two agreeing readings matter more than which one is chosen: a
+    /// confident false accusation is the failure mode this app exists to avoid,
+    /// and it is the fifth of its family found in this milestone.
     private static func sopsBlockLines(in text: String) -> [String] {
-        var lines: [String] = []
-        var inBlock = false
-        for rawLine in LineEndings.lines(of: text) {
-            let line = String(rawLine)
-            if line == "sops:" { inBlock = true; lines.append(line); continue }
-            guard inBlock else { continue }
+        let all = LineEndings.lines(of: text).map(String.init)
+        guard let blockStart = all.lastIndex(where: { $0 == "sops:" }) else { return [] }
+
+        var lines: [String] = [all[blockStart]]
+        for line in all[(blockStart + 1)...] {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty { lines.append(line); continue }
             if !line.hasPrefix(" ") && !line.hasPrefix("\t") { break }

@@ -70,11 +70,26 @@ enum CommandRunner {
         errThread.start()
 
         if let inPipe, let standardInput {
+            // A child that exits early (git check-ignore does, on `fatal`)
+            // leaves us writing to a closed pipe. `try?` is not enough: the
+            // default disposition of SIGPIPE **terminates the process**, and
+            // the comment that used to sit here claimed Foundation disables
+            // it — a review measured that as false. Under AppKit the
+            // disposition is `SIG_DFL`, and a 2 MB write to a child that never
+            // reads killed the app with exit 141.
+            //
+            // Two triggers are reachable today, both through
+            // `GitIgnoreOracle`, whose candidate list passes 64 KiB on any
+            // sizeable project: git failing with `fatal`, and this function's
+            // own `terminate()` below closing the pipe while the writer is
+            // still going.
+            //
+            // A crash here is worse than a failed check — the open document
+            // goes with it, and `applicationWillTerminate` is skipped, so a
+            // copied secret stays on the pasteboard.
+            ignoreSIGPIPEOnce()
             let writer = Thread {
                 let handle = inPipe.fileHandleForWriting
-                // A child that exits early (git check-ignore can) leaves us
-                // writing to a closed pipe; SIGPIPE is disabled in Foundation's
-                // process handling, so this surfaces as a throw we ignore.
                 try? handle.write(contentsOf: standardInput)
                 try? handle.close()
             }
@@ -88,7 +103,21 @@ enum CommandRunner {
         }
         if process.isRunning {
             timedOut = true
+            // `terminate()` is SIGTERM, which a child is free to ignore — and
+            // then `waitUntilExit()` below blocks forever. `timeout:` read as
+            // a bound but was not one: a review ran `sleep 30` with
+            // `timeout: 2` and the call was still blocked 15 seconds later.
+            // There is no outer deadline to catch that — `HealthReport.run()`
+            // has no per-check limit and `HealthViewModel.refresh()` would sit
+            // at `isRunning == true` for the rest of the session.
             process.terminate()
+            let killDeadline = Date().addingTimeInterval(2)
+            while process.isRunning && Date() < killDeadline {
+                usleep(20_000)
+            }
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+            }
         }
         process.waitUntilExit()
 
@@ -99,12 +128,45 @@ enum CommandRunner {
             usleep(10_000)
         }
 
+        // A reader that has not reached EOF has a partially filled — or empty
+        // — box, and returning that as a status-0 success is worse than
+        // returning nothing.
+        //
+        // Measured consequence: `GitIgnoreOracle.ignoredPaths` reads an empty
+        // set as "git ignores none of these", so **every** candidate becomes
+        // `exposed` and the user is told their gitignored `.env` files are
+        // leaking. A false accusation, from a drain that timed out.
+        //
+        // `nil` is the honest answer, and every caller already handles it —
+        // the oracle turns it into `.undetermined` with a stated reason, which
+        // is what "we could not read git's answer" actually means.
+        if !outThread.isFinished || !errThread.isFinished {
+            return nil
+        }
+
         return CommandOutcome(
             standardOutput: outBox.get(),
             standardError: errBox.get(),
             terminationStatus: process.terminationStatus,
             timedOut: timedOut
         )
+    }
+
+    /// Sets SIGPIPE to `SIG_IGN`, process-wide, exactly once.
+    ///
+    /// Process-wide because signal dispositions are: there is no per-thread
+    /// SIGPIPE. With it ignored, a write to a closed pipe returns `EPIPE`
+    /// instead of killing the app — which is what every `try?` around a pipe
+    /// write in this file already assumed was happening.
+    ///
+    /// A `static let` so the `signal(2)` call happens once no matter how many
+    /// commands run concurrently.
+    private static let sigpipeIgnored: Void = {
+        signal(SIGPIPE, SIG_IGN)
+    }()
+
+    private static func ignoreSIGPIPEOnce() {
+        _ = sigpipeIgnored
     }
 }
 

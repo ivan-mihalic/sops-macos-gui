@@ -245,3 +245,47 @@ struct SopsMetadataShapeTests {
             "data: ENC[x]\r\nsops:\r\n    mac: ENC[y]\r\n    version: 3.13.3\r\n"))
     }
 }
+
+/// The two readings of "which `sops:` block is the metadata" must agree.
+///
+/// `SopsMetadataShape.isYAMLMetadata` takes the last; `EncryptedFileMetadata`
+/// used to take the first. A user key named `sops` at the top level split them
+/// apart, and the app then accused a correct file of missing its own recipient.
+@Suite("The metadata block is found the same way everywhere")
+struct SopsBlockAgreementTests {
+
+    /// A real shape: a project that stores sops-related settings under its own
+    /// `sops:` key, with the actual metadata block below it as sops writes it.
+    private static let documentWithAUserKeyNamedSops = """
+        sops:
+          note: this is the user's own key, not the metadata block
+        db:
+            password: ENC[AES256_GCM,data:abc,iv:def,tag:ghi,type:str]
+        sops:
+            age:
+                - recipient: age1realrecipientvaluegoeshere00000000000000000000000000
+                  enc: |
+                    -----BEGIN AGE ENCRYPTED FILE-----
+                    -----END AGE ENCRYPTED FILE-----
+            lastmodified: "2026-08-09T00:00:00Z"
+            mac: ENC[AES256_GCM,data:mac,iv:iv,tag:tag,type:str]
+            version: 3.13.2
+        """
+
+    @Test("a user key named sops does not hide the real recipient list")
+    func userKeyNamedSopsDoesNotShadowTheMetadata() {
+        let recipients = EncryptedFileMetadata.recipients(
+            inEncryptedFile: Self.documentWithAUserKeyNamedSops)
+        #expect(
+            recipients.contains("age1realrecipientvaluegoeshere00000000000000000000000000"),
+            "the recipient list came back empty, so the health check would report this correct file as missing its own key")
+    }
+
+    @Test("both readings agree that this file is encrypted")
+    func bothReadingsAgree() {
+        #expect(SopsMetadataShape.isYAMLMetadata(Self.documentWithAUserKeyNamedSops))
+        #expect(
+            !EncryptedFileMetadata.recipients(
+                inEncryptedFile: Self.documentWithAUserKeyNamedSops).isEmpty)
+    }
+}

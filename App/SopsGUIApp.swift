@@ -27,10 +27,90 @@ import SopsProjects
 /// Until then they are `nil` and termination is allowed through, which is
 /// correct rather than merely convenient: no document can be open before the
 /// window that opens documents exists, so there is nothing to lose.
+
+/// Intercepts `windowShouldClose:` and forwards **everything else** to the
+/// delegate SwiftUI installed.
+///
+/// ## Why a proxy and not just taking the delegate
+///
+/// The first attempt at guarding ⌘W did this:
+///
+/// ```swift
+/// for window in NSApp.windows where window.delegate == nil { window.delegate = appDelegate }
+/// ```
+///
+/// which assigned **zero** windows, because a SwiftUI window already has one
+/// (`AppKitWindowController`). The guard was dead code, and a review measured
+/// the result: dirty document → ⌘W → no prompt → window closes →
+/// `SecretEditorView`'s `onDisappear` clears the tracker →
+/// `applicationShouldTerminate` sees `isDirty == false` → `.terminateNow`.
+/// The document, the warning, and the process, all gone in one keystroke.
+///
+/// Dropping the `where` clause is not the fix either. With the delegate simply
+/// replaced, SwiftUI's teardown changed — `onDisappear` stopped firing at all.
+/// So this keeps SwiftUI's delegate and stands in front of it, using ObjC
+/// message forwarding so that every method this class does *not* implement is
+/// answered by the original, including ones AppKit may add later.
+@MainActor
+final class WindowCloseGuard: NSObject, NSWindowDelegate {
+    /// SwiftUI's own delegate. Weak: the window owns it, and this proxy must
+    /// not be what keeps it alive.
+    weak var forwarding: NSWindowDelegate?
+    private let shouldClose: @MainActor () -> Bool
+
+    init(forwarding: NSWindowDelegate?, shouldClose: @escaping @MainActor () -> Bool) {
+        self.forwarding = forwarding
+        self.shouldClose = shouldClose
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        shouldClose()
+    }
+
+    // MARK: - Forwarding
+
+    override func responds(to aSelector: Selector!) -> Bool {
+        if super.responds(to: aSelector) { return true }
+        return forwarding?.responds(to: aSelector) ?? false
+    }
+
+    override func forwardingTarget(for aSelector: Selector!) -> Any? {
+        if super.responds(to: aSelector) { return nil }
+        return forwarding
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var unsavedChanges: UnsavedChangesTracker?
     var quitRequest: QuitRequest?
+
+    /// Strong references, because `NSWindow.delegate` is weak — without this
+    /// the proxy is deallocated the moment it is installed and the window
+    /// silently reverts to SwiftUI's delegate. Keyed by window so a repeated
+    /// `.onAppear` replaces rather than stacks proxies.
+    private var closeGuards: [ObjectIdentifier: WindowCloseGuard] = [:]
+
+    /// Puts a `WindowCloseGuard` in front of every window that does not
+    /// already have one.
+    ///
+    /// Idempotent, because `.onAppear` can fire more than once for the same
+    /// window and chaining a proxy onto a proxy would make `windowShouldClose`
+    /// ask twice.
+    func installWindowCloseGuards() {
+        for window in NSApp.windows {
+            let key = ObjectIdentifier(window)
+            guard closeGuards[key] == nil else { continue }
+            // The Settings scene has its own window and its own delegate;
+            // guarding it too is harmless — it asks the same question, and a
+            // Settings window is never the thing holding an open document.
+            let guardDelegate = WindowCloseGuard(forwarding: window.delegate) { [weak self] in
+                self?.windowShouldClose(window) ?? true
+            }
+            closeGuards[key] = guardDelegate
+            window.delegate = guardDelegate
+        }
+    }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let quitRequest, let unsavedChanges else { return .terminateNow }
@@ -175,13 +255,12 @@ struct SopsGUIApp: App {
                     // be open before this window is.
                     appDelegate.unsavedChanges = unsavedChanges
                     appDelegate.quitRequest = quitRequest
-                    // SwiftUI owns the window, so the only way to guard its
-                    // close button is to take its delegate. Done here rather
-                    // than in `applicationDidFinishLaunching` because the
-                    // window does not exist yet at launch.
-                    for window in NSApp.windows where window.delegate == nil {
-                        window.delegate = appDelegate
-                    }
+                    // SwiftUI owns the window, so guarding its close button
+                    // means standing in front of the delegate it installed —
+                    // never replacing it, which stops `onDisappear` firing.
+                    // Done here rather than in `applicationDidFinishLaunching`
+                    // because the window does not exist yet at launch.
+                    appDelegate.installWindowCloseGuards()
                 }
                 // The confirmation itself has to be attached to a view that's
                 // actually on screen — `.commands` closures below are not

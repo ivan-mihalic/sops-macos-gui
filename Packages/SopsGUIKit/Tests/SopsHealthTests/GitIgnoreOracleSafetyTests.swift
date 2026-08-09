@@ -98,29 +98,57 @@ struct GitIgnoreOracleSafetyTests {
             "the unmitigated call did not fire the hook, so this fixture proves nothing and the sibling test is passing for the wrong reason")
     }
 
-    /// Cheap and structural: whatever else changes, no git invocation in this
-    /// type may be assembled without the protective config. Catches a fourth
-    /// call site added later without it, which neither test above would see.
-    @Test("every git invocation in the oracle carries the protective config")
+    /// Cheap and structural: no git invocation **anywhere in `Sources/`** may be
+    /// assembled without the protective config.
+    ///
+    /// It used to read `GitIgnoreOracle.swift` alone, and a review defeated it
+    /// in the obvious way: move `ls-files` into a sibling file without the
+    /// mitigation, and both counts fall to 2 and the test passes. That is the
+    /// same parse-one-file blindness that let an unguarded `//export` into
+    /// `libprobe.h` on the Go side, found one review earlier — so it is fixed
+    /// the same way, by looking at everything rather than at the file the bug
+    /// happened to be in.
+    @Test("every git invocation in Sources carries the protective config")
     func everyInvocationIsGuarded() throws {
-        let source = try String(
-            contentsOfFile: URL(fileURLWithPath: #filePath)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .appendingPathComponent("Sources/SopsHealth/GitIgnoreOracle.swift").path,
-            encoding: .utf8)
+        let sourcesRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources")
 
-        let callSites = source.components(separatedBy: "CommandRunner.run").count - 1
-        #expect(callSites > 0, "found no CommandRunner.run calls — has this file moved?")
+        var source = ""
+        var filesRead = 0
+        if let walker = FileManager.default.enumerator(
+            at: sourcesRoot, includingPropertiesForKeys: nil)
+        {
+            for case let url as URL in walker where url.pathExtension == "swift" {
+                source += (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+                filesRead += 1
+            }
+        }
+        #expect(filesRead > 20, "read only \(filesRead) source files — has the layout moved?")
 
-        // `arguments:` label included on purpose: a bare `gitArguments(root:`
-        // count would also match the helper's own declaration, so the test
-        // would read 4-against-3 and fail on a correct file.
+        // A git invocation is a `CommandRunner.run` whose *tool* is the git
+        // executable. Counting bare `gitPath` would over-count:
+        // `WorktreeResolver` has a local of the same name holding the path of
+        // a `.git` directory, which it only ever `stat`s and reads. And the
+        // other `CommandRunner.run` callers launch `$SHELL` or
+        // `<tool> --version`, neither of which reads a repository's config.
+        var gitInvocations = 0
+        for chunk in source.components(separatedBy: "CommandRunner.run(").dropFirst() {
+            let head = chunk.prefix(while: { $0.isWhitespace || $0 == "\n" })
+            if chunk.dropFirst(head.count).hasPrefix("gitPath") {
+                gitInvocations += 1
+            }
+        }
+        #expect(
+            gitInvocations > 0,
+            "found no git invocations anywhere in Sources — has the oracle moved or been renamed?")
+
         let guarded = source.components(separatedBy: "arguments: gitArguments(root:").count - 1
         #expect(
-            guarded == callSites,
-            "\(callSites) git invocations but \(guarded) built through gitArguments — a call assembling its own argument list can reach core.fsmonitor")
+            guarded == gitInvocations,
+            "\(gitInvocations) git invocations in Sources but \(guarded) built through gitArguments — one of them can reach core.fsmonitor in a scanned repository")
     }
 
     private func run(_ tool: String, _ arguments: [String]) {

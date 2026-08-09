@@ -182,4 +182,29 @@ struct OuterSidebarWiringTests {
             source.contains(".disabled(unsavedChanges.isSaving)"),
             "the outer sidebar stays live during a save")
     }
+
+    /// The rule the two tests above do not state: the binding must **ask**.
+    ///
+    /// A review gutted `guardedSelection`'s setter to `selection = requested`,
+    /// left the name alone, and all 583 tests stayed green — including the two
+    /// above, which only check that something called `guardedSelection` is
+    /// passed to the two controls. Checking the name and not the body is how
+    /// a source-level test becomes decoration.
+    ///
+    /// Still weaker than driving the binding, which `@State` does not allow
+    /// from a test. It pins the one line that carries the decision.
+    @Test("the guarded binding routes its setter through the decision")
+    func setterAsksTheDecision() throws {
+        let source = try Self.appShellSource
+
+        // The setter is the only place `requestSectionSwitch` is called, and
+        // `requestSectionSwitch` is the only caller of the decision function.
+        // Both links have to be present for the click to reach the guard.
+        #expect(
+            source.contains("set: { requested in requestSectionSwitch(to: requested) }"),
+            "guardedSelection's setter no longer calls requestSectionSwitch — a click on About writes selection directly and the open document dies unasked")
+        #expect(
+            source.contains("switch Self.sectionSwitchDecision("),
+            "requestSectionSwitch no longer consults sectionSwitchDecision")
+    }
 }

@@ -486,3 +486,29 @@ func TestResultRecoveryAcceptsTheRealShape(t *testing.T) {
 func resultFixture(body string) string {
 	return "package main\n\nimport \"C\"\n\nconst (\n\tstatusOK      C.int = 0\n\tstatusFailure C.int = 1\n)\n\n" + body + "\n"
 }
+
+// TestResultRecoveryRejectsASelfAssignment is its own function rather than
+// another row in the table above because it is the mutation that got through
+// the rules those rows were written for.
+//
+// `status = status` satisfies every earlier rule — deferred closure, recover
+// feeding a condition, no nested literal, an assignment to a named result —
+// and swallows the panic, returning `statusOK`. `go vet` is silent and all 158
+// Go tests passed. The rule now asks whether the assignment moves anything.
+func TestResultRecoveryRejectsASelfAssignment(t *testing.T) {
+	source := `func result(out **C.char, payload []byte, err error) (status C.int) {
+	defer func() {
+		if recover() != nil {
+			status = status
+		}
+	}()
+	return statusOK
+}`
+	complaints, err := inspectResultRecovery(resultFixture(source))
+	if err != nil {
+		t.Fatalf("parse fixture: %v", err)
+	}
+	if len(complaints) == 0 {
+		t.Fatal("a self-assignment was accepted: the panic is swallowed and reported as success")
+	}
+}

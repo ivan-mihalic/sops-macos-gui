@@ -230,11 +230,23 @@ func assignsToNamedResult(fn *ast.FuncDecl, body *ast.BlockStmt) bool {
 			// than setting it — the shape that looks right and does nothing.
 			return true
 		}
-		for _, lhs := range assign.Lhs {
-			if ident, ok := lhs.(*ast.Ident); ok && names[ident.Name] {
-				assigns = true
-				return false
+		for i, lhs := range assign.Lhs {
+			ident, ok := lhs.(*ast.Ident)
+			if !ok || !names[ident.Name] {
+				continue
 			}
+			// `status = status` satisfied "assigns to a named result" and
+			// changes nothing: the panic is swallowed and `result` returns its
+			// zero status, which is `statusOK`. A review found it, `go vet`
+			// does not object, and all 158 Go tests passed. So the assignment
+			// has to actually move the value.
+			if i < len(assign.Rhs) {
+				if rhs, ok := assign.Rhs[i].(*ast.Ident); ok && rhs.Name == ident.Name {
+					continue
+				}
+			}
+			assigns = true
+			return false
 		}
 		return true
 	})
