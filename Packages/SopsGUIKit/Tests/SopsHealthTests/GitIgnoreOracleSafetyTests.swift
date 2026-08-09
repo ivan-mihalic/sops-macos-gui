@@ -387,6 +387,70 @@ struct GitIgnoreOracleFailureTests {
             "a repository with a damaged .git was reported as not being one")
     }
 
+    /// The regression iteration 11 introduced while fixing the swap: the `.git`
+    /// discriminator looked only in `root`. Git prints "not a git repository
+    /// (or any of the parent directories)" from *anywhere inside* a repository
+    /// whose `.git` is damaged, and a project is very often a subdirectory —
+    /// so the app went back to the confident, false "this project is not
+    /// inside a git repository", with the gitignore check silently dropped on
+    /// the strength of it. The previous round's own tests could not see this:
+    /// both built `.git` directly in `root`.
+    @Test(
+        "real git: a damaged repository is undetermined from a subdirectory too",
+        .enabled(if: GitIgnoreOracleFailureTests.realGit != nil, "git is required"))
+    func realGitDamagedRepositorySeenFromASubdirectory() throws {
+        let git = try #require(Self.realGit)
+
+        let sandbox = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("realgit-sub-\(UUID().uuidString)")
+        let repository = sandbox.appendingPathComponent("repo")
+        let project = repository.appendingPathComponent("services/config")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: sandbox) }
+
+        Self.run(git, ["-C", repository.path, "init", "-q", "."])
+        try? FileManager.default.removeItem(at: repository.appendingPathComponent(".git/refs"))
+        try? FileManager.default.removeItem(at: repository.appendingPathComponent(".git/HEAD"))
+
+        try #require(!FileManager.default.fileExists(atPath: project.appendingPathComponent(".git").path),
+                     "the project directory has its own .git — this test would not exercise the walk upward")
+
+        guard case .undetermined(let reason) =
+            GitIgnoreOracle.classify(candidates: [], root: project, gitPath: git) else {
+            Issue.record("expected .undetermined for a project inside a damaged repository")
+            return
+        }
+        #expect(
+            !reason.contains("not inside a git repository"),
+            "a project inside a damaged repository was told it is not in a repository at all")
+    }
+
+    /// The other side of the same walk: a plain directory nested several levels
+    /// under no repository at all must still read as outside, not as a git
+    /// malfunction. Without this, "walk up until you find a .git" could be
+    /// satisfied by never finding one and always answering `.unreadable`.
+    @Test(
+        "real git: a deeply nested plain directory still reads as outside",
+        .enabled(if: GitIgnoreOracleFailureTests.realGit != nil, "git is required"))
+    func realGitNestedPlainDirectoryIsStillOutside() throws {
+        let git = try #require(Self.realGit)
+
+        let sandbox = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("realgit-plain-\(UUID().uuidString)")
+        let nested = sandbox.appendingPathComponent("a/b/c")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: sandbox) }
+
+        guard case .undetermined(let reason) =
+            GitIgnoreOracle.classify(candidates: [], root: nested, gitPath: git) else {
+            Issue.record("expected .undetermined for a plain nested directory")
+            return
+        }
+        #expect(
+            reason.contains("not inside a git repository"),
+            "a directory under no repository at all was reported as a git malfunction")
+    }
+
     private static func run(_ tool: String, _ arguments: [String]) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: tool)

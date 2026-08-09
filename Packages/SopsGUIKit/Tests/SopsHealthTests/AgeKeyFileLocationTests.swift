@@ -36,7 +36,8 @@ struct AgeKeyFileLocationTests {
     /// platform is `$HOME/Library/Application Support`.
     @Test("with no environment set, the Library path sops actually reads is checked")
     func libraryPathIsTheDefault() {
-        let paths = AgeKeyFileLocations.candidates(environment: [:], homeDirectory: "/Users/probe")
+        let paths = AgeKeyFileLocations.candidates(
+            environment: [:], homeDirectory: "/Users/probe", loginShellEnvironment: { [:] })
 
         #expect(paths.first == "/Users/probe/Library/Application Support/sops/age/keys.txt",
                 "sops reads os.UserConfigDir() on macOS, not ~/.config: \(paths)")
@@ -49,7 +50,8 @@ struct AgeKeyFileLocationTests {
     @Test("XDG_CONFIG_HOME replaces the Library path, as it does for sops")
     func xdgConfigHomeWins() {
         let paths = AgeKeyFileLocations.candidates(
-            environment: ["XDG_CONFIG_HOME": "/elsewhere/cfg"], homeDirectory: "/Users/probe")
+            environment: ["XDG_CONFIG_HOME": "/elsewhere/cfg"], homeDirectory: "/Users/probe",
+            loginShellEnvironment: { [:] })
 
         #expect(paths.contains("/elsewhere/cfg/sops/age/keys.txt"))
         #expect(!paths.contains("/Users/probe/Library/Application Support/sops/age/keys.txt"))
@@ -60,7 +62,8 @@ struct AgeKeyFileLocationTests {
     @Test("an empty XDG_CONFIG_HOME is ignored, as sops ignores it")
     func emptyXDGIsIgnored() {
         let paths = AgeKeyFileLocations.candidates(
-            environment: ["XDG_CONFIG_HOME": ""], homeDirectory: "/Users/probe")
+            environment: ["XDG_CONFIG_HOME": ""], homeDirectory: "/Users/probe",
+            loginShellEnvironment: { [:] })
 
         #expect(paths.contains("/Users/probe/Library/Application Support/sops/age/keys.txt"))
     }
@@ -68,7 +71,8 @@ struct AgeKeyFileLocationTests {
     @Test("SOPS_AGE_KEY_FILE is checked, and checked first")
     func explicitEnvironmentPathIsFirst() {
         let paths = AgeKeyFileLocations.candidates(
-            environment: ["SOPS_AGE_KEY_FILE": "/opt/keys/age.txt"], homeDirectory: "/Users/probe")
+            environment: ["SOPS_AGE_KEY_FILE": "/opt/keys/age.txt"], homeDirectory: "/Users/probe",
+            loginShellEnvironment: { [:] })
 
         #expect(paths.first == "/opt/keys/age.txt")
         #expect(paths.count == 3, "the other two are still worth stat-ing: \(paths)")
@@ -78,7 +82,8 @@ struct AgeKeyFileLocationTests {
     func duplicatesCollapse() {
         let paths = AgeKeyFileLocations.candidates(
             environment: ["SOPS_AGE_KEY_FILE": "/Users/probe/.config/sops/age/keys.txt"],
-            homeDirectory: "/Users/probe")
+            homeDirectory: "/Users/probe",
+            loginShellEnvironment: { [:] })
 
         #expect(Set(paths).count == paths.count, "\(paths)")
     }
@@ -97,7 +102,8 @@ struct AgeKeyFileLocationTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
 
-        let paths = AgeKeyFileLocations.candidates(environment: [:], homeDirectory: home.path)
+        let paths = AgeKeyFileLocations.candidates(
+            environment: [:], homeDirectory: home.path, loginShellEnvironment: { [:] })
         #expect(AgeKeyFileLocations.existingFiles(among: paths).isEmpty,
                 "a `mkdir -p keys.txt` is not a plaintext key")
         #expect(!AgeKeyFileLocations.isRegularFile(directory.path))
@@ -160,7 +166,8 @@ struct AgeKeyFileLocationTests {
         try "# created by age-keygen\n".write(to: keyFile, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: home) }
 
-        let paths = AgeKeyFileLocations.candidates(environment: [:], homeDirectory: home.path)
+        let paths = AgeKeyFileLocations.candidates(
+            environment: [:], homeDirectory: home.path, loginShellEnvironment: { [:] })
         let finding = legacyFinding(await check(paths).run())
 
         #expect(finding.status == .warning)
@@ -183,7 +190,8 @@ struct AgeKeyFileLocationTests {
         }
         defer { try? FileManager.default.removeItem(at: home) }
 
-        let paths = AgeKeyFileLocations.candidates(environment: [:], homeDirectory: home.path)
+        let paths = AgeKeyFileLocations.candidates(
+            environment: [:], homeDirectory: home.path, loginShellEnvironment: { [:] })
         let finding = legacyFinding(await check(paths).run())
 
         #expect(finding.status == .warning)

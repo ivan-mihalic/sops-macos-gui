@@ -221,6 +221,33 @@ private struct MainThreadOccupancy {
 /// of both.
 private let blockedMainThreadFraction = 0.5
 
+/// Whether this binary was built with a sanitizer that instruments every memory
+/// access.
+///
+/// `RTLD_DEFAULT` is `(void *)-2` on Darwin; `__tsan_init` exists only in a
+/// ThreadSanitizer build.
+///
+/// This matters because the occupancy assertion below is a **wall-clock ratio**,
+/// and TSan changes the thing it measures. Measured on this machine, same test,
+/// same input:
+///
+///     plain        save() occupancy: 30.1%  7.5%  22.1%  6.7%  22.2%  6.9%  — 6/6 pass
+///     TSan         save() occupancy: 53.8% 20.3%  56.0% 20.3%  21.6% 30.4%  — 3/3 runs fail
+///
+/// So `swift test --sanitize=thread` could not come back green, and this
+/// project uses exactly that command to prove its concurrency correctness — it
+/// is how the real data race in `ProjectScanner`'s concurrent map was found. A
+/// red TSan run that is *expected* to be red is a TSan run nobody reads, which
+/// is precisely where the next real race would hide.
+///
+/// Only the two ratio assertions are skipped. Everything else in the test — that
+/// load and save actually succeed, that the edit lands, that the instrument
+/// reports at all — still runs under the sanitizer, which is where the race
+/// detection value is anyway.
+private let isRunningUnderThreadSanitizer: Bool = {
+    dlsym(UnsafeMutableRawPointer(bitPattern: -2), "__tsan_init") != nil
+}()
+
 /// The main thread's own accumulated CPU time, user + system.
 ///
 /// `@MainActor` is what makes `mach_thread_self()` the right thread: the main
@@ -926,6 +953,15 @@ struct SecretDocumentViewModelTests {
         // call. `mainActorInstrumentDiscriminates` proves the instrument can
         // tell those apart; `blockedMainThreadFraction` sits between them with
         // room on both sides.
+        //
+        // Not asserted under a sanitizer — see `isRunningUnderThreadSanitizer`
+        // for the measurements. The numbers are still printed above, so a TSan
+        // run is not silent about them, it just does not fail on a ratio the
+        // instrumentation itself moved.
+        guard !isRunningUnderThreadSanitizer else {
+            print("  (occupancy not asserted: this binary is instrumented, which changes the ratio)")
+            return
+        }
         #expect(loading.fraction < blockedMainThreadFraction, Comment(rawValue:
             "load() spent \(loading.description) — the main thread did the bridge's work itself, "
             + "so a window would have been frozen for the whole call"))

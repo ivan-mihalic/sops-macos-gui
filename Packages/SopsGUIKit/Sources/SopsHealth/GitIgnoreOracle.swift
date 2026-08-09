@@ -185,8 +185,22 @@ enum GitIgnoreOracle {
         // not an error state.
         //
         // The message alone cannot separate "outside" from "damaged", so the
-        // filesystem answers: an existing `.git` at the root means the message
-        // is about a repository that is broken, not absent.
+        // filesystem answers: an existing `.git` means the message is about a
+        // repository that is broken, not absent.
+        //
+        // **Searched upward, not just at the root**, and the first version of
+        // this looked only at `root`. Git says "or any of the parent
+        // directories" because that is exactly what it searched, and it prints
+        // the same sentence from anywhere inside a repository whose `.git` is
+        // damaged. A project is very often a subdirectory of its repository, so
+        // looking only at `root` sent every such user back to the confident,
+        // false "this project is not inside a git repository" — the very claim
+        // the round before had just fixed, moved down one directory level. The
+        // round's own tests could not see it: both built `.git` in `root`.
+        //
+        // If a healthy `.git` existed anywhere above, git would have found it
+        // and never printed this message, so reaching here with one present
+        // means it is damaged.
         guard outcome.standardErrorComplete else { return .unreadable }
         let complaint = outcome.standardErrorText.lowercased()
 
@@ -194,10 +208,29 @@ enum GitIgnoreOracle {
         if complaint.contains("(null)") { return .unreadable }
 
         if complaint.contains("not a git repository") {
-            let dotGit = root.appendingPathComponent(".git")
-            return FileManager.default.fileExists(atPath: dotGit.path) ? .unreadable : .outside
+            return Self.hasGitDirectoryAtOrAbove(root) ? .unreadable : .outside
         }
         return .unreadable
+    }
+
+    /// Whether a `.git` entry exists at `directory` or at any ancestor of it,
+    /// the same search git itself performs before printing "or any of the
+    /// parent directories".
+    ///
+    /// Bounded by walking until the path stops shortening, so a symlink loop or
+    /// an unusual root cannot spin here. `.git` is a directory in an ordinary
+    /// checkout and a file in a linked worktree or submodule — either counts,
+    /// which is why this asks about existence rather than type.
+    private static func hasGitDirectoryAtOrAbove(_ directory: URL) -> Bool {
+        var current = directory.standardizedFileURL
+        while true {
+            if FileManager.default.fileExists(atPath: current.appendingPathComponent(".git").path) {
+                return true
+            }
+            let parent = current.deletingLastPathComponent().standardizedFileURL
+            if parent.path == current.path { return false }
+            current = parent
+        }
     }
 
     /// The paths git reports as ignored, or nil if git failed outright.

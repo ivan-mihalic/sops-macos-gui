@@ -102,13 +102,87 @@ enum Fixtures {
                 id: "security.biometry", title: "Touch ID", status: .skipped(
                     reason: "Keychain key storage arrives in M3."),
                 detail: "Not used yet — the session key store is in-memory only for M2."),
-            HealthFinding(
-                id: "project.0.sops-yaml", title: "acme-web: .sops.yaml", status: .ok,
-                detail: "Found a .sops.yaml with 2 creation rules."),
-            HealthFinding(
-                id: "project.0.plaintext-leak", title: "acme-web: plaintext leak", status: .ok,
-                detail: "No plaintext .env files were found outside of .gitignore."),
-        ]
+        ] + realProjectFindings
+    }
+
+    /// The project findings, produced by **running the real check** over a
+    /// throwaway project rather than by writing out what its output is
+    /// imagined to look like.
+    ///
+    /// The hand-written pair this replaces said "acme-web: plaintext leak" and
+    /// "No plaintext .env files were found outside of .gitignore." Neither
+    /// string exists in the app: the real titles and details differ, and — the
+    /// reason this matters rather than being a typo — **no hand-written `.ok`
+    /// project finding carried the scope-disclosure paragraph**, which every
+    /// real one does (`ProjectScopeAccountant.finding`). That paragraph is the
+    /// single thing a person reviewing an `.ok` finding is there to check:
+    /// whether the app admits what it did not look at. It was invisible in
+    /// every snapshot.
+    ///
+    /// Synchronous because the catalog is built on the main actor and this is a
+    /// dev tool; the scan is a few files in a temp directory.
+    private static var realProjectFindings: [HealthFinding] {
+        guard let root = try? makeSnapshotProject() else { return [] }
+        let check = ProjectHealthCheck(source: SnapshotProjects(projects: [
+            InspectedProject(name: "acme-web", rootPath: root.path)
+        ]))
+        return runSynchronously { await check.run() }
+    }
+
+    /// A project with something to find: an encrypted file, a `.sops.yaml`, a
+    /// plaintext `.env` that is *not* gitignored, and a `node_modules` the scan
+    /// never enters — so the scope paragraph has a real exclusion to disclose.
+    private static func makeSnapshotProject() throws -> URL {
+        // A **fixed** directory name, not a UUID: these PNGs exist to be
+        // diffed between commits, and the project root appears verbatim in
+        // three of the findings. A fresh UUID every run would make every
+        // snapshot differ from the last for no reason, which is the fastest
+        // way to teach a reviewer to skip the diff. Removed and rebuilt so a
+        // stale run cannot leak into a fresh one.
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sops-gui-snapshot-project")
+        try? FileManager.default.removeItem(at: root)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        try writeSopsLikeYAML(root, at: "config/production.secrets.yaml")
+        try writeSopsLikeYAML(root, at: "node_modules/pkg/fixture.secrets.yaml")
+        // A genuinely valid age **public** key — public by definition, and
+        // nothing in this repository holds its private half, which was
+        // discarded the moment this line was written. It has to be real: an
+        // `age1example…` placeholder is not Bech32, so the check reported
+        // "could not be parsed: malformed recipient" and the snapshot showed a
+        // broken project instead of an ordinary one.
+        try "creation_rules:\n  - path_regex: .*\n    age: age1xergf8q8mg5fu5jkrwut46zm9nuurdgufverfft4ed09eudlhu3scah4e3\n"
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        try "API_KEY=EXAMPLE-not-a-real-secret\n"
+            .write(to: root.appendingPathComponent(".env"), atomically: true, encoding: .utf8)
+        return root
+    }
+
+    private struct SnapshotProjects: ProjectSourceProviding {
+        let projects: [InspectedProject]
+    }
+
+    /// Bridges one `async` call into the catalog's synchronous fixture
+    /// properties. A semaphore, and it is safe here for one reason worth
+    /// stating: `Catalog.all()` awaits nothing while this runs, and the work
+    /// behind it (`ProjectScanner`) runs off the cooperative pool, so nothing
+    /// this blocks on needs the thread it is blocking.
+    private static func runSynchronously<T: Sendable>(
+        _ work: @escaping @Sendable () async -> T
+    ) -> T {
+        let box = UnsafeResultBox<T>()
+        let done = DispatchSemaphore(value: 0)
+        Task.detached {
+            box.value = await work()
+            done.signal()
+        }
+        done.wait()
+        return box.value!
+    }
+
+    private final class UnsafeResultBox<T>: @unchecked Sendable {
+        var value: T?
     }
 
     // MARK: - Five statuses (`HealthFindingRow`)

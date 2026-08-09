@@ -66,27 +66,89 @@ public enum AgeKeyFileLocations {
 
     public static let userConfigRelativePath = "sops/age/keys.txt"
 
+    /// The two variables that *relocate* the search, asked of the login shell.
+    ///
+    /// Deliberately two names and no more. `env` would work and is not used:
+    /// dumping the environment would pull `SOPS_AGE_KEY` — whose value is an
+    /// age private key — into this process as a side effect of looking for file
+    /// paths. These two hold paths, and paths are safe to hold, quote and log.
+    ///
+    /// `runLoginShell` is injected so the merge logic is testable without a
+    /// process spawn; the default is the real login shell.
+    public static func loginShellPathVariables(
+        runLoginShell: ([String], String) -> [String: String] = readFromLoginShell
+    ) -> [String: String] {
+        runLoginShell(["SOPS_AGE_KEY_FILE", "XDG_CONFIG_HOME"],
+                      ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh")
+    }
+
+    /// Asks `shell` for each name, NUL-separated so a path containing a newline
+    /// survives. `-lc`, never `-lic`: an interactive shell can block on prompts
+    /// or plugins. Same reasoning, same flags, as `ToolLocator`.
+    ///
+    /// Any failure — no shell, a timeout, a profile that writes to stdout —
+    /// yields nothing rather than a guess. Nothing is the safe answer: it
+    /// leaves the ordinary two paths in place.
+    public static func readFromLoginShell(_ names: [String], _ shell: String) -> [String: String] {
+        let script = names.map { "printf %s \"${\($0)-}\"; printf '\\0'" }.joined(separator: "; ")
+        guard let output = try? ToolLocator.capture(shell, ["-lc", script], timeout: 3) else { return [:] }
+
+        let fields = output.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
+        var found: [String: String] = [:]
+        for (index, name) in names.enumerated() where index < fields.count {
+            let value = fields[index]
+            if !value.isEmpty { found[name] = value }
+        }
+        return found
+    }
+
     /// Every path worth stat-ing, in the order sops itself would consider them,
     /// deduplicated and with empty entries dropped.
     ///
-    /// `environment` and `homeDirectory` are injected so this is testable
-    /// without touching the machine's real environment — a test that has to set
-    /// `XDG_CONFIG_HOME` process-wide is a test that corrupts every other test
-    /// running beside it under Swift Testing's parallel execution.
-    public static func candidates(environment: [String: String] = ProcessInfo.processInfo.environment,
-                                  homeDirectory: String = NSHomeDirectory()) -> [String] {
+    /// `environment`, `homeDirectory` and `loginShellEnvironment` are injected
+    /// so this is testable without touching the machine's real environment — a
+    /// test that has to set `XDG_CONFIG_HOME` process-wide is a test that
+    /// corrupts every other test running beside it under Swift Testing's
+    /// parallel execution.
+    ///
+    /// ## Why the login shell is consulted at all
+    ///
+    /// A GUI app launched from Finder inherits a minimal environment, which is
+    /// why `ToolLocator` exists in this same module and asks the login shell
+    /// for `PATH`. This probe went without that, and the cost is worse than a
+    /// tool reported missing: with `export SOPS_AGE_KEY_FILE=~/keys/prod.txt`
+    /// in a shell profile, the two paths below are the ones that variable
+    /// *overrides*, so the check finds nothing and reports "No unprotected age
+    /// key file was found at any of the places sops reads one from" — a
+    /// sentence about sops's resolution order, over a list computed as though
+    /// the user had no environment. Settings then disables the import button
+    /// on the same false ground.
+    ///
+    /// The launch environment wins where it has an answer: launched from a
+    /// terminal that set the variable, that is the value sops itself would see.
+    public static func candidates(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        homeDirectory: String = NSHomeDirectory(),
+        loginShellEnvironment: () -> [String: String] = { loginShellPathVariables() }
+    ) -> [String] {
         var paths: [String] = []
+        let shellEnvironment = loginShellEnvironment()
 
         func add(_ path: String) {
             guard !path.isEmpty, !paths.contains(path) else { return }
             paths.append(path)
         }
+        func value(_ name: String) -> String? {
+            if let launch = environment[name], !launch.isEmpty { return launch }
+            if let shell = shellEnvironment[name], !shell.isEmpty { return shell }
+            return nil
+        }
 
-        if let explicit = environment["SOPS_AGE_KEY_FILE"], !explicit.isEmpty {
+        if let explicit = value("SOPS_AGE_KEY_FILE") {
             add(explicit)
         }
         // The darwin branch of sops's own `getUserConfigDir`.
-        let configHome = environment["XDG_CONFIG_HOME"].flatMap { $0.isEmpty ? nil : $0 }
+        let configHome = value("XDG_CONFIG_HOME")
             ?? (homeDirectory as NSString).appendingPathComponent("Library/Application Support")
         add((configHome as NSString).appendingPathComponent(userConfigRelativePath))
         // The conventional location, whether or not this sops build reads it.

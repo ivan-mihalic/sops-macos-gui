@@ -721,14 +721,33 @@ public struct ProjectScanner {
             // pre-existing `guard values.isRegularFile` dropped every symlink
             // in the tree, of either kind, in silence.
             if values.isSymbolicLink == true {
-                var linkTargetIsDirectory: ObjCBool = false
-                // `fileExists` *does* follow the link, which is what makes it
-                // the right probe here. A link that resolves to nothing is a
-                // broken link: there is no content behind it that went
-                // unexamined, so it is not a limitation, just an absence.
-                guard FileManager.default.fileExists(atPath: url.path,
-                                                     isDirectory: &linkTargetIsDirectory) else { continue }
-                if linkTargetIsDirectory.boolValue {
+                // `stat` follows the link, which is what makes it the right
+                // probe here — and unlike `fileExists` it says *why* it could
+                // not answer. That difference is the whole reason this is no
+                // longer `fileExists`: the previous version's comment said "a
+                // link that resolves to nothing is a broken link: there is no
+                // content behind it that went unexamined", which is true for
+                // `ENOENT` and false for `EACCES`. A link pointing into a
+                // directory this process cannot search resolves to nothing as
+                // far as `fileExists` is concerned, so an encrypted file behind
+                // it was dropped in complete silence — no limitation, no
+                // finding, and a file list free to report the project as
+                // holding nothing.
+                //
+                // The same defect, in the same function, as the root check a
+                // hundred lines above, which was fixed one round earlier
+                // without anybody looking down here.
+                var linkTarget = stat()
+                guard stat(url.path, &linkTarget) == 0 else {
+                    if errno != ENOENT {
+                        // Something is behind this link and it was not read.
+                        tree.note(.unreadableFile(path: url.path))
+                    }
+                    // `ENOENT` really is an absence: a stale link with nothing
+                    // behind it is not a gap in what this scan examined.
+                    continue
+                }
+                if (linkTarget.st_mode & S_IFMT) == S_IFDIR {
                     // Not followed, deliberately: following directory symlinks
                     // is how a project scan loops forever, or escapes the
                     // project entirely and walks the user's whole disk on the

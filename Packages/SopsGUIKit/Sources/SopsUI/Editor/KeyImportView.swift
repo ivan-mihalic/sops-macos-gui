@@ -285,6 +285,8 @@ public struct KeyImportView: View {
             LocalizedKey.keyErrorNotAnAgeKey.text
         case SessionKeyStore.Error.multipleKeysInFile(let count):
             String(format: LocalizedKey.keyErrorMultipleKeys.text, count)
+        case SessionKeyStore.Error.multipleLinesPasted:
+            LocalizedKey.keyErrorMultipleLinesPasted.text
         default:
             // `importFromLegacyKeyFile(at:)` also throws whatever
             // `String(contentsOfFile:encoding:)` throws (file missing,

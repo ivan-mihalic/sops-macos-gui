@@ -75,6 +75,10 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case keyErrorNotAnAgeKey = "key.error.not-an-age-key"
     // Formatted with the number of keys found — see `KeyImportView.message(for:)`.
     case keyErrorMultipleKeys = "key.error.multiple-keys"
+    // The paste field was given more than one line. Separate from
+    // `key.error.multiple-keys`, which names a file and counts keys — neither
+    // of which is true on the paste path.
+    case keyErrorMultipleLinesPasted = "key.error.multiple-lines-pasted"
     case keyErrorReadFailed = "key.error.read-failed"
 
     case actionBack = "action.back"
@@ -128,6 +132,9 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // A folder was dropped on the sidebar and the drop carried nothing this
     // app could read as a path — see `droppedProjectPath(from:)`.
     case projectsErrorDropUnreadable = "projects.error.drop-unreadable"
+    // Formatted with the first problem and the number of further problems in
+    // the same drop — see `ProjectSidebarModel.addDroppedProjects`.
+    case projectsErrorDropPartial = "projects.error.drop-partial"
     case projectsErrorRemoveFailed = "projects.error.remove-failed"
 
     // MARK: Task 9 — file list

@@ -107,7 +107,11 @@ public struct ToolLocator: ToolLocating {
     /// "wait for exit, then read" deadlocks against its own backpressure)
     /// lives in `CommandRunner`, shared with the `git` probes in
     /// `GitIgnoreOracle`. One copy of that reasoning, not two.
-    private static func capture(_ launchPath: String, _ arguments: [String], timeout: TimeInterval) throws -> String {
+    /// Not `private`: `AgeKeyFileLocations` asks the login shell for two path
+    /// variables and must do it the same way — same `-lc`, same timeout, same
+    /// single `CommandRunner` chokepoint — rather than growing a second,
+    /// divergent copy of "spawn a login shell and read its answer".
+    static func capture(_ launchPath: String, _ arguments: [String], timeout: TimeInterval) throws -> String {
         guard let outcome = CommandRunner.run(launchPath, arguments: arguments, timeout: timeout) else {
             throw CocoaError(.fileNoSuchFile)
         }

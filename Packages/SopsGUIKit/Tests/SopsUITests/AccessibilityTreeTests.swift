@@ -28,8 +28,11 @@ import Testing
 ///    `statusRowsAnnounceTheirStatus` is the canary: it asserts the tree is
 ///    genuinely populated, so if this stops working the suite fails loudly
 ///    instead of going quiet.
+// Not `private`: `FileListViewWiringTests` renders through the same probe. The
+// technique is the only way to assert on what a view actually shows without
+// launching the app, so it belongs to the target, not to one file.
 @MainActor
-private enum AXProbe {
+enum AXProbe {
 
     /// One node of a rendered accessibility tree.
     struct Node {

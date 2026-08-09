@@ -196,13 +196,31 @@ public final class ProjectStore {
         projects = candidate
     }
 
-    /// Whether the project's directory can currently be found. Re-checks the
+    /// Whether the project's directory is genuinely **gone**. Re-checks the
     /// filesystem on every call rather than caching, so a volume that gets
     /// remounted (or a directory that reappears) is reflected immediately.
+    ///
+    /// `stat` and `errno`, not `FileManager.fileExists`, and the difference is
+    /// what the sidebar badge means. `fileExists` needs `+x` on every directory
+    /// above the one it is asked about and answers `false` when it does not
+    /// have it — the same answer it gives for a deleted directory. So a project
+    /// inside a folder the user had locked was badged **"Missing"**, while the
+    /// file list beside it, which had already been fixed to use `stat`, said
+    /// the folder could not be *read*. Two parts of one window disagreeing
+    /// about one directory, with the sidebar holding the wrong end: "Missing"
+    /// sends the user off to re-add the project, when the fix is permissions.
+    ///
+    /// Unreachable is not missing. A directory this process cannot stat is
+    /// reported as present, and the honest "could not be read" comes from
+    /// `ProjectScanner`, which is the type that actually tried to open it.
     public func isMissing(_ project: StoredProject) -> Bool {
-        var isDirectory: ObjCBool = false
-        let exists = fileManager.fileExists(atPath: project.rootPath, isDirectory: &isDirectory)
-        return !(exists && isDirectory.boolValue)
+        var status = stat()
+        guard stat(project.rootPath, &status) == 0 else {
+            // Out of reach, not gone: `EACCES`/`EPERM` means something is there
+            // that this process is not allowed to look at.
+            return !(errno == EACCES || errno == EPERM)
+        }
+        return (status.st_mode & S_IFMT) != S_IFDIR
     }
 
     // MARK: - Persistence

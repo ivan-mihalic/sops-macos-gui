@@ -1,4 +1,5 @@
 import Foundation
+import SopsProjects
 import Testing
 @testable import SopsUI
 
@@ -53,5 +54,76 @@ struct ProjectDropTests {
         #expect(droppedProjectPath(from: nil) == nil)
         #expect(droppedProjectPath(from: "not a url" as NSString) == nil)
         #expect(droppedProjectPath(from: Data([0xFF, 0xFE]) as NSData) == nil)
+    }
+}
+
+/// A drop carries several items, and each provider's completion handler used to
+/// call into the model on its own. `addProject` starts by clearing `lastError`,
+/// so which single message survived was decided by which provider finished
+/// last — and a good folder finishing after an unreadable item wiped the alert
+/// entirely, putting the user right back in the silence the alert was added to
+/// end.
+@Suite("One drop produces one outcome")
+@MainActor
+struct ProjectDropBatchTests {
+
+    private func model() throws -> ProjectSidebarModel {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("drop-batch-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return ProjectSidebarModel(
+            store: try ProjectStore(fileURL: directory.appendingPathComponent("projects.json")))
+    }
+
+    private func folder() throws -> String {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("drop-folder-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url.path
+    }
+
+    @Test("an unreadable item is still reported when a good folder is in the same drop")
+    func unreadableSurvivesAGoodFolder() throws {
+        let model = try model()
+        model.addDroppedProjects(paths: [try folder()], unreadableCount: 1)
+
+        #expect(model.groups.count == 1, "the readable folder was not added")
+        #expect(model.lastError != nil,
+                "the unreadable item was reported by nobody because a successful add cleared it")
+    }
+
+    @Test("a drop with nothing wrong shows no alert")
+    func cleanDropIsSilent() throws {
+        let model = try model()
+        model.addDroppedProjects(paths: [try folder(), try folder()], unreadableCount: 0)
+
+        #expect(model.groups.count == 2)
+        #expect(model.lastError == nil, "a drop that worked raised an alert")
+    }
+
+    @Test("several problems in one drop are counted, not overwritten",
+          .enabled(if: LocalizationTests.bundleHasMacOSLayout,
+                   "this asserts on text a *format* key produces, and swift test's native build system never compiles .xcstrings — every key falls back to its own raw value, which carries no %@ to substitute into; run under xcodebuild or swift test --build-system swiftbuild"),)
+    func problemsAreCounted() throws {
+        let model = try model()
+        let duplicate = try folder()
+        model.addProject(path: duplicate)
+
+        model.addDroppedProjects(paths: [duplicate], unreadableCount: 2)
+
+        let reported = try #require(model.lastError)
+        #expect(reported.contains("2"),
+                "three problems in one drop were reported as one: \(reported)")
+    }
+
+    /// The readable folders must be added even when something else in the drop
+    /// failed — refusing the whole batch would be a different bug.
+    @Test("a failure does not discard the rest of the drop")
+    func partialFailureStillAddsTheRest() throws {
+        let model = try model()
+        model.addDroppedProjects(paths: [try folder(), try folder()], unreadableCount: 1)
+
+        #expect(model.groups.count == 2, "good folders were dropped because another item failed")
+        #expect(model.lastError != nil)
     }
 }

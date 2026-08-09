@@ -859,6 +859,17 @@
         }
       }
     },
+    "key.error.multiple-lines-pasted": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paste one key on its own — this app takes a single AGE-SECRET-KEY-1… line, without the public-key comment age-keygen prints beside it."
+          }
+        }
+      }
+    },
     "key.error.not-an-age-key": {
       "extractionState": "manual",
       "localizations": {
@@ -1251,6 +1262,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "The project list couldn't be saved. Try again."
+          }
+        }
+      }
+    },
+    "projects.error.drop-partial": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ (%2$d more item(s) in that drop had problems too.)"
           }
         }
       }

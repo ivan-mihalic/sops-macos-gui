@@ -59,21 +59,57 @@ public final class ProjectSidebarModel {
     /// see this project, and it's already there.
     public func addProject(path: String) {
         lastError = nil
+        lastError = attemptAdd(path)
+    }
+
+    /// Adds one project and *returns* what went wrong rather than publishing
+    /// it, so a caller handling several at once can decide what the user sees.
+    ///
+    /// Split out because `addProject` begins by clearing `lastError`, and a
+    /// drop of several items calls it once per item: the last provider to
+    /// finish decided which single error survived, and a successful add landing
+    /// after a failure wiped the failure entirely. Measured, not supposed.
+    private func attemptAdd(_ path: String) -> String? {
         do {
             let project = try store.add(path: path)
             rebuildGroups()
             selection = project.id
+            return nil
         } catch ProjectStore.Error.alreadyAdded(let existing) {
-            lastError = LocalizedKey.projectsErrorDuplicate.text
             selection = existing.id
+            return LocalizedKey.projectsErrorDuplicate.text
         } catch ProjectStore.Error.notADirectory {
-            lastError = LocalizedKey.projectsErrorNotDirectory.text
+            return LocalizedKey.projectsErrorNotDirectory.text
         } catch {
             // ProjectStore.Error.unreadable — persisting the updated list
             // failed. Not narrated more specifically: the underlying I/O
             // error names no secret and isn't actionable beyond "try again".
-            lastError = LocalizedKey.projectsErrorAddFailed.text
+            return LocalizedKey.projectsErrorAddFailed.text
         }
+    }
+
+    /// One drop, however many items it carried, resolved into one outcome.
+    ///
+    /// `unreadableCount` is the number of items that claimed to be file URLs
+    /// and carried nothing this app could read — see `droppedProjectPath`.
+    /// Every readable path is still added; the alert reports the first problem
+    /// and says how many others there were, so a mixed drop cannot end in
+    /// silence and cannot report only whichever item happened to finish last.
+    public func addDroppedProjects(paths: [String], unreadableCount: Int) {
+        lastError = nil
+
+        var problems: [String] = []
+        for path in paths {
+            if let problem = attemptAdd(path) { problems.append(problem) }
+        }
+        problems.append(
+            contentsOf: Array(repeating: LocalizedKey.projectsErrorDropUnreadable.text,
+                              count: max(0, unreadableCount)))
+
+        guard let first = problems.first else { return }
+        lastError = problems.count == 1
+            ? first
+            : String(format: LocalizedKey.projectsErrorDropPartial.text, first, problems.count - 1)
     }
 
     /// Forgets the project. Never touches its directory on disk — see
@@ -337,26 +373,41 @@ public struct ProjectSidebar: View {
     /// URL goes through `model.addProject(path:)` exactly like the open
     /// panel — a non-directory drop, or a duplicate, surfaces the same
     /// `lastError` alert rather than failing silently.
+    /// Every provider is resolved first, and the model is told once.
+    ///
+    /// The version this replaces called into the model from each provider's own
+    /// completion handler, independently. Those finish in any order, and
+    /// `addProject` starts by clearing `lastError` — so a mixed drop of one
+    /// unreadable item and one good folder ended with no alert at all whenever
+    /// the good one finished last, which is exactly the silence the unreadable
+    /// branch was added to end.
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
-        var handledAny = false
-        for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-            handledAny = true
-            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
-                let path = droppedProjectPath(from: item)
-                Task { @MainActor in
-                    if let path {
-                        model.addProject(path: path)
-                    } else {
-                        // A drop this app accepted and then could not read is
-                        // not a no-op the user should have to guess at. The
-                        // sidebar's own error alert is the only feedback path
-                        // a drop has.
-                        model.lastError = LocalizedKey.projectsErrorDropUnreadable.text
-                    }
+        let fileURLProviders = providers.filter {
+            $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+        }
+        guard !fileURLProviders.isEmpty else { return false }
+
+        Task { @MainActor in
+            var paths: [String] = []
+            var unreadable = 0
+            for provider in fileURLProviders {
+                if let path = await Self.path(from: provider) {
+                    paths.append(path)
+                } else {
+                    unreadable += 1
                 }
             }
+            model.addDroppedProjects(paths: paths, unreadableCount: unreadable)
         }
-        return handledAny
+        return true
+    }
+
+    private static func path(from provider: NSItemProvider) async -> String? {
+        await withCheckedContinuation { continuation in
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+                continuation.resume(returning: droppedProjectPath(from: item))
+            }
+        }
     }
 }
 

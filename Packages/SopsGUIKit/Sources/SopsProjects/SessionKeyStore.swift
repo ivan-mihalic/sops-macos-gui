@@ -83,6 +83,16 @@ public final class SessionKeyStore {
         /// `importFromKeysFileContents(_:)`'s doc comment for the decision
         /// behind refusing rather than guessing which one the user meant.
         case multipleKeysInFile(count: Int)
+        /// The paste field was given more than one line.
+        ///
+        /// Its own case rather than `.multipleKeysInFile`, because the message
+        /// for that one names a *file* and a count of keys, and on this path
+        /// there is no file and the extra line is very often the `# public
+        /// key:` comment `age-keygen` prints — not a second key at all. Carries
+        /// no count: what the extra lines are is not something this can know,
+        /// and a number here was read as "keys" by the only thing that showed
+        /// it.
+        case multipleLinesPasted
     }
 
     private static let agePrivateKeyPrefix = "AGE-SECRET-KEY-1"
@@ -126,7 +136,13 @@ public final class SessionKeyStore {
 
         let lines = trimmed.split(whereSeparator: \.isNewline)
         guard lines.count == 1 else {
-            throw Error.multipleKeysInFile(count: lines.count)
+            // `.multipleLinesPasted`, not `.multipleKeysInFile`: this is the
+            // paste field and there is no file. The old case produced "That
+            // file has 2 keys in it … trim the file to the one you want" for
+            // someone who pasted a key and the `# public key:` comment
+            // underneath it — naming a file they never touched, counting a
+            // comment as a key, and advising an edit that would not help.
+            throw Error.multipleLinesPasted
         }
 
         // The prefix is 16 characters; a real age identity is Bech32 with a
@@ -205,7 +221,13 @@ public final class SessionKeyStore {
             .filter { !$0.isEmpty && !$0.hasPrefix("#") }
 
         guard !keyLines.isEmpty else { throw Error.empty }
-        guard keyLines.count == 1 else { throw Error.multipleKeysInFile(count: keyLines.count) }
+        // A count of *key-shaped* lines, not of lines that survived comment
+        // stripping. The old count included anything non-empty and non-`#`, so
+        // a stray word in a `keys.txt` was reported as a second key and the
+        // user was told to "trim the file to the one you want" while hunting
+        // for a key that is not there.
+        let keyCount = keyLines.filter { $0.hasPrefix(Self.agePrivateKeyPrefix) }.count
+        guard keyLines.count == 1 else { throw Error.multipleKeysInFile(count: max(keyCount, 1)) }
         try importKey(keyLines[0])
     }
 

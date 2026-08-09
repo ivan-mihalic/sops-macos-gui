@@ -125,3 +125,35 @@ func TestEncryptAcceptsADocumentWithNoValues(t *testing.T) {
 		t.Fatalf("an empty document was refused: %v", err)
 	}
 }
+
+// A document whose only leaf is a null has nothing sops would ever encrypt —
+// `walkValue` returns early on nil. Counting nulls as values made the guard
+// fire and then explain itself with a sentence that was false twice over:
+// "every key in this document ends in _unencrypted" about a key named
+// `password`, and "encrypted_regex matches none of this document's keys" about
+// a rule matching the only key present.
+func TestEncryptAcceptsADocumentWhoseOnlyValueIsNull(t *testing.T) {
+	key := newAgeKeyPair(t)
+
+	for _, rule := range []string{"", "^password$"} {
+		if _, err := Encrypt([]byte("password:\n"), FormatYAML, EncryptOpts{
+			AgeRecipients:  []string{key.Public},
+			EncryptedRegex: rule,
+		}); err != nil {
+			t.Errorf("a document whose only value is null was refused (rule %q): %v", rule, err)
+		}
+	}
+}
+
+// Still refused when there is a real value the rule does not reach: the null
+// exemption must not become a way through the guard.
+func TestEncryptStillRefusesWhenARealValueGoesUnencrypted(t *testing.T) {
+	key := newAgeKeyPair(t)
+
+	if _, err := Encrypt([]byte("password: hunter2\nnote:\n"), FormatYAML, EncryptOpts{
+		AgeRecipients:  []string{key.Public},
+		EncryptedRegex: "^note$",
+	}); err == nil {
+		t.Errorf("a document with a real value left in cleartext was accepted")
+	}
+}

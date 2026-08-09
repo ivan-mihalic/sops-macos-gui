@@ -61,9 +61,22 @@ public struct HealthPanel: View {
             }
             .padding(12)
         }
-        .task {
-            if model.findings.isEmpty { await model.refresh() }
-        }
+        // Unconditional, like `OnboardingWizard`'s. The `if
+        // model.findings.isEmpty` guard this replaces made the panel show the
+        // previous run's verdicts as if they were current: `HealthViewModel` is
+        // one shared instance for the whole app, and the `security.keystore`
+        // check reads the same `SessionKeyStore` the neighbouring Settings ›
+        // Key tab writes to. Open Health, import a key in Key, come back — and
+        // Health still says "No age key is configured in this app, so this app
+        // cannot decrypt anything", in the present tense, about a key that is
+        // configured. Findings carry no timestamp, so nothing on screen hints
+        // that they are old.
+        //
+        // A re-run costs what a re-run costs; `model.refresh()` already
+        // coalesces a request arriving mid-scan (see `startRefresh`), so
+        // arriving here while one is in flight rejoins it rather than starting
+        // a second.
+        .task { await model.refresh() }
     }
 
     private func title(for category: HealthCategory) -> String {

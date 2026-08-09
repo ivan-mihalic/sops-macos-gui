@@ -43,11 +43,22 @@ struct ScrollOverflowFadeCoverageTests {
         "Editor/SecretEditorView.swift",
     ]
 
+    /// Comments stripped first, and this is not hypothetical tidying: the
+    /// same attack has now beaten a source-text test in this suite three
+    /// separate rounds — check the name, gut the setter; check the setter
+    /// text, comment it out with `//`; strip `//`, use `/* */`. Verified here
+    /// by mutation: replacing the real call in `HealthPanel.swift` with
+    /// `// FIXME: temporarily dropped .scrollOverflowFade() while reworking`
+    /// left this test, and all 231 tests in the target, green.
+    ///
+    /// `OuterSidebarWiringTests.strippingComments` rather than a second copy —
+    /// that one already carries the scars and the doc comment explaining them.
     @Test("every list that can overflow signals it",
           arguments: ScrollOverflowFadeCoverageTests.viewsWithAnOverflowableList)
     func listHasTheFade(relativePath: String) throws {
         let url = Self.sourceRoot.appendingPathComponent(relativePath)
-        let source = try String(contentsOf: url, encoding: .utf8)
+        let source = OuterSidebarWiringTests.strippingComments(
+            try String(contentsOf: url, encoding: .utf8))
 
         // Sanity first, so a renamed or moved file fails as a missing list
         // rather than passing as a file with no `List` to fade. Both call

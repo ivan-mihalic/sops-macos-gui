@@ -298,29 +298,61 @@ struct SessionKeyStoreTests {
     // The whole point of "in memory for the session only" is that nothing
     // about the key ends up on disk. This scans the app's real Application
     // Support directory (the same location `ProjectStore.defaultFileURL`
-    // uses) before and after a successful import and asserts the listing is
-    // byte-for-byte unchanged — not just "no obviously key-named file
-    // appeared", but that this store wrote *nothing* there at all. Safe to
-    // point at the real location precisely because passing this test is what
-    // proves `SessionKeyStore` never touches it; if it ever regressed to
-    // writing there, this test would be the one polluting a real user's
-    // Application Support directory, which is the point.
+    // uses) before and after a successful import. Safe to point at the real
+    // location precisely because passing this test is what proves
+    // `SessionKeyStore` never touches it; if it ever regressed to writing
+    // there, this test would be the one polluting a real user's Application
+    // Support directory, which is the point.
+    //
+    // **Contents, not the listing**, and the comment this replaces claimed
+    // otherwise in as many words: "not just 'no obviously key-named file
+    // appeared', but that this store wrote *nothing* there at all". It
+    // compared `contentsOfDirectory` — file *names*. A regression that
+    // appended the identity to the `projects.json` already sitting in that
+    // directory changed no name, and the test stayed green while real age
+    // private keys landed in a real user's Application Support. Demonstrated
+    // by mutation, and it is the most valuable single guarantee in this type:
+    // a persisted identity survives a restart, rides into iCloud and Time
+    // Machine backups, and is the one thing ADR 0001 promises never happens.
     @Test("the key is never written to disk")
     func keyIsNeverWrittenToDisk() throws {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let appDir = support.appendingPathComponent("cz.mihalic.SopsGUI", isDirectory: true)
 
-        let before = try? FileManager.default.contentsOfDirectory(atPath: appDir.path)
+        let before = Self.fingerprint(of: appDir)
 
         let store = SessionKeyStore()
         try store.importKey(validKey)
         #expect(store.state == .configured)
         store.forget()
 
-        let after = try? FileManager.default.contentsOfDirectory(atPath: appDir.path)
+        let after = Self.fingerprint(of: appDir)
 
+        // Names only, never contents: a difference report must not print what
+        // a leaked file now holds.
         #expect(before == after,
-                "SessionKeyStore must never write to the app's Application Support directory; before=\(before ?? []) after=\(after ?? [])")
+                Comment(rawValue: "SessionKeyStore must never write to the app's Application Support directory. "
+                    + "Entries that differ: \(Self.differingNames(before, after).joined(separator: ", "))"))
+    }
+
+    /// Every file under `directory`, recursively, mapped to a hash of its
+    /// contents. Absent directory is an empty map, which is the same answer
+    /// before and after and so cannot mask a write.
+    private static func fingerprint(of directory: URL) -> [String: Int] {
+        guard let walker = FileManager.default.enumerator(
+            at: directory, includingPropertiesForKeys: [.isRegularFileKey]) else { return [:] }
+        var result: [String: Int] = [:]
+        for case let url as URL in walker {
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true,
+                  let data = try? Data(contentsOf: url) else { continue }
+            result[url.path] = data.hashValue
+        }
+        return result
+    }
+
+    private static func differingNames(_ before: [String: Int], _ after: [String: Int]) -> [String] {
+        let names = Set(before.keys).union(after.keys)
+        return names.filter { before[$0] != after[$0] }.map { ($0 as NSString).lastPathComponent }.sorted()
     }
 
     // MARK: - No secret in any error
@@ -409,14 +441,47 @@ struct SessionKeyStoreShapeTests {
     /// The paste field's doc comment claimed it "always accepts exactly one
     /// key, by construction". It did not: trimming only touches the ends, so
     /// two keys separated by a newline both went to the bridge, routing around
-    /// the `.multipleKeysInFile` refusal `importFromKeysFileContents` enforces.
+    /// the refusal `importFromKeysFileContents` enforces.
+    ///
+    /// `.multipleLinesPasted`, not `.multipleKeysInFile`: the latter's message
+    /// names a file and a count of keys, and on the paste path there is no file
+    /// — see the case's own doc comment.
     @Test("two keys pasted together are refused, not silently both imported")
     func pastedKeysFileIsRefused() {
         let store = SessionKeyStore()
-        #expect(throws: SessionKeyStore.Error.multipleKeysInFile(count: 2)) {
+        #expect(throws: SessionKeyStore.Error.multipleLinesPasted) {
             try store.importKey(wellShaped + "\n" + wellShaped)
         }
         #expect(store.state == .empty)
+    }
+
+    /// The common shape by a mile: `age-keygen` prints the public key as a
+    /// comment right beneath the private one, so selecting both is one careless
+    /// drag. It used to be reported as "That file has 2 keys in it … trim the
+    /// file to the one you want" — a file the user never touched, a comment
+    /// counted as a key, and advice that fixes nothing.
+    @Test("a key pasted with age-keygen's public-key comment is refused without inventing a second key")
+    func pastedKeyWithCommentIsRefusedHonestly() {
+        let store = SessionKeyStore()
+        #expect(throws: SessionKeyStore.Error.multipleLinesPasted) {
+            try store.importKey(wellShaped + "\n# public key: age1qqqq")
+        }
+    }
+
+    /// The file path keeps its own case, and its count must be a count of
+    /// *keys*. A stray non-comment word used to be reported as a second key.
+    @Test("a keys.txt with one key and one line of noise does not claim two keys")
+    func keysFileNoiseIsNotCountedAsAKey() {
+        let store = SessionKeyStore()
+        do {
+            try store.importFromKeysFileContents("# created by age-keygen\n" + wellShaped + "\nnotes\n")
+            Issue.record("expected a refusal")
+        } catch SessionKeyStore.Error.multipleKeysInFile(let count) {
+            #expect(count == 1,
+                    "the app reported \(count) keys in a file holding one, and told the user to trim it")
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
     }
 
     @Test("a well-shaped key is still accepted")

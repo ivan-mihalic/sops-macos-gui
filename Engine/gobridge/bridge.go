@@ -479,6 +479,13 @@ func leafValues(branches sops.TreeBranches) []interface{} {
 			}
 		case sops.Comment:
 			// Not a value.
+		case nil:
+			// sops's own `walkValue` returns early on nil, so a null is never
+			// encrypted and can never change. Counting it made a document whose
+			// only leaf is `password:` (a null) look like one where encryption
+			// silently did nothing, and the refusal then told the user their
+			// rule matched no keys — about a rule matching the only key there
+			// is. Measured before this line existed.
 		default:
 			values = append(values, node)
 		}
