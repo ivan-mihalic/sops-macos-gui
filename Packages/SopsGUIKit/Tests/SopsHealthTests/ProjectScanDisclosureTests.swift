@@ -315,11 +315,19 @@ struct ProjectScanDisclosureTests {
     /// so no other machine depends on a path only this one has. This is how
     /// the literal finding text quoted in the task report was obtained, rather
     /// than by transcribing it from the source.
+    ///
+    /// It asserts, rather than only printing. An opt-in test with no `#expect`
+    /// at all is a test that cannot fail: run against a path that does not
+    /// exist it passed happily, so the one time somebody sets the variable —
+    /// the moment it is supposed to earn its keep — it would report success
+    /// over a scan that never happened.
     @Test("real repository findings",
           .enabled(if: ProcessInfo.processInfo.environment["PROJECT_HEALTH_ROOT"] != nil),
           .timeLimit(.minutes(5)))
     func realRepositoryFindings() async throws {
         let path = ProcessInfo.processInfo.environment["PROJECT_HEALTH_ROOT"]!
+        try #require(FileManager.default.fileExists(atPath: path),
+                     "PROJECT_HEALTH_ROOT names a path that is not there")
         let clock = ContinuousClock()
         let scanStart = clock.now
         let tree = await ProjectScanner.scan(root: URL(fileURLWithPath: path))
@@ -340,6 +348,15 @@ struct ProjectScanDisclosureTests {
             if let remediation = finding.remediation {
                 print("REMEDIATION: \(remediation.explanation)")
             }
+        }
+
+        #expect(!tree.rootMissing && !tree.rootUnreadable,
+                "the scan never got into PROJECT_HEALTH_ROOT, so nothing printed above is an answer")
+        #expect(!findings.isEmpty,
+                "a real project produced no findings at all, which no code path should be able to do")
+        for finding in findings {
+            #expect(!finding.detail.isEmpty,
+                    Comment(rawValue: "\(finding.title) has a status and no explanation"))
         }
     }
 }

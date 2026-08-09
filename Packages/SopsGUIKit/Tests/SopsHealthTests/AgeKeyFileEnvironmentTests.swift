@@ -98,7 +98,7 @@ struct AgeKeyFileEnvironmentTests {
 
         for name in ["SOPS_AGE_KEY_FILE", "XDG_CONFIG_HOME"] {
             let direct = Self.ask(shell, name)
-            #expect(probed[name] ?? "" == direct,
+            #expect((probed ?? [:])[name] ?? "" == direct,
                     "the probe and the login shell disagree about \(name)")
         }
     }
@@ -139,10 +139,23 @@ struct AgeKeyFileProbeCostTests {
                 "200 lookups took \(elapsed) — the login shell is being spawned per call")
     }
 
+    /// Only meaningful when a fresh probe succeeds. It can fail transiently —
+    /// the 3 s timeout is reachable under ThreadSanitizer, which is how the
+    /// permanent-failure-caching defect was found — and comparing a good cached
+    /// answer against a timed-out fresh one proves nothing about the cache.
     @Test("the cached answer is the same one the uncached probe gives")
-    func cacheDoesNotChangeTheAnswer() {
-        #expect(AgeKeyFileLocations.cachedLoginShellPathVariables()
-            == AgeKeyFileLocations.loginShellPathVariables())
+    func cacheDoesNotChangeTheAnswer() throws {
+        let fresh = try #require(AgeKeyFileLocations.loginShellPathVariables(),
+                                 "the login-shell probe did not complete; nothing to compare against")
+        #expect(AgeKeyFileLocations.cachedLoginShellPathVariables() == fresh)
+    }
+
+    /// A probe that failed must not be remembered as "no variables set" — that
+    /// is a false all-clear held for the rest of the process.
+    @Test("a failed probe is not cached as an answer")
+    func failureIsNotCached() {
+        #expect(AgeKeyFileLocations.loginShellPathVariables { _, _ in nil } == nil,
+                "a failed probe reported an answer instead of a failure")
     }
 }
 
@@ -218,13 +231,13 @@ struct AgeKeyFileNoisyShellTests {
           .enabled(if: FileManager.default.isExecutableFile(atPath: "/bin/tcsh"), "tcsh is required"))
     func unusableShellYieldsNothing() {
         #expect(AgeKeyFileLocations.readFromLoginShell(
-            ["SOPS_AGE_KEY_FILE", "XDG_CONFIG_HOME"], "/bin/tcsh").isEmpty,
+            ["SOPS_AGE_KEY_FILE", "XDG_CONFIG_HOME"], "/bin/tcsh") == nil,
             "an unusable shell's error output became a key file path")
     }
 
     @Test("a shell that does not exist yields nothing") 
     func missingShellYieldsNothing() {
         #expect(AgeKeyFileLocations.readFromLoginShell(
-            ["SOPS_AGE_KEY_FILE"], "/no/such/shell").isEmpty)
+            ["SOPS_AGE_KEY_FILE"], "/no/such/shell") == nil)
     }
 }

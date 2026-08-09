@@ -76,8 +76,8 @@ public enum AgeKeyFileLocations {
     /// `runLoginShell` is injected so the merge logic is testable without a
     /// process spawn; the default is the real login shell.
     public static func loginShellPathVariables(
-        runLoginShell: ([String], String) -> [String: String] = readFromLoginShell
-    ) -> [String: String] {
+        runLoginShell: ([String], String) -> [String: String]? = readFromLoginShell
+    ) -> [String: String]? {
         runLoginShell(["SOPS_AGE_KEY_FILE", "XDG_CONFIG_HOME"],
                       ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh")
     }
@@ -98,7 +98,14 @@ public enum AgeKeyFileLocations {
         cacheLock.lock()
         defer { cacheLock.unlock() }
         if let cached = cachedShellVariables { return cached }
-        let fresh = loginShellPathVariables()
+        // **Successes only.** A probe can fail transiently — the 3 s timeout is
+        // reachable on a loaded machine, and was reached under ThreadSanitizer
+        // — and a failure caches as "no variables set", which is
+        // indistinguishable from a clean answer and would hold a false security
+        // all-clear for the rest of the session. Retrying costs a shell spawn
+        // on a machine where the probe is genuinely broken; holding a wrong
+        // all-clear costs the user their secret.
+        guard let fresh = loginShellPathVariables() else { return [:] }
         cachedShellVariables = fresh
         return fresh
     }
@@ -131,7 +138,7 @@ public enum AgeKeyFileLocations {
     /// and its usage text becomes nothing rather than becoming a path.
     static let probeMarker = "\u{1}sops-gui-env\u{1}"
 
-    public static func readFromLoginShell(_ names: [String], _ shell: String) -> [String: String] {
+    public static func readFromLoginShell(_ names: [String], _ shell: String) -> [String: String]? {
         // Only parameter expansions of the two names, never `env` or `export
         // -p`: `SOPS_AGE_KEY` holds an age private key and must not enter this
         // process as a side effect of looking for file paths.
@@ -139,10 +146,10 @@ public enum AgeKeyFileLocations {
             + names.map { "printf %s \"${\($0)-}\"; printf '\\0'" }.joined(separator: "; ")
         guard let output = try? ToolLocator.capture(shell, ["-lc", script], timeout: 3),
               let markerEnd = output.range(of: probeMarker)?.upperBound
-        else { return [:] }
+        else { return nil }
 
         let fields = output[markerEnd...].split(separator: "\0", omittingEmptySubsequences: false)
-        guard fields.count > names.count else { return [:] }
+        guard fields.count > names.count else { return nil }
 
         var found: [String: String] = [:]
         for (index, name) in names.enumerated() {

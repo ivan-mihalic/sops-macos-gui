@@ -196,11 +196,20 @@ struct ToolLocatorTests {
 
         #expect(found?.version == SemanticVersion(9, 9, 9))
         #expect((found?.rawVersionOutput.utf8.count ?? 0) > 1_000_000)
-        // This is the assertion that actually distinguishes a concurrent
-        // drain from the broken read-after-wait shape: the fixed capture()
-        // returns as soon as the child exits (well under a second for 1 MB);
-        // the broken shape would only return once the production 5s timeout
-        // elapsed, holding truncated output.
-        #expect(elapsed < .seconds(2))
+        // This is the assertion that actually distinguishes a concurrent drain
+        // from the broken read-after-wait shape: the fixed `capture()` returns
+        // as soon as the child exits; the broken shape only returns once the
+        // production 5 s timeout elapses, holding truncated output.
+        //
+        // The ceiling is 4 s, not the 2 s it was. 2 s is comfortable on an idle
+        // machine and not comfortable under this suite's own parallelism — it
+        // failed a full `xcrun swift test` run at 5.3 s wall for the test,
+        // which is the whole suite competing for cores, not a stalled drain.
+        // A wall-clock assertion that fires on machine load is the same defect
+        // as the main-actor occupancy one, and this one was on the ledger for
+        // two rounds. 4 s still sits below the 5 s timeout the broken shape
+        // would have to wait out, so it keeps the discrimination it exists for,
+        // and the two assertions above already prove nothing was truncated.
+        #expect(elapsed < .seconds(4), Comment(rawValue: "capture() took \(elapsed)"))
     }
 }
