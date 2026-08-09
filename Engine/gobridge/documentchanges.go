@@ -52,8 +52,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"slices"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -181,6 +179,12 @@ func ApplyChangesAndEncrypt(encrypted []byte, changes ChangeSet, agePrivateKey s
 		return nil, err
 	}
 
+	// **Before** anything mutates the tree. The first version of this guard
+	// built its snapshot after the change set had been applied while keying it
+	// off paths from the file as read, so a removal that renumbered a list made
+	// every later secret invisible to it. See `exposureLedger`.
+	ledger := newExposureLedger(doc.tree, doc.encryptedNodes)
+
 	plan, err := planChanges(doc.tree.Branches, changes)
 	if err != nil {
 		return nil, err
@@ -221,10 +225,7 @@ func ApplyChangesAndEncrypt(encrypted []byte, changes ChangeSet, agePrivateKey s
 		return nil, err
 	}
 
-	// Captured before the encrypt: the plaintext of every leaf that was
-	// ciphertext when the file was read. See refuseNewlyExposedValues for why
-	// this is compared by value rather than by path.
-	protected := protectedValues(doc)
+	beforeEncrypting := snapshotBeforeEncrypting(doc.tree)
 
 	if err := common.EncryptTree(common.EncryptTreeOpts{
 		DataKey: doc.dataKey,
@@ -236,7 +237,7 @@ func ApplyChangesAndEncrypt(encrypted []byte, changes ChangeSet, agePrivateKey s
 		return nil, fmt.Errorf("the document could not be re-encrypted")
 	}
 
-	if err := refuseNewlyExposedValues(doc.tree, protected); err != nil {
+	if err := ledger.refuseNewExposure(doc.tree, beforeEncrypting); err != nil {
 		return nil, err
 	}
 
@@ -245,89 +246,6 @@ func ApplyChangesAndEncrypt(encrypted []byte, changes ChangeSet, agePrivateKey s
 		return nil, fmt.Errorf("the saved document could not be rendered")
 	}
 	return out, nil
-}
-
-// protectedValues maps the plaintext of every leaf that was ciphertext on disk
-// to the key path it was read from, so a refusal can name the key at risk.
-//
-// Values only — never logged, never returned to the caller, never put in an
-// error. The map is the plaintext of the user's secrets and dies with this
-// call.
-func protectedValues(doc *loadedDocument) map[string]string {
-	protected := make(map[string]string)
-	_ = walkLeaves(doc.tree.Branches, func(document int, path []string, value interface{}, _ bool) error {
-		if !doc.encryptedPaths[pathKey(document, path)] {
-			return nil
-		}
-		text, ok := value.(string)
-		// An empty string carries nothing to expose, and matching on it would
-		// refuse any document with an empty plaintext leaf.
-		if !ok || text == "" {
-			return nil
-		}
-		protected[text] = strings.Join(path, ".")
-		return nil
-	})
-	return protected
-}
-
-// refuseNewlyExposedValues refuses a save that would write, in cleartext, a
-// value that was ciphertext in the file this app opened.
-//
-// This is the post-condition the save path went a whole milestone without, on
-// the reasoning that a document "arrived already encrypted under its own rule",
-// so a rule protecting nothing described a file that was already like that. The
-// counterexample: the rule's *meaning* can change between the read and the
-// write, with no attacker and no tampering. `unencrypted_comment_regex` is a
-// supported creation-rule key and sops clears its active-comment stack after
-// each value, so a comment that governed only the row beneath it starts
-// governing the next row the moment the user deletes that row — and the secret
-// under it is written out in plain text. Verified end to end: a value that was
-// `ENC[AES256_GCM,…]` on disk came back as cleartext after deleting an
-// unrelated key, and `sops --decrypt` read the result with exit 0.
-//
-// The MAC does not catch it. With `mac_only_encrypted` unset — the default —
-// sops takes the MAC over the plaintext of every leaf regardless of which ones
-// are encrypted, so a file whose values were silently not encrypted verifies
-// perfectly.
-//
-// **By value, not by path**, and that is the whole design. A path comparison
-// would have to model how the change set moves paths around: removing a list
-// element renumbers its siblings, so half the tree can legitimately change path
-// in one save. Values do not move. The question this asks — "is a secret this
-// file used to protect now sitting in the output as plain text?" — is exactly
-// the question that matters, and it needs no model of sops's matching rules,
-// so it cannot drift from them.
-//
-// A value the user edited to coincidentally equal a previously-encrypted one is
-// refused too. That is correct: it would be that secret, in plain text.
-func refuseNewlyExposedValues(tree *sops.Tree, protected map[string]string) error {
-	if len(protected) == 0 {
-		return nil
-	}
-	var exposed []string
-	_ = walkLeaves(tree.Branches, func(_ int, _ []string, value interface{}, _ bool) error {
-		text, ok := value.(string)
-		if !ok || encValueRe.MatchString(text) {
-			return nil
-		}
-		if key, wasProtected := protected[text]; wasProtected {
-			exposed = append(exposed, key)
-		}
-		return nil
-	})
-	if len(exposed) == 0 {
-		return nil
-	}
-	sort.Strings(exposed)
-	exposed = slices.Compact(exposed)
-	// Names keys, never values — the whole point is that these are secrets.
-	return fmt.Errorf(
-		"saving this file would write %s in plain text, because this file's own "+
-			"encryption rules no longer cover %s. The file on disk has not been "+
-			"changed",
-		strings.Join(exposed, ", "),
-		map[bool]string{true: "them", false: "it"}[len(exposed) > 1])
 }
 
 // changePlan is a validated change set: every path resolved, every value

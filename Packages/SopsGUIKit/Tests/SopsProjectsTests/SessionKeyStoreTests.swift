@@ -476,11 +476,22 @@ struct SessionKeyStoreShapeTests {
         do {
             try store.importFromKeysFileContents("# created by age-keygen\n" + wellShaped + "\nnotes\n")
             Issue.record("expected a refusal")
-        } catch SessionKeyStore.Error.multipleKeysInFile(let count) {
-            #expect(count == 1,
-                    "the app reported \(count) keys in a file holding one, and told the user to trim it")
+        } catch SessionKeyStore.Error.unreadableKeysFile {
+            // Correct: one key, plus content that is not a key. Reporting this
+            // as "that file has 1 keys in it … trim it to the one you want"
+            // named the right number and still described nothing.
         } catch {
             Issue.record("unexpected error: \(error)")
+        }
+    }
+
+    /// The count is only reported when it is a count of keys, and then it must
+    /// be right.
+    @Test("a keys.txt holding two real keys says so, with the right number")
+    func twoKeysAreCountedAsTwo() {
+        let store = SessionKeyStore()
+        #expect(throws: SessionKeyStore.Error.multipleKeysInFile(count: 2)) {
+            try store.importFromKeysFileContents("# two identities\n" + wellShaped + "\n" + wellShaped + "\n")
         }
     }
 

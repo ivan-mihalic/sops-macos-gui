@@ -110,17 +110,43 @@ public enum AgeKeyFileLocations {
     /// survives. `-lc`, never `-lic`: an interactive shell can block on prompts
     /// or plugins. Same reasoning, same flags, as `ToolLocator`.
     ///
-    /// Any failure — no shell, a timeout, a profile that writes to stdout —
-    /// yields nothing rather than a guess. Nothing is the safe answer: it
-    /// leaves the ordinary two paths in place.
-    public static func readFromLoginShell(_ names: [String], _ shell: String) -> [String: String] {
-        let script = names.map { "printf %s \"${\($0)-}\"; printf '\\0'" }.joined(separator: "; ")
-        guard let output = try? ToolLocator.capture(shell, ["-lc", script], timeout: 3) else { return [:] }
+    /// ## The marker, and why the first version was wrong
+    ///
+    /// A login shell prints. A `.zprofile` with a greeting, a `neofetch`, a
+    /// version-manager banner — all of it lands on stdout **before** this
+    /// script's own output, and `ToolLocator.capture` hands back stdout and
+    /// stderr concatenated. The first version split that on NUL and took field
+    /// zero, so `SOPS_AGE_KEY_FILE` came back as
+    /// `"=== welcome to my mac ===\n/Users/…/keys.txt"` — a path that exists
+    /// nowhere. `SecurityPostureCheck` then reported "No unprotected age key
+    /// file was found at any of the places sops reads one from" while an
+    /// unprotected key file sat at the path the profile had just exported:
+    /// exactly the sentence, over exactly the blindness, this probe was added
+    /// to end. Demonstrated with a real zsh and a real `.zprofile`.
+    ///
+    /// So the script emits a marker first and everything before it is
+    /// discarded, and only the next `names.count` fields are read — which also
+    /// drops whatever `capture` appended from stderr. A shell that cannot run
+    /// the script at all (`/bin/tcsh` does not accept `-lc`) emits no marker,
+    /// and its usage text becomes nothing rather than becoming a path.
+    static let probeMarker = "\u{1}sops-gui-env\u{1}"
 
-        let fields = output.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
+    public static func readFromLoginShell(_ names: [String], _ shell: String) -> [String: String] {
+        // Only parameter expansions of the two names, never `env` or `export
+        // -p`: `SOPS_AGE_KEY` holds an age private key and must not enter this
+        // process as a side effect of looking for file paths.
+        let script = "printf %s '\(probeMarker)'; "
+            + names.map { "printf %s \"${\($0)-}\"; printf '\\0'" }.joined(separator: "; ")
+        guard let output = try? ToolLocator.capture(shell, ["-lc", script], timeout: 3),
+              let markerEnd = output.range(of: probeMarker)?.upperBound
+        else { return [:] }
+
+        let fields = output[markerEnd...].split(separator: "\0", omittingEmptySubsequences: false)
+        guard fields.count > names.count else { return [:] }
+
         var found: [String: String] = [:]
-        for (index, name) in names.enumerated() where index < fields.count {
-            let value = fields[index]
+        for (index, name) in names.enumerated() {
+            let value = String(fields[index])
             if !value.isEmpty { found[name] = value }
         }
         return found

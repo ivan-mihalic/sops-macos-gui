@@ -137,8 +137,13 @@ type loadedDocument struct {
 	store   common.Store
 	cipher  sops.Cipher
 	dataKey []byte
-	// encryptedPaths records which leaves were ciphertext before decryption.
+	// encryptedPaths records which leaves were ciphertext before decryption,
+	// keyed by key path. Drives `Row.Encrypted` in the editor.
 	encryptedPaths map[string]bool
+	// encryptedNodes records the same fact for every node sops can encrypt,
+	// comments included, keyed positionally so it survives a change set that
+	// renumbers a list. Drives `exposureLedger`.
+	encryptedNodes map[string]bool
 }
 
 // loadAndDecrypt performs the read half that both entry points share.
@@ -169,6 +174,11 @@ func loadAndDecrypt(encrypted []byte, agePrivateKey string) (*loadedDocument, er
 	if err != nil {
 		return nil, err
 	}
+	// Captured here too, and separately, because `encryptedPaths` is the
+	// editor's view — leaves only, keyed by key path — and the save guard needs
+	// comments as well (sops encrypts them and leaves them out of the MAC) and
+	// needs keys that survive a change set renumbering a list.
+	encryptedNodes := collectNodeEncryption(tree.Branches)
 
 	ks := &ageKeyService{identities: identities}
 	cipher := aes.NewCipher()
@@ -187,6 +197,7 @@ func loadAndDecrypt(encrypted []byte, agePrivateKey string) (*loadedDocument, er
 		cipher:         cipher,
 		dataKey:        dataKey,
 		encryptedPaths: encryptedPaths,
+		encryptedNodes: encryptedNodes,
 	}, nil
 }
 
@@ -658,6 +669,23 @@ func parseEditValue(e Edit) (interface{}, error) {
 		}
 		return b, nil
 	case KindNull:
+		// A null edit carrying text is a caller bug, and the version of this
+		// that returned `nil, nil` made it a **silent data loss**: the editor
+		// renders a live text field for a null row, so a user could reveal it,
+		// type a real secret, watch "Unsaved changes" appear, press Save, get
+		// no error — and the secret was dropped here, before it ever reached
+		// the file. Two edits in one save, one of them to a null row, reported
+		// as fully saved with one of them discarded.
+		//
+		// Refused rather than guessed at: turning it into a string would be
+		// this layer deciding what the user meant about a value's type. The UI
+		// sends the right kind now; this is the backstop that makes the old
+		// failure impossible rather than merely fixed in one caller.
+		if e.Value != "" {
+			return nil, fmt.Errorf(
+				"%s: this key holds null, and a null cannot carry a value — "+
+					"change its type instead", editLabel(e))
+		}
 		return nil, nil
 	case KindTimestamp:
 		var t time.Time

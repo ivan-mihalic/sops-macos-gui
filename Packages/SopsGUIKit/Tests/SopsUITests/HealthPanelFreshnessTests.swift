@@ -1,5 +1,7 @@
+import AppKit
 import Foundation
 import SopsHealth
+import SwiftUI
 import Testing
 @testable import SopsUI
 
@@ -37,6 +39,38 @@ struct HealthPanelFreshnessTests {
         private var value = 0
         func next() -> Int { value += 1; return value }
         func total() -> Int { value }
+    }
+
+    /// The one that actually renders `HealthPanel`.
+    ///
+    /// The model-level test below passes with the buggy `.task { if
+    /// model.findings.isEmpty … }` restored verbatim — measured — so on its own
+    /// it guards nothing, which is the same shape the previous round fixed for
+    /// `FileListView` and reintroduced next door.
+    ///
+    /// `.task` does fire in the offscreen host `AXProbe` builds, but not
+    /// synchronously, so this waits for the run to be observed rather than
+    /// assuming it happened by the time `tree` returns.
+    @Test("arriving at the panel a second time re-runs the checks")
+    func panelRefreshesOnEveryAppearance() async throws {
+        let counter = Counter()
+        let model = HealthViewModel(reportBuilder: {
+            HealthReport(checks: [ChangingCheck(counter: counter)])
+        })
+
+        await model.refresh()
+        try #require(await counter.total() == 1, "precondition: one run so far")
+
+        _ = AXProbe.tree(size: CGSize(width: 640, height: 520)) {
+            HealthPanel(model: model)
+        }
+        // The `.task` is asynchronous; give it a bounded chance to be seen.
+        for _ in 0..<100 where await counter.total() < 2 {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+
+        #expect(await counter.total() >= 2,
+                "rendering the panel again did not re-run the checks, so it shows the previous run's verdicts")
     }
 
     @Test("a second visit re-runs the checks rather than reusing the first answer")

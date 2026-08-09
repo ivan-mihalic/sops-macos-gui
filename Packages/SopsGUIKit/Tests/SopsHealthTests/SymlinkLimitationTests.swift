@@ -79,6 +79,38 @@ struct SymlinkLimitationTests {
                 "the scan silently dropped a link it could not resolve, so the file list is free to say the project holds no encrypted files")
     }
 
+    /// A symlink cycle and a link whose path runs through a plain file are
+    /// stale links in exactly the same sense as a dangling one — nothing is
+    /// behind them, nothing is being denied — but neither reports `ENOENT`.
+    /// Recording a limitation for them put the warning banner permanently on
+    /// any project carrying one.
+    @Test("a stale link that is not ENOENT is still not a limitation", arguments: ["loop", "through-a-file"])
+    func staleLinksAreNotLimitations(_ shape: String) async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("symlink-stale-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        switch shape {
+        case "loop":
+            // Mutually referential links: resolving either yields ELOOP.
+            try FileManager.default.createSymbolicLink(
+                at: root.appendingPathComponent("a"), withDestinationURL: root.appendingPathComponent("b"))
+            try FileManager.default.createSymbolicLink(
+                at: root.appendingPathComponent("b"), withDestinationURL: root.appendingPathComponent("a"))
+        default:
+            let plain = root.appendingPathComponent("plain.txt")
+            try "not a directory".write(to: plain, atomically: true, encoding: .utf8)
+            try FileManager.default.createSymbolicLink(
+                at: root.appendingPathComponent("through"),
+                withDestinationURL: plain.appendingPathComponent("child"))
+        }
+
+        let scanned = await ProjectScanner.scan(root: root)
+        #expect(scanned.incompleteScanReason == nil,
+                "a stale symlink (\(shape)) was reported as content this scan could not read")
+    }
+
     /// A genuinely broken link — the target really is gone — is an absence, not
     /// a limitation. Without this, the fix could be "always record something",
     /// which would put a warning banner on every project carrying a stale

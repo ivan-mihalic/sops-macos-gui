@@ -79,6 +79,8 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // `key.error.multiple-keys`, which names a file and counts keys — neither
     // of which is true on the paste path.
     case keyErrorMultipleLinesPasted = "key.error.multiple-lines-pasted"
+    // A key file with at most one key but other content besides comments.
+    case keyErrorUnreadableKeysFile = "key.error.unreadable-keys-file"
     case keyErrorReadFailed = "key.error.read-failed"
 
     case actionBack = "action.back"

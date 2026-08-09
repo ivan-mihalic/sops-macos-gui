@@ -93,6 +93,15 @@ public final class SessionKeyStore {
         /// and a number here was read as "keys" by the only thing that showed
         /// it.
         case multipleLinesPasted
+        /// A key file holds at most one age key, but also holds lines that are
+        /// neither a key nor a comment, so which line to import is not
+        /// something this app should guess at.
+        ///
+        /// Distinct from `.multipleKeysInFile`, whose message counts keys and
+        /// tells the user to remove the extra ones. There are no extra keys
+        /// here — there is other content — and "trim the file to the one you
+        /// want" sends the reader hunting for a second key that is not there.
+        case unreadableKeysFile
     }
 
     private static let agePrivateKeyPrefix = "AGE-SECRET-KEY-1"
@@ -221,13 +230,16 @@ public final class SessionKeyStore {
             .filter { !$0.isEmpty && !$0.hasPrefix("#") }
 
         guard !keyLines.isEmpty else { throw Error.empty }
-        // A count of *key-shaped* lines, not of lines that survived comment
-        // stripping. The old count included anything non-empty and non-`#`, so
-        // a stray word in a `keys.txt` was reported as a second key and the
-        // user was told to "trim the file to the one you want" while hunting
-        // for a key that is not there.
+
+        // Two different problems, two different sentences. Reporting both as
+        // "that file has N keys in it" is how this got told a user their
+        // one-key file had 1 keys in it and to trim it to one — a count that
+        // named the right number and still described nothing, with the advice
+        // pointing at a second key that does not exist. (The first attempt at
+        // this only changed the number; the number was never the defect.)
         let keyCount = keyLines.filter { $0.hasPrefix(Self.agePrivateKeyPrefix) }.count
-        guard keyLines.count == 1 else { throw Error.multipleKeysInFile(count: max(keyCount, 1)) }
+        if keyCount > 1 { throw Error.multipleKeysInFile(count: keyCount) }
+        guard keyLines.count == 1 else { throw Error.unreadableKeysFile }
         try importKey(keyLines[0])
     }
 

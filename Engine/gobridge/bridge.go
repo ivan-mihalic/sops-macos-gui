@@ -457,10 +457,16 @@ func SopsVersion() string { return moduleVersion("github.com/getsops/sops/v3") }
 // build info.
 func AgeVersion() string { return moduleVersion("filippo.io/age") }
 
-// leafValues returns every scalar value in a tree, in walk order. Comments are
-// not values — sops never encrypts them, so counting them would make a
-// document of nothing but comments look like one whose encryption silently did
-// nothing.
+// leafValues returns every scalar value in a tree, in walk order.
+//
+// Comments are excluded. **Not** because sops leaves them alone — it does not,
+// it encrypts them (`Tree.walkBranch` runs the comment through the cipher) and
+// then leaves them out of the MAC. An earlier version of this comment claimed
+// the opposite, and that belief is why the save-path guard went a round without
+// looking at comments at all. Here the exclusion only makes this post-condition
+// more conservative: it asks "did encrypting do anything to the values", and a
+// document of nothing but comments would otherwise answer yes for a reason that
+// has nothing to do with the rule under test.
 func leafValues(branches sops.TreeBranches) []interface{} {
 	var values []interface{}
 	var walk func(interface{})

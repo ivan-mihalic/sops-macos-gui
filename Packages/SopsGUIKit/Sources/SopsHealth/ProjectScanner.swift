@@ -739,12 +739,23 @@ public struct ProjectScanner {
                 // without anybody looking down here.
                 var linkTarget = stat()
                 guard stat(url.path, &linkTarget) == 0 else {
-                    if errno != ENOENT {
-                        // Something is behind this link and it was not read.
+                    // Only *denial* is a gap. `EACCES`/`EPERM` mean something
+                    // is behind this link and this process was not allowed to
+                    // look at it.
+                    //
+                    // Everything else is a stale link: `ENOENT` (target gone),
+                    // `ELOOP` (a symlink cycle), `ENOTDIR` (the path runs
+                    // through a plain file), `ENAMETOOLONG`. Nothing is behind
+                    // any of them, so none is content that went unexamined.
+                    // The first version of this recorded a limitation for
+                    // everything except `ENOENT`, which put the orange "part of
+                    // this project could not be read" banner permanently on any
+                    // project carrying one stale symlink — the exact
+                    // meaninglessness `danglingSymlinkIsNotALimitation` exists
+                    // to prevent, arrived at from the other side.
+                    if errno == EACCES || errno == EPERM {
                         tree.note(.unreadableFile(path: url.path))
                     }
-                    // `ENOENT` really is an absence: a stale link with nothing
-                    // behind it is not a gap in what this scan examined.
                     continue
                 }
                 if (linkTarget.st_mode & S_IFMT) == S_IFDIR {

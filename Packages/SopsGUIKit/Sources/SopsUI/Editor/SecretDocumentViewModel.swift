@@ -923,7 +923,7 @@ public final class SecretDocumentViewModel {
                 sets.append(
                     SecretEdit(
                         document: baseline.document, path: baseline.path,
-                        value: edited, kind: baseline.kind))
+                        value: edited, kind: Self.editedKind(of: baseline, newValue: edited)))
             }
         }
         let adds = pendingAdditions.map {
@@ -932,6 +932,26 @@ public final class SecretDocumentViewModel {
                 value: $0.value, kind: $0.kind)
         }
         return SecretChangeSet(sets: sets, adds: adds, removes: removes)
+    }
+
+    /// The type an edited row should be written back as.
+    ///
+    /// Everything keeps the type it had, except a `null` row the user has typed
+    /// into. A null cannot carry a value: the bridge's `KindNull` used to
+    /// return `nil` and discard the text, so a user could reveal a null row,
+    /// type a real secret, watch "Unsaved changes" appear, press Save, see no
+    /// error — and the secret never reached the file. Two edits in one save,
+    /// one of them to a null row, came back reported as fully saved with one
+    /// silently dropped.
+    ///
+    /// Typing text into a null field is an unambiguous request for a string;
+    /// clearing it back to empty leaves it null, which is what the row already
+    /// was. The bridge refuses a null edit carrying text outright, so this is
+    /// the honest translation rather than the only thing standing between the
+    /// user and the loss.
+    static func editedKind(of baseline: SecretRow, newValue: String) -> SecretRow.Kind {
+        guard baseline.kind == .null, !newValue.isEmpty else { return baseline.kind }
+        return .string
     }
 
     /// Resyncs this type with the file it just wrote, by re-reading the bytes

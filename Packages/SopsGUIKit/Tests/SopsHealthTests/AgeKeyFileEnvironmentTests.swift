@@ -145,3 +145,86 @@ struct AgeKeyFileProbeCostTests {
             == AgeKeyFileLocations.loginShellPathVariables())
     }
 }
+
+/// A login shell prints. The first version of the probe took the first
+/// NUL-delimited field of stdout+stderr, so a greeting in `.zprofile` was
+/// prepended to `SOPS_AGE_KEY_FILE` and the security all-clear went back to
+/// being wrong — over a real key file, at the exported path.
+@Suite("A talkative login shell does not corrupt the probe", .serialized)
+struct AgeKeyFileNoisyShellTests {
+
+    private static let zsh = "/bin/zsh"
+
+    private func sandbox(profile: String) throws -> URL {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("noisy-shell-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try profile.write(to: directory.appendingPathComponent(".zprofile"),
+                          atomically: true, encoding: .utf8)
+        return directory
+    }
+
+    /// `ZDOTDIR` makes zsh read our `.zprofile` instead of the machine's, so
+    /// this exercises a real login shell without touching the user's own.
+    private func probe(in directory: URL, keyFile: String) -> [String: String] {
+        let script = "printf %s '\(AgeKeyFileLocations.probeMarker)'; "
+            + "printf %s \"${SOPS_AGE_KEY_FILE-}\"; printf '\\0'; "
+            + "printf %s \"${XDG_CONFIG_HOME-}\"; printf '\\0'"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: Self.zsh)
+        process.arguments = ["-lc", script]
+        process.environment = ["ZDOTDIR": directory.path, "SOPSGUI_KEYFILE": keyFile]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return [:] }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let output = String(decoding: data, as: UTF8.self)
+
+        guard let markerEnd = output.range(of: AgeKeyFileLocations.probeMarker)?.upperBound
+        else { return [:] }
+        let fields = output[markerEnd...].split(separator: "\0", omittingEmptySubsequences: false)
+        guard fields.count > 2 else { return [:] }
+        var found: [String: String] = [:]
+        for (index, name) in ["SOPS_AGE_KEY_FILE", "XDG_CONFIG_HOME"].enumerated()
+        where !fields[index].isEmpty {
+            found[name] = String(fields[index])
+        }
+        return found
+    }
+
+    @Test("a profile that greets the user does not become part of the key path",
+          .enabled(if: FileManager.default.isExecutableFile(atPath: AgeKeyFileNoisyShellTests.zsh),
+                   "zsh is required"))
+    func greetingDoesNotCorruptThePath() throws {
+        let keyFile = "/Users/probe/keys/prod.txt"
+        let directory = try sandbox(profile: """
+            echo "=== welcome to my mac ==="
+            export SOPS_AGE_KEY_FILE="\(keyFile)"
+            """)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let found = probe(in: directory, keyFile: keyFile)
+
+        #expect(found["SOPS_AGE_KEY_FILE"] == keyFile,
+                "the profile's greeting was read as part of the key file path: \(found)")
+    }
+
+    /// A shell that cannot run the script at all must yield nothing, not turn
+    /// its own usage message into a path. `/bin/tcsh` ships with macOS, is in
+    /// `/etc/shells`, and does not accept `-lc`.
+    @Test("a shell that cannot run the probe yields nothing",
+          .enabled(if: FileManager.default.isExecutableFile(atPath: "/bin/tcsh"), "tcsh is required"))
+    func unusableShellYieldsNothing() {
+        #expect(AgeKeyFileLocations.readFromLoginShell(
+            ["SOPS_AGE_KEY_FILE", "XDG_CONFIG_HOME"], "/bin/tcsh").isEmpty,
+            "an unusable shell's error output became a key file path")
+    }
+
+    @Test("a shell that does not exist yields nothing") 
+    func missingShellYieldsNothing() {
+        #expect(AgeKeyFileLocations.readFromLoginShell(
+            ["SOPS_AGE_KEY_FILE"], "/no/such/shell").isEmpty)
+    }
+}

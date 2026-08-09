@@ -892,6 +892,17 @@
         }
       }
     },
+    "key.error.unreadable-keys-file": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That file holds lines that are neither an age key nor a comment, so this app can't tell which one to import. Leave one AGE-SECRET-KEY-1… line and comments, or paste the key directly."
+          }
+        }
+      }
+    },
     "key.forget-button": {
       "extractionState": "manual",
       "localizations": {

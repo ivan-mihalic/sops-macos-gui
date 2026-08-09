@@ -985,7 +985,19 @@ struct SecretDocumentViewModelTests {
         // bridge call reverted to `runOffCooperativePool { … }()` — or to any
         // synchronous call — looks like from here.
         let (_, blocked) = await measuringMainThread { burnCPU(for: burn) }
-        #expect(blocked.fraction > 0.8, Comment(rawValue:
+        // Not `> 0.8`. That was an absolute claim about *this machine's
+        // scheduling*, and the whole suite runs in one process under the
+        // open-source toolchain: with 99 suites in flight the main thread is
+        // descheduled often enough that a genuinely blocking call measured
+        // 0.55, and the test that exists to prove the instrument is not
+        // measuring machine load failed because it was measuring machine load.
+        // Measured, in a full `swift test` run.
+        //
+        // What this test is named for is *discrimination*, and that is what is
+        // asserted below: the two controls must land on opposite sides of the
+        // threshold and far apart. The floor here only catches an instrument
+        // that has stopped reporting main-thread CPU at all.
+        #expect(blocked.fraction > blockedMainThreadFraction, Comment(rawValue:
             "the instrument did not see a main thread that was busy for the entire window: "
             + blocked.description))
 
@@ -1001,10 +1013,12 @@ struct SecretDocumentViewModelTests {
 
         print("=== INSTRUMENT: on main actor \(blocked.description); off main actor \(offloaded.description) ===")
 
-        // And the two are on opposite sides of the threshold the test above
-        // uses, in this run, on this machine.
-        #expect(blocked.fraction > blockedMainThreadFraction)
-        #expect(offloaded.fraction < blocked.fraction / 2)
+        // The claim this test is named for: the two controls are on opposite
+        // sides of the threshold the test above uses, and far enough apart that
+        // no amount of machine load could swap them.
+        #expect(offloaded.fraction < blocked.fraction / 2, Comment(rawValue:
+            "blocked and offloaded work were not distinguishable: "
+            + blocked.description + " vs " + offloaded.description))
     }
 }
 
