@@ -1048,3 +1048,70 @@ them is now a pure function with 13 tests, but the buttons themselves are
 verified by reading only. And `ScrollOverflowFadeCoverageTests` asserts that the
 modifier is *called*, not that anything is drawn; the drawing was confirmed once,
 by eye, from the PNGs.
+
+---
+
+## Third review (2026-08-09) — what it found and what remains
+
+The third whole-branch review ran against the merge commit `dcd11c5` and again
+returned **do not merge / no tick**. Its five blockers are closed on this
+branch; two of them were new instances of failures the previous two rounds had
+each declared finished.
+
+**Closed:**
+
+- **Arbitrary code execution from a scanned repository.** `core.fsmonitor` is a
+  repository-local git config key whose value git executes, and
+  `GitIgnoreOracle` shells out to git on every project scan. Clone a repo, add
+  it as a project, and its script ran as the user the moment the scan reached a
+  file named `.env`. Verified before and after with a real hook. Every git
+  invocation now carries `-c core.fsmonitor=`, with a control test that runs the
+  *unmitigated* call and asserts the hook does fire — otherwise the guard test
+  would pass forever if git changed or the fixture rotted.
+- **A new `//export` in a second file was invisible to the guard test**, which
+  parsed `main.go` alone. An unguarded entry point really did reach
+  `libprobe.h`. It now parses every non-test file in the directory.
+- **`TestResultRecoversToo` had rules but no fixtures.** The shape nobody
+  thought to try — `recover()` inside a nested goroutine, which returns nil and
+  lets the panic kill the host — reported `ok`. Two more rules and seven
+  fixtures.
+- **⌘W and ⌘N were the fourth and fifth unguarded exits from a dirty
+  document.** Closing the window destroyed the document *and* cleared the
+  tracker, so the next ⌘Q answered `.terminateNow`; and two windows shared one
+  `UnsavedChangesTracker`, so a second window opening a clean file disarmed the
+  first window's warning. `windowShouldClose` now asks `QuitRequest`, and
+  `.newItem` is removed so the single-document model the tracker documents is
+  actually true.
+- **Disconnecting the outer-sidebar guard reddens tests now.** It did not: the
+  review reverted both `guardedSelection` uses to `$selection` and all 577 tests
+  stayed green.
+
+**Still open, carried to M3** — in addition to items 12–17 above:
+
+18. **`!!binary` values are displayed wrong and can be destroyed by editing.**
+    `DecryptToRows` returns the bytes correctly; the JSON transport to Swift
+    replaces them with `�`, so the editor shows `��` for a value whose real
+    content is binary. Echoing that row back writes the replacement characters
+    to the file — a silent, permanent loss. `document.go:610` claims "the YAML
+    store never produces it", which `Encrypt` disproves. The sops CLI
+    round-trips these correctly, so this is ours. It is a core-honesty defect:
+    the editor states something false about the file's contents.
+19. **Rule 6 (`reboundAfterGuard`) only walks top-level statements.** `err = nil`
+    nested in an `if`, a bare block, a `switch` or a `for` is invisible. Helper
+    and named-return variants *are* caught.
+20. **`ExternalToolCheck` keeps `.ok` when `softFloor == nil`**, disclosing only
+    in prose, while its sibling `EngineFreshnessCheck` returns `.problem` on the
+    same condition.
+21. **`WorktreeResolver` uses `standardizedFileURL`, not `CanonicalPath`.**
+    Measured: it rewrites `/private/tmp` to `/tmp`, and the two standardized
+    URLs are not `==` despite reporting the same path — so worktree grouping can
+    fail on a path that reaches the app through `/private`.
+
+**Verified clean by the third review**, and worth keeping in view because they
+are the properties most likely to be broken by future work: no secret value in
+any of ten channels (including zero `fatalError`/`assert`/`precondition` in
+`Sources/`, so the crash-report channel does not exist); the scanner never
+quotes a secret it found; the accessibility mask is real and its tests are
+non-vacuous; the pasteboard markers and SHA-256-gated clear; `AtomicFileWriter`'s
+ordering; the ThreadSanitizer-clean scanner; the CLI round-trip actually running
+rather than skipping; and ADR 0001 holding throughout.

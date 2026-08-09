@@ -28,7 +28,7 @@ import SopsProjects
 /// correct rather than merely convenient: no document can be open before the
 /// window that opens documents exists, so there is nothing to lose.
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var unsavedChanges: UnsavedChangesTracker?
     var quitRequest: QuitRequest?
 
@@ -57,6 +57,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         ClipboardClearing.clearOnTermination()
+    }
+
+    /// Closing the window is the fourth way out of a dirty document, and until
+    /// this existed it was unguarded.
+    ///
+    /// `WindowGroup` gives every window a Close item and a red button, neither
+    /// of which passes through `applicationShouldTerminate`. Measured against
+    /// the real shell: one window, a dirty document, `performClose(nil)` — the
+    /// window count went 1 → 0 with no sheet shown, and because
+    /// `SecretEditorView`'s `onDisappear` clears the tracker on the way out, the
+    /// **next ⌘Q then answered `.terminateNow`**. The same click destroyed the
+    /// document and disarmed the warning that would have named it. That is the
+    /// third time this milestone has produced exactly that pair, and the reason
+    /// this is a delegate method rather than another `.disabled`.
+    ///
+    /// It answers with `QuitRequest`, not a second notion of dirty — the same
+    /// mistake, made once per exit, is how the earlier three came about.
+    ///
+    /// The dialog it raises is the quit dialog, and that is deliberate rather
+    /// than a shortcut: `.newItem` is removed below, so there is exactly one
+    /// window, and closing the only window of a single-document app is the
+    /// same decision as quitting. `applicationShouldTerminateAfterLastWindowClosed`
+    /// returns true for the same reason, so the two paths cannot drift into
+    /// disagreeing about what a closed window means.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard let quitRequest, let unsavedChanges else { return true }
+        switch quitRequest.answerTerminationRequest(
+            documentIsDirty: unsavedChanges.isDirty, saveIsInFlight: unsavedChanges.isSaving)
+        {
+        case .terminateNow:
+            return true
+        case .askFirst:
+            // `answerTerminationRequest` has raised the dialog. Refusing the
+            // close keeps the document, the window and the tracker exactly as
+            // they were while the user answers.
+            return false
+        case .waitForSaveInFlight:
+            // No dialog, same refusal: a save takes 133–380 ms and cannot be
+            // interrupted. Closing between the encrypt and the write is the
+            // one moment where the file on disk is neither version.
+            return false
+        }
+    }
+
+    /// With one window and no way to open a second, a closed window means the
+    /// app is done. Stated explicitly so it cannot quietly diverge from
+    /// `windowShouldClose`, which reuses the quit question on that assumption.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
     }
 }
 
@@ -126,6 +175,13 @@ struct SopsGUIApp: App {
                     // be open before this window is.
                     appDelegate.unsavedChanges = unsavedChanges
                     appDelegate.quitRequest = quitRequest
+                    // SwiftUI owns the window, so the only way to guard its
+                    // close button is to take its delegate. Done here rather
+                    // than in `applicationDidFinishLaunching` because the
+                    // window does not exist yet at launch.
+                    for window in NSApp.windows where window.delegate == nil {
+                        window.delegate = appDelegate
+                    }
                 }
                 // The confirmation itself has to be attached to a view that's
                 // actually on screen — `.commands` closures below are not
@@ -187,6 +243,22 @@ struct SopsGUIApp: App {
             // `AppDelegate.applicationShouldTerminate`, which all of them go
             // through, so this is an ordinary Quit button again — kept only so
             // the item keeps its own localized title and ⌘Q binding.
+            // No New Window, and this is a correctness fix rather than a
+            // simplification. Two windows shared one `UnsavedChangesTracker`
+            // — verified by object identity — and `SecretEditorView`'s
+            // registration is last-writer-wins, so a second window opening a
+            // clean file overwrote the first window's dirty registration and
+            // ⌘Q went from asking to `.terminateNow`. Closing an unrelated
+            // *clean* window disarmed the warning for the dirty document still
+            // on screen.
+            //
+            // `UnsavedChangesTracker`'s own doc comment says it holds at most
+            // one document's state because "this app opens one file at a time
+            // (PROPOSAL.md's editor is single-document)". That was a statement
+            // about the spec that `WindowGroup` did not honour. Making it true
+            // is cheaper and less error-prone than making the tracker
+            // per-window, and it is what the spec says the app is.
+            CommandGroup(replacing: .newItem) {}
             CommandGroup(replacing: .appTermination) {
                 Button(LocalizedKey.actionQuit.text) {
                     NSApp.terminate(nil)

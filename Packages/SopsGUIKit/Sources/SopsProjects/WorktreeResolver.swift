@@ -87,7 +87,16 @@ public enum WorktreeResolver {
         // A pointer shaped like `<main>/.git/worktrees/<name>` is what a
         // linked worktree looks like — but the shape check alone is purely
         // lexical (path component names via `standardizedFileURL`, which
-        // does not resolve symlinks). A directory that merely has the right
+        // does not follow a symlink to its target — though it is *not* the
+        // pure string operation this comment used to claim: measured,
+        // `URL(fileURLWithPath: "/private/tmp").standardizedFileURL.path` is
+        // `/tmp`, so it does rewrite the macOS `/private` prefix. Worse for
+        // anything that compares URLs, the standardized `/private/tmp` and
+        // `/tmp` URLs are **not `==`** despite both reporting `/tmp` as their
+        // path. Compare `.path`, never the URLs, and see `CanonicalPath` for
+        // the type that exists to make that unnecessary — it is not used here
+        // yet, which is recorded as M3 work rather than fixed mid-review).
+        // A directory that merely has the right
         // names in its path — by corruption, by a stale pointer left behind
         // by tooling, or via a symlink standing in for one of those path
         // components — is not a worktree just because its path looks like

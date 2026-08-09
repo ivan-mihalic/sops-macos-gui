@@ -335,3 +335,154 @@ func sops_thing(in *C.char, out **C.char) C.int {
 		}
 	}
 }
+
+// TestResultRecoveryCatchesMutations is the fixture set `inspectResultRecovery`
+// did not have.
+//
+// It had none: all twelve cases above target `inspectGuardWiring`, and the four
+// mutations behind the `result` rules were run by hand once and thrown away —
+// exactly what this file's own header says not to do. A review then found a
+// shape the hand-run mutations had missed, and it was the worst of them: a
+// `recover()` inside a nested goroutine, which returns nil, lets the panic
+// terminate the host, and reported `ok`.
+func TestResultRecoveryCatchesMutations(t *testing.T) {
+	mutations := []struct {
+		name     string
+		source   string
+		expected string
+	}{
+		{
+			// What defeated the substring check: a comment is body text.
+			name: "the recover is gone and only a comment names it",
+			source: `func result(out **C.char, payload []byte, err error) (status C.int) {
+	// TODO: restore the recover() here before shipping.
+	return statusOK
+}`,
+			expected: "does not defer a closure that calls recover()",
+		},
+		{
+			name: "no defer at all, recover called inline",
+			source: `func result(out **C.char, payload []byte, err error) (status C.int) {
+	if recover() != nil {
+		status = statusFailure
+	}
+	return statusOK
+}`,
+			expected: "does not defer a closure that calls recover()",
+		},
+		{
+			// Swallows the panic and falls off the end, returning a zero
+			// status: success, for a call that panicked.
+			name: "a bare recover that swallows and does nothing",
+			source: `func result(out **C.char, payload []byte, err error) (status C.int) {
+	defer func() {
+		recover()
+	}()
+	return statusOK
+}`,
+			expected: "does not defer a closure that calls recover()",
+		},
+		{
+			// The one the hand-run mutations missed. recover() returns nil
+			// anywhere but directly inside the deferred function, so this is
+			// worse than having no recover: the panic escapes, and the test
+			// used to say ok.
+			name: "recover moved into a goroutine, where it returns nil",
+			source: `func result(out **C.char, payload []byte, err error) (status C.int) {
+	defer func() {
+		go func() {
+			if r := recover(); r != nil {
+				status = statusFailure
+			}
+		}()
+	}()
+	return statusOK
+}`,
+			expected: "does not defer a closure that calls recover()",
+		},
+		{
+			// Notices the panic and returns success anyway.
+			name: "the recovered value is bound and then discarded",
+			source: `func result(out **C.char, payload []byte, err error) (status C.int) {
+	defer func() {
+		r := recover()
+		_ = r
+	}()
+	return statusOK
+}`,
+			expected: "never assigns to a named result",
+		},
+		{
+			name: "the recover branch is empty",
+			source: `func result(out **C.char, payload []byte, err error) (status C.int) {
+	defer func() {
+		if recover() != nil {
+		}
+	}()
+	return statusOK
+}`,
+			expected: "never assigns to a named result",
+		},
+		{
+			// `:=` shadows rather than sets. Looks right, does nothing.
+			name: "the closure declares a new status instead of setting the result",
+			source: `func result(out **C.char, payload []byte, err error) (status C.int) {
+	defer func() {
+		if recover() != nil {
+			status := statusFailure
+			_ = status
+		}
+	}()
+	return statusOK
+}`,
+			expected: "never assigns to a named result",
+		},
+	}
+
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			complaints, err := inspectResultRecovery(resultFixture(mutation.source))
+			if err != nil {
+				t.Fatalf("parse fixture: %v", err)
+			}
+			if len(complaints) == 0 {
+				t.Fatalf("mutation went unnoticed; expected a complaint about %q", mutation.expected)
+			}
+			for _, complaint := range complaints {
+				if strings.Contains(complaint, mutation.expected) {
+					return
+				}
+			}
+			t.Fatalf("complaints %q mention nothing about %q", complaints, mutation.expected)
+		})
+	}
+}
+
+// TestResultRecoveryAcceptsTheRealShape guards the other direction: the rules
+// must not reject the source actually shipping, or the fixtures above would be
+// satisfied by a check that complains about everything.
+func TestResultRecoveryAcceptsTheRealShape(t *testing.T) {
+	source := `func result(out **C.char, payload []byte, err error) (status C.int) {
+	defer func() {
+		if recover() != nil {
+			if out != nil {
+				*out = nil
+			}
+			status = statusFailure
+		}
+	}()
+	return statusOK
+}`
+	complaints, err := inspectResultRecovery(resultFixture(source))
+	if err != nil {
+		t.Fatalf("parse fixture: %v", err)
+	}
+	if len(complaints) != 0 {
+		t.Fatalf("the shipped shape was rejected: %q", complaints)
+	}
+}
+
+// resultFixture wraps a `result` definition in the minimum that parses.
+func resultFixture(body string) string {
+	return "package main\n\nimport \"C\"\n\nconst (\n\tstatusOK      C.int = 0\n\tstatusFailure C.int = 1\n)\n\n" + body + "\n"
+}

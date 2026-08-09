@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import SopsUI
 
@@ -11,7 +12,7 @@ import Testing
 /// the open document. No prompt, no warning, edits gone.
 ///
 /// The compounding part, and the reason this ranked above the other findings
-/// in its review: `ProjectWorkspaceView.onDisappear` calls
+/// in its review: `SecretEditorView`'s `onDisappear` (SecretEditorView.swift:261) calls
 /// `unsavedChanges.clear()`. So the same click also disarmed ⌘Q — the user
 /// lost the document *and* the warning that would have named it.
 @MainActor
@@ -116,5 +117,69 @@ struct OuterSidebarSwitchTests {
                 documentIsDirty: dirty, saveIsInFlight: saving)
             #expect(section == file, "dirty=\(dirty) saving=\(saving)")
         }
+    }
+}
+
+/// The routing itself, which the suite above cannot reach.
+///
+/// `sectionSwitchDecision` is a pure function and tests of it say nothing about
+/// whether the sidebar consults it. A review proved the gap: reverting
+/// `AppShell`'s two `guardedSelection` uses to `$selection` — the exact bug —
+/// left all 577 tests green, because the decision function was still correct
+/// and still tested.
+///
+/// This reads the source. That is weaker than driving the binding, and it is
+/// what is available: `selection` is `@State`, so writing it outside a view
+/// body does nothing observable, and `AppShell`'s body cannot be evaluated in a
+/// test. The repo already uses the technique for the same reason in
+/// `ScrollOverflowFadeCoverageTests`. It asserts the wiring is present, not
+/// that SwiftUI honours it.
+@Suite("The outer sidebar's selection is wired through the guard")
+struct OuterSidebarWiringTests {
+
+    private static var appShellSource: String {
+        get throws {
+            try String(
+                contentsOfFile: URL(fileURLWithPath: #filePath)
+                    .deletingLastPathComponent()
+                    .deletingLastPathComponent()
+                    .deletingLastPathComponent()
+                    .appendingPathComponent("Sources/SopsUI/AppShell.swift").path,
+                encoding: .utf8)
+        }
+    }
+
+    @Test("no selection binding in the outer sidebar bypasses the guard")
+    func noRawSelectionBinding() throws {
+        let source = try Self.appShellSource
+
+        // `$selection` passed to a subview or a List is the unguarded form.
+        // The `Binding(get:set:)` inside `guardedSelection` reads `selection`
+        // directly and writes through `requestSectionSwitch`, so it does not
+        // use the `$` projection at all — which makes any occurrence of it a
+        // bypass.
+        let raw = source.components(separatedBy: "$selection").count - 1
+        #expect(
+            raw == 0,
+            "AppShell passes $selection somewhere — that write skips WorkspaceSwitchDecision and destroys an open dirty document with no prompt")
+    }
+
+    @Test("both sidebar controls take the guarded binding")
+    func bothControlsAreGuarded() throws {
+        let source = try Self.appShellSource
+        #expect(
+            source.contains("List(selection: guardedSelection)"),
+            "the sidebar List no longer takes guardedSelection")
+        #expect(
+            source.contains("PinnedSidebarRow(section: section, selection: guardedSelection)"),
+            "the pinned rows (About, Settings) no longer take guardedSelection")
+    }
+
+    @Test("the guard is disabled during a save, like the other two exits")
+    func disabledDuringSave() throws {
+        let source = try Self.appShellSource
+        #expect(
+            source.contains(".disabled(unsavedChanges.isSaving)"),
+            "the outer sidebar stays live during a save")
     }
 }
