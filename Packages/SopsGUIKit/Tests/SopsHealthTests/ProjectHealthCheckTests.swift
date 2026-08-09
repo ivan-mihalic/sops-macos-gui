@@ -189,4 +189,38 @@ struct ProjectHealthCheckTests {
         let text = finding(await check.run(), suffix: "stale-recipients").detail.lowercased()
         #expect(!text.contains("can decrypt"))
     }
+
+    // Review finding: a project whose directory disappeared after being
+    // added used to produce `.ok` ("Looked through <path> ... and found
+    // none") for the gitignore finding and a `.warning` ("No .sops.yaml in
+    // <path>") right next to it — both describing an inspection that never
+    // happened, because `FileManager.enumerator(at:)` returns the same
+    // "nothing here" result for a missing root as it would for a directory
+    // that was genuinely empty. Build a project, then delete its directory
+    // out from under the check (not through `ProjectStore` — this suite
+    // tests `ProjectHealthCheck` directly, which only ever sees a bare
+    // `rootPath` string) before running it.
+    @Test("a project whose directory has disappeared reports that plainly, not an inspection that never happened")
+    func missingDirectoryReportsPlainly() async throws {
+        let root = try makeProject(sopsYAML: "creation_rules:\n  - age: \(devKey)\n")
+        try FileManager.default.removeItem(atPath: root)
+
+        let check = ProjectHealthCheck(source: FakeProjects(
+            projects: [InspectedProject(name: "demo", rootPath: root)]))
+        let findings = await check.run()
+
+        // One honest finding replaces all three project findings — not a
+        // false .ok gitignore finding sitting next to a false .warning
+        // sops-yaml finding, both implying a scan that never ran.
+        #expect(findings.count == 1)
+        let missing = findings[0]
+        #expect(missing.id.hasSuffix(".missing"))
+        #expect(missing.status == .warning)
+        #expect(missing.detail.contains(root))
+        #expect(missing.detail.lowercased().contains("could not be found"))
+        // Removal, if the user chooses it from here, must read as "stop
+        // tracking", never "delete" — this app never deletes anything the
+        // user didn't put there via this app.
+        #expect(missing.remediation?.explanation.lowercased().contains("nothing on disk is touched") == true)
+    }
 }

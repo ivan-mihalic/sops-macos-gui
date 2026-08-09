@@ -72,7 +72,11 @@ extension HealthReport {
                 osVersion: SemanticVersion(os.majorVersion, os.minorVersion, os.patchVersion),
                 minimumOSVersion: SemanticVersion(14, 0, 0),
                 keyStore: keyStore, biometry: biometry, appUpdates: appUpdates,
-                legacyKeyFilePath: NSHomeDirectory() + "/.config/sops/age/keys.txt"),
+                // Every place the embedded sops actually reads a key file
+                // from, not the one path this used to hardcode — which was
+                // `~/.config/sops/age/keys.txt`, a location sops does not read
+                // on macOS at all. See `AgeKeyFileLocations`.
+                legacyKeyFilePaths: AgeKeyFileLocations.candidates()),
             ProjectHealthCheck(source: projects),
         ])
     }

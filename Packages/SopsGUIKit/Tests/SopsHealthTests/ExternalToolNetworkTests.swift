@@ -132,7 +132,15 @@ struct ExternalToolNetworkTests {
         // One line, `sops <version>`, and it still parses. Removing the
         // upstream check removes lines from the output, so the parser's
         // "first digit-leading token" anchor has to survive the new shape.
-        let lines = output.split(separator: "\n", omittingEmptySubsequences: true)
+        //
+        // `LineEndings.lines`, not `split(separator: "\n")`. This is real
+        // stdout from a real binary, and `"\r\n"` is a single Swift
+        // `Character`: an LF-anchored split returns the whole output as one
+        // "line" for a CRLF-printing tool however many lines it really has,
+        // so `count == 1` held no matter what sops said. Empty subsequences
+        // are filtered at the call site, per `LineEndings`' doc comment —
+        // the trailing newline is a terminator here, not a blank line.
+        let lines = LineEndings.lines(of: output).filter { !$0.isEmpty }
         #expect(lines.count == 1, "expected a single line, got \(lines.count): \(output)")
         #expect(output.hasPrefix("sops "))
         #expect(located.version != nil, "version no longer parses out of \(output)")

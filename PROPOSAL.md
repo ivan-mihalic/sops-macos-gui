@@ -272,11 +272,107 @@ Ranked by value/effort; ✦ = recommended for v1:
 |---|---|---|
 | M0 | **Spike** ✅ | Go xcframework bridge; CLI-compatibility round-trip proof. Verdict: in-process, [ADR 0001](docs/adr/0001-in-process-go-bridge.md) |
 | M1 | **Shell & onboarding** ✅ | App scaffold (sidebar, About, Settings, String Catalogs), engine integration, the whole of §6 |
-| M2 | Core editing | Project add (incl. worktrees), file list, form editor, encrypt/decrypt, atomic save. Plan: [2026-08-07](docs/superpowers/plans/2026-08-07-m2-core-editing.md). Its Task 1 is the §6 D tree-walk constraint; Task 6 holds the age key in memory for the session only, which M3 replaces with the Keychain behind the same protocol |
+| M2 | Core editing — **feature-complete, ✅ withdrawn** | Project add (incl. worktrees), file list, form editor, encrypt/decrypt, atomic save all shipped and CLI-round-tripped. Plan: [2026-08-07](docs/superpowers/plans/2026-08-07-m2-core-editing.md). Task 6 holds the age key in memory for the session only, which M3 replaces with the Keychain behind the same protocol. **The tick was awarded on 2026-08-08 and taken back the same day** — see the note below |
 | M3 | Keys & security | Keychain + Touch ID, session TTL, key generate/import/reveal, clipboard hygiene |
 | M4 | Recipients & help | `.sops.yaml` editing, updatekeys, recipient add/remove + rotate reminder, Help section with snippets |
 | M5 | Polish & release | Liquid Glass pass, Sparkle, notarized release pipeline, first public release → **repo goes public** |
 | M6 | DX extras | Items from §8 by priority |
+
+> **Status 2026-08-08, after the review's findings were worked (Tasks 17–21).** Every
+> blocking finding below is now closed, and so are the non-blocking ones the review would
+> have let through to M3: the editor no longer keeps a reveal alive across a save that
+> renumbers rows, the unsaved-changes dialog is not shown during an in-flight save (where it
+> could both lie and lose data), the padlock no longer contradicts the file, copied secrets
+> carry `ConcealedType`/`TransientType` and never reach Universal Clipboard, and the two
+> tests the review caught certifying nothing now discriminate. 569 Swift tests under both
+> compilers, 156 Go, zero failures.
+>
+> **The second review ran, and returned "do not merge" as well** — three blocking findings, of
+> which the two that matter most are worth naming because both were *this* pattern again. The
+> outer sidebar turned out to be a third, unguarded exit from a dirty document: selecting About
+> destroyed the open document without a prompt *and* disarmed ⌘Q on the way out, while the doc
+> comment one view down claimed project-switch had been guarded "rather than being left as a
+> narrower hole". And `TestResultRecoversToo` was still the substring check its sibling had been
+> rewritten away from — the commit that rewrote the sibling claimed both. The third was a
+> ThreadSanitizer-confirmed data race the code's own comment argued could not happen.
+>
+> All three are closed (Task 22), along with both overclaiming comments — including this
+> section's own supporting claim that a new blind spot in the scanner "cannot compile", which a
+> review disproved by adding one and watching the suite stay green.
+>
+> **The tick is still off.** It has now been awarded once and withdrawn, and withheld once and
+> vindicated. Two reviews have each found something the previous round reported as finished, so
+> the honest reading is that a third review is what would earn it — not another round of task
+> reports, and not my own confidence. What the branch *is*: materially better than `master` on
+> every axis the reviews measured, with every blocking finding from both reviews closed and the
+> rest written down in the plan rather than lost.
+>
+> ---
+>
+> **The ✅ was awarded prematurely and withdrawn** (2026-08-08). A whole-branch review, run
+> after the fix wave and after this note first claimed the milestone closed, found that
+> **both** bullets below are weaker than they are written. They are kept verbatim, with the
+> corrections attached, because the mistake is the useful part of the record: Task 12
+> withheld the tick on exactly this suspicion, the fix wave produced real work, and the tick
+> went on anyway on the strength of task reports rather than an independent check.
+>
+> - **On bullet 1.** `TestEveryExportRunsInsideTheGuard` (`Engine/cshim/exports_test.go:58`)
+>   is a `strings.Contains` over the function body. Verified by mutation: delete the guard
+>   from `sops_decrypt_yaml`, leave the comment `// TODO: wrap in gobridge.Guard( ... ) one
+>   day`, and the suite reports `ok`. The guards *are* all present and the recovery
+>   composition genuinely holds — that was re-verified end to end — but the sentence "all
+>   nine entry points now recover" rests on a test that cannot tell. Three doc comments in
+>   `cshim/main.go` also promise protection that does not exist: a double `sops_free` aborts
+>   in libc rather than panicking, and neither a failing `C.CString` nor a bad pointer handed
+>   to `C.GoString` is recoverable — all three confirmed by running probes.
+> - **On bullet 2.** §6 D has at least four further undisclosed exclusion paths that Task 14
+>   did not touch: `.skipsPackageDescendants` (a second, uncommented exclusion mechanism —
+>   literally this section's "buried in a constant"), per-file read errors, unreadable
+>   subdirectories, and unfollowed directory symlinks. Reproduced end to end: a repository
+>   with a plaintext `sk_live_…` key inside an `.xcodeproj` gets **two `.ok` findings** and a
+>   scope sentence naming only `.git`. Separately, the 64 KiB sniff cap makes any file with
+>   more than ~112 recipients invisible, and the check then reports "No sops-encrypted files
+>   were found" about a directory that demonstrably has them.
+>
+> What follows is the note as originally written. Treat every claim in it as needing the
+> qualification above.
+>
+> ---
+>
+> **How M2 was said to have earned its ✅** (final verification 2026-08-08, then a four-task
+> fix wave the same day). Final verification deliberately withheld the ✅ and named two
+> blockers; both were addressed, each with a failing test written first.
+>
+> 1. **`recover()` at the C boundary** — closed (Task 13). Vendored sops v3.13.3 panics
+>    (`hash of unhashable type []uint8`) on any value declaring `type:bytes`, and the `type:`
+>    tag is *not* covered by the GCM additional data, so flipping one `type:str` leaves the
+>    value authenticating perfectly and detonating on decryption — no key required. The
+>    nastier sibling is `type:bytes` on the **MAC** itself, where every value looks sound.
+>    All nine cgo entry points now recover and return the ordinary error contract; the
+>    message carries only compile-time facts, never the panic payload, so a canary planted
+>    in the file cannot escape through it. ~35 targeted malformations and 2.7M fuzz
+>    executions found no other panic and **no wrong-output case**.
+> 2. **The §6 D exclusion is now stated in the finding** — closed (Task 14), along with two
+>    further instances of the same fault the sweep turned up: the plaintext finding ignored
+>    `wasTruncated` entirely, and the recipients `.skipped` reason claimed "anywhere under
+>    &lt;root&gt;". Exclusion is *stated*, budget exhaustion still *demotes* to Unknown —
+>    `.git` is excluded on every real repository, so demoting on exclusion would make every
+>    project finding permanently Unknown and bury the genuine ones.
+>
+> The tree-walk cost is solved twice over: 170s → **0.025s** on this repository, and 4.06s →
+> 2.73s on a 272k-file tree.
+>
+> Two rounds of carried-forward debt were also cleared rather than inherited by M3 (Tasks 15
+> and 16): masked values no longer leak a secret's **length** to the accessibility tree, the
+> Copy label resets, the unsaved-changes decision is testable and tested, and a sweep for
+> CRLF-blind line splitting found **four** live bugs — including a confident *false*
+> "does not list … among its recipients" accusation, and a filename-derived shell command
+> that could span two lines. A standing test now fails the build on the idiom.
+>
+> **460 Swift tests, zero failures under both compilers on this machine** (the long-standing
+> pair of wall-clock flakes was fixed by measuring bytes read instead of seconds elapsed, not
+> by loosening the threshold), 153 Go tests, clean Release build, and a five-fixture round
+> trip against the real `sops` CLI in which untouched values keep their exact ciphertext.
 
 Onboarding comes first because several of its checks (§6 D, §6 C) are the natural consumers of
 the project model and the key store, and writing them first pins down those interfaces before

@@ -17,7 +17,7 @@ private func makeCheck(
     keyStore: KeyStoreState = .configured,
     biometry: BiometryState = .available,
     updates: AppUpdateState = .upToDate(version: "1.0.0"),
-    legacyKeyFilePath: String = "/nonexistent/keys.txt"
+    legacyKeyFilePaths: [String] = ["/nonexistent/keys.txt"]
 ) -> SecurityPostureCheck {
     SecurityPostureCheck(
         osVersion: os,
@@ -25,7 +25,7 @@ private func makeCheck(
         keyStore: FakeKeyStore(state: keyStore),
         biometry: FakeBiometry(state: biometry),
         appUpdates: FakeUpdates(state: updates),
-        legacyKeyFilePath: legacyKeyFilePath)
+        legacyKeyFilePaths: legacyKeyFilePaths)
 }
 
 @Suite("SecurityPostureCheck")
@@ -44,6 +44,29 @@ struct SecurityPostureCheckTests {
         #expect(keystore.status == .problem)
     }
 
+    /// The third copy of the wrong path, and the one a user would trust most.
+    ///
+    /// This remediation used to end "…or import it from
+    /// ~/.config/sops/age/keys.txt" — a place the embedded sops does not read
+    /// on macOS (`AgeKeyFileLocations`) and a place the import control may
+    /// well not offer. A health report telling the user to go to a file that
+    /// is not there, next to a sibling finding that correctly named
+    /// `Library/Application Support`, is worse than saying nothing: it
+    /// contradicts the app's own check. It names no path now — which file, if
+    /// any, exists is `LegacyKeyFileImportOptions`' answer at the moment the
+    /// user is standing in front of the control.
+    @Test("the missing-key remediation points at the app, never at a guessed path")
+    func missingKeyRemediationNamesNoPath() async throws {
+        let keystore = finding(await makeCheck(keyStore: .empty).run(), "security.keystore")
+        let explanation = try #require(keystore.remediation?.explanation)
+
+        #expect(explanation.contains("Settings"), "it must still say where to go: \(explanation)")
+        for fragment in ["keys.txt", "~/.config", "sops/age", "Application Support"] {
+            #expect(!explanation.contains(fragment),
+                    "this check cannot know which key file exists, so it must name none: \(explanation)")
+        }
+    }
+
     @Test("biometry not enrolled is a warning, not a problem — a password still works")
     func biometryNotEnrolledWarns() async {
         let biometry = finding(await makeCheck(biometry: .notEnrolled).run(), "security.biometry")
@@ -60,7 +83,7 @@ struct SecurityPostureCheckTests {
         let keyFile = dir.appendingPathComponent("keys.txt")
         try "# created by age-keygen\n".write(to: keyFile, atomically: true, encoding: .utf8)
 
-        let legacy = finding(await makeCheck(legacyKeyFilePath: keyFile.path).run(),
+        let legacy = finding(await makeCheck(legacyKeyFilePaths: [keyFile.path]).run(),
                              "security.legacy-key-file")
         #expect(legacy.status == .warning)
         #expect(legacy.detail.contains(keyFile.path))
@@ -85,7 +108,7 @@ struct SecurityPostureCheckTests {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        let legacy = finding(await makeCheck(legacyKeyFilePath: dir.path).run(),
+        let legacy = finding(await makeCheck(legacyKeyFilePaths: [dir.path]).run(),
                              "security.legacy-key-file")
         #expect(legacy.status == .ok)
     }
@@ -171,7 +194,7 @@ struct SecurityPostureCheckTests {
         let keyFile = dir.appendingPathComponent("keys.txt")
         try "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQ\n".write(to: keyFile, atomically: true, encoding: .utf8)
 
-        for finding in await makeCheck(legacyKeyFilePath: keyFile.path).run() {
+        for finding in await makeCheck(legacyKeyFilePaths: [keyFile.path]).run() {
             let text = finding.detail + finding.title + (finding.remediation?.explanation ?? "")
             #expect(!text.contains("AGE-SECRET-KEY-1QQQ"))
         }
@@ -202,7 +225,7 @@ struct SecurityPostureCheckTests {
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyFile.path)
         }
 
-        let legacy = finding(await makeCheck(legacyKeyFilePath: keyFile.path).run(),
+        let legacy = finding(await makeCheck(legacyKeyFilePaths: [keyFile.path]).run(),
                              "security.legacy-key-file")
         #expect(legacy.status == .warning)
         #expect(legacy.detail.contains(keyFile.path))

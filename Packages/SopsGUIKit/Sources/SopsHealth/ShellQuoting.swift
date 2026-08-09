@@ -32,8 +32,17 @@ enum ShellQuoting {
     /// represent such a filename at all, and a remediation nobody can follow is
     /// worse than an explanation with no command attached. NUL is refused for
     /// the same reason and because no argument can contain it.
+    ///
+    /// `Character.isNewline`, not `$0 == "\n" || $0 == "\r"`. A filename
+    /// containing a CRLF pair is one `Character` equal to neither, so the
+    /// explicit comparison let it straight through and produced a "single
+    /// line" command that in fact spans two — the precise failure this
+    /// refusal exists to prevent, and one an attacker choosing a filename in
+    /// a repository the user cloned can arrange deliberately. `isNewline`
+    /// also covers the Unicode line and paragraph separators, which is the
+    /// right direction for a refusal: it declines more, never less.
     static func singleQuoted(_ value: String) -> String? {
-        guard !value.contains(where: { $0 == "\n" || $0 == "\r" || $0 == "\0" }) else { return nil }
+        guard !value.contains(where: { $0.isNewline || $0 == "\0" }) else { return nil }
         return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 

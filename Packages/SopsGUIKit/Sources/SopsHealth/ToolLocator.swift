@@ -81,8 +81,16 @@ public struct ToolLocator: ToolLocating {
     /// Pulls the first version-looking token out of a tool's output.
     /// Tools print wildly different shapes; anchoring on the first token that
     /// starts with a digit (optionally after a `v`) covers all of ours.
+    ///
+    /// Tokenised on `Character.isWhitespace`, not on an explicit
+    /// `" "`/`"\n"`/`"\t"` list. The explicit list had the CRLF blind spot
+    /// that has now bitten this project four times (see `LineEndings`): a
+    /// `"\r\n"` pair is one `Character` equal to none of the three, so a tool
+    /// printing CRLF — unusual on macOS, but nothing here gets to assume the
+    /// tool's provenance — came back as a single unsplittable token and no
+    /// version was found at all.
     public static func parseVersion(from output: String) -> SemanticVersion? {
-        for token in output.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" }) {
+        for token in output.split(whereSeparator: \.isWhitespace) {
             let candidate = token.drop(while: { $0 == "v" || $0 == "V" })
             guard candidate.first?.isNumber == true else { continue }
             if let version = SemanticVersion(parsing: String(candidate)) { return version }

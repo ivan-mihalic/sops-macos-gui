@@ -2,6 +2,28 @@
   "sourceLanguage": "en",
   "version": "1.0",
   "strings": {
+    "action.add": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add"
+          }
+        }
+      }
+    },
+    "action.add-project": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Project…"
+          }
+        }
+      }
+    },
     "action.back": {
       "extractionState": "manual",
       "localizations": {
@@ -9,6 +31,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Back"
+          }
+        }
+      }
+    },
+    "action.cancel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel"
           }
         }
       }
@@ -68,6 +101,28 @@
         }
       }
     },
+    "action.quit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quit"
+          }
+        }
+      }
+    },
+    "action.remove-project": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove"
+          }
+        }
+      }
+    },
     "action.rerun-checks": {
       "extractionState": "manual",
       "localizations": {
@@ -97,6 +152,578 @@
           "stringUnit": {
             "state": "translated",
             "value": "No project selected"
+          }
+        }
+      }
+    },
+    "editor.add-row": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add a key"
+          }
+        }
+      }
+    },
+    "editor.add.destination": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adding to"
+          }
+        }
+      }
+    },
+    "editor.add.destination-root": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "the top level"
+          }
+        }
+      }
+    },
+    "editor.add.duplicate-key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A key with this name is already here. Change its value instead."
+          }
+        }
+      }
+    },
+    "editor.add.key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Key"
+          }
+        }
+      }
+    },
+    "editor.add.list-note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A new entry is appended to the end of this list."
+          }
+        }
+      }
+    },
+    "editor.add.reserved-key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "YAML reserves this name, and a file that uses it for an ordinary value cannot be read back. Choose a different name."
+          }
+        }
+      }
+    },
+    "editor.add.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add to this document"
+          }
+        }
+      }
+    },
+    "editor.add.type": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Type"
+          }
+        }
+      }
+    },
+    "editor.add.value": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Value"
+          }
+        }
+      }
+    },
+    "editor.discard-and-quit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Discard Changes and Quit"
+          }
+        }
+      }
+    },
+    "editor.discard-changes": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Discard Changes"
+          }
+        }
+      }
+    },
+    "editor.empty-document.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "It's a valid, empty sops document — there's nothing to show, and nothing was left out."
+          }
+        }
+      }
+    },
+    "editor.empty-document.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This file has no values yet"
+          }
+        }
+      }
+    },
+    "editor.hide-value": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hide value"
+          }
+        }
+      }
+    },
+    "editor.kind.bool": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "boolean"
+          }
+        }
+      }
+    },
+    "editor.kind.empty-list": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "empty list"
+          }
+        }
+      }
+    },
+    "editor.kind.empty-map": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "empty map"
+          }
+        }
+      }
+    },
+    "editor.kind.float": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "float"
+          }
+        }
+      }
+    },
+    "editor.kind.int": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "integer"
+          }
+        }
+      }
+    },
+    "editor.kind.null": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "null"
+          }
+        }
+      }
+    },
+    "editor.kind.string": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "string"
+          }
+        }
+      }
+    },
+    "editor.kind.timestamp": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "timestamp"
+          }
+        }
+      }
+    },
+    "editor.load-failed.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This file couldn't be opened"
+          }
+        }
+      }
+    },
+    "editor.merge-key-badge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Merge key"
+          }
+        }
+      }
+    },
+    "editor.merge-key-explanation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This value comes from a YAML merge key (<<:). Editing it changes this merged copy, not the shared anchor it was copied from."
+          }
+        }
+      }
+    },
+    "editor.needs-key.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add your age private key in Settings › Key to open this file."
+          }
+        }
+      }
+    },
+    "editor.needs-key.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No decryption key configured"
+          }
+        }
+      }
+    },
+    "editor.new-row-badge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New"
+          }
+        }
+      }
+    },
+    "editor.new-row-explanation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Added in this session and not in the file yet. Whether it is stored encrypted is decided by this file's own rules when you save."
+          }
+        }
+      }
+    },
+    "editor.no-file-selected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select a file to view and edit its values."
+          }
+        }
+      }
+    },
+    "editor.quit-unsaved.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quitting now will lose any edits that haven't been saved."
+          }
+        }
+      }
+    },
+    "editor.quit-unsaved.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You have unsaved changes"
+          }
+        }
+      }
+    },
+    "editor.remove-row": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove the selected key"
+          }
+        }
+      }
+    },
+    "editor.remove-row-disabled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select a row to remove it."
+          }
+        }
+      }
+    },
+    "editor.reveal-value": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reveal value"
+          }
+        }
+      }
+    },
+    "editor.save-and-continue": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save and Continue"
+          }
+        }
+      }
+    },
+    "editor.save-and-quit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save and Quit"
+          }
+        }
+      }
+    },
+    "editor.save-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save"
+          }
+        }
+      }
+    },
+    "editor.save-error.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't save this file"
+          }
+        }
+      }
+    },
+    "editor.unsaved-changes.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Switching away from this file will lose any edits that haven't been saved."
+          }
+        }
+      }
+    },
+    "editor.unsaved-changes.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You have unsaved changes"
+          }
+        }
+      }
+    },
+    "editor.unsaved-indicator": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unsaved changes"
+          }
+        }
+      }
+    },
+    "editor.value-encrypted": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Encrypted on disk"
+          }
+        }
+      }
+    },
+    "editor.value-not-encrypted": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not encrypted on disk"
+          }
+        }
+      }
+    },
+    "files.empty.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No encrypted files found in this project."
+          }
+        }
+      }
+    },
+    "files.no-project-selected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select a project to see its encrypted files."
+          }
+        }
+      }
+    },
+    "files.other-format.note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d file(s) use a sops format this app doesn't open yet (dotenv, JSON, or INI)."
+          }
+        }
+      }
+    },
+    "files.project-missing.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This project's folder can't be found. It may have been moved, renamed, or is on a volume that isn't currently mounted."
+          }
+        }
+      }
+    },
+    "files.scanning": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scanning for encrypted files…"
+          }
+        }
+      }
+    },
+    "files.truncated.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This project has more files than one scan checks. Directories skipped entirely: %@."
+          }
+        }
+      }
+    },
+    "files.truncated.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not every file in this project was scanned."
           }
         }
       }
@@ -185,6 +812,193 @@
           "stringUnit": {
             "state": "translated",
             "value": "This report ran no checks, so nothing here has been verified."
+          }
+        }
+      }
+    },
+    "key.error.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That's empty. Paste your age key — it starts with AGE-SECRET-KEY-1."
+          }
+        }
+      }
+    },
+    "key.error.multiple-keys": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That file has %d keys in it. This app can only hold one at a time — trim the file to the one you want, or paste it directly instead."
+          }
+        }
+      }
+    },
+    "key.error.not-an-age-key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That doesn't look like an age key. An age private key starts with AGE-SECRET-KEY-1."
+          }
+        }
+      }
+    },
+    "key.error.read-failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That file couldn't be read."
+          }
+        }
+      }
+    },
+    "key.forget-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Forget"
+          }
+        }
+      }
+    },
+    "key.import.error-title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't import that key"
+          }
+        }
+      }
+    },
+    "key.import.legacy-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import from this key file"
+          }
+        }
+      }
+    },
+    "key.import.legacy-choose-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import from a key file…"
+          }
+        }
+      }
+    },
+    "key.import.legacy-footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This only reads a key file when you ask it to — never automatically."
+          }
+        }
+      }
+    },
+    "key.import.legacy-none-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No key file to import"
+          }
+        }
+      }
+    },
+    "key.import.legacy-none-footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No age key file is sitting at any of the places sops reads one from:"
+          }
+        }
+      }
+    },
+    "key.import.legacy-success": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imported for this session. That file is still sitting on disk unprotected — this app can't import it out of harm's way, but you can narrow who can read it:"
+          }
+        }
+      }
+    },
+    "key.import.paste-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import"
+          }
+        }
+      }
+    },
+    "key.paste.footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Held in memory for this session only. Never written to disk, and forgotten when you quit the app or press Forget."
+          }
+        }
+      }
+    },
+    "key.paste.header": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paste your age key"
+          }
+        }
+      }
+    },
+    "key.status.configured": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A key is imported for this session."
+          }
+        }
+      }
+    },
+    "key.status.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No key is imported."
           }
         }
       }
@@ -387,6 +1201,116 @@
         }
       }
     },
+    "projects.add-error.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't add that project"
+          }
+        }
+      }
+    },
+    "projects.empty.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No projects yet."
+          }
+        }
+      }
+    },
+    "projects.error.add-failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The project list couldn't be saved. Try again."
+          }
+        }
+      }
+    },
+    "projects.error.duplicate": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This project has already been added."
+          }
+        }
+      }
+    },
+    "projects.error.not-directory": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That isn't a folder."
+          }
+        }
+      }
+    },
+    "projects.error.remove-failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Removing this project didn't save. Try again."
+          }
+        }
+      }
+    },
+    "projects.missing-badge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Missing"
+          }
+        }
+      }
+    },
+    "projects.remove-confirm.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This only stops tracking it in SOPS GUI. Nothing is deleted from disk."
+          }
+        }
+      }
+    },
+    "projects.remove-confirm.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop tracking this project?"
+          }
+        }
+      }
+    },
+    "projects.worktree-label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Worktree"
+          }
+        }
+      }
+    },
     "settings.tab.health": {
       "extractionState": "manual",
       "localizations": {
@@ -394,6 +1318,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Health"
+          }
+        }
+      }
+    },
+    "settings.tab.key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Key"
           }
         }
       }

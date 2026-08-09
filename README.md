@@ -6,13 +6,30 @@ per-project organization, Touch ID protected age keys, producing files 100%
 compatible with the standard `sops` CLI. Working title; see
 [`PROPOSAL.md`](PROPOSAL.md) for the full spec, non-goals, and open questions.
 
-**Current state (M1 — Shell & onboarding):** the app has a sidebar shell with About
-and Settings pinned at the bottom, and a re-runnable health check / onboarding
-wizard (PROPOSAL.md §6) that verifies the machine's tooling, the embedded engine's
-freshness, the app's own security posture, and per-project health. The secret
-editor itself (project add, file list, form editing, encrypt/decrypt) is a later
-milestone (M2) and does not exist yet — this build does not open or edit any
-encrypted files.
+**Current state (M2 — core editing, feature-complete but not closed):** the app has a sidebar shell with About and
+Settings pinned at the bottom, and a re-runnable health check / onboarding wizard
+(PROPOSAL.md §6) that verifies the machine's tooling, the embedded engine's
+freshness, the app's own security posture, and per-project health. On top of that,
+M2 added the editor: add a project by path, drag & drop or `NSOpenPanel` (git
+worktrees are detected and grouped under their main repository), browse the
+encrypted files it finds, open one into a form of key / value / type rows with
+every value masked and a per-row reveal and copy, add and remove keys, and save
+atomically. Every file the editor writes is round-tripped against the real `sops`
+CLI in `EditorCompatibilityTests` — comments, key order, recipients and
+`encrypted_regex` all survive, and untouched values keep their exact ciphertext.
+
+A file declaring `type:bytes` no longer takes the process down with it, the
+project scan states the scope it actually covered instead of reporting "found
+none" over directories it skipped, a save refuses rather than overwriting a
+file something else changed underneath it, quitting from anywhere prompts for
+unsaved edits, copied secrets are marked concealed so clipboard managers do not
+archive them, and revealing a row can no longer expose a different secret after
+a save renumbers the document. **The milestone tick is held back pending a
+second whole-branch review** — the first one found the previous tick unearned,
+and PROPOSAL.md §9 records why.
+
+The age key lives in memory for the session only; Keychain and Touch ID are M3.
+YAML is the only format this build opens (PROPOSAL.md §10).
 
 ## Constraints
 

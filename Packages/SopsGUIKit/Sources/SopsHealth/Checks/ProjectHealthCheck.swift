@@ -89,32 +89,111 @@ public struct ProjectHealthCheck: HealthCheck {
         // An index cannot collide with another index. Deriving identity from
         // anything the user types is the bug; the fix is to stop. The user's
         // own name is unaffected — it is shown in `title`, verbatim.
-        return projects.enumerated().flatMap { index, project in
-            findings(for: project, idScope: String(index), gitPath: gitPath)
+        //
+        // Sequential across projects, not a `TaskGroup` fan-out: each
+        // project's own scan already parallelises its tail reads
+        // (`ProjectScanner.tailReadConcurrencyWidth`), and running multiple
+        // projects' scans concurrently on top of that would multiply file
+        // descriptor pressure rather than wall clock — out of scope for what
+        // this task measured. A `for` loop replaces the previous `flatMap`
+        // only because `findings(for:)` must now `await` the scan; ordering
+        // and result shape are otherwise unchanged.
+        var allFindings: [HealthFinding] = []
+        for (index, project) in projects.enumerated() {
+            let scoped = await findings(for: project, idScope: String(index), gitPath: gitPath)
+            allFindings.append(contentsOf: scoped.map(\.finding))
         }
+        return allFindings
     }
 
+    /// Returns `ScopedFinding`, not `HealthFinding`, and that is the whole
+    /// point: a `ScopedFinding` can only be obtained from a
+    /// `ProjectScopeAccountant`, which appends the scope disclosure and applies
+    /// the status floor. A future branch added here cannot forget to account
+    /// for what the walk missed, because a branch that forgets does not
+    /// compile. See `ScopedFinding` for what this replaced and why the previous
+    /// shape — a local `withScope(_:)` helper called by convention at each
+    /// `return` — rotted.
     private func findings(for project: InspectedProject, idScope: String,
-                          gitPath: String?) -> [HealthFinding] {
+                          gitPath: String?) async -> [ScopedFinding] {
         let root = URL(fileURLWithPath: project.rootPath)
         let configURL = root.appendingPathComponent(".sops.yaml")
 
         // One walk of the tree feeds both findings below.
-        let tree = Self.scanTree(under: root)
+        let tree = await ProjectScanner.scan(root: root)
+        let scope = ProjectScopeAccountant(tree: tree, rootPath: project.rootPath)
+
+        // The directory this project points to is gone — deleted, unmounted,
+        // renamed. Nothing below this point ran against anything: the walk
+        // never visited a single file, and `configURL`'s own existence check
+        // would report "No .sops.yaml" as if it had actually looked, which is
+        // exactly the same false confidence as the gitignore finding's
+        // "found none" over a scan that never happened. One honest finding
+        // replaces all three project findings — sops-yaml, recipients,
+        // gitignore — rather than three separately-worded ways of not
+        // admitting the same thing. `ProjectSidebar` already surfaces this
+        // exact fact today (`ProjectStore.isMissing`, badge in the sidebar);
+        // this is the same signal reaching the health report, computed the
+        // same way sops-yaml's own existence check below is: reading the
+        // filesystem this check already walks, without adding a field to
+        // `InspectedProject` that every other call site would then have to
+        // keep in sync with the filesystem too.
+        guard !tree.rootMissing else {
+            return [scope.finding(
+                about: .oneKnownPath(project.rootPath),
+                id: "project.\(idScope).missing", title: "\(project.name): project directory",
+                status: .warning,
+                detail: "The directory this project points to, \(project.rootPath), could not be found. Nothing here was checked — not .sops.yaml, not encrypted files, not gitignore status — because there was nothing to look at.",
+                remediation: Remediation(
+                    explanation: "If the directory was moved or renamed, remove this project and re-add it at the new location. If it was deleted or is on an unmounted volume, removing it here only stops tracking it — nothing on disk is touched either way."))]
+        }
+
+        // The directory is there and this process cannot read it. Everything
+        // below would answer from the same blindness the walk just hit — and
+        // did, before this guard existed: `FileManager.fileExists` on
+        // `<root>/.sops.yaml` returns `false` for want of search permission on
+        // the root, so the check accused the user of having no `.sops.yaml`
+        // while the file sat right there. One honest finding, exactly as for a
+        // root that is gone.
+        guard !tree.rootUnreadable else {
+            let command = ShellQuoting.singleQuoted(project.rootPath).map { "ls -ld " + $0 }
+            return [scope.finding(
+                about: .oneKnownPath(project.rootPath),
+                id: "project.\(idScope).unreadable", title: "\(project.name): project directory",
+                status: .warning,
+                detail: "The directory this project points to, \(project.rootPath), could not be read. Nothing here was checked — not .sops.yaml, not encrypted files, not gitignore status — because this app could not list what is in it.",
+                remediation: Remediation(
+                    explanation: "This is a permissions problem, not a problem with the project: something in the path is not readable by the account running this app, or the volume it lives on is mounted without access. Check the ownership and mode of the directory and of every directory above it. This app does not change permissions itself.",
+                    command: command))]
+        }
+
         let leak = gitignoreFinding(for: project, idScope: idScope, root: root,
-                                    candidates: tree.plaintextCandidates, gitPath: gitPath)
+                                    tree: tree, scope: scope, gitPath: gitPath)
 
         guard FileManager.default.fileExists(atPath: configURL.path) else {
             // The plaintext-leak finding is emitted even here. A project with
             // no .sops.yaml is the *most* likely one to have secrets sitting
             // in plaintext, so suppressing that finding until a config exists
             // would hide it exactly when it matters most.
-            return [HealthFinding(
+            return [scope.finding(
+                about: .oneKnownPath(configURL.path),
                 id: "project.\(idScope).sops-yaml", title: "\(project.name): .sops.yaml",
                 status: .warning,
                 detail: "No .sops.yaml in \(project.rootPath). Without it, sops has no rules for which keys to encrypt new files to.",
                 remediation: Remediation(
-                    explanation: "Create one from the .sops.yaml wizard in this app.")), leak]
+                    // Was "Create one from the .sops.yaml wizard in this
+                    // app." — a real defect, caught only once this check ran
+                    // against a real project for the first time (this task):
+                    // no such wizard exists anywhere in this app. PROPOSAL.md
+                    // §5 lists one as a future Help feature; nothing in this
+                    // milestone or any earlier one builds it. Telling the
+                    // user to go use a tool that isn't there is exactly the
+                    // "claims more than it established" failure this app's
+                    // findings are held to — so until the wizard exists, say
+                    // what the user can actually do today: write the file by
+                    // hand. When the wizard ships, this remediation is where
+                    // it should point.
+                    explanation: "Add a .sops.yaml file at the project root with a creation_rules entry naming the age public keys new files should be encrypted to. This app does not have a .sops.yaml generator yet — see sops's own documentation for the file format.")), leak]
         }
 
         // Probe that the config itself loads under sops's own parser,
@@ -126,7 +205,8 @@ public struct ProjectHealthCheck: HealthCheck {
         do {
             _ = try SopsBridge.lookupCreationRule(configPath: configURL.path, targetFilePath: probeTarget)
         } catch {
-            return [HealthFinding(
+            return [scope.finding(
+                about: .oneKnownPath(configURL.path),
                 id: "project.\(idScope).sops-yaml", title: "\(project.name): .sops.yaml",
                 status: .problem,
                 detail: "The .sops.yaml in \(project.rootPath) could not be parsed: \(error).",
@@ -135,13 +215,38 @@ public struct ProjectHealthCheck: HealthCheck {
         }
 
         return [
-            HealthFinding(id: "project.\(idScope).sops-yaml",
+            scope.finding(about: .oneKnownPath(configURL.path),
+                          id: "project.\(idScope).sops-yaml",
                           title: "\(project.name): .sops.yaml", status: .ok,
                           detail: "The .sops.yaml in \(project.rootPath) parses successfully."),
             recipientFinding(for: project, idScope: idScope, root: root,
-                             configPath: configURL.path, tree: tree),
+                             configPath: configURL.path, tree: tree, scope: scope),
             leak,
         ]
+    }
+
+    // MARK: - Scope disclosure, as this suite's tests still name it
+
+    /// The scope disclosure itself now lives in `ProjectScopeDisclosure.swift`,
+    /// behind `ProjectScopeAccountant`, because a helper this type could choose
+    /// *not* to call was the thing that failed twice. These three forwarders
+    /// exist so the disclosure suite keeps naming the behaviour where a reader
+    /// looks for it — on the check that produces the findings — while the only
+    /// implementation lives with the type that cannot be bypassed.
+
+    /// See `ProjectScopeAccountant.namesShown`.
+    static var excludedNamesShown: Int { ProjectScopeAccountant.namesShown }
+
+    /// See `ProjectScopeAccountant.leadIn`.
+    static var scopeLeadIn: String { ProjectScopeAccountant.leadIn }
+
+    /// See `ProjectScopeAccountant.scopeSentence(tree:relativeTo:)`.
+    ///
+    /// `relativeTo` defaults to `nil`, which prints absolute paths — fine for
+    /// a unit test asserting on wording, never how a real finding is built
+    /// (`ProjectScopeAccountant` always has the project root).
+    static func scanScopeSentence(tree: ScannedTree, relativeTo rootPath: String? = nil) -> String? {
+        ProjectScopeAccountant.scopeSentence(tree: tree, relativeTo: rootPath)
     }
 
     /// Human-readable label for a sops master-key type identifier
@@ -183,10 +288,7 @@ public struct ProjectHealthCheck: HealthCheck {
     /// `resolvingSymlinksInPath()` *removes* a leading `/private`, it does not
     /// add one, so it alone does not reconcile the two. Normalizing both sides
     /// the same way — resolve, then drop a leading `/private` — does.
-    private static func canonicalPath(_ path: String) -> String {
-        let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
-        return resolved.hasPrefix("/private/") ? String(resolved.dropFirst("/private".count)) : resolved
-    }
+    private static func canonicalPath(_ path: String) -> String { CanonicalPath.of(path) }
 
     /// Compares each encrypted file's actual key list against the rule that
     /// governs it. This is a comparison of two lists of public keys read from
@@ -211,6 +313,14 @@ public struct ProjectHealthCheck: HealthCheck {
     /// 3. **The file's own metadata** (`EncryptedFileMetadata`) — ground truth
     ///    for what actually protects it right now, which can drift from what
     ///    its rule declares.
+    /// 4. **The scan itself** (`ScannedTree.wasTruncated`) — whether the walk
+    ///    that produced `tree` covered the whole project or gave up at
+    ///    `maxScannedFiles`. This is a different kind of gap from the other
+    ///    three: it is not that some backend or file is unreadable, it is
+    ///    that files may exist which were never looked at at all. Reporting
+    ///    `.ok` over an incomplete walk is the same vacuous verdict every
+    ///    other signal here exists to prevent, so it goes into the same
+    ///    `unverifiable` bucket and blocks `.ok` the same way.
     ///
     /// Status precedence, deliberate: a genuine age-recipient mismatch is
     /// still `.problem` even when something else was unreadable — a real,
@@ -231,7 +341,8 @@ public struct ProjectHealthCheck: HealthCheck {
     /// cannot be hidden behind an informational status. It also keeps one
     /// vocabulary for all three signals above, which already used `.unknown`.
     private func recipientFinding(for project: InspectedProject, idScope: String, root: URL,
-                                  configPath: String, tree: ScannedTree) -> HealthFinding {
+                                  configPath: String, tree: ScannedTree,
+                                  scope: ProjectScopeAccountant) -> ScopedFinding {
         var mismatches: [String] = []
         var sawStaleRecipient = false
         var unverifiable: [String] = []
@@ -251,7 +362,10 @@ public struct ProjectHealthCheck: HealthCheck {
 
         let rootPrefix = Self.canonicalPath(root.path) + "/"
         func relativeName(_ url: URL) -> String {
-            let path = Self.canonicalPath(url.path)
+            // `ofLeaf`, not `of`: a `.env` reachable through a symbolic link
+            // must be named by the link inside the project, not by the target
+            // outside it. See `CanonicalPath.ofLeaf`.
+            let path = CanonicalPath.ofLeaf(url.path)
             return path.hasPrefix(rootPrefix) ? String(path.dropFirst(rootPrefix.count)) : path
         }
 
@@ -338,7 +452,8 @@ public struct ProjectHealthCheck: HealthCheck {
             if !unverifiable.isEmpty {
                 detail += "\n\nThis app also could not fully check:\n" + unverifiable.joined(separator: "\n")
             }
-            return HealthFinding(
+            return scope.finding(
+                about: .theWholeTree,
                 id: "project.\(idScope).stale-recipients",
                 title: "\(project.name): recipients", status: .problem,
                 detail: detail,
@@ -347,7 +462,15 @@ public struct ProjectHealthCheck: HealthCheck {
                     command: "sops updatekeys <file>"))
         }
 
-        guard unverifiable.isEmpty else {
+        // `tree.wasTruncated` is a status condition in its own right, not just
+        // a line of prose: a walk that gave up part-way through cannot produce
+        // an affirmative verdict about recipients, exactly as PROPOSAL.md §6 D
+        // requires of the budget route ("the finding degrading to *Unknown*").
+        // The exclusion deliberately does **not** appear here — see
+        // `scanScopeSentence` and the disclosure suite for why a permanent,
+        // named, bounded exclusion is stated rather than allowed to make every
+        // finding in the app permanently `.unknown`.
+        guard unverifiable.isEmpty, !tree.wasTruncated else {
             // Lead with what was actually verified. A user whose age rule is
             // healthy deserves to know that part is fine; they must simply
             // not read it as a verdict on the whole project.
@@ -360,15 +483,30 @@ public struct ProjectHealthCheck: HealthCheck {
             default:
                 verified = "Checked \(verifiedFileCount) encrypted files' age recipient lists against the rules that govern them — they all match."
             }
-            let reason = unreadableBackends.isEmpty
-                ? "Part of this project's recipients could not be checked. This is not a verdict on them."
-                : "This project uses \(Self.backendList(unreadableBackends)), which this app cannot read — it only understands age keys."
-            return HealthFinding(
+            // Truncation is named first when it applies. It is the broadest
+            // gap of the three — an unreadable backend is a bounded fact about
+            // a named rule or file, whereas a walk that ran out of budget
+            // cannot even say *which* files it missed — so it is the reason a
+            // one-line status should carry.
+            let reason: String
+            if tree.wasTruncated {
+                reason = "This project has more files than this app's scan budget, so part of the tree was never checked."
+            } else if !unreadableBackends.isEmpty {
+                reason = "This project uses \(Self.backendList(unreadableBackends)), which this app cannot read — it only understands age keys."
+            } else {
+                reason = "Part of this project's recipients could not be checked. This is not a verdict on them."
+            }
+            var detail = verified
+            if !unverifiable.isEmpty {
+                detail += "\n\nDeliberately not checked:\n"
+                    + unverifiable.map { "• " + $0 }.joined(separator: "\n")
+            }
+            return scope.finding(
+                about: .theWholeTree,
                 id: "project.\(idScope).stale-recipients",
                 title: "\(project.name): recipients",
                 status: .unknown(reason: reason),
-                detail: verified + "\n\nDeliberately not checked:\n"
-                    + unverifiable.map { "• " + $0 }.joined(separator: "\n"),
+                detail: detail,
                 remediation: Remediation(
                     explanation: "Nothing here needs fixing on this app's account — it reports only what it read. To check the rest, use the tooling for that backend: `gpg --list-keys` for PGP, or your cloud provider's console for KMS, Key Vault or Vault. This app only manages age keys."))
         }
@@ -392,16 +530,23 @@ public struct ProjectHealthCheck: HealthCheck {
             // `HealthStatus`'s own vocabulary, and it names the fact rather
             // than implying a verdict.
             guard !tree.encrypted.isEmpty || !tree.encryptedInOtherFormats.isEmpty else {
-                return HealthFinding(
+                return scope.finding(
+                about: .theWholeTree,
                     id: "project.\(idScope).stale-recipients",
                     title: "\(project.name): recipients",
-                    status: .skipped(reason: "No sops-encrypted files were found anywhere under \(project.rootPath)."),
+                    // "under", not "anywhere under": the walk behind this has
+                    // an exclusion list, so "anywhere" was a claim it could
+                    // not make. The scope paragraph in the detail says which
+                    // places, and this reason no longer overstates what the
+                    // one-liner covers.
+                    status: .skipped(reason: "No sops-encrypted files were found under \(project.rootPath)."),
                     detail: "The .sops.yaml here parses and uses age keys only, but there are no encrypted files yet, so no recipient list was compared against it. This app is not vouching for this project's recipients either way.")
             }
             // Files exist, every one of them resolved to a rule, and not one
             // comparison had an age key on either side. The check ran and
             // reached no verdict.
-            return HealthFinding(
+            return scope.finding(
+                about: .theWholeTree,
                 id: "project.\(idScope).stale-recipients",
                 title: "\(project.name): recipients",
                 status: .unknown(reason: "No encrypted file here declares an age recipient, and neither does the rule governing it, so there was nothing to compare."),
@@ -411,7 +556,8 @@ public struct ProjectHealthCheck: HealthCheck {
         let checked = verifiedFileCount == 1
             ? "Checked 1 encrypted file's recipient key list against the rule that governs it — it matches."
             : "Checked \(verifiedFileCount) encrypted files' recipient key lists against the rules that govern them — they all match."
-        return HealthFinding(
+        return scope.finding(
+                about: .theWholeTree,
             id: "project.\(idScope).stale-recipients",
             title: "\(project.name): recipients", status: .ok,
             detail: checked + " Every rule in .sops.yaml uses age keys only, so there is nothing here this app could not read.")
@@ -461,21 +607,51 @@ public struct ProjectHealthCheck: HealthCheck {
     /// a path, not a pattern — there is only the shell layer to get right, and
     /// `ShellQuoting` plus a `--` separator gets it right for every filename
     /// that can appear on one line.
+    ///
+    /// **Scope.** This finding is produced from the same single walk
+    /// `recipientFinding` uses, and it inherits that walk's limits: the
+    /// directory-name exclusion list, and the file budget. Both are stated in
+    /// the detail, on every branch, via `scanScopeSentence` — the walk is
+    /// never the whole tree, and "found none" is a verdict about a scope, so
+    /// the scope has to be on the page next to it. Reproduced before this
+    /// existed: this app scanning its own repository skipped `.build` and
+    /// `.swiftpm`, never came near the budget, and reported "Looked through
+    /// <root> … and found none" naming no exclusion at all.
     private func gitignoreFinding(for project: InspectedProject, idScope: String, root: URL,
-                                  candidates: [URL], gitPath: String?) -> HealthFinding {
+                                  tree: ScannedTree, scope: ProjectScopeAccountant,
+                                  gitPath: String?) -> ScopedFinding {
         let findingID = "project.\(idScope).gitignore"
         let title = "\(project.name): plaintext files"
+        let candidates = tree.plaintextCandidates
 
         let rootPrefix = Self.canonicalPath(root.path) + "/"
         func relativeName(_ url: URL) -> String {
-            let path = Self.canonicalPath(url.path)
+            // `ofLeaf`, not `of`: a `.env` reachable through a symbolic link
+            // must be named by the link inside the project, not by the target
+            // outside it. See `CanonicalPath.ofLeaf`.
+            let path = CanonicalPath.ofLeaf(url.path)
             return path.hasPrefix(rootPrefix) ? String(path.dropFirst(rootPrefix.count)) : path
         }
 
-        // No candidate file at all is a definite answer that needs no git:
-        // it is a fact about the filesystem, not about ignore rules.
+        // No candidate file at all is a definite answer that needs no git —
+        // but only about the part of the tree the walk actually entered. A
+        // walk that ran out of budget cannot say "found none" at all: it does
+        // not know which files it never reached, so there is no scope left to
+        // be right about. That is the budget route PROPOSAL.md §6 D describes
+        // ("degrading to *Unknown* and naming what it did not reach"), applied
+        // to this finding as it already was to `recipientFinding`. The
+        // exclusion is handled differently and deliberately — it is named, not
+        // demoted; see `scanScopeSentence`.
         guard !candidates.isEmpty else {
-            return HealthFinding(
+            guard !tree.wasTruncated else {
+                return scope.finding(
+                about: .theWholeTree,
+                    id: findingID, title: title,
+                    status: .unknown(reason: "This project has more files than this app's scan budget, so part of the tree was never searched for plaintext secret files."),
+                    detail: "No plaintext files whose names conventionally hold secrets (.env and its variants) turned up in the part of \(project.rootPath) this scan reached — but it did not reach all of it, so this app is not telling you there are none.")
+            }
+            return scope.finding(
+                about: .theWholeTree,
                 id: findingID, title: title, status: .ok,
                 detail: "Looked through \(project.rootPath) for plaintext files whose names conventionally hold secrets (.env and its variants) and found none.")
         }
@@ -490,7 +666,8 @@ public struct ProjectHealthCheck: HealthCheck {
             let explanation = command != nil
                 ? "Check them yourself with the command below, and make sure anything holding a real secret is either ignored or moved into a file this app encrypts."
                 : "Check them yourself with `git check-ignore -v`, and make sure anything holding a real secret is either ignored or moved into a file this app encrypts. \(Self.newlineInNameNote)"
-            return HealthFinding(
+            return scope.finding(
+                about: .theWholeTree,
                 id: findingID, title: title, status: .unknown(reason: reason),
                 detail: "These files under \(project.rootPath) have names that conventionally hold plaintext secrets: \(names.joined(separator: ", ")). Whether they are ignored could not be established, so this app is not telling you either way.",
                 remediation: Remediation(explanation: explanation, command: command))
@@ -500,7 +677,19 @@ public struct ProjectHealthCheck: HealthCheck {
                 let count = candidates.count == 1
                     ? "1 plaintext file whose name conventionally holds secrets"
                     : "\(candidates.count) plaintext files whose names conventionally hold secrets"
-                return HealthFinding(
+                // "git ignores all of them" is true of the files that were
+                // found; over a truncated walk it is not an answer about the
+                // project, for the same reason the empty-candidate branch
+                // above is not.
+                guard !tree.wasTruncated else {
+                    return scope.finding(
+                about: .theWholeTree,
+                        id: findingID, title: title,
+                        status: .unknown(reason: "This project has more files than this app's scan budget, so part of the tree was never searched for plaintext secret files."),
+                        detail: "Found \(count) in the part of \(project.rootPath) this scan reached (\(names.joined(separator: ", "))), and git ignores every one of those. The scan did not reach the whole project, so this app is not telling you that is all of them.")
+                }
+                return scope.finding(
+                about: .theWholeTree,
                     id: findingID, title: title, status: .ok,
                     detail: "Found \(count) under \(project.rootPath) (\(names.joined(separator: ", "))). git ignores all of them, so none can be committed by accident.")
             }
@@ -526,7 +715,8 @@ public struct ProjectHealthCheck: HealthCheck {
             }
             explanation += rotationNote
 
-            return HealthFinding(
+            return scope.finding(
+                about: .theWholeTree,
                 id: findingID, title: title, status: .problem,
                 detail: detail,
                 // No command. See this method's doc comment: a `.gitignore`
@@ -546,308 +736,19 @@ public struct ProjectHealthCheck: HealthCheck {
             || name.hasPrefix(" ") || name.hasSuffix(" ")
     }
 
+    /// Whether a filename contains a line break, and so cannot be named by
+    /// any single-line command this app offers.
+    ///
+    /// `Character.isNewline`, not `$0 == "\n" || $0 == "\r"`: a CRLF pair is
+    /// one `Character` equal to neither, so the explicit comparison missed
+    /// exactly the name it needed to catch and the note about renaming the
+    /// file first was never attached. Same fix, same reason, as
+    /// `ShellQuoting.singleQuoted` — and the two must agree, because this
+    /// predicate is what explains the `nil` that one returns.
     static func nameSpansLines(_ name: String) -> Bool {
-        name.contains(where: { $0 == "\n" || $0 == "\r" })
+        name.contains(where: \.isNewline)
     }
 
     static let newlineInNameNote =
         "One of these filenames contains a line break, which .gitignore cannot express and no single-line command can name safely, so this app is not offering one — rename the file first."
-
-    /// The number of bytes read from the *end* of every candidate file, via
-    /// `FileHandle` seek — never more, regardless of the file's total size.
-    ///
-    /// This works because sops always appends its `sops:` metadata block as
-    /// the file's *last* top-level key. Verified directly against the pinned
-    /// getsops/sops v3.13.3 source this app embeds: `SerializeMetadata` in
-    /// `stores/metadata.go` builds the metadata `TreeItem`s (`md`) and then,
-    /// for every branch, appends the branch's *existing* items first and
-    /// `md` after —
-    /// ```go
-    /// for _, item := range branch { newBranch = append(newBranch, item) }
-    /// for _, item := range md     { newBranch = append(newBranch, item) }
-    /// ```
-    /// — so `sops:` is unconditionally last. A bounded tail read therefore
-    /// finds it regardless of how large the file's own plaintext-derived
-    /// `ENC[...]` values are before it, at a *constant* cost per file.
-    ///
-    /// 64 KiB, not the 8 MiB an earlier version of this check used: a real
-    /// sops metadata block is a handful of small per-key entries (~200-400
-    /// bytes each for age/pgp/kms), so even a file with a few hundred
-    /// recipients stays well under 64 KiB. 8 MiB was measured to cost
-    /// ~0.5s per matching file — fine for one file, ~7.7s across 15 files
-    /// and ~10.3s across 20 in a real-sized repository, i.e. the exact
-    /// "large tree is slow" regression this cap exists to prevent, just
-    /// re-introduced at the per-file, per-tree-size level instead of the
-    /// per-single-large-file level the original version fixed. 64 KiB
-    /// removes that scaling: see the fix report for before/after timing
-    /// across 15- and 20-file trees. The residual edge case — a `sops:`
-    /// block itself exceeding 64 KiB, needing on the order of a hundred-plus
-    /// recipients on a single file — falls back to being invisible to this
-    /// check, the same direction of limitation as before, at a threshold
-    /// closer to what real files actually look like.
-    static let maxSniffedFileBytes = 64 * 1024
-
-    /// A candidate file paired with the tail bytes already read from it, so
-    /// callers that need the content (`recipientFinding`) don't re-open and
-    /// re-read the file a second time after `encryptedFiles(under:)` already
-    /// paid that cost once.
-    struct SniffedFile {
-        let url: URL
-        let tail: String
-    }
-
-    /// What one walk of a project tree found.
-    struct ScannedTree {
-        /// Files carrying a YAML `sops:` metadata block — the shape this
-        /// build can read recipients out of.
-        var encrypted: [SniffedFile] = []
-        /// Files carrying sops metadata in some other serialization
-        /// (dotenv, JSON, INI). Recorded, not ignored: they are reported as
-        /// unverifiable rather than quietly left out of the count.
-        var encryptedInOtherFormats: [URL] = []
-        /// Files whose *names* conventionally hold plaintext secrets and
-        /// which carry no sops metadata at all.
-        var plaintextCandidates: [URL] = []
-    }
-
-    /// Directories that hold a tool's own storage rather than the user's
-    /// content. `.git` is the one that matters: it is large, it is walked on
-    /// every refresh, and nothing a user would call a secret lives there as a
-    /// loose file. Deliberately short — every entry here is a place this app
-    /// promises not to look, and the longer that list gets the more likely it
-    /// is to hide something real. Build and dependency directories
-    /// (`node_modules`, `.build`) are *not* on it: a secret can genuinely end
-    /// up in one, and being slow is better than being silent.
-    ///
-    /// Known cost, deliberately unpaid here: on a real repository this walk
-    /// visits 272,802 files instead of 13,899 and takes ~170 seconds, because
-    /// `node_modules/.bun` and `.worktrees` are inside it. On *this*
-    /// repository it is 5,347 against 30, since `CLAUDE.md` puts worktrees at
-    /// the repository root. Nothing in M1 exposes that: `HealthReport.standard`
-    /// injects `NoProjects()`, so this walk never runs against a real tree.
-    /// It becomes a multi-minute freeze on first launch the day a project
-    /// picker ships — which is why PROPOSAL.md §6 D now makes solving it a
-    /// precondition of that milestone, with the two acceptable shapes
-    /// (a disclosed dependency-directory exclusion, or a budget that degrades
-    /// the finding to Unknown and names what it did not reach) written down
-    /// there. Do not quietly add an entry to this set instead; the set is the
-    /// list of places the app promises not to look, and every addition owes
-    /// the user a sentence.
-    private static let skippedDirectoryNames: Set<String> = [".git", ".hg", ".svn"]
-
-    /// Walks the project tree once, classifying every regular file.
-    ///
-    /// Hidden files are **not** skipped, which is the change that closes one
-    /// of the three reproduced false-OK paths. The previous
-    /// `.skipsHiddenFiles` meant a genuinely sops-encrypted `.hidden-secrets.yaml`
-    /// or `.config/secrets.yaml` was permanently invisible — including one
-    /// encrypted to a key the config no longer declared, i.e. a real
-    /// `.problem` the report rendered as "every file's key list matches". A
-    /// sops-encrypted `.env` is a completely ordinary thing for a user to
-    /// have, and so is a `secrets/` directory under a dotfile path. An
-    /// exclusion the user cannot see and the copy does not admit is the same
-    /// failure class as the vacuous OK itself, so the exclusion is gone rather
-    /// than documented.
-    ///
-    /// Every file's *tail* is read (see `maxSniffedFileBytes`), never its full
-    /// contents, so this scales with file count, not file size. Nothing is
-    /// read from a plaintext candidate beyond that tail, and nothing read from
-    /// any file ever reaches a finding.
-    static func scanTree(under root: URL) -> ScannedTree {
-        guard let enumerator = FileManager.default.enumerator(
-            at: root, includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
-            options: [.skipsPackageDescendants]) else { return ScannedTree() }
-
-        var tree = ScannedTree()
-        for case let url as URL in enumerator {
-            let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey])
-            if values?.isDirectory == true {
-                if Self.skippedDirectoryNames.contains(url.lastPathComponent) {
-                    enumerator.skipDescendants()
-                }
-                continue
-            }
-            guard values?.isRegularFile == true else { continue }
-
-            let tail = Self.tailText(of: url, maxBytes: Self.maxSniffedFileBytes)
-            if let tail, tail.contains("\nsops:") || tail.hasPrefix("sops:") {
-                tree.encrypted.append(SniffedFile(url: url, tail: tail))
-            } else if let tail, Self.looksSopsEncryptedInAnotherFormat(tail) {
-                tree.encryptedInOtherFormats.append(url)
-            } else if Self.isPlaintextSecretCandidate(url.lastPathComponent) {
-                tree.plaintextCandidates.append(url)
-            }
-        }
-        return tree
-    }
-
-    /// sops metadata as written by its non-YAML stores. Only used to keep an
-    /// encrypted file from being mistaken for a plaintext one — an encrypted
-    /// `.env` reported as a leaking secret is a false alarm, and false alarms
-    /// are how a user learns to skip this finding.
-    private static func looksSopsEncryptedInAnotherFormat(_ tail: String) -> Bool {
-        tail.contains("sops_mac=") || tail.contains("sops_version=")   // dotenv
-            || tail.contains("\"sops\":")                              // json
-            || tail.contains("\n[sops]")                               // ini
-    }
-
-    /// Whether a *filename* is one that conventionally holds plaintext
-    /// secrets. Names only — nothing here reads a file.
-    ///
-    /// The old list was three hardcoded strings (`.env`, `.env.local`,
-    /// `.env.production`), so `.env.staging`, `.env.development` and
-    /// `production.env` all went unreported. This covers the whole `.env`
-    /// family in both spellings instead.
-    ///
-    /// Deliberately still narrow. Widening it to things like `credentials`,
-    /// `id_rsa` or `.npmrc` would produce false alarms on files that are
-    /// routinely committed on purpose, and a finding that cries wolf is one
-    /// the user stops reading — which costs more than the names it would
-    /// catch. The `.env` family is the case PROPOSAL.md §6 D names and the one
-    /// with an unambiguous convention behind it.
-    static func isPlaintextSecretCandidate(_ name: String) -> Bool {
-        let lower = name.lowercased()
-        // Placeholders documenting which variables exist. Committing one is
-        // the point of it, so flagging it is pure noise.
-        let placeholderSuffixes = [".example", ".sample", ".template", ".dist", ".defaults"]
-        if placeholderSuffixes.contains(where: { lower.hasSuffix($0) }) { return false }
-        if lower == ".env" || lower.hasPrefix(".env.") { return true }
-        // "production.env", "local.env" — the same convention written the
-        // other way round. Excludes ".env" itself, already matched above.
-        return lower.hasSuffix(".env") && lower != ".env"
-    }
-
-    /// Reads at most the last `maxBytes` bytes of `url` via `FileHandle`
-    /// seek — see `maxSniffedFileBytes` for why the tail is always where
-    /// the `sops:` block lives, regardless of the file's total size.
-    private static func tailText(of url: URL, maxBytes: Int) -> String? {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
-        defer { try? handle.close() }
-        guard let size = try? handle.seekToEnd(), size > 0 else { return nil }
-
-        let readSize = min(UInt64(maxBytes), size)
-        guard (try? handle.seek(toOffset: size - readSize)) != nil,
-              var bytes = try? handle.read(upToCount: Int(readSize))
-        else { return nil }
-
-        // A byte-offset tail slice can start mid-UTF-8-codepoint. Drop
-        // leading continuation bytes (0b10xxxxxx) rather than fail the
-        // whole decode over a boundary nowhere near the sops: block this
-        // exists to find, which sits well inside the tail, not at its very
-        // first byte.
-        while let first = bytes.first, first & 0b1100_0000 == 0b1000_0000 {
-            bytes.removeFirst()
-        }
-        return String(data: bytes, encoding: .utf8)
-    }
-}
-
-/// Reads metadata out of an *encrypted file's own* `sops:` block — a
-/// fundamentally different, narrower problem than parsing a user-authored
-/// `.sops.yaml`, which is why it is not covered by the migration to
-/// `SopsBridge.lookupCreationRule` described in `ProjectHealthCheck`'s doc
-/// comment. Two things make it narrower:
-///
-/// 1. The input is machine-generated by sops's own serializer
-///    (`stores/yaml/store.go`, `stores/metadata.go` in getsops/sops
-///    v3.13.3), never hand-typed. It has exactly one shape: fixed 4-space
-///    indent, no comments, no flow sequences split or otherwise, no
-///    creative formatting choices — the entire "a real user writes YAML in
-///    many equally-valid ways" problem that made `.sops.yaml` parsing
-///    fragile does not exist here.
-/// 2. What this reads is far narrower: a handful of known top-level keys
-///    under `sops:`, each with a small, fixed set of sub-fields. There is
-///    no indentation-sensitive rule/key state machine, no bracket
-///    balancing, no multi-line joining.
-///
-/// That said, this scanner was reviewed for the *same class* of bug the
-/// `.sops.yaml` parser had — scope creep from "read sops's own metadata"
-/// into "read anything that looks similar" — and one real instance was
-/// found and fixed: `recipients(inEncryptedFile:)` used to scan the *whole*
-/// file for any line starting with `recipient:`, not just inside the
-/// `sops:` block. Since sops only ever encrypts *values*, never *keys*, a
-/// project's own plaintext data can legitimately have a field literally
-/// named `recipient` (e.g. an email/payment "recipient" field) — after
-/// encryption that becomes `recipient: ENC[...]`, which the old, unscoped
-/// scan would have swallowed whole as if `ENC[AES256_GCM,...]` were a real
-/// age public key. Both functions are now scoped to the `sops:` block via
-/// the shared `sopsBlockLines(in:)` helper, closing that gap. See
-/// `EncryptedFileMetadataTests.swift` for the regression test.
-enum EncryptedFileMetadata {
-
-    /// Public keys a sops-encrypted file is wrapped for, read from its
-    /// `sops.age[].recipient` metadata.
-    static func recipients(inEncryptedFile text: String) -> [String] {
-        sopsBlockLines(in: text).compactMap { line in
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard trimmed.hasPrefix("- recipient:") || trimmed.hasPrefix("recipient:") else { return nil }
-            guard let colon = trimmed.firstIndex(of: ":") else { return nil }
-            let value = unquote(String(trimmed[trimmed.index(after: colon)...]))
-            return value.isEmpty ? nil : value
-        }
-    }
-
-    /// Non-age key backends actually present in an encrypted file's own
-    /// `sops:` metadata block, read from the field names getsops/sops v3.13.3
-    /// itself writes (`stores.metadata` in `stores/stores.go`): `pgp`, `kms`,
-    /// `gcp_kms`, `hckms`, `azure_kv`, `hc_vault`, `key_groups`. This is
-    /// ground truth about how the *file itself* is protected right now —
-    /// independent of what its governing `.sops.yaml` rule declares, which
-    /// can drift out of sync with what was actually run. A file whose own
-    /// metadata shows one of these cannot have its recipients fully verified
-    /// by this app: it only ever holds age keys, never a PGP private key, a
-    /// cloud IAM credential, or a Vault token.
-    static func nonAgeBackends(inEncryptedFile text: String) -> [String] {
-        let backendKeys: Set<String> = ["pgp", "kms", "gcp_kms", "hckms", "azure_kv", "hc_vault", "key_groups"]
-        var found: [String] = []
-        for line in sopsBlockLines(in: text) {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.isEmpty || trimmed == "sops:" { continue }
-            let (key, value) = split(trimmed)
-            guard backendKeys.contains(key) else { continue }
-            let v = value.trimmingCharacters(in: .whitespaces)
-            if v != "[]", v != "{}", !found.contains(key) {
-                found.append(key)
-            }
-        }
-        return found
-    }
-
-    /// Extracts just the `sops:` metadata block's lines — started by a line
-    /// that is exactly `sops:` at column 0, ended by the next column-0 line
-    /// or EOF. Scoping every scan to this block, rather than the whole
-    /// file, is what stops a user's own plaintext field name (e.g.
-    /// `recipient`, `kms`) from being mistaken for sops metadata; see the
-    /// type-level doc comment.
-    private static func sopsBlockLines(in text: String) -> [String] {
-        var lines: [String] = []
-        var inBlock = false
-        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = String(rawLine)
-            if line == "sops:" { inBlock = true; lines.append(line); continue }
-            guard inBlock else { continue }
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.isEmpty { lines.append(line); continue }
-            if !line.hasPrefix(" ") && !line.hasPrefix("\t") { break }
-            lines.append(line)
-        }
-        return lines
-    }
-
-    private static func split(_ entry: String) -> (key: String, value: String) {
-        guard let colon = entry.firstIndex(of: ":") else { return (entry, "") }
-        let key = String(entry[entry.startIndex..<colon]).trimmingCharacters(in: .whitespaces)
-        let value = String(entry[entry.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
-        return (key, value)
-    }
-
-    private static func unquote(_ value: String) -> String {
-        let trimmed = value.trimmingCharacters(in: .whitespaces)
-        guard trimmed.count >= 2 else { return trimmed }
-        if (trimmed.hasPrefix("\"") && trimmed.hasSuffix("\""))
-            || (trimmed.hasPrefix("'") && trimmed.hasSuffix("'")) {
-            return String(trimmed.dropFirst().dropLast())
-        }
-        return trimmed
-    }
 }

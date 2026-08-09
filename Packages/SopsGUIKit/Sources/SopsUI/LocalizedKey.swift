@@ -36,9 +36,46 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case healthNothingChecked = "health.nothing-checked"
     case settingsTabHealth = "settings.tab.health"
     case settingsTabUpdates = "settings.tab.updates"
+    case settingsTabKey = "settings.tab.key"
     case settingsUpdatesToggle = "settings.updates.toggle"
     case settingsUpdatesExplanation = "settings.updates.explanation"
     case settingsUpdatesPrivacy = "settings.updates.privacy"
+
+    case keyStatusConfigured = "key.status.configured"
+    case keyStatusEmpty = "key.status.empty"
+    case keyPasteHeader = "key.paste.header"
+    case keyPasteFooter = "key.paste.footer"
+    case keyImportPasteButton = "key.import.paste-button"
+    case keyForgetButton = "key.forget-button"
+    // The three shapes of the key-file import control, one per case of
+    // `LegacyKeyFileImportOptions`. None of them contains a path: the one
+    // case that may name a path — exactly one file found — shows it as
+    // `Text(verbatim:)` beneath this title, because a path is not
+    // translatable and, resolved through the catalog, would vanish under
+    // whichever build system copies `.xcstrings` uncompiled. The old single
+    // key read literally "Import from ~/.config/sops/age/keys.txt", naming a
+    // path the app no longer necessarily reads and, on macOS, usually does
+    // not.
+    case keyImportLegacyButton = "key.import.legacy-button"
+    case keyImportLegacyChooseButton = "key.import.legacy-choose-button"
+    case keyImportLegacyNoneButton = "key.import.legacy-none-button"
+    case keyImportLegacyFooter = "key.import.legacy-footer"
+    // Introduces the list of paths that were stat'd and held nothing. Same
+    // discipline as `SecurityPostureCheck`'s all-clear: "found nothing" means
+    // nothing unless the places looked at are named.
+    case keyImportLegacyNoneFooter = "key.import.legacy-none-footer"
+    // Shown after a successful import from the legacy keys.txt file,
+    // immediately above the same `chmod 600` remediation
+    // `SecurityPostureCheck`'s `security.legacy-key-file` finding offers —
+    // this is the moment the app can point at that advice, not invent its
+    // own. See `KeyImportView`.
+    case keyImportLegacySuccess = "key.import.legacy-success"
+    case keyImportErrorTitle = "key.import.error-title"
+    case keyErrorEmpty = "key.error.empty"
+    case keyErrorNotAnAgeKey = "key.error.not-an-age-key"
+    // Formatted with the number of keys found — see `KeyImportView.message(for:)`.
+    case keyErrorMultipleKeys = "key.error.multiple-keys"
+    case keyErrorReadFailed = "key.error.read-failed"
 
     case actionBack = "action.back"
     case actionContinue = "action.continue"
@@ -70,6 +107,106 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // Deliberately distinct from `.verdict(.ok)`: a report that ran no checks
     // has verified nothing, and "Everything checks out." would claim it did.
     case onboardingSummaryNothingChecked = "onboarding.summary.nothing-checked"
+
+    case actionAddProject = "action.add-project"
+    case actionRemoveProject = "action.remove-project"
+    case actionCancel = "action.cancel"
+    case projectsEmptyTitle = "projects.empty.title"
+    // Shown next to a project whose directory could not be found on disk
+    // right now — see `ProjectStore.isMissing(_:)`. The project stays in the
+    // sidebar rather than vanishing; this badge is why it's still there.
+    case projectsMissingBadge = "projects.missing-badge"
+    case projectsWorktreeLabel = "projects.worktree-label"
+    case projectsRemoveConfirmTitle = "projects.remove-confirm.title"
+    // Load-bearing per PROPOSAL.md and CLAUDE.md: removing a project must
+    // never be read as deleting it. This is the sentence that says so.
+    case projectsRemoveConfirmMessage = "projects.remove-confirm.message"
+    case projectsAddErrorTitle = "projects.add-error.title"
+    case projectsErrorNotDirectory = "projects.error.not-directory"
+    case projectsErrorDuplicate = "projects.error.duplicate"
+    case projectsErrorAddFailed = "projects.error.add-failed"
+    case projectsErrorRemoveFailed = "projects.error.remove-failed"
+
+    // MARK: Task 9 — file list
+
+    case filesNoProjectSelected = "files.no-project-selected"
+    case filesScanning = "files.scanning"
+    case filesEmptyTitle = "files.empty.title"
+    case filesProjectMissingTitle = "files.project-missing.title"
+    case filesTruncatedTitle = "files.truncated.title"
+    // Formatted with the comma-joined list of skipped directory names — see
+    // `FileListView.truncationBanner`.
+    case filesTruncatedDetail = "files.truncated.detail"
+    // Formatted with the count of sops files this build can't open (dotenv/
+    // JSON/INI — YAML-only for v1) — see `FileListModel.otherFormatCount`.
+    case filesOtherFormatNote = "files.other-format.note"
+
+    // MARK: Task 9 — editor
+
+    case editorNoFileSelected = "editor.no-file-selected"
+    case editorNeedsKeyTitle = "editor.needs-key.title"
+    case editorNeedsKeyBody = "editor.needs-key.body"
+    case editorLoadFailedTitle = "editor.load-failed.title"
+    // Deliberately distinct from `.editorLoadFailedTitle`: a `.loaded`
+    // document with zero rows is what `sops -e` on `{}` produces — a
+    // legitimate, ordinary file, not a failure. See `SecretEditorView`'s
+    // doc comment ("The property this view must not break").
+    case editorEmptyDocumentTitle = "editor.empty-document.title"
+    case editorEmptyDocumentBody = "editor.empty-document.body"
+    case editorUnsavedIndicator = "editor.unsaved-indicator"
+    case editorSaveButton = "editor.save-button"
+    case editorSaveErrorTitle = "editor.save-error.title"
+    case editorRevealValue = "editor.reveal-value"
+    case editorHideValue = "editor.hide-value"
+    case editorMergeKeyBadge = "editor.merge-key-badge"
+    case editorMergeKeyExplanation = "editor.merge-key-explanation"
+    case editorValueEncrypted = "editor.value-encrypted"
+    case editorValueNotEncrypted = "editor.value-not-encrypted"
+    case editorKindString = "editor.kind.string"
+    case editorKindInt = "editor.kind.int"
+    case editorKindFloat = "editor.kind.float"
+    case editorKindBool = "editor.kind.bool"
+    case editorKindNull = "editor.kind.null"
+    case editorKindTimestamp = "editor.kind.timestamp"
+    case editorKindEmptyMap = "editor.kind.empty-map"
+    case editorKindEmptyList = "editor.kind.empty-list"
+
+    // MARK: Task 8b — adding and removing rows
+
+    case actionAdd = "action.add"
+    case editorAddRow = "editor.add-row"
+    case editorRemoveRow = "editor.remove-row"
+    case editorRemoveRowDisabled = "editor.remove-row-disabled"
+    case editorAddSheetTitle = "editor.add.title"
+    case editorAddDestination = "editor.add.destination"
+    case editorAddDestinationRoot = "editor.add.destination-root"
+    case editorAddKeyField = "editor.add.key"
+    case editorAddValueField = "editor.add.value"
+    case editorAddTypeField = "editor.add.type"
+    // A list entry has no name and no position to choose: it goes at the end.
+    // Saying so is what stops a user looking for the field that isn't there.
+    case editorAddListNote = "editor.add.list-note"
+    case editorAddDuplicateKey = "editor.add.duplicate-key"
+    // `<<` is YAML's merge key and `sops` at the top level is SOPS's own
+    // metadata; a document that misuses either cannot be read back at all.
+    // Mirrors `refuseReservedKey` in the bridge — see `AddRowRefusal`.
+    case editorAddReservedKey = "editor.add.reserved-key"
+    // Shown instead of a padlock on a row added in this session — see
+    // `SecretEditorView`'s doc comment for why neither padlock would be true.
+    case editorNewRowBadge = "editor.new-row-badge"
+    case editorNewRowExplanation = "editor.new-row-explanation"
+
+    // MARK: Task 9 — unsaved-changes prompts (file/project switch and quit)
+
+    case editorUnsavedChangesTitle = "editor.unsaved-changes.title"
+    case editorUnsavedChangesMessage = "editor.unsaved-changes.message"
+    case editorSaveAndContinue = "editor.save-and-continue"
+    case editorDiscardChanges = "editor.discard-changes"
+    case actionQuit = "action.quit"
+    case editorQuitUnsavedTitle = "editor.quit-unsaved.title"
+    case editorQuitUnsavedMessage = "editor.quit-unsaved.message"
+    case editorSaveAndQuit = "editor.save-and-quit"
+    case editorDiscardAndQuit = "editor.discard-and-quit"
 
     /// The resolved English text. Used in views and asserted in tests.
     public var text: String {

@@ -199,7 +199,11 @@ func Encrypt(plain []byte, format Format, opts EncryptOpts) ([]byte, error) {
 
 	branches, err := store.LoadPlainFile(plain)
 	if err != nil {
-		return nil, fmt.Errorf("load plain file: %w", err)
+		// Never `%w`. go-yaml quotes the document back at you for a duplicate
+		// key, an unresolved alias, or a scalar where a mapping was expected —
+		// and this input is the user's plaintext. The line number survives;
+		// nothing else does. See describeYAMLFailure in document.go.
+		return nil, describeYAMLFailure("the document is not valid YAML", err)
 	}
 	if len(branches) < 1 {
 		return nil, fmt.Errorf("file must contain at least one document")
@@ -251,12 +255,16 @@ func Encrypt(plain []byte, format Format, opts EncryptOpts) ([]byte, error) {
 		Tree:    &tree,
 		Cipher:  aes.NewCipher(),
 	}); err != nil {
-		return nil, fmt.Errorf("encrypt tree: %w", err)
+		// Same rule as the decrypt path, for the same reason: sops's
+		// tree-encryption errors interpolate the value that failed
+		// ("Could not convert %s to bytes", and a timestamp that would not
+		// marshal), and everything in this tree is plaintext.
+		return nil, fmt.Errorf("the document could not be encrypted")
 	}
 
 	encrypted, err := store.EmitEncryptedFile(tree)
 	if err != nil {
-		return nil, fmt.Errorf("emit encrypted file: %w", err)
+		return nil, fmt.Errorf("the encrypted document could not be rendered")
 	}
 	return encrypted, nil
 }
@@ -281,24 +289,32 @@ func Decrypt(encrypted []byte, format Format, agePrivateKey string) ([]byte, err
 	}
 	store := common.StoreForFormat(sf, config.NewStoresConfig())
 
-	tree, err := store.LoadEncryptedFile(encrypted)
+	// Shared with the document API so that both read paths refuse the same
+	// files, sanitise the same way, and cannot drift apart.
+	tree, err := loadEncryptedDocument(store, encrypted)
 	if err != nil {
-		return nil, fmt.Errorf("load encrypted file: %w", err)
+		return nil, err
 	}
 
 	ks := &ageKeyService{identities: identities}
 
 	if _, err := common.DecryptTree(common.DecryptTreeOpts{
-		Tree:        &tree,
+		Tree:        tree,
 		Cipher:      aes.NewCipher(),
 		KeyServices: ks.clients(),
 	}); err != nil {
-		return nil, fmt.Errorf("decrypt tree: %w", err)
+		// Never `%w`. sops's decrypt errors can carry the decrypted value:
+		// aes.Cipher.Decrypt converts the plaintext after unwrapping it and
+		// passes strconv's error, which quotes its input, back up. See
+		// describeDecryptFailure in document.go for the full account.
+		return nil, describeDecryptFailure(tree, err)
 	}
 
 	plain, err := store.EmitPlainFile(tree.Branches)
 	if err != nil {
-		return nil, fmt.Errorf("emit plain file: %w", err)
+		// The YAML encoder's error can quote the value it choked on, and every
+		// value in this tree is now plaintext.
+		return nil, fmt.Errorf("the decrypted document could not be rendered")
 	}
 	return plain, nil
 }
