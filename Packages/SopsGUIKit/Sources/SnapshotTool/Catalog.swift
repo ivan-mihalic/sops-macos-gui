@@ -147,7 +147,17 @@ enum Catalog {
         // rendered by this view (it only ever shows a checkmark and
         // "Configured"), but kept fake regardless per CLAUDE.md's standing
         // rule against secret-shaped values in fixtures.
-        try? configured.importKey("AGE-SECRET-KEY-1EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE")
+        // 74 characters over the Bech32 alphabet — the shape `importKey`
+        // requires since the shape check landed. The previous stand-in was 72
+        // characters of "EXAMPLE", which `try?` swallowed: the store stayed
+        // `.empty` and the snapshot named "configured" rendered the empty
+        // state. A reviewer reading that PNG was approving a screen the app
+        // never shows. `try!` would have caught it; `try?` made a broken
+        // fixture look like a working one.
+        //
+        // Not a real key and cannot decrypt anything — these snapshots only
+        // exercise layout.
+        try? configured.importKey("AGE-SECRET-KEY-1QTKPVHZDCRWEY069SMX3U8JAGN7F5L24QTKPVHZDCRWEY069SMX3U8JAGN")
 
         // The import control's three shapes, each pinned to a fixture rather
         // than to whatever happens to be under this machine's real `$HOME` —

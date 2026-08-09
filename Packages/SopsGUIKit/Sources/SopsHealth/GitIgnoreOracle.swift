@@ -166,7 +166,27 @@ enum GitIgnoreOracle {
         //
         // So a non-zero exit only means "outside" when git says that is what
         // it means. Everything else is an absence of an answer.
+        // Matching on git's wording is the only signal available — but two
+        // shapes carry that phrase while meaning the opposite of "you are not
+        // in a repository", and both are reachable here:
+        //
+        //   - a linked worktree whose main clone is gone (unmounted, moved):
+        //     `fatal: not a git repository: (null)`
+        //   - a repository whose `.git` is damaged:
+        //     `fatal: not a git repository (or any of the parent directories)`
+        //     with the directory named
+        //
+        // This project treats worktrees as first-class, so the first is
+        // exactly the case that must not produce a confident verdict.
+        //
+        // The read is also gated on `standardErrorComplete`: deciding from a
+        // half-read complaint is the same mistake as deciding from a half-read
+        // answer, one stream over.
         let complaint = outcome.standardErrorText.lowercased()
+        guard outcome.standardErrorComplete else { return .unreadable }
+        if complaint.contains("(null)") || complaint.contains("or any of the parent directories") {
+            return .unreadable
+        }
         if complaint.contains("not a git repository") { return .outside }
         return .unreadable
     }

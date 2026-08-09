@@ -133,6 +133,7 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case filesScanning = "files.scanning"
     case filesEmptyTitle = "files.empty.title"
     case filesProjectMissingTitle = "files.project-missing.title"
+    case filesProjectUnreadableTitle = "files.project-unreadable.title"
     case filesTruncatedTitle = "files.truncated.title"
     // Formatted with the comma-joined list of skipped directory names — see
     // `FileListView.truncationBanner`.

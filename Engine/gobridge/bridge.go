@@ -7,6 +7,7 @@ package gobridge
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"runtime/debug"
 	"strings"
 
@@ -212,9 +213,43 @@ func Encrypt(plain []byte, format Format, opts EncryptOpts) ([]byte, error) {
 		return nil, fmt.Errorf("file already encrypted: it has a top-level %q entry", "sops")
 	}
 
+	// Refuse anything that is not a native `age1…` recipient, **before**
+	// handing the string to upstream. Two reasons, both measured:
+	//
+	//  1. Upstream's parse error is `unknown recipient type: %q` with the whole
+	//     input. Paste an `AGE-SECRET-KEY-1…` into the recipients field — an
+	//     easy mistake, they sit side by side in the UI — and the private key
+	//     comes back inside `SopsBridgeError.description`, which reaches the
+	//     UI, the log and any crash report. The decrypt path already guards
+	//     exactly this (`parseDecryptionIdentities`); the encrypt path did not.
+	//
+	//  2. A recipient shaped like `age1name1…` makes upstream exec
+	//     `age-plugin-<name>` **from $PATH**, with no absolute path and no
+	//     timeout. Recipients come from a project's `.sops.yaml`, so a cloned
+	//     repository could name the plugin. That is the same vector
+	//     `parseDecryptionIdentities` closes on the identity side.
+	for index, recipient := range opts.AgeRecipients {
+		if !strings.HasPrefix(recipient, "age1") {
+			return nil, fmt.Errorf(
+				"recipient %d is not a native age recipient: it must begin with %q",
+				// Index, never the value: the value may be a private key.
+				index+1, "age1")
+		}
+		// `age1<name>1<data>` is the plugin form. A native X25519 recipient is
+		// bech32 over `age1` with no further separator.
+		if rest := recipient[len("age1"):]; strings.Contains(rest, "1") {
+			return nil, fmt.Errorf(
+				"recipient %d looks like an age plugin recipient; this app supports "+
+					"native age recipients only, and never runs a plugin binary",
+				index+1)
+		}
+	}
+
 	masterKeys, err := sopsage.MasterKeysFromRecipients(strings.Join(opts.AgeRecipients, ","))
 	if err != nil {
-		return nil, fmt.Errorf("parse age recipients: %w", err)
+		// Never `%w`: see above. The recipients string may contain a private
+		// key the user pasted into the wrong field.
+		return nil, fmt.Errorf("the age recipients could not be parsed")
 	}
 	if len(masterKeys) == 0 {
 		return nil, fmt.Errorf("no age recipients given")
@@ -222,6 +257,23 @@ func Encrypt(plain []byte, format Format, opts EncryptOpts) ([]byte, error) {
 	group := make(sops.KeyGroup, 0, len(masterKeys))
 	for _, mk := range masterKeys {
 		group = append(group, mk)
+	}
+
+	// `sops.Tree.shouldBeEncrypted` does `matched, _ := regexp.Match(...)` and
+	// drops the error, so an `encrypted_regex` that does not compile makes
+	// every value "not matched" — and the file is written with complete sops
+	// metadata, a valid MAC, and every secret in cleartext. `sops --decrypt`
+	// reads it back without complaint. Verified.
+	//
+	// Compiling it here turns that into a refusal. The regex text is the
+	// user's own rule from `.sops.yaml`, not document content, so quoting it
+	// is safe and is the only way the message is actionable.
+	if opts.EncryptedRegex != "" {
+		if _, err := regexp.Compile(opts.EncryptedRegex); err != nil {
+			return nil, fmt.Errorf(
+				"encrypted_regex %q is not a valid regular expression, so nothing would "+
+					"have been encrypted", opts.EncryptedRegex)
+		}
 	}
 
 	// The CLI only falls back to the default unencrypted suffix when no other

@@ -22,6 +22,15 @@ public final class FileListModel {
     public private(set) var wasTruncated = false
     public private(set) var skippedDirectoryNames: [String] = []
     public private(set) var rootMissing = false
+    /// The root exists but could not be read — changed permissions, a
+    /// detached volume, a revoked sandbox scope.
+    ///
+    /// `ProjectHealthCheck` has handled this since Task 18; the file list
+    /// dropped it on the floor, so an unreadable project rendered as
+    /// "No encrypted files found in this project." — a confident statement
+    /// about a directory the scan never got into, which is the one thing
+    /// PROPOSAL §6 D says this app must never do.
+    public private(set) var rootUnreadable = false
 
     public init(projectRoot: URL) {
         self.projectRoot = projectRoot
@@ -49,6 +58,7 @@ public final class FileListModel {
         wasTruncated = tree.wasTruncated
         skippedDirectoryNames = tree.skippedDirectoryNames.sorted()
         rootMissing = tree.rootMissing
+        rootUnreadable = tree.rootUnreadable
         isScanning = false
         hasScanned = true
     }
@@ -101,6 +111,8 @@ public struct FileListView: View {
     private var content: some View {
         if model.rootMissing {
             statusPlaceholder(systemImage: "questionmark.folder", title: .filesProjectMissingTitle)
+        } else if model.rootUnreadable {
+            statusPlaceholder(systemImage: "lock.folder", title: .filesProjectUnreadableTitle)
         } else if model.isScanning && !model.hasScanned {
             VStack(spacing: 8) {
                 ProgressView()

@@ -345,13 +345,46 @@ struct GitIgnoreOracleFailureTests {
         #expect(reason.contains("not inside a git repository"))
     }
 
+
+    /// A linked worktree whose main clone is unreachable says
+    /// `fatal: not a git repository: (null)` — the phrase, meaning the
+    /// opposite. This project groups worktrees in the sidebar, so it is
+    /// precisely the case that must not become a verdict.
+    @Test("a worktree with an unreachable main repository is undetermined")
+    func orphanedWorktreeIsNotAVerdict() throws {
+        let git = try Self.fakeGit("echo 'fatal: not a git repository: (null)' >&2; exit 128")
+        defer { try? FileManager.default.removeItem(at: git.deletingLastPathComponent()) }
+
+        let reason = try #require(undeterminedReason(from: git))
+        #expect(
+            !reason.contains("not inside a git repository"),
+            "an orphaned worktree was reported as not being in a repository at all")
+    }
+
+    /// A damaged `.git` produces the same phrase with the parent-directory
+    /// wording. Also a repository, also not a verdict.
+    @Test("a damaged repository is undetermined, not 'outside'")
+    func damagedRepositoryIsNotAVerdict() throws {
+        let git = try Self.fakeGit(
+            "echo 'fatal: not a git repository (or any of the parent directories): .git' >&2; exit 128")
+        defer { try? FileManager.default.removeItem(at: git.deletingLastPathComponent()) }
+
+        let reason = try #require(undeterminedReason(from: git))
+        #expect(!reason.contains("not inside a git repository"))
+    }
+
     /// stdout complete, stderr held open by a grandchild: the answer was read
     /// in full, so it must be used. Iteration 7's single flag rejected it.
     @Test("a complete stdout answer is used even when a grandchild holds stderr")
     func stderrBlockedDoesNotDiscardTheAnswer() throws {
+        // `>/dev/null` only, deliberately: with `2>&1` the grandchild holds
+        // neither pipe (measured: stderr EOF in 14 ms) and this test cannot
+        // fail on the bug it names. Verified by mutation — restoring
+        // iteration 7's combined flag left the whole suite green with the
+        // two-redirect fixture, and reddens this one.
         let git = try Self.fakeGit("""
             echo true
-            sleep 20 >/dev/null 2>&1 &
+            sleep 20 >/dev/null &
             exit 0
             """)
         defer { try? FileManager.default.removeItem(at: git.deletingLastPathComponent()) }

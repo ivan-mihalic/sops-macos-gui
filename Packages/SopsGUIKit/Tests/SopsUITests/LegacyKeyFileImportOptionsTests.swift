@@ -1,6 +1,7 @@
 import Foundation
 import SopsHealth
 import Testing
+import SopsProjects
 @testable import SopsUI
 
 /// The half of the wrong-path defect that lived in the UI.
@@ -131,5 +132,40 @@ struct LegacyKeyFileImportOptionsTests {
 
         #expect(command == "chmod 600 '\(Self.library)'")
         #expect(!command.contains(".config"), "the wrong path must not reappear here")
+    }
+}
+
+/// The snapshot catalog's "configured" fixture must actually configure.
+///
+/// It was 72 characters and `importKey` requires 74, so `try?` swallowed the
+/// refusal, the store stayed `.empty`, and the PNG named `key-import-configured`
+/// showed the empty state. Snapshots are read by people deciding whether a
+/// screen is right; one that renders the opposite state is worse than none.
+@MainActor
+@Suite("The snapshot catalog's configured key fixture really configures")
+struct SnapshotKeyFixtureTests {
+
+    @Test("the key literal in Catalog.swift is accepted by SessionKeyStore")
+    func catalogKeyIsAccepted() throws {
+        let catalog = try String(
+            contentsOfFile: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Sources/SnapshotTool/Catalog.swift").path,
+            encoding: .utf8)
+
+        let literals = catalog
+            .components(separatedBy: "\"")
+            .filter { $0.hasPrefix("AGE-SECRET-KEY-1") }
+        #expect(!literals.isEmpty, "no key literal found — has the catalog moved?")
+
+        for literal in literals {
+            let store = SessionKeyStore()
+            #expect(throws: Never.self) { try store.importKey(literal) }
+            #expect(
+                store.state == .configured,
+                "a catalog key literal is refused, so any snapshot built from it renders the empty state")
+        }
     }
 }

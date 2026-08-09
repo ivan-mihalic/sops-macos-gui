@@ -1,6 +1,5 @@
 {
   "sourceLanguage": "en",
-  "version": "1.0",
   "strings": {
     "action.add": {
       "extractionState": "manual",
@@ -691,6 +690,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "This project's folder can't be found. It may have been moved, renamed, or is on a volume that isn't currently mounted."
+          }
+        }
+      }
+    },
+    "files.project-unreadable.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This project's folder could not be read"
           }
         }
       }
@@ -1476,5 +1486,6 @@
         }
       }
     }
-  }
+  },
+  "version": "1.0"
 }
