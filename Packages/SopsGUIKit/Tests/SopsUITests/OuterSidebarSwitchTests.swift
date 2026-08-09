@@ -137,15 +137,32 @@ struct OuterSidebarSwitchTests {
 @Suite("The outer sidebar's selection is wired through the guard")
 struct OuterSidebarWiringTests {
 
+    /// `AppShell.swift` with `//` comments removed.
+    ///
+    /// Stripping matters: a review defeated every assertion in this suite by
+    /// gutting `guardedSelection`'s setter and leaving the guarded form as a
+    /// comment on the line above. The bug was fully restored — a click on About
+    /// discarded a dirty document without asking — and all four string checks
+    /// still passed, because `#filePath` is read as plain text and a comment is
+    /// text too. The suite's own doc comment had warned that checking the name
+    /// and not the body is how a source-level test becomes decoration; checking
+    /// the body as *text* was one step better and still not enough.
     private static var appShellSource: String {
         get throws {
-            try String(
+            let raw = try String(
                 contentsOfFile: URL(fileURLWithPath: #filePath)
                     .deletingLastPathComponent()
                     .deletingLastPathComponent()
                     .deletingLastPathComponent()
                     .appendingPathComponent("Sources/SopsUI/AppShell.swift").path,
                 encoding: .utf8)
+            return raw
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .map { line -> Substring in
+                    guard let marker = line.range(of: "//") else { return line }
+                    return line[line.startIndex..<marker.lowerBound]
+                }
+                .joined(separator: "\n")
         }
     }
 

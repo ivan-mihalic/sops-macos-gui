@@ -239,10 +239,75 @@ private let devKey = "age1ykd0u99qxpdl4yr57lwqv5rt9e473p6hhdps2a5q5ddmt0x6ryaqkj
 // see EncryptedFileMetadata's doc comment in ProjectHealthCheck.swift. It is
 // NOT what was replaced by SopsBridge.lookupCreationRule.
 
+
+/// Whether this process can drive `gpg` at all.
+///
+/// `gpg --gen-key` needs a writable GNUPGHOME, a gpg-agent socket and an
+/// entropy source. Under `Scripts/no-network.sb` it gets none of those and
+/// fails with `keybox created` followed by exit 2 — a failure of the harness,
+/// not of the code under test.
+///
+/// This mattered the moment the network gate started running current code:
+/// the gate had been building with `swift` and running an artefact produced by
+/// `xcrun swift`, so for two days it executed a bundle from before these tests
+/// existed and reported pass. Fixing that surfaced these two immediately.
+enum GPGAvailability {
+    static let canGenerateKeys: Bool = {
+        guard FileManager.default.isExecutableFile(atPath: "/opt/homebrew/bin/gpg") else {
+            return false
+        }
+        // A sandboxed run cannot create the agent socket. Probing for it is
+        // cheaper and more honest than parsing the eventual error text.
+        let probe = Process()
+        probe.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/gpg")
+        probe.arguments = ["--version"]
+        probe.standardOutput = FileHandle.nullDevice
+        probe.standardError = FileHandle.nullDevice
+        do { try probe.run() } catch { return false }
+        probe.waitUntilExit()
+        guard probe.terminationStatus == 0 else { return false }
+
+        // The real precondition is the **gpg-agent socket**. `gpg --gen-key`
+        // starts an agent, and an agent needs to bind a Unix domain socket
+        // under GNUPGHOME. `--list-keys` does not, which is why an earlier
+        // version of this probe passed under the sandbox and the tests still
+        // failed — the probe was measuring the wrong resource.
+        let home = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("gpgprobe-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+        do {
+            try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        } catch { return false }
+
+        let socketPath = home.appendingPathComponent("S.probe").path
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = Array(socketPath.utf8)
+        guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else { return false }
+        withUnsafeMutablePointer(to: &address.sun_path) { destination in
+            destination.withMemoryRebound(to: CChar.self, capacity: pathBytes.count + 1) { bytes in
+                for (index, byte) in pathBytes.enumerated() { bytes[index] = CChar(bitPattern: byte) }
+                bytes[pathBytes.count] = 0
+            }
+        }
+        let bound = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                bind(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        return bound == 0
+    }()
+}
+
 @Suite("EncryptedFileMetadata.nonAgeBackends against real and grounded fixtures")
 struct EncryptedFileMetadataNonAgeBackendTests {
 
-    @Test("a real sops --pgp encrypted file has no age recipient, and is recognised as pgp-protected")
+    @Test("a real sops --pgp encrypted file has no age recipient, and is recognised as pgp-protected",
+          .enabled(if: GPGAvailability.canGenerateKeys, "gpg cannot create a keybox in this environment"))
     func realPGPFile() throws {
         let (encrypted, fingerprint) = try RealPGPFixture.makeEncryptedFile(
             plaintext: "password: hunter2\napi_key: sk-live-abc123\n")
@@ -339,7 +404,8 @@ struct EncryptedFileMetadataNonAgeBackendTests {
 @Suite("ProjectHealthCheck against non-age backends")
 struct ProjectHealthCheckNonAgeBackendTests {
 
-    @Test("a pgp-only rule protecting a real pgp-encrypted file is .unknown, never a confident .ok")
+    @Test("a pgp-only rule protecting a real pgp-encrypted file is .unknown, never a confident .ok",
+          .enabled(if: GPGAvailability.canGenerateKeys, "gpg cannot create a keybox in this environment"))
     func pgpOnlyRuleIsUnknownNotOK() async throws {
         let (encrypted, _) = try RealPGPFixture.makeEncryptedFile(plaintext: "password: hunter2\n")
         let root = try makeProject(

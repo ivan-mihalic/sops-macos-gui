@@ -70,7 +70,18 @@ extension HealthReport {
                 upstream: GitHubReleaseSource(isEnabled: updateChecksEnabled)),
             SecurityPostureCheck(
                 osVersion: SemanticVersion(os.majorVersion, os.minorVersion, os.patchVersion),
-                minimumOSVersion: SemanticVersion(14, 0, 0),
+                // 26.0, matching `Package.swift`, `project.yml`
+                // (`LSMinimumSystemVersion`) and `build-xcframework.sh`. This
+                // said 14.0 — a fourth copy, and the only one that disagreed,
+                // against CLAUDE.md's "deployment target is one variable".
+                //
+                // It also made the check vacuous: `LSMinimumSystemVersion` is
+                // 26.0, so the app cannot launch below it, so the `.problem`
+                // branch was unreachable and `security.os` could only ever
+                // return `.ok`. A check that cannot fail is not a check, and
+                // its "is below the minimum this app supports" text would have
+                // been false if it ever appeared.
+                minimumOSVersion: SemanticVersion(26, 0, 0),
                 keyStore: keyStore, biometry: biometry, appUpdates: appUpdates,
                 // Every place the embedded sops actually reads a key file
                 // from, not the one path this used to hardcode — which was

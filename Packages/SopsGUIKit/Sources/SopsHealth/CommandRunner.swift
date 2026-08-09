@@ -128,19 +128,29 @@ enum CommandRunner {
             usleep(10_000)
         }
 
-        // A reader that has not reached EOF has a partially filled — or empty
-        // — box, and returning that as a status-0 success is worse than
-        // returning nothing.
+        // A **stdout** reader that has not reached EOF has a partially filled
+        // — or empty — box, and returning that as a status-0 success is worse
+        // than returning nothing.
         //
-        // Measured consequence: `GitIgnoreOracle.ignoredPaths` reads an empty
-        // set as "git ignores none of these", so **every** candidate becomes
-        // `exposed` and the user is told their gitignored `.env` files are
-        // leaking. A false accusation, from a drain that timed out.
+        // Measured consequence of the old behaviour: `GitIgnoreOracle.ignoredPaths`
+        // reads an empty set as "git ignores none of these", so every candidate
+        // becomes `exposed` and the user is told their gitignored `.env` files
+        // are leaking. A false accusation, from a drain that timed out.
         //
-        // `nil` is the honest answer, and every caller already handles it —
-        // the oracle turns it into `.undetermined` with a stated reason, which
-        // is what "we could not read git's answer" actually means.
-        if !outThread.isFinished || !errThread.isFinished {
+        // **stderr is deliberately not part of this condition**, and the first
+        // version of this check got that wrong. EOF on a pipe waits for every
+        // process holding the write end, not just the child — so a grandchild
+        // that inherited stderr and outlives the child keeps that reader
+        // blocked while stdout has already delivered a complete answer.
+        // Measured: `sh -c "echo true; sleep 25 >/dev/null & exit 0"` returned
+        // the full `true\n` on stdout, exit 0, and the check threw it away.
+        // Downstream that turned into `ToolLocator` losing the login shell's
+        // PATH and `GitIgnoreOracle` telling the user a real repository "is
+        // not inside a git repository".
+        //
+        // stderr is diagnostic here — no caller parses it for a decision — so
+        // whatever arrived by the deadline is good enough for it.
+        if !outThread.isFinished {
             return nil
         }
 

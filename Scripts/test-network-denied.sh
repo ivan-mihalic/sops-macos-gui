@@ -23,8 +23,20 @@ if sandbox-exec -f "$PROFILE" curl -s -m 5 https://api.github.com >/dev/null 2>&
 fi
 echo "    confirmed: curl could not reach the network"
 
+# `xcrun swift`, not bare `swift`. This machine has two toolchains (see
+# CLAUDE.md) and they use different build layouts: the swiftly-managed one
+# produces a single `SopsGUIKitPackageTests.xctest` under
+# `.build/arm64-apple-macosx/debug/`, while `xcrun swift` (Swift Build)
+# produces per-target bundles under `.build/out/Products/Debug/` — which is
+# what the run step below executes.
+#
+# Building with the wrong one meant this gate could never refresh the bundle it
+# then ran. On a fresh clone it failed loudly; on a machine where a stale
+# bundle happened to exist it passed quietly — measured at 87 source files
+# newer than the artefact it was asserting about. "The app does not touch the
+# network" then said nothing about the current code.
 echo "==> building SopsHealthTests"
-(cd Packages/SopsGUIKit && swift build --build-tests)
+(cd Packages/SopsGUIKit && xcrun swift build --build-tests)
 
 echo "==> running SopsHealthTests with networking denied"
 sandbox-exec -f "$PROFILE" xcrun xctest \

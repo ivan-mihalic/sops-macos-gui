@@ -98,18 +98,23 @@ enum EncryptedFileMetadata {
     ///
     /// This used to take the first, while `SopsMetadataShape.isYAMLMetadata`
     /// — the type that decides whether a file is a SOPS document at all —
-    /// takes the last. A file with a user key literally named `sops` at the
-    /// top level therefore split the two apart: the shape check found the real
-    /// metadata and said "encrypted", this function parsed the user's block and
-    /// found no recipients, and `ProjectHealthCheck` then reported
-    /// `.problem` — "does not list &lt;key&gt; among its recipients" — with a
-    /// `sops updatekeys` remediation, about a file whose recipients are
-    /// perfectly correct.
+    /// takes the last. Two readings that can disagree about which block is the
+    /// metadata is the defect; agreeing matters more than which one wins.
     ///
-    /// sops writes its metadata block last, so the last one is the right
-    /// answer. Two agreeing readings matter more than which one is chosen: a
-    /// confident false accusation is the failure mode this app exists to avoid,
-    /// and it is the fifth of its family found in this milestone.
+    /// **The reason, corrected.** The first version of this comment justified
+    /// the change with a document holding two top-level `sops:` keys. A review
+    /// checked that against the real CLI and it cannot exist: sops refuses to
+    /// read it (`mapping key "sops" already defined`) and refuses to encrypt a
+    /// plaintext carrying its own top-level `sops` key ("rename the 'sops'
+    /// entry"). The change was right; the story was not.
+    ///
+    /// The real reason is **multi-document YAML**, measured against sops
+    /// 3.13.2: each document gets its own `sops:` block, and taking the first
+    /// makes `isYAMLMetadata` walk into the `---` separator at column zero and
+    /// return false. Last-match is what keeps multi-document files working.
+    ///
+    /// A nested `sops:` at deeper indentation is not a hazard either way — the
+    /// comparison is against the untrimmed line, so `    sops:` never matches.
     private static func sopsBlockLines(in text: String) -> [String] {
         let all = LineEndings.lines(of: text).map(String.init)
         guard let blockStart = all.lastIndex(where: { $0 == "sops:" }) else { return [] }

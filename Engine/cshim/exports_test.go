@@ -225,9 +225,11 @@ func assignsToNamedResult(fn *ast.FuncDecl, body *ast.BlockStmt) bool {
 	assigns := false
 	ast.Inspect(body, func(n ast.Node) bool {
 		assign, ok := n.(*ast.AssignStmt)
-		if !ok || assign.Tok == token.DEFINE {
-			// `:=` declares a new variable that shadows the result rather
-			// than setting it — the shape that looks right and does nothing.
+		if !ok || assign.Tok != token.ASSIGN {
+			// `:=` shadows the result rather than setting it. A compound
+			// assignment (`+=`, `|=`) is not a write of a chosen value either
+			// — it is arithmetic on whatever was already there, and
+			// `status += 0` swallows a panic exactly as `status = status` did.
 			return true
 		}
 		for i, lhs := range assign.Lhs {
@@ -235,22 +237,42 @@ func assignsToNamedResult(fn *ast.FuncDecl, body *ast.BlockStmt) bool {
 			if !ok || !names[ident.Name] {
 				continue
 			}
-			// `status = status` satisfied "assigns to a named result" and
-			// changes nothing: the panic is swallowed and `result` returns its
-			// zero status, which is `statusOK`. A review found it, `go vet`
-			// does not object, and all 158 Go tests passed. So the assignment
-			// has to actually move the value.
-			if i < len(assign.Rhs) {
-				if rhs, ok := assign.Rhs[i].(*ast.Ident); ok && rhs.Name == ident.Name {
-					continue
-				}
+			if i < len(assign.Rhs) && assignsFailure(assign.Rhs[i]) {
+				assigns = true
+				return false
 			}
-			assigns = true
-			return false
 		}
 		return true
 	})
 	return assigns
+}
+
+// assignsFailure reports whether expr is the `statusFailure` constant.
+//
+// The rule was first "assigns to a named result", then "assigns something
+// other than itself". Both described a *shape*, and a review found seven ways
+// past the second: `status = statusOK`, `status += 0`, `status = (status)`,
+// `status = status + 0`, `status = C.int(0)`, assignment from a zero-valued
+// local, and `status |= 0`. Each satisfied the rule and turned a recovered
+// panic into a reported success. `status = statusOK` is the dangerous one — it
+// reads like error handling.
+//
+// So the rule is about the *value* now. There is exactly one right answer for
+// `result`'s recover branch, so it says that rather than trying to enumerate
+// the wrong ones. A refactor that legitimately renames the constant will fail
+// this, and should: it is a change to the one line deciding whether a
+// panicking call is reported as a failure.
+func assignsFailure(expr ast.Expr) bool {
+	for {
+		switch e := expr.(type) {
+		case *ast.ParenExpr:
+			expr = e.X
+		case *ast.Ident:
+			return e.Name == "statusFailure"
+		default:
+			return false
+		}
+	}
 }
 
 // isRecoverCall reports whether n is a call to the builtin `recover`. It is a

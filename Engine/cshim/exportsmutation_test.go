@@ -512,3 +512,71 @@ func TestResultRecoveryRejectsASelfAssignment(t *testing.T) {
 		t.Fatal("a self-assignment was accepted: the panic is swallowed and reported as success")
 	}
 }
+
+// TestResultRecoveryRejectsEverySwallowShape is the table the previous two
+// attempts at this rule needed.
+//
+// Rule 5 was first "assigns to a named result", then "assigns something other
+// than itself". A review walked through seven shapes that satisfied the second
+// and still reported a panicking call as a success. Enumerating wrong answers
+// was the mistake; the rule now names the one right answer, and these are the
+// regression cases for it.
+func TestResultRecoveryRejectsEverySwallowShape(t *testing.T) {
+	swallows := []struct{ name, branch string }{
+		{"assigns the success constant", "status = statusOK"},
+		{"assigns itself", "status = status"},
+		{"adds zero", "status += 0"},
+		{"assigns itself in parentheses", "status = (status)"},
+		{"adds zero the long way", "status = status + 0"},
+		{"assigns a zero conversion", "status = C.int(0)"},
+		{"ors zero", "status |= 0"},
+		{"multiplies by one", "status *= 1"},
+		{"assigns a zero-valued local", "var z C.int\n\t\t\tstatus = z"},
+	}
+
+	for _, swallow := range swallows {
+		t.Run(swallow.name, func(t *testing.T) {
+			source := `func result(out **C.char, payload []byte, err error) (status C.int) {
+	defer func() {
+		if recover() != nil {
+			` + swallow.branch + `
+		}
+	}()
+	return statusOK
+}`
+			complaints, err := inspectResultRecovery(resultFixture(source))
+			if err != nil {
+				t.Fatalf("parse fixture: %v", err)
+			}
+			if len(complaints) == 0 {
+				t.Fatalf("accepted %q: a recovered panic is reported as success", swallow.branch)
+			}
+		})
+	}
+}
+
+// TestResultRecoveryAcceptsTheOnlyRightAnswer is the other half: the rule must
+// not have become "complain about everything", which would satisfy the table
+// above for no reason at all.
+func TestResultRecoveryAcceptsTheOnlyRightAnswer(t *testing.T) {
+	for _, branch := range []string{
+		"status = statusFailure",
+		"status = (statusFailure)",
+	} {
+		source := `func result(out **C.char, payload []byte, err error) (status C.int) {
+	defer func() {
+		if recover() != nil {
+			` + branch + `
+		}
+	}()
+	return statusOK
+}`
+		complaints, err := inspectResultRecovery(resultFixture(source))
+		if err != nil {
+			t.Fatalf("parse fixture: %v", err)
+		}
+		if len(complaints) != 0 {
+			t.Fatalf("rejected the correct shape %q: %v", branch, complaints)
+		}
+	}
+}

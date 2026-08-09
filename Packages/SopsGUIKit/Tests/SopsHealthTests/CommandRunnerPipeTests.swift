@@ -121,3 +121,32 @@ struct CommandRunnerTimeoutTests {
         #expect(!result.timedOut)
     }
 }
+
+/// A grandchild holding a pipe must not discard a complete answer.
+@Suite("A lingering grandchild does not invalidate the child's output")
+struct CommandRunnerGrandchildTests {
+
+    /// Iteration 4 required *both* readers to reach EOF before returning an
+    /// outcome. EOF waits on every process holding the write end, so a
+    /// background grandchild that inherits stderr keeps that reader blocked
+    /// while stdout has already delivered everything.
+    ///
+    /// The two callers this broke: `ToolLocator` silently lost the login
+    /// shell's PATH (leaving four hardcoded fallbacks, so an mise/asdf/nix user
+    /// is told an installed tool is missing), and `GitIgnoreOracle` reported
+    /// "This project is not inside a git repository" about one that is.
+    @Test("stdout is honoured even when a grandchild still holds stderr")
+    func grandchildHoldingStderrDoesNotDiscardStdout() throws {
+        let outcome = CommandRunner.run(
+            "/bin/sh",
+            arguments: ["-c", "echo true; sleep 25 >/dev/null & exit 0"],
+            timeout: 5)
+
+        let result = try #require(
+            outcome,
+            "a complete stdout answer was discarded because a grandchild still held stderr")
+        #expect(result.terminationStatus == 0)
+        #expect(result.standardOutputText.trimmingCharacters(in: .whitespacesAndNewlines) == "true")
+        #expect(!result.timedOut)
+    }
+}

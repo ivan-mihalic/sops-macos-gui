@@ -120,57 +120,56 @@ struct GitIgnoreOracleSafetyTests {
             "the unmitigated call did not fire the hook, so this fixture proves nothing and the sibling test is passing for the wrong reason")
     }
 
-    /// Cheap and structural: no git invocation **anywhere in `Sources/`** may be
-    /// assembled without the protective config.
+    /// There is exactly **one** place in the app that runs git, and it applies
+    /// the mitigation.
     ///
-    /// It used to read `GitIgnoreOracle.swift` alone, and a review defeated it
-    /// in the obvious way: move `ls-files` into a sibling file without the
-    /// mitigation, and both counts fall to 2 and the test passes. That is the
-    /// same parse-one-file blindness that let an unguarded `//export` into
-    /// `libprobe.h` on the Go side, found one review earlier — so it is fixed
-    /// the same way, by looking at everything rather than at the file the bug
-    /// happened to be in.
-    @Test("every git invocation in Sources carries the protective config")
-    func everyInvocationIsGuarded() throws {
-        let sourcesRoot = URL(fileURLWithPath: #filePath)
+    /// The previous version of this test counted call sites against guarded
+    /// ones by matching source text, and a review walked past it five ways:
+    /// rename the local holding the executable, write `self.gitPath`, put the
+    /// guarded token inside a comment, hide the executable in an array — and,
+    /// worst, **delete `safeArguments` from the helper** while leaving every
+    /// call site untouched, which the count could not see at all.
+    ///
+    /// Counting was the wrong idea. `GitIgnoreOracle.runGit` is now the single
+    /// chokepoint, so this asserts that shape instead: one `CommandRunner.run`
+    /// in the file, carrying `safeArguments`. It is still source text — the
+    /// behavioural test above is what actually proves the hook does not fire —
+    /// but it now fails on the mutation that mattered most, and there is no
+    /// arithmetic left to fool.
+    @Test("git runs from exactly one place, and that place applies the mitigation")
+    func gitHasASingleGuardedChokepoint() throws {
+        let oracle = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Sources")
+            .appendingPathComponent("Sources/SopsHealth/GitIgnoreOracle.swift")
+        let source = try String(contentsOf: oracle, encoding: .utf8)
 
-        var source = ""
-        var filesRead = 0
-        if let walker = FileManager.default.enumerator(
-            at: sourcesRoot, includingPropertiesForKeys: nil)
-        {
-            for case let url as URL in walker where url.pathExtension == "swift" {
-                source += (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-                filesRead += 1
-            }
-        }
-        #expect(filesRead > 20, "read only \(filesRead) source files — has the layout moved?")
+        // Comments are stripped first. A review defeated the sibling test in
+        // `OuterSidebarSwitchTests` by moving the matched literal into a
+        // comment above the gutted code, and the same trick applies here.
+        let code = Self.strippingComments(source)
 
-        // A git invocation is a `CommandRunner.run` whose *tool* is the git
-        // executable. Counting bare `gitPath` would over-count:
-        // `WorktreeResolver` has a local of the same name holding the path of
-        // a `.git` directory, which it only ever `stat`s and reads. And the
-        // other `CommandRunner.run` callers launch `$SHELL` or
-        // `<tool> --version`, neither of which reads a repository's config.
-        var gitInvocations = 0
-        for chunk in source.components(separatedBy: "CommandRunner.run(").dropFirst() {
-            let head = chunk.prefix(while: { $0.isWhitespace || $0 == "\n" })
-            if chunk.dropFirst(head.count).hasPrefix("gitPath") {
-                gitInvocations += 1
-            }
-        }
+        let invocations = code.components(separatedBy: "CommandRunner.run").count - 1
         #expect(
-            gitInvocations > 0,
-            "found no git invocations anywhere in Sources — has the oracle moved or been renamed?")
+            invocations == 1,
+            "\(invocations) CommandRunner.run calls in GitIgnoreOracle — git must run from one place, or the mitigation is per-call-site again")
 
-        let guarded = source.components(separatedBy: "arguments: gitArguments(root:").count - 1
         #expect(
-            guarded == gitInvocations,
-            "\(gitInvocations) git invocations in Sources but \(guarded) built through gitArguments — one of them can reach core.fsmonitor in a scanned repository")
+            code.contains("safeArguments + [\"-C\", root.path]"),
+            "runGit no longer prepends safeArguments — every scanned repository can run code from its own .git/config")
+    }
+
+    /// Removes `//` line comments so a matched literal cannot be satisfied by
+    /// a comment sitting above the very code it is supposed to describe.
+    static func strippingComments(_ source: String) -> String {
+        source
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> Substring in
+                guard let marker = line.range(of: "//") else { return line }
+                return line[line.startIndex..<marker.lowerBound]
+            }
+            .joined(separator: "\n")
     }
 
     private func run(_ tool: String, _ arguments: [String]) {

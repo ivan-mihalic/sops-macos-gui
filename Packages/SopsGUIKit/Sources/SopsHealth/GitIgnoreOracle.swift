@@ -59,10 +59,34 @@ enum GitIgnoreOracle {
     /// three call sites.
     private static let safeArguments = ["-c", "core.fsmonitor="]
 
-    /// `git -C <root> …` with the protective config in front of `-C`, where
-    /// git requires it: `-c` must precede the subcommand.
-    private static func gitArguments(root: URL, _ subcommand: [String]) -> [String] {
-        safeArguments + ["-C", root.path] + subcommand
+    /// **The only place in this app that runs git.**
+    ///
+    /// A single chokepoint rather than a helper the three call sites politely
+    /// agree to use. The earlier shape — each site assembling its own argument
+    /// list through `gitArguments` — was guarded by a test that counted string
+    /// matches, and a review walked past it five ways: rename the local
+    /// holding the executable, write `self.gitPath`, put the guarded token in
+    /// a comment, or delete `safeArguments` from the helper while leaving
+    /// every call site untouched.
+    ///
+    /// Counting call sites was the wrong idea. With one function there is
+    /// nothing to count: a new git invocation either goes through here and is
+    /// protected, or is a visibly separate `Process`/`CommandRunner.run` that
+    /// no longer looks like the rest of the file.
+    ///
+    /// `-c` must precede the subcommand, which is why the config goes in front
+    /// of `-C` rather than being appended.
+    private static func runGit(
+        _ gitPath: String,
+        in root: URL,
+        _ subcommand: [String],
+        standardInput: Data? = nil
+    ) -> CommandOutcome? {
+        CommandRunner.run(
+            gitPath,
+            arguments: safeArguments + ["-C", root.path] + subcommand,
+            standardInput: standardInput,
+            timeout: timeout)
     }
 
     enum Verdict {
@@ -94,10 +118,7 @@ enum GitIgnoreOracle {
     }
 
     private static func isInsideWorkTree(root: URL, gitPath: String) -> Bool {
-        guard let outcome = CommandRunner.run(
-            gitPath,
-            arguments: gitArguments(root: root, ["rev-parse", "--is-inside-work-tree"]),
-            timeout: timeout)
+        guard let outcome = runGit(gitPath, in: root, ["rev-parse", "--is-inside-work-tree"])
         else { return false }
         return outcome.terminationStatus == 0
             && outcome.standardOutputText.trimmingCharacters(in: .whitespacesAndNewlines) == "true"
@@ -125,12 +146,10 @@ enum GitIgnoreOracle {
         guard !candidates.isEmpty else { return [] }
         let input = Data(candidates.map { $0.path + "\0" }.joined().utf8)
 
-        guard let outcome = CommandRunner.run(
-            gitPath,
-            arguments: gitArguments(root: root, ["check-ignore", "--stdin", "-z"]),
-            standardInput: input,
-            timeout: timeout
-        ), !outcome.timedOut else { return nil }
+        guard let outcome = runGit(
+            gitPath, in: root, ["check-ignore", "--stdin", "-z"], standardInput: input),
+            !outcome.timedOut
+        else { return nil }
 
         switch outcome.terminationStatus {
         case 0, 1: break
@@ -143,11 +162,10 @@ enum GitIgnoreOracle {
     /// costs a sentence of extra advice, never the verdict itself.
     private static func trackedPaths(_ paths: [URL], root: URL, gitPath: String) -> Set<String> {
         guard !paths.isEmpty else { return [] }
-        guard let outcome = CommandRunner.run(
-            gitPath,
-            arguments: gitArguments(root: root, ["ls-files", "-z", "--"] + paths.map(\.path)),
-            timeout: timeout
-        ), outcome.terminationStatus == 0, !outcome.timedOut else { return [] }
+        guard let outcome = runGit(
+            gitPath, in: root, ["ls-files", "-z", "--"] + paths.map(\.path)),
+            outcome.terminationStatus == 0, !outcome.timedOut
+        else { return [] }
 
         // ls-files prints paths relative to the repository root, so match on
         // the trailing component rather than the absolute string.

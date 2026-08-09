@@ -98,12 +98,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// window and chaining a proxy onto a proxy would make `windowShouldClose`
     /// ask twice.
     func installWindowCloseGuards() {
+        // Removing the New Window menu item took the *menu* away; window
+        // tabbing puts the capability back. Measured on a scene of this exact
+        // shape: `allowsAutomaticWindowTabbing` is true by default,
+        // `newWindowForTab:` has a live target, and sending that action really
+        // does produce a second window. It is not reachable from today's UI —
+        // the tab bar only appears once two windows exist — so the defence
+        // rested entirely on a menu item that no longer exists.
+        //
+        // Two windows share one `UnsavedChangesTracker`, and its registration
+        // is last-writer-wins, so a second window opening a clean file wipes
+        // the first window's dirty registration and ⌘Q stops warning. That is
+        // the finding this app already fixed once, at the menu layer.
+        NSWindow.allowsAutomaticWindowTabbing = false
+
         for window in NSApp.windows {
             let key = ObjectIdentifier(window)
             guard closeGuards[key] == nil else { continue }
-            // The Settings scene has its own window and its own delegate;
-            // guarding it too is harmless — it asks the same question, and a
-            // Settings window is never the thing holding an open document.
+            // Guarding the Settings window would **not** be harmless, which
+            // an earlier version of this comment claimed. Its close would run
+            // through `windowShouldClose` into the *quit* dialog, whose
+            // "Discard and Quit" terminates the app — and that dialog is
+            // attached to the WindowGroup's content, so it would appear over
+            // the main window rather than the one being closed.
+            //
+            // It does not happen today: the Settings scene is created lazily
+            // (measured — one window exists when this runs) and `.onAppear`
+            // gets here first. That is a timing accident, not a guarantee, so
+            // the window is skipped by identity rather than by hoping.
+            if window.identifier?.rawValue.localizedCaseInsensitiveContains("settings") == true {
+                continue
+            }
             let guardDelegate = WindowCloseGuard(forwarding: window.delegate) { [weak self] in
                 self?.windowShouldClose(window) ?? true
             }

@@ -113,8 +113,50 @@ public final class SessionKeyStore {
     public func importKey(_ text: String) throws {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw Error.empty }
+
+        // A pasted blob containing more than one line is a `keys.txt`, not a
+        // key. It used to be accepted whole: `trimmingCharacters` only touches
+        // the ends, so two keys separated by a newline went straight into
+        // `key`, and `parseDecryptionIdentities` on the Go side imported
+        // **both**. That contradicted this type's own doc comment — "the paste
+        // field … always accepts exactly one key, by construction" — and it
+        // routed around the `.multipleKeysInFile` refusal that
+        // `importFromKeysFileContents` enforces. `cat keys.txt`, paste, done.
         guard trimmed.hasPrefix(Self.agePrivateKeyPrefix) else { throw Error.notAnAgeKey }
+
+        let lines = trimmed.split(whereSeparator: \.isNewline)
+        guard lines.count == 1 else {
+            throw Error.multipleKeysInFile(count: lines.count)
+        }
+
+        // The prefix is 16 characters; a real age identity is Bech32 with a
+        // fixed length. Checking only the prefix meant `AGE-SECRET-KEY-1` plus
+        // anything — a truncated paste, a typo'd character — was accepted,
+        // `state` became `.configured`, and `SecurityPostureCheck` then
+        // reported `.ok`: "An age key is imported for this session." The user
+        // read an all-clear and could not decrypt a thing, because the real
+        // refusal came from `gobridge` on every single file open.
+        //
+        // This is a shape check, not a validity check: it cannot tell a
+        // well-formed key from one that decrypts nothing, and it does not try.
+        // What it stops is the *shape* of failure that Health calls healthy.
+        guard Self.looksLikeACompleteAgeKey(trimmed) else { throw Error.notAnAgeKey }
+
         key = trimmed
+    }
+
+    /// Whether `candidate` has the length and alphabet `age-keygen` produces.
+    ///
+    /// age private keys are Bech32 over the `age-secret-key-` HRP: the body is
+    /// the Bech32 charset (`qpzry9x8gf2tvdw0s3jn54khce6mua7l`, upper-cased by
+    /// age), and `age-keygen` emits a fixed 74-character identity. Anything
+    /// shorter is a truncated paste; anything containing `b`, `i`, `o` or `1`
+    /// in the body is not Bech32 at all.
+    private static func looksLikeACompleteAgeKey(_ candidate: String) -> Bool {
+        guard candidate.count == 74 else { return false }
+        let body = candidate.dropFirst(agePrivateKeyPrefix.count)
+        let bech32 = Set("QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L")
+        return body.allSatisfy { bech32.contains($0) }
     }
 
     /// Extracts a single decryption identity from `keys.txt`-shaped content

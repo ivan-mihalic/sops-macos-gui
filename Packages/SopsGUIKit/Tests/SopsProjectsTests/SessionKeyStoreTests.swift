@@ -6,7 +6,13 @@ import SopsHealth
 /// A syntactically valid but obviously-fake age key body, distinctive enough
 /// that its presence in any string is unambiguous — used by the
 /// no-leak test below to prove no error message echoes back what was typed.
-private let validKey = "AGE-SECRET-KEY-1QZ7X9K3M8V2N5P0R4T6W1Y8B3D9F2H5J7L0Q4S6U8W1Z3"
+/// Shaped like a real identity: `age-keygen` emits exactly 74 characters, and
+/// the body is Bech32 (`b`, `i`, `o` and `1` are not in that alphabet). The
+/// previous fixture was 56 characters and contained a `B`, so it was not a
+/// key shape at all — which is why it kept passing while `importKey` checked
+/// nothing but the 16-character prefix. It decrypts nothing, and is not meant
+/// to; these tests are about acceptance, never about decryption.
+private let validKey = "AGE-SECRET-KEY-1Q8W4UR23CLXD5MZFSH79VN6PG0KAYTJEQ8W4UR23CLXD5MZFSH79VN6PG0"
 private let distinctiveGarbage = "NOT-AN-AGE-KEY-XYZZY-PLUGH-QUUX-42"
 
 /// The three line endings a real `keys.txt` might use: bare LF (the common
@@ -354,5 +360,69 @@ struct SessionKeyStoreTests {
             let described = String(describing: error)
             #expect(!described.contains("QWERTY-MARKER-77"))
         }
+    }
+}
+
+/// A key the store accepts must at least have the shape of a key.
+///
+/// `importKey` checked the 16-character prefix and nothing else, so
+/// `AGE-SECRET-KEY-1` plus anything — a truncated paste, a typo — was accepted,
+/// `state` became `.configured`, and `SecurityPostureCheck` reported `.ok`:
+/// "An age key is imported for this session." The user read an all-clear and
+/// then failed to decrypt every file, because the real refusal came from the
+/// Go bridge on each open.
+@MainActor
+@Suite("A key is accepted only if it has the shape of one")
+struct SessionKeyStoreShapeTests {
+
+    private let wellShaped = "AGE-SECRET-KEY-1Q8W4UR23CLXD5MZFSH79VN6PG0KAYTJEQ8W4UR23CLXD5MZFSH79VN6PG0"
+
+    @Test("a truncated paste is refused rather than reported as configured")
+    func truncatedKeyIsRefused() {
+        let store = SessionKeyStore()
+        #expect(throws: SessionKeyStore.Error.notAnAgeKey) {
+            try store.importKey("AGE-SECRET-KEY-1Q8W4UR23CLXD5MZ")
+        }
+        #expect(store.state == .empty)
+    }
+
+    @Test("the prefix alone is refused")
+    func prefixAloneIsRefused() {
+        let store = SessionKeyStore()
+        #expect(throws: SessionKeyStore.Error.notAnAgeKey) {
+            try store.importKey("AGE-SECRET-KEY-1")
+        }
+    }
+
+    /// `b`, `i`, `o` and `1` are deliberately absent from Bech32 because they
+    /// are the characters people mistype. A key containing one is not a key.
+    @Test("a body character outside the Bech32 alphabet is refused")
+    func nonBech32BodyIsRefused() {
+        let store = SessionKeyStore()
+        var typo = Array(wellShaped)
+        typo[20] = "B"
+        #expect(throws: SessionKeyStore.Error.notAnAgeKey) {
+            try store.importKey(String(typo))
+        }
+    }
+
+    /// The paste field's doc comment claimed it "always accepts exactly one
+    /// key, by construction". It did not: trimming only touches the ends, so
+    /// two keys separated by a newline both went to the bridge, routing around
+    /// the `.multipleKeysInFile` refusal `importFromKeysFileContents` enforces.
+    @Test("two keys pasted together are refused, not silently both imported")
+    func pastedKeysFileIsRefused() {
+        let store = SessionKeyStore()
+        #expect(throws: SessionKeyStore.Error.multipleKeysInFile(count: 2)) {
+            try store.importKey(wellShaped + "\n" + wellShaped)
+        }
+        #expect(store.state == .empty)
+    }
+
+    @Test("a well-shaped key is still accepted")
+    func wellShapedKeyIsAccepted() throws {
+        let store = SessionKeyStore()
+        try store.importKey(wellShaped)
+        #expect(store.state == .configured)
     }
 }
