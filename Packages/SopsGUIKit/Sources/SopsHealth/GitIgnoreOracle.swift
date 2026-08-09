@@ -107,8 +107,13 @@ enum GitIgnoreOracle {
         guard let gitPath else {
             return .undetermined(reason: "git was not found on this machine, so this app could not ask it which files are ignored. It never guesses at gitignore rules itself.")
         }
-        guard isInsideWorkTree(root: root, gitPath: gitPath) else {
+        switch workTreeVerdict(root: root, gitPath: gitPath) {
+        case .inside:
+            break
+        case .outside:
             return .undetermined(reason: "This project is not inside a git repository, so there are no gitignore rules to check it against.")
+        case .unreadable:
+            return .undetermined(reason: "git did not finish answering whether this project is inside a repository, so this app could not check its gitignore rules. It never guesses.")
         }
         guard let ignored = ignoredPaths(candidates: candidates, root: root, gitPath: gitPath) else {
             return .undetermined(reason: "git was found but `git check-ignore` did not complete, so this app could not tell which of these files are ignored.")
@@ -117,11 +122,36 @@ enum GitIgnoreOracle {
         return .answered(exposed: exposed, tracked: trackedPaths(exposed, root: root, gitPath: gitPath))
     }
 
-    private static func isInsideWorkTree(root: URL, gitPath: String) -> Bool {
-        guard let outcome = runGit(gitPath, in: root, ["rev-parse", "--is-inside-work-tree"])
-        else { return false }
-        return outcome.terminationStatus == 0
-            && outcome.standardOutputText.trimmingCharacters(in: .whitespacesAndNewlines) == "true"
+    /// Three answers, not two.
+    ///
+    /// This returned `Bool`, which collapsed "git says no" and "we could not
+    /// read git's answer" into the same value — and `classify` turned that
+    /// into the sentence *"This project is not inside a git repository"* about
+    /// a directory that is one. Same family as every other finding in this
+    /// milestone: a confident claim standing in for a missing one.
+    ///
+    /// It reaches `outputComplete` for the same reason `ignoredPaths` does. A
+    /// truncated `rev-parse` gives `tru`, which is not `true`, which read as
+    /// "not a repository". The comment on `ignoredPaths` claiming this was
+    /// needed "here and nowhere else in this file" was wrong when written.
+    private enum WorkTreeVerdict {
+        case inside
+        case outside
+        /// git did not answer, or its answer was cut short.
+        case unreadable
+    }
+
+    private static func workTreeVerdict(root: URL, gitPath: String) -> WorkTreeVerdict {
+        guard let outcome = runGit(gitPath, in: root, ["rev-parse", "--is-inside-work-tree"]),
+              !outcome.timedOut, outcome.outputComplete
+        else { return .unreadable }
+
+        let answer = outcome.standardOutputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if outcome.terminationStatus == 0 && answer == "true" { return .inside }
+        // `rev-parse` exits non-zero outside a work tree, which is a real
+        // answer. Any other non-zero with no recognisable output is not.
+        if outcome.terminationStatus != 0 || answer == "false" { return .outside }
+        return .unreadable
     }
 
     /// The paths git reports as ignored, or nil if git failed outright.
@@ -146,10 +176,9 @@ enum GitIgnoreOracle {
         guard !candidates.isEmpty else { return [] }
         let input = Data(candidates.map { $0.path + "\0" }.joined().utf8)
 
-        // `outputComplete` is required here and nowhere else in this file:
-        // a short ignore list silently promotes every missing entry to
+        // A short ignore list silently promotes every missing entry to
         // "not ignored", which surfaces as a confident plaintext-leak report
-        // about files git is ignoring perfectly well.
+        // about files git is ignoring perfectly well — hence `outputComplete`.
         guard let outcome = runGit(
             gitPath, in: root, ["check-ignore", "--stdin", "-z"], standardInput: input),
             !outcome.timedOut, outcome.outputComplete

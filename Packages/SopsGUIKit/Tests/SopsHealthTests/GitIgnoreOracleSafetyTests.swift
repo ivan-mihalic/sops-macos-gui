@@ -207,3 +207,88 @@ struct GitIgnoreOracleSafetyTests {
         process.waitUntilExit()
     }
 }
+
+/// "git did not answer" and "git said no" must not produce the same sentence.
+@Suite("An unreadable git answer is not reported as 'not a repository'")
+struct GitIgnoreOracleVerdictTests {
+
+    private static func makeFakeGit(_ script: String) throws -> URL {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("fakegit-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let tool = dir.appendingPathComponent("git")
+        try ("#!/bin/sh\n" + script + "\n").write(to: tool, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
+        return tool
+    }
+
+    /// A grandchild holding the pipe leaves `rev-parse`'s answer unreadable.
+    /// The old `Bool` return made that indistinguishable from "false", so the
+    /// app told the user a real repository was not one.
+    @Test("an answer cut short is reported as undetermined, not as 'not a repository'")
+    func truncatedAnswerIsNotAVerdict() throws {
+        let git = try Self.makeFakeGit("""
+            printf 'tru'
+            sleep 20 &
+            exit 0
+            """)
+        defer { try? FileManager.default.removeItem(at: git.deletingLastPathComponent()) }
+
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        let verdict = GitIgnoreOracle.classify(candidates: [], root: root, gitPath: git.path)
+
+        guard case .undetermined(let reason) = verdict else {
+            Issue.record("expected .undetermined, got \(verdict)")
+            return
+        }
+        #expect(
+            !reason.contains("not inside a git repository"),
+            "an unreadable answer was reported as a confident verdict about the repository")
+        #expect(reason.contains("did not finish"))
+    }
+
+    /// The other side: a genuine "no" must still say so, or the fix would have
+    /// traded one wrong sentence for another.
+    @Test("a real 'not a repository' answer still says exactly that")
+    func genuineOutsideAnswerIsPreserved() throws {
+        let git = try Self.makeFakeGit("echo false; exit 1")
+        defer { try? FileManager.default.removeItem(at: git.deletingLastPathComponent()) }
+
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        let verdict = GitIgnoreOracle.classify(candidates: [], root: root, gitPath: git.path)
+
+        guard case .undetermined(let reason) = verdict else {
+            Issue.record("expected .undetermined, got \(verdict)")
+            return
+        }
+        #expect(reason.contains("not inside a git repository"))
+    }
+
+    /// The case where `outputComplete` is the only thing standing between a
+    /// blocked read and a confident wrong answer: git exits non-zero — which
+    /// on its own is a legitimate "outside a work tree" — while a grandchild
+    /// keeps the pipe open, so we never learn whether it said anything.
+    ///
+    /// Without the completeness check the exit code alone decides, and the
+    /// user is told "not inside a git repository" on the strength of a read
+    /// that never finished.
+    @Test("a non-zero exit with an unfinished read is undetermined, not 'outside'")
+    func nonZeroExitWithBlockedReadIsUndetermined() throws {
+        let git = try Self.makeFakeGit("""
+            sleep 20 &
+            exit 128
+            """)
+        defer { try? FileManager.default.removeItem(at: git.deletingLastPathComponent()) }
+
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        let verdict = GitIgnoreOracle.classify(candidates: [], root: root, gitPath: git.path)
+
+        guard case .undetermined(let reason) = verdict else {
+            Issue.record("expected .undetermined, got \(verdict)")
+            return
+        }
+        #expect(
+            reason.contains("did not finish"),
+            "an exit code was treated as an answer although the read never completed")
+    }
+}
