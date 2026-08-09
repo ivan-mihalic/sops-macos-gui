@@ -125,6 +125,9 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case projectsErrorNotDirectory = "projects.error.not-directory"
     case projectsErrorDuplicate = "projects.error.duplicate"
     case projectsErrorAddFailed = "projects.error.add-failed"
+    // A folder was dropped on the sidebar and the drop carried nothing this
+    // app could read as a path — see `droppedProjectPath(from:)`.
+    case projectsErrorDropUnreadable = "projects.error.drop-unreadable"
     case projectsErrorRemoveFailed = "projects.error.remove-failed"
 
     // MARK: Task 9 — file list
@@ -134,10 +137,18 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case filesEmptyTitle = "files.empty.title"
     case filesProjectMissingTitle = "files.project-missing.title"
     case filesProjectUnreadableTitle = "files.project-unreadable.title"
-    case filesTruncatedTitle = "files.truncated.title"
-    // Formatted with the comma-joined list of skipped directory names — see
-    // `FileListView.truncationBanner`.
-    case filesTruncatedDetail = "files.truncated.detail"
+    // Shown when a walk fell short of the whole tree in a way that blocks any
+    // affirmative statement about the list. The *reason* is not a key: it comes
+    // from `ScannedTree.incompleteScanReason` — see
+    // `FileListView.incompleteScanBanner`.
+    case filesScanIncompleteTitle = "files.scan-incomplete.title"
+    // The empty state over an incomplete walk. `files.empty.title` claims the
+    // project holds no encrypted files; over a walk that could not see all of
+    // it, that claim is not available.
+    case filesEmptyPartialTitle = "files.empty-partial.title"
+    // Formatted with the comma-joined list of directory names never entered —
+    // see `FileListView.footnotes`.
+    case filesSkippedDirectoriesNote = "files.skipped-directories.note"
     // Formatted with the count of sops files this build can't open (dotenv/
     // JSON/INI — YAML-only for v1) — see `FileListModel.otherFormatCount`.
     case filesOtherFormatNote = "files.other-format.note"

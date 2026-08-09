@@ -167,6 +167,59 @@ struct ProjectScanBoundsTests {
         let scanned = await ProjectScanner.scan(root: root)
 
         #expect(!scanned.rootMissing)
+        #expect(!scanned.rootUnreadable)
+    }
+
+    // `rootUnreadable` existed, was documented at length, drove a distinct
+    // finding — and nothing asserted it. Both ways a root can be unreadable
+    // are pinned here.
+    //
+    // Under `sudo`, `chmod 000` denies nothing and both of these would assert
+    // nothing at all, so each says so rather than passing.
+
+    @Test("a project root this process cannot read is unreadable, not missing")
+    func unreadableRootIsNotReportedAsMissing() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("unreadable-root-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: root.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+                try? FileManager.default.removeItem(at: root) }
+
+        try #require((try? FileManager.default.contentsOfDirectory(atPath: root.path)) == nil,
+            "chmod 000 denied nothing — running as root would make this test vacuous")
+
+        let scanned = await ProjectScanner.scan(root: root)
+
+        #expect(scanned.rootUnreadable, "an unreadable root was not reported as unreadable")
+        #expect(!scanned.rootMissing, "an unreadable root was reported as deleted")
+    }
+
+    // The narrower half, and the one that was wrong: `fileExists` needs search
+    // permission on the *containing* directory, so a project inside a folder
+    // the user has locked answered "does not exist" — and the file list said
+    // "This project folder no longer exists", about a folder sitting right
+    // there. Missing and unreadable are different sentences with different
+    // remedies; only one of them tells the user to go fix permissions.
+    @Test("a project whose parent directory cannot be searched is unreadable, not missing")
+    func unreadableParentIsNotReportedAsMissingProject() async throws {
+        let parent = FileManager.default.temporaryDirectory
+            .appendingPathComponent("locked-parent-" + UUID().uuidString)
+        let root = parent.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: parent.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: parent.path)
+                try? FileManager.default.removeItem(at: parent) }
+
+        try #require(!FileManager.default.fileExists(atPath: root.path),
+            "the locked parent is still searchable — running as root would make this test vacuous")
+
+        let scanned = await ProjectScanner.scan(root: root)
+
+        #expect(scanned.rootUnreadable,
+                "a project behind an unsearchable parent was not reported as unreadable")
+        #expect(!scanned.rootMissing,
+                "a project behind an unsearchable parent was reported as deleted")
     }
 }
 

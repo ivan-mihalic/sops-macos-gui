@@ -407,11 +407,29 @@ struct AccessibilityTreeTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let keyFile = directory.appendingPathComponent("keys.txt")
-        // A real, well-formed identity would be imported successfully if this
-        // view ever read the file on its own — which is the point. Obviously
-        // fake per CLAUDE.md: never generated, never a usable key.
-        try "AGE-SECRET-KEY-1EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE\n"
-            .write(to: keyFile, atomically: true, encoding: .utf8)
+
+        // A **real** throwaway identity, generated here and thrown away with
+        // the temp directory. It has to be real: this test asserts the store
+        // stays empty, which only means anything if the file on disk is one
+        // the store would otherwise accept.
+        //
+        // The previous fixture was a hand-written
+        // `AGE-SECRET-KEY-1EXAMPLE…` string of 72 characters, and
+        // `SessionKeyStore.importKey` refuses anything that is not exactly 74
+        // with a Bech32 body. So the store would have stayed `.empty` even if
+        // the view had read the file, parsed it, and tried to import it — the
+        // assertion could not fail, and the comment above it claimed the
+        // opposite in as many words ("a real, well-formed identity would be
+        // imported successfully"). Nothing here is committed: `age-keygen`
+        // runs at test time, the value never leaves this directory, and it is
+        // never printed.
+        let key = try AgeKey.generate()
+        try (key.private + "\n").write(to: keyFile, atomically: true, encoding: .utf8)
+
+        let probe = SessionKeyStore()
+        try probe.importKey(key.private)
+        try #require(probe.state != .empty,
+                     "the fixture identity is not one the store accepts — this test would be vacuous")
 
         let store = SessionKeyStore()
         let nodes = keyImportTree(.one(keyFile.path), store: store)

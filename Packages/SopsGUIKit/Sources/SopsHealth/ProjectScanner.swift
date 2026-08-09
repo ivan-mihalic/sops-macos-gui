@@ -38,6 +38,30 @@ public struct ScannedTree: Sendable {
     /// same fact is two places for it to disagree.
     public var wasTruncated: Bool { limitations.contains(.budgetExhausted) }
 
+    /// Why nothing derived from this walk may claim to be about the whole
+    /// tree — `nil` when the walk did in fact cover it.
+    ///
+    /// This is the same judgement `ProjectScopeAccountant` applies to health
+    /// findings, exposed for callers outside the health check that show a
+    /// user something *derived from a scan* and would otherwise state it
+    /// unconditionally. The file list was exactly that: it read
+    /// `wasTruncated` and `skippedDirectoryNames` and nothing else, so of the
+    /// five limitations where `blocksAffirmativeVerdict` is true it noticed
+    /// one. A `chmod 000` on a **subdirectory** holding encrypted files left
+    /// every flag it read false and `encrypted` empty, and the list rendered
+    /// "No encrypted files found in this project." — the confident statement
+    /// about unlooked-at files that PROPOSAL §6 D forbids. `rootUnreadable`
+    /// had been fixed for the root and no other level of the tree.
+    ///
+    /// Derived, never stored: one record of what the walk missed
+    /// (`limitations`), one rule for what that means
+    /// (`blocksAffirmativeVerdict`), and every caller reading the same answer.
+    public var incompleteScanReason: String? {
+        let blocking = limitations.filter(\.blocksAffirmativeVerdict)
+        guard !blocking.isEmpty else { return nil }
+        return ProjectScopeAccountant.blockedVerdictReason(blocking)
+    }
+
     /// Names of directories this walk declined to enter (deduplicated,
     /// not in walk order). Disclosed to the user rather than left as a
     /// silent constant — see `ProjectScanner.skippedDirectoryNames`.
@@ -571,12 +595,35 @@ public struct ProjectScanner {
     private static func walk(root: URL) -> (tree: ScannedTree, candidates: [URL]) {
         // Checked explicitly, before ever asking for an enumerator, so the
         // resulting `ScannedTree` can say *why* it's empty rather than just
-        // being empty — see `ScannedTree.rootMissing`'s doc comment. A path
-        // that exists but isn't a directory (the project's root replaced by
-        // a plain file after being added, however unlikely) is the same
+        // being empty — see `ScannedTree.rootMissing`'s doc comment.
+        //
+        // `stat`, not `FileManager.fileExists`, and the difference is the whole
+        // point. `fileExists` answers `false` for a directory that is right
+        // there whenever any component of the path above it cannot be searched
+        // — it needs `+x` on every parent — and it does not say which of the
+        // two happened. A project inside a folder the user had locked was
+        // therefore reported as `rootMissing`, and the file list told them
+        // "This project folder no longer exists" about a folder that does.
+        // Missing and unreadable are different sentences with different
+        // remedies, and only one of them is true.
+        //
+        // `stat` distinguishes them by `errno`: `ENOENT` is genuinely gone,
+        // `EACCES`/`EPERM` is there but out of reach. It follows symlinks,
+        // matching `fileExists`'s behaviour for a root reached through one.
+        var rootStatus = stat()
+        guard stat(root.path, &rootStatus) == 0 else {
+            var tree = ScannedTree()
+            if errno == EACCES || errno == EPERM {
+                tree.rootUnreadable = true
+            } else {
+                tree.rootMissing = true
+            }
+            return (tree, [])
+        }
+        // A path that exists but isn't a directory (the project's root replaced
+        // by a plain file after being added, however unlikely) is the same
         // "nothing to walk" situation as a path that doesn't exist at all.
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+        guard (rootStatus.st_mode & S_IFMT) == S_IFDIR else {
             var tree = ScannedTree()
             tree.rootMissing = true
             return (tree, [])

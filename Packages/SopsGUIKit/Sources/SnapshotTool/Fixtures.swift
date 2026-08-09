@@ -470,20 +470,26 @@ enum Fixtures {
             readFile: { _ in encrypted })
         await model.load()
 
-        if let password = model.rows.first(where: { $0.path == ["db", "password"] }) {
-            model.update(rowID: password.id, to: "rotated-EXAMPLE-value")
-        }
-        if let flag = model.rows.first(where: { $0.path == ["feature_flags", "1"] }) {
-            model.removeRow(id: flag.id)
-        }
-        var selected: String?
-        if let host = model.rows.first(where: { $0.path == ["db", "host"] }) {
-            let destination = model.addDestination(forSelectedRowID: host.id)
-            if case .added(let id) = model.addRow(
-                in: destination, key: "replica_host", kind: .string, value: "db-replica.internal.example")
-            {
-                selected = id
-            }
+        // `if let` here, and it was three of them, is the same defect as the
+        // `try?` in `Catalog.swift`: a fixture that quietly does nothing. If
+        // the row is not found — a changed path, a load that failed, an editor
+        // that renamed a field — this snapshot renders a document with *no*
+        // pending changes under the name "pending changes", and the reviewer
+        // approves a screen the app never produces. Not finding the row is a
+        // broken fixture, so it is thrown, loudly, and the snapshot run stops.
+        let password = try requireRow(model, ["db", "password"])
+        model.update(rowID: password.id, to: "rotated-EXAMPLE-value")
+
+        let flag = try requireRow(model, ["feature_flags", "1"])
+        model.removeRow(id: flag.id)
+
+        let host = try requireRow(model, ["db", "host"])
+        let destination = model.addDestination(forSelectedRowID: host.id)
+        guard case .added(let selected) = model.addRow(
+            in: destination, key: "replica_host", kind: .string, value: "db-replica.internal.example")
+        else {
+            throw FixtureFailure(
+                "adding replica_host was refused, so this snapshot would show no new row")
         }
         return (model, selected)
     }
@@ -641,6 +647,65 @@ enum Fixtures {
         return model
     }
 
+    /// A walk that could not cover the whole tree: one subdirectory this
+    /// process cannot list, plus a `node_modules` the scan never enters by
+    /// name. Renders the warning banner *and* the quiet exclusion footnote,
+    /// which is the combination nothing had ever looked at — the banner used
+    /// to fire only on the file-budget cap, and the footnote used to be
+    /// nested inside the banner, so on any ordinary project neither appeared.
+    ///
+    /// Permissions are restored as soon as the scan is done: this tool must
+    /// not leave an unreadable directory behind in `/tmp`.
+    static func fileListModelIncompleteScan() async throws -> FileListModel {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("snapshot-files-partial-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try writeSopsLikeYAML(root, at: "services/billing/production.secrets.yaml")
+        try writeSopsLikeYAML(root, at: "services/checkout/production.secrets.yaml")
+        try writeSopsLikeYAML(root, at: "node_modules/some-package/fixture.secrets.yaml")
+
+        let locked = root.appendingPathComponent("vault")
+        try writeSopsLikeYAML(root, at: "vault/root.secrets.yaml")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+
+        let model = FileListModel(projectRoot: root)
+        await model.refresh()
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path)
+
+        guard model.incompleteScanReason != nil else {
+            throw FixtureFailure(
+                "the locked directory was readable after all, so this snapshot would show "
+                    + "an ordinary complete scan under the name \"incomplete\"")
+        }
+        return model
+    }
+
+    /// The same incomplete walk, but every encrypted file in the project sits
+    /// behind the directory it could not read. The placeholder must narrow its
+    /// claim from "no encrypted files in this project" to "none in the part
+    /// that could be scanned" — the confident version is a statement about
+    /// files nobody looked at.
+    static func fileListModelEmptyPartialScan() async throws -> FileListModel {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("snapshot-files-empty-partial-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let locked = root.appendingPathComponent("vault")
+        try writeSopsLikeYAML(root, at: "vault/root.secrets.yaml")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+
+        let model = FileListModel(projectRoot: root)
+        await model.refresh()
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path)
+
+        guard model.incompleteScanReason != nil, model.files.isEmpty else {
+            throw FixtureFailure(
+                "this fixture was meant to find nothing behind an unreadable directory; "
+                    + "it found \(model.files.count) file(s)")
+        }
+        return model
+    }
+
     /// A project whose directory no longer exists — deleted or unmounted
     /// after being added. `rootMissing`, never a silent "found nothing".
     static func fileListModelMissingRoot() async -> FileListModel {
@@ -661,4 +726,22 @@ enum Fixtures {
         try process.run()
         process.waitUntilExit()
     }
+}
+
+/// A fixture could not be built as written. Thrown rather than absorbed: a
+/// snapshot that silently renders a different state than its name claims is
+/// worse than no snapshot, because someone reviews it and signs it off.
+struct FixtureFailure: Error, CustomStringConvertible {
+    let description: String
+    init(_ description: String) { self.description = description }
+}
+
+@MainActor
+private func requireRow(_ model: SecretDocumentViewModel, _ path: [String]) throws -> SecretRow {
+    guard let row = model.rows.first(where: { $0.path == path }) else {
+        throw FixtureFailure(
+            "the fixture document has no row at \(path.joined(separator: ".")) — "
+                + "it holds \(model.rows.map { $0.path.joined(separator: ".") })")
+    }
+    return row
 }

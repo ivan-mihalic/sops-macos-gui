@@ -47,8 +47,73 @@ struct FileListModelTests {
         #expect(model.files.isEmpty)
         #expect(!model.hasScanned)
         #expect(!model.isScanning)
-        #expect(!model.wasTruncated)
+        #expect(model.incompleteScanReason == nil)
         #expect(!model.rootMissing)
+    }
+
+    /// The defect this suite missed for two rounds: the model read
+    /// `wasTruncated` (the file budget) and `skippedDirectoryNames` (a
+    /// permanent, non-blocking exclusion) and nothing else. Four of the five
+    /// limitations that block an affirmative verdict left every property it
+    /// read at its default, so a project whose secrets sit in a directory this
+    /// process cannot list rendered as a plain, confident "No encrypted files
+    /// found in this project."
+    ///
+    /// Run as root, `chmod 000` does not deny anything — the test would then
+    /// be asserting nothing, so it says so rather than passing.
+    @Test("a subdirectory that cannot be listed stops the list claiming the project is empty")
+    func unreadableSubdirectoryBlocksTheEmptyClaim() async throws {
+        let root = try makeProject()
+        let vault = root.appendingPathComponent("vault")
+        try writeSopsLike(root, at: "vault/secrets.yaml")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: vault.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: vault.path) }
+
+        try #require(
+            !FileManager.default.isReadableFile(atPath: vault.appendingPathComponent("secrets.yaml").path),
+            "chmod 000 denied nothing — running as root would make this test vacuous")
+
+        let model = FileListModel(projectRoot: root)
+        await model.refresh()
+
+        #expect(model.files.isEmpty, "precondition: the scan cannot reach the file")
+        let reason = try #require(
+            model.incompleteScanReason,
+            "an unlistable subdirectory left the list free to claim the project holds no encrypted files")
+        #expect(!reason.isEmpty)
+    }
+
+    /// A walk that really did cover the tree must not raise the banner —
+    /// otherwise the fix above is just "always warn", which tells a user
+    /// nothing and would pass the test above with a hardcoded string.
+    @Test("a complete scan reports no reason to doubt it")
+    func completeScanHasNoIncompleteReason() async throws {
+        let root = try makeProject()
+        try writeSopsLike(root, at: "config/secrets.yaml")
+
+        let model = FileListModel(projectRoot: root)
+        await model.refresh()
+
+        #expect(model.files.count == 1)
+        #expect(model.incompleteScanReason == nil,
+                "a readable project was reported as only partially scanned")
+    }
+
+    /// `.git` exists in every real repository, so this list is almost never
+    /// empty — and it used to be rendered only inside the truncation banner,
+    /// which fires only on the rare walk that exhausts the file budget.
+    @Test("directory names the walk never enters are reported without needing a truncated scan")
+    func skippedDirectoriesAreReportedOnAnOrdinaryScan() async throws {
+        let root = try makeProject()
+        try writeSopsLike(root, at: "config/secrets.yaml")
+        try writeSopsLike(root, at: "node_modules/pkg/secrets.yaml")
+
+        let model = FileListModel(projectRoot: root)
+        await model.refresh()
+
+        #expect(model.incompleteScanReason == nil, "a skipped dependency directory is not a blocking limitation")
+        #expect(model.skippedDirectoryNames.contains("node_modules"),
+                "the exclusion was not disclosed on an ordinary, untruncated scan")
     }
 
     @Test("refresh finds an encrypted file and reports it relative to the project root")

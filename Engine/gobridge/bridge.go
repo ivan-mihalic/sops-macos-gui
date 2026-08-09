@@ -7,6 +7,7 @@ package gobridge
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"regexp"
 	"runtime/debug"
 	"strings"
@@ -302,6 +303,13 @@ func Encrypt(plain []byte, format Format, opts EncryptOpts) ([]byte, error) {
 		return nil, fmt.Errorf("generate data key: %v", errs)
 	}
 
+	// Snapshotted before the encrypt so the check below is a *post-condition*
+	// on what actually happened, not a prediction of what sops's matching
+	// rules will do. Predicting them means reimplementing
+	// `sops.Tree.shouldBeEncrypted` here and keeping the copy in step forever;
+	// comparing before with after cannot drift.
+	valuesBeforeEncrypting := leafValues(tree.Branches)
+
 	if err := common.EncryptTree(common.EncryptTreeOpts{
 		DataKey: dataKey,
 		Tree:    &tree,
@@ -312,6 +320,35 @@ func Encrypt(plain []byte, format Format, opts EncryptOpts) ([]byte, error) {
 		// ("Could not convert %s to bytes", and a timestamp that would not
 		// marshal), and everything in this tree is plaintext.
 		return nil, fmt.Errorf("the document could not be encrypted")
+	}
+
+	// A rule that compiles and matches nothing produces a file with complete
+	// sops metadata, a valid MAC, and every value in cleartext. `sops
+	// --decrypt` reads it back without complaint, so nothing downstream ever
+	// notices, and from the user's side it is indistinguishable from a
+	// successful encryption. The compile guard above cannot see this:
+	// `^nothing_here$` is a perfectly valid regular expression.
+	//
+	// Only when the document has values at all — an empty file has nothing to
+	// encrypt, and that is not a broken rule.
+	//
+	// Note this deliberately differs from the save path
+	// (`refuseUnusableEncryptionRule`), which refuses only the compile
+	// failure. There, the document arrived already encrypted under its own
+	// rule, so "matches nothing" describes a file that was already like that
+	// before this app touched it. Here the app is *creating* the file, and a
+	// file it creates must not claim a protection it did not apply.
+	if len(valuesBeforeEncrypting) > 0 &&
+		!anyValueChanged(valuesBeforeEncrypting, leafValues(tree.Branches)) {
+		if opts.EncryptedRegex != "" {
+			return nil, fmt.Errorf(
+				"encrypted_regex %q matches none of this document's keys, so every value "+
+					"would have been written in plain text", opts.EncryptedRegex)
+		}
+		return nil, fmt.Errorf(
+			"every key in this document ends in %q, which sops treats as \"do not encrypt\", "+
+				"so every value would have been written in plain text",
+			sops.DefaultUnencryptedSuffix)
 	}
 
 	encrypted, err := store.EmitEncryptedFile(tree)
@@ -419,3 +456,50 @@ func SopsVersion() string { return moduleVersion("github.com/getsops/sops/v3") }
 // UnknownVersion. age exposes no version constant, so it is read from the
 // build info.
 func AgeVersion() string { return moduleVersion("filippo.io/age") }
+
+// leafValues returns every scalar value in a tree, in walk order. Comments are
+// not values — sops never encrypts them, so counting them would make a
+// document of nothing but comments look like one whose encryption silently did
+// nothing.
+func leafValues(branches sops.TreeBranches) []interface{} {
+	var values []interface{}
+	var walk func(interface{})
+	walk = func(node interface{}) {
+		switch typed := node.(type) {
+		case sops.TreeBranch:
+			for _, item := range typed {
+				if _, isComment := item.Key.(sops.Comment); isComment {
+					continue
+				}
+				walk(item.Value)
+			}
+		case []interface{}:
+			for _, element := range typed {
+				walk(element)
+			}
+		case sops.Comment:
+			// Not a value.
+		default:
+			values = append(values, node)
+		}
+	}
+	for _, branch := range branches {
+		walk(branch)
+	}
+	return values
+}
+
+// anyValueChanged reports whether encryption touched anything at all. A length
+// change counts: it means the shape moved, which encryption alone would not do
+// but which is certainly not "nothing happened".
+func anyValueChanged(before, after []interface{}) bool {
+	if len(before) != len(after) {
+		return true
+	}
+	for i := range before {
+		if !reflect.DeepEqual(before[i], after[i]) {
+			return true
+		}
+	}
+	return false
+}

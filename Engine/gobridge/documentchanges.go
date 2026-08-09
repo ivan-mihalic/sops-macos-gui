@@ -51,6 +51,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -197,6 +198,25 @@ func ApplyChangesAndEncrypt(encrypted []byte, changes ChangeSet, agePrivateKey s
 		if err := addAtPath(doc.tree.Branches, add.add, add.value); err != nil {
 			return nil, err
 		}
+	}
+
+	// The file's own `encrypted_regex` decides what gets encrypted, and
+	// `sops.Tree.shouldBeEncrypted` does `matched, _ := regexp.Match(...)` —
+	// it drops the error. A rule that does not compile therefore matches
+	// nothing, and the save writes every value in cleartext with complete
+	// metadata and a valid MAC. `sops --decrypt` reads that back happily,
+	// because as far as the format is concerned nothing is wrong.
+	//
+	// This is reachable in M2 today, unlike the same check in `Encrypt`.
+	// Verified end to end: `.sops.yaml` with `^(password|api_key$` — one
+	// missing bracket — is accepted by the real CLI with exit 0 and no
+	// warning, the app opens the resulting file without complaint, and
+	// editing one value writes the new secret to disk in plaintext.
+	//
+	// `refuseUnusableEncryptionRule` runs before the encrypt, so a document
+	// whose rule cannot protect it is refused rather than silently exposed.
+	if err := refuseUnusableEncryptionRule(doc.tree); err != nil {
+		return nil, err
 	}
 
 	if err := common.EncryptTree(common.EncryptTreeOpts{
@@ -755,4 +775,28 @@ func ApplyChangesJSON(encrypted []byte, changesJSON []byte, agePrivateKey string
 		}
 	}
 	return ApplyChangesAndEncrypt(encrypted, changes, agePrivateKey)
+}
+
+// refuseUnusableEncryptionRule rejects a document whose `encrypted_regex`
+// cannot compile.
+//
+// Only the compile failure, deliberately. "Compiles but matches nothing" is a
+// legitimate configuration — a file may hold only keys the rule does not
+// cover — so refusing it would block correct documents. A rule that cannot
+// compile can never match anything, which is never what anybody meant.
+//
+// The regex text is the user's own rule from `.sops.yaml`, not document
+// content, so quoting it is safe and is the only thing that makes the message
+// actionable.
+func refuseUnusableEncryptionRule(tree *sops.Tree) error {
+	rule := tree.Metadata.EncryptedRegex
+	if rule == "" {
+		return nil
+	}
+	if _, err := regexp.Compile(rule); err != nil {
+		return fmt.Errorf(
+			"this file's encrypted_regex %q is not a valid regular expression, so saving "+
+				"it would write every value in plain text", rule)
+	}
+	return nil
 }

@@ -650,6 +650,17 @@
         }
       }
     },
+    "files.empty-partial.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No encrypted files in the part of this project that could be scanned."
+          }
+        }
+      }
+    },
     "files.empty.title": {
       "extractionState": "manual",
       "localizations": {
@@ -705,6 +716,17 @@
         }
       }
     },
+    "files.scan-incomplete.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not everything in this project was scanned."
+          }
+        }
+      }
+    },
     "files.scanning": {
       "extractionState": "manual",
       "localizations": {
@@ -716,24 +738,13 @@
         }
       }
     },
-    "files.truncated.detail": {
+    "files.skipped-directories.note": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This project has more files than one scan checks. Directories skipped entirely: %@."
-          }
-        }
-      }
-    },
-    "files.truncated.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Not every file in this project was scanned."
+            "value": "Directories this app never enters: %@."
           }
         }
       }
@@ -1240,6 +1251,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "The project list couldn't be saved. Try again."
+          }
+        }
+      }
+    },
+    "projects.error.drop-unreadable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That drop didn't carry a folder this app could read. Try the Add Project button instead."
           }
         }
       }

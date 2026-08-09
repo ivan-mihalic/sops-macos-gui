@@ -297,6 +297,10 @@ struct GitIgnoreOracleVerdictTests {
 @Suite("A failed git run is undetermined, not a verdict")
 struct GitIgnoreOracleFailureTests {
 
+    /// The real git binary, if one is installed.
+    static let realGit: String? = ["/opt/homebrew/bin/git", "/usr/bin/git", "/usr/local/bin/git"]
+        .first { FileManager.default.isExecutableFile(atPath: $0) }
+
     private static func fakeGit(_ script: String) throws -> URL {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("failgit-\(UUID().uuidString)")
@@ -334,17 +338,64 @@ struct GitIgnoreOracleFailureTests {
             "\(scenario.name) was reported as a confident verdict about the repository")
     }
 
-    /// And the genuine answer still reads as itself — otherwise the fix would
-    /// have traded one wrong sentence for another.
-    @Test("git actually saying it is not a repository is still reported as that")
-    func genuineNotARepositoryIsPreserved() throws {
-        let git = try Self.fakeGit("echo 'fatal: not a git repository' >&2; exit 128")
-        defer { try? FileManager.default.removeItem(at: git.deletingLastPathComponent()) }
+    /// Removed as a separate case: its fixture was
+    /// `fatal: not a git repository` with no path, which real git never prints
+    /// for `rev-parse --is-inside-work-tree`. It was the only guard on
+    /// `.outside`, and it guarded a string that cannot occur.
+    /// `plainDirectoryIsReportedAsOutside` above replaces it with the wording
+    /// git actually uses.
 
-        let reason = try #require(undeterminedReason(from: git))
-        #expect(reason.contains("not inside a git repository"))
+
+    /// The same two cases against the **real** git binary, because the fixtures
+    /// above encode my reading of what git prints — and iteration 10 got that
+    /// reading exactly backwards, classifying the canonical "not a repository"
+    /// message as a git malfunction.
+    @Test(
+        "real git: a plain directory reads as outside, a damaged one as undetermined",
+        .enabled(if: Self.realGit != nil, "git is required"))
+    func realGitAgreesWithTheFixtures() throws {
+        let git = try #require(Self.realGit)
+
+        let sandbox = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("realgit-\(UUID().uuidString)")
+        let plain = sandbox.appendingPathComponent("plain")
+        let damaged = sandbox.appendingPathComponent("damaged")
+        try FileManager.default.createDirectory(at: plain, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: damaged, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: sandbox) }
+
+        Self.run(git, ["-C", damaged.path, "init", "-q", "."])
+        try? FileManager.default.removeItem(at: damaged.appendingPathComponent(".git/refs"))
+        try? FileManager.default.removeItem(at: damaged.appendingPathComponent(".git/HEAD"))
+
+        guard case .undetermined(let plainReason) =
+            GitIgnoreOracle.classify(candidates: [], root: plain, gitPath: git) else {
+            Issue.record("expected .undetermined for a plain directory")
+            return
+        }
+        #expect(
+            plainReason.contains("not inside a git repository"),
+            "real git's canonical 'not a repository' message was read as a malfunction")
+
+        guard case .undetermined(let damagedReason) =
+            GitIgnoreOracle.classify(candidates: [], root: damaged, gitPath: git) else {
+            Issue.record("expected .undetermined for a damaged repository")
+            return
+        }
+        #expect(
+            !damagedReason.contains("not inside a git repository"),
+            "a repository with a damaged .git was reported as not being one")
     }
 
+    private static func run(_ tool: String, _ arguments: [String]) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: tool)
+        process.arguments = arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try? process.run()
+        process.waitUntilExit()
+    }
 
     /// A linked worktree whose main clone is unreachable says
     /// `fatal: not a git repository: (null)` — the phrase, meaning the
@@ -361,16 +412,55 @@ struct GitIgnoreOracleFailureTests {
             "an orphaned worktree was reported as not being in a repository at all")
     }
 
-    /// A damaged `.git` produces the same phrase with the parent-directory
-    /// wording. Also a repository, also not a verdict.
+    /// A damaged `.git` gives the **same** message as being outside a
+    /// repository — measured, both are
+    /// `fatal: not a git repository (or any of the parent directories): .git`.
+    /// The filesystem is the only discriminator, so this fixture provides a
+    /// real `.git` directory and expects "we could not tell", not a verdict.
     @Test("a damaged repository is undetermined, not 'outside'")
     func damagedRepositoryIsNotAVerdict() throws {
         let git = try Self.fakeGit(
             "echo 'fatal: not a git repository (or any of the parent directories): .git' >&2; exit 128")
         defer { try? FileManager.default.removeItem(at: git.deletingLastPathComponent()) }
 
-        let reason = try #require(undeterminedReason(from: git))
-        #expect(!reason.contains("not inside a git repository"))
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("damaged-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent(".git"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let verdict = GitIgnoreOracle.classify(candidates: [], root: root, gitPath: git.path)
+        guard case .undetermined(let reason) = verdict else {
+            Issue.record("expected .undetermined, got \(verdict)")
+            return
+        }
+        #expect(
+            !reason.contains("not inside a git repository"),
+            "a repository with a damaged .git was reported as not being one")
+    }
+
+    /// The case iteration 10 made unreachable: an ordinary directory that is
+    /// simply not in a repository. For a secrets GUI that is a common, normal
+    /// state, and it must read as itself rather than as a git malfunction.
+    @Test("an ordinary non-repository directory is reported as exactly that")
+    func plainDirectoryIsReportedAsOutside() throws {
+        let git = try Self.fakeGit(
+            "echo 'fatal: not a git repository (or any of the parent directories): .git' >&2; exit 128")
+        defer { try? FileManager.default.removeItem(at: git.deletingLastPathComponent()) }
+
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("plain-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let verdict = GitIgnoreOracle.classify(candidates: [], root: root, gitPath: git.path)
+        guard case .undetermined(let reason) = verdict else {
+            Issue.record("expected .undetermined, got \(verdict)")
+            return
+        }
+        #expect(
+            reason.contains("not inside a git repository"),
+            "a plain directory was reported as git failing to answer, sending the user to debug a toolchain problem that does not exist")
     }
 
     /// stdout complete, stderr held open by a grandchild: the answer was read

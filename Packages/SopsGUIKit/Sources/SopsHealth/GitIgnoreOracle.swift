@@ -166,28 +166,37 @@ enum GitIgnoreOracle {
         //
         // So a non-zero exit only means "outside" when git says that is what
         // it means. Everything else is an absence of an answer.
-        // Matching on git's wording is the only signal available — but two
-        // shapes carry that phrase while meaning the opposite of "you are not
-        // in a repository", and both are reachable here:
+        // Matching on git's wording is the only signal available, and the
+        // previous attempt at it had the two branches the wrong way round.
         //
-        //   - a linked worktree whose main clone is gone (unmounted, moved):
+        // Measured, git 2.54.0, `rev-parse --is-inside-work-tree`:
+        //
+        //   - a directory outside any repository:
+        //     `fatal: not a git repository (or any of the parent directories): .git`
+        //   - a repository whose `.git` is damaged: **the same message**
+        //   - a linked worktree whose main clone is gone:
         //     `fatal: not a git repository: (null)`
-        //   - a repository whose `.git` is damaged:
-        //     `fatal: not a git repository (or any of the parent directories)`
-        //     with the directory named
         //
-        // This project treats worktrees as first-class, so the first is
-        // exactly the case that must not produce a confident verdict.
+        // So the parent-directories wording is the *canonical* "you are not in
+        // a repository" — iteration 10 classified it as unreadable, which made
+        // `.outside` unreachable through a real git and told users with an
+        // ordinary non-repository project that git "did not finish answering".
+        // For a secrets GUI, a project outside a repository is a common case,
+        // not an error state.
         //
-        // The read is also gated on `standardErrorComplete`: deciding from a
-        // half-read complaint is the same mistake as deciding from a half-read
-        // answer, one stream over.
-        let complaint = outcome.standardErrorText.lowercased()
+        // The message alone cannot separate "outside" from "damaged", so the
+        // filesystem answers: an existing `.git` at the root means the message
+        // is about a repository that is broken, not absent.
         guard outcome.standardErrorComplete else { return .unreadable }
-        if complaint.contains("(null)") || complaint.contains("or any of the parent directories") {
-            return .unreadable
+        let complaint = outcome.standardErrorText.lowercased()
+
+        // An orphaned worktree names no path at all.
+        if complaint.contains("(null)") { return .unreadable }
+
+        if complaint.contains("not a git repository") {
+            let dotGit = root.appendingPathComponent(".git")
+            return FileManager.default.fileExists(atPath: dotGit.path) ? .unreadable : .outside
         }
-        if complaint.contains("not a git repository") { return .outside }
         return .unreadable
     }
 

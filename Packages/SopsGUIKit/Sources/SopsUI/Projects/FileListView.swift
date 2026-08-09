@@ -19,7 +19,19 @@ public final class FileListModel {
     public private(set) var otherFormatCount = 0
     public private(set) var isScanning = false
     public private(set) var hasScanned = false
-    public private(set) var wasTruncated = false
+    /// Set when the scan fell short of the whole tree in a way that makes any
+    /// affirmative statement about this list dishonest — the budget cap, an
+    /// unlistable directory, an unfollowed directory symlink, an unreadable
+    /// file, an oversized metadata block. Carries the sentence explaining
+    /// which; see `ScannedTree.incompleteScanReason`.
+    ///
+    /// This replaces a bare `wasTruncated` flag, which covered the budget cap
+    /// alone and therefore missed four of the five blocking limitations —
+    /// including the common one, a subdirectory the user cannot read.
+    public private(set) var incompleteScanReason: String?
+    /// Directory names the walk never enters at all (`.git`, `node_modules`,
+    /// …). Not a defect and not a warning — a permanent, named, bounded
+    /// exclusion, so it is stated quietly rather than in the banner.
     public private(set) var skippedDirectoryNames: [String] = []
     public private(set) var rootMissing = false
     /// The root exists but could not be read — changed permissions, a
@@ -38,8 +50,8 @@ public final class FileListModel {
 
     /// Walks the project tree and replaces every published property from the
     /// result in one pass, so a view observing this model never sees a
-    /// half-updated combination (e.g. `wasTruncated` from the new scan next
-    /// to `files` from the old one).
+    /// half-updated combination (e.g. `incompleteScanReason` from the new
+    /// scan next to `files` from the old one).
     public func refresh() async {
         isScanning = true
         let tree = await ProjectScanner.scan(root: projectRoot)
@@ -55,7 +67,7 @@ public final class FileListModel {
         // `.env` sops file isn't left wondering why it never appears.
         files = tree.encrypted.map(\.url).sorted { relativePath(for: $0) < relativePath(for: $1) }
         otherFormatCount = tree.encryptedInOtherFormats.count
-        wasTruncated = tree.wasTruncated
+        incompleteScanReason = tree.incompleteScanReason
         skippedDirectoryNames = tree.skippedDirectoryNames.sorted()
         rootMissing = tree.rootMissing
         rootUnreadable = tree.rootUnreadable
@@ -80,11 +92,11 @@ public final class FileListModel {
 
 /// The encrypted files in one project, shown relative to the project root.
 ///
-/// A `wasTruncated` scan says so directly in this list — Task 9's brief is
-/// explicit that this is exactly where a user would otherwise assume they
-/// are seeing every file, since `ProjectScanner` already knows and reports
-/// it (Task 1/1b) but nothing downstream of the health check has shown it
-/// to a user yet.
+/// A scan that fell short of the whole tree says so directly in this list —
+/// Task 9's brief is explicit that this is exactly where a user would
+/// otherwise assume they are seeing every file, since `ProjectScanner`
+/// already knows and reports it (Task 1/1b) but nothing downstream of the
+/// health check has shown it to a user yet.
 public struct FileListView: View {
     @Bindable private var model: FileListModel
     @Binding private var selection: URL?
@@ -96,8 +108,8 @@ public struct FileListView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            if model.wasTruncated {
-                truncationBanner
+            if let reason = model.incompleteScanReason {
+                incompleteScanBanner(reason)
             }
 
             content
@@ -107,6 +119,13 @@ public struct FileListView: View {
         }
     }
 
+    /// The three states below are about the *root* — nothing ran, so there is
+    /// no list and no footnote to qualify. Everything after them is a real
+    /// walk's result, and its footnotes belong to it whether or not it found
+    /// anything: `otherFormatCount` used to be rendered inside the
+    /// has-files branch, so a project holding only dotenv or JSON sops files
+    /// hit the empty placeholder and was told nothing was here — the one
+    /// group of users the note exists for.
     @ViewBuilder
     private var content: some View {
         if model.rootMissing {
@@ -119,28 +138,58 @@ public struct FileListView: View {
                 Text(.filesScanning).foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if model.files.isEmpty {
-            statusPlaceholder(systemImage: "doc.text.magnifyingglass", title: .filesEmptyTitle)
         } else {
-            List(selection: $selection) {
-                ForEach(model.files, id: \.self) { url in
-                    Text(model.relativePath(for: url))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .tag(url)
+            if model.files.isEmpty {
+                // "No encrypted files found in this project." is a claim about
+                // the whole project. Over an incomplete walk it is not one this
+                // app is entitled to make, so the wording narrows to what was
+                // actually covered and the banner above says why.
+                statusPlaceholder(
+                    systemImage: "doc.text.magnifyingglass",
+                    title: model.incompleteScanReason == nil ? .filesEmptyTitle : .filesEmptyPartialTitle)
+            } else {
+                List(selection: $selection) {
+                    ForEach(model.files, id: \.self) { url in
+                        Text(model.relativePath(for: url))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .tag(url)
+                    }
                 }
+                .listStyle(.sidebar)
+                .scrollOverflowFade()
             }
-            .listStyle(.sidebar)
-            .scrollOverflowFade()
 
-            if model.otherFormatCount > 0 {
-                Divider()
-                Text(String(format: LocalizedKey.filesOtherFormatNote.text, model.otherFormatCount))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(8)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            footnotes
+        }
+    }
+
+    /// Standing facts about what this list is, as opposed to the banner's
+    /// "something went wrong on this particular walk".
+    @ViewBuilder
+    private var footnotes: some View {
+        if model.otherFormatCount > 0 {
+            footnote(String(format: LocalizedKey.filesOtherFormatNote.text, model.otherFormatCount))
+        }
+        // Previously rendered only inside the truncation banner, i.e. only on
+        // the rare walk that hit the file budget — while `.git` puts an entry
+        // in this list on every real repository. The disclosure PROPOSAL §6 D
+        // asks for was therefore almost never shown.
+        if !model.skippedDirectoryNames.isEmpty {
+            footnote(String(format: LocalizedKey.filesSkippedDirectoriesNote.text,
+                            model.skippedDirectoryNames.joined(separator: ", ")))
+        }
+    }
+
+    private func footnote(_ text: String) -> some View {
+        VStack(spacing: 0) {
+            Divider()
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -157,18 +206,21 @@ public struct FileListView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var truncationBanner: some View {
+    /// `reason` comes from `SopsHealth` already written as a sentence for a
+    /// user (`ProjectScopeAccountant.blockedVerdictReason`) — the same text
+    /// the health check shows for the same condition, so the two views of one
+    /// scan cannot drift into saying different things about it. It is not a
+    /// `LocalizedKey` for the same reason the health findings aren't: the
+    /// sentence is assembled from the walk's own data.
+    private func incompleteScanBanner(_ reason: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Label(.filesTruncatedTitle, systemImage: "exclamationmark.triangle.fill")
+            Label(.filesScanIncompleteTitle, systemImage: "exclamationmark.triangle.fill")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.orange)
-            if !model.skippedDirectoryNames.isEmpty {
-                Text(String(format: LocalizedKey.filesTruncatedDetail.text,
-                            model.skippedDirectoryNames.joined(separator: ", ")))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            Text(reason)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)

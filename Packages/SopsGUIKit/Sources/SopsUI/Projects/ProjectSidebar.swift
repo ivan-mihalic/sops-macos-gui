@@ -342,14 +342,52 @@ public struct ProjectSidebar: View {
         for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
             handledAny = true
             provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
-                guard let data = item as? Data,
-                      let url = URL(dataRepresentation: data, relativeTo: nil)
-                else { return }
+                let path = droppedProjectPath(from: item)
                 Task { @MainActor in
-                    model.addProject(path: url.path)
+                    if let path {
+                        model.addProject(path: path)
+                    } else {
+                        // A drop this app accepted and then could not read is
+                        // not a no-op the user should have to guess at. The
+                        // sidebar's own error alert is the only feedback path
+                        // a drop has.
+                        model.lastError = LocalizedKey.projectsErrorDropUnreadable.text
+                    }
                 }
             }
         }
         return handledAny
     }
+}
+
+/// The filesystem path inside whatever `NSItemProvider.loadItem` hands back for
+/// `public.file-url`, or `nil` if there isn't one.
+///
+/// Two representations, because the provider's choice is not ours to make: it
+/// depends on the source application and on how the item was registered.
+/// Finder, `NSFilePromiseProvider`, and a same-process drag do not agree. An
+/// `NSURL` needs no branch of its own — `as? URL` bridges it, which was
+/// checked by deleting the branch and watching `nsurlIsRead` stay green rather
+/// than by assuming it.
+///
+/// The version this replaces accepted `Data` alone. An `NSURL` — which is what
+/// a drag originating in this process delivers — fell through a `guard … else
+/// { return }` and the drop did nothing at all: no project added, no alert, no
+/// log. The user drags a folder onto the sidebar and the app appears to have
+/// simply ignored them.
+///
+/// Free function rather than a method so a test can call it without building a
+/// view and without a real drag. That is not incidental: the previous bug was
+/// unreachable from any test precisely because it lived inside a `private func`
+/// on a `View`, and every test of dropping went through `addProject` directly.
+func droppedProjectPath(from item: NSSecureCoding?) -> String? {
+    if let url = item as? URL {
+        return url.isFileURL ? url.path : nil
+    }
+    if let data = item as? Data,
+       let url = URL(dataRepresentation: data, relativeTo: nil),
+       url.isFileURL {
+        return url.path
+    }
+    return nil
 }

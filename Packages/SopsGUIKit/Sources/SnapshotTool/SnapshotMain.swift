@@ -29,7 +29,15 @@ struct SnapshotMain {
         let outputDirectory = URL(fileURLWithPath: arguments.first ?? ".snapshots", isDirectory: true)
         let filter = arguments.dropFirst().first
 
-        try? FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+        // Not `try?`: if this fails, every write below fails too and the run
+        // ends reporting snapshots it never wrote.
+        do {
+            try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+        } catch {
+            FileHandle.standardError.write(
+                Data("could not create \(outputDirectory.path): \(error)\n".utf8))
+            exit(1)
+        }
 
         let all: [Snapshot]
         do {

@@ -153,11 +153,14 @@ enum Catalog {
         // `.empty` and the snapshot named "configured" rendered the empty
         // state. A reviewer reading that PNG was approving a screen the app
         // never shows. `try!` would have caught it; `try?` made a broken
-        // fixture look like a working one.
+        // fixture look like a working one — and the comment saying so sat
+        // directly above a `try?` for another whole round. It is `try!` now:
+        // a dev tool crashing on a fixture it cannot build is the correct
+        // outcome; writing a PNG that lies about the app is not.
         //
         // Not a real key and cannot decrypt anything — these snapshots only
         // exercise layout.
-        try? configured.importKey("AGE-SECRET-KEY-1QTKPVHZDCRWEY069SMX3U8JAGN7F5L24QTKPVHZDCRWEY069SMX3U8JAGN")
+        try! configured.importKey("AGE-SECRET-KEY-1QTKPVHZDCRWEY069SMX3U8JAGN7F5L24QTKPVHZDCRWEY069SMX3U8JAGN")
 
         // The import control's three shapes, each pinned to a fixture rather
         // than to whatever happens to be under this machine's real `$HOME` —
@@ -307,6 +310,8 @@ enum Catalog {
         let withFiles = try await Fixtures.fileListModelWithFiles()
         let empty = try await Fixtures.fileListModelEmpty()
         let missingRoot = await Fixtures.fileListModelMissingRoot()
+        let incomplete = try await Fixtures.fileListModelIncompleteScan()
+        let emptyPartial = try await Fixtures.fileListModelEmptyPartialScan()
 
         let size = CGSize(width: 320, height: 480)
         func list(_ name: String, _ model: FileListModel) -> Snapshot {
@@ -319,6 +324,8 @@ enum Catalog {
             list("file-list-with-files", withFiles),
             list("file-list-empty", empty),
             list("file-list-missing-root", missingRoot),
+            list("file-list-incomplete-scan", incomplete),
+            list("file-list-empty-partial-scan", emptyPartial),
         ]
     }
 }
