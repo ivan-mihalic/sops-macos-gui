@@ -142,7 +142,8 @@ public struct AppShell: View {
     /// — while this wider one sat one view up.
     ///
     /// Worse than losing the edits on its own: `ProjectWorkspaceView`'s
-    /// `onDisappear` calls `unsavedChanges.clear()`, so the same click also
+    /// `SecretEditorView`'s `onDisappear` calls `unsavedChanges.clear()` as the
+    /// editor is torn down with it, so the same click also
     /// disarmed ⌘Q. The user lost the document *and* the warning that would
     /// have mentioned it.
     ///

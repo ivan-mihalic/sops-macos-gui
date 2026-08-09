@@ -284,8 +284,12 @@ Ranked by value/effort; ✦ = recommended for v1:
 > renumbers rows, the unsaved-changes dialog is not shown during an in-flight save (where it
 > could both lie and lose data), the padlock no longer contradicts the file, copied secrets
 > carry `ConcealedType`/`TransientType` and never reach Universal Clipboard, and the two
-> tests the review caught certifying nothing now discriminate. 569 Swift tests under both
-> compilers, 156 Go, zero failures.
+> tests the review caught certifying nothing now discriminate.
+>
+> Counts stated here go stale as soon as anything is added, and two rounds of this note
+> carried numbers that no longer matched — so, as of the third review's fixes: **583 Swift
+> tests under both compilers, 158 Go, zero failures.** Treat a number in this file as a
+> timestamp, not a guarantee; the suites are the authority.
 >
 > **The second review ran, and returned "do not merge" as well** — three blocking findings, of
 > which the two that matter most are worth naming because both were *this* pattern again. The
