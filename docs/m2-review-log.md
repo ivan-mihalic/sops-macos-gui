@@ -416,9 +416,51 @@ Four reviews. 20 findings.
   `WorktreeResolverTests`' `git()` helper ignoring exit status so
   `bareRepository` builds no fixture at all.
 
+### Round 15, remaining reviews — fixed in `db331a5`
+
+Three defects that destroyed data, all reproduced before being touched.
+
+| # | Finding | Fix |
+|---|---|---|
+| 15.14 | **A save could overwrite an arbitrary file outside the repository and report success.** `load()` fingerprints and reads in two syscalls; `FileFingerprint.of` is `nil` for a dangling symlink; `refuseIfChanged` returns immediately with nothing to compare; the writer resolves symlinks. Reproduced overwriting a file outside the repo with ciphertext while the real document went unchanged — 20–28% of loads under a flipping symlink | Refused at the caller. Tightening the writer instead reddened eight tests: `expecting: nil` is legitimate there (writing through a symlink, creating a new file) |
+| 15.15 | **One NUL byte truncated the document and the next save deleted the rest, permanently.** Two complete SOPS documents joined by a NUL opened showing only the first; saving wrote back what was shown. The real `sops` CLI refuses the same file, so this was also a read-direction divergence from the CLI ADR 0001 requires round-tripping with | Refused until the boundary is length-prefixed |
+| 15.16 | **A symlink to a FIFO hung the scan forever** — `tailBytes` does `open(O_RDONLY)` with no `O_NONBLOCK` and no timeout, inside `concurrentPerform` where cancellation cannot reach it | Only a regular-file target is followed |
+
+**Also recorded from those reviews, not fixed** — beyond the list above:
+
+- The `exposureLedger` counting rule **refuses legitimate saves**: any save that
+  adds a plaintext copy of a value encrypted elsewhere fires it, which for
+  `true`/`0`/`1` in a config file is near-certain. A file with one encrypted
+  `true` means no plaintext boolean in it can ever be set to `true`. Narrowed
+  from round 13, not removed.
+- `snapshotBeforeEncrypting` — round 13's headline redesign — has **no
+  observable effect**: two independent mutations survived all ten tests the
+  round added, because an encrypted node's canonical form is its ciphertext and
+  never matches a plaintext secret name.
+- `describePath` escapes only `< 0x20` and `0x7f`, so U+2028/U+2029/U+0085 still
+  break the refusal into a forged paragraph (measured through real CoreText).
+  Its 120 bound counts **bytes**, and escape expansion produces a 723-byte
+  message — past the test's own 400-byte threshold, which the test never sees
+  because it only uses ASCII.
+- The refusal names one key per canonical value, so with two keys holding one
+  secret the user fixes one and ships the other.
+- Duplicate keys in YAML document 1+ are accepted (sops's uniqueness check runs
+  on document 0 only), the editor shows a value the key does not hold, and the
+  file becomes permanently unsaveable. The real `sops` CLI produces such files.
+- Opening a file is **quadratic in keys within one mapping** — 100 000 keys in
+  one map is 53 s of parse, on every load and every save, ~13× the file size in
+  RSS with plaintext in the heap. Attributed precisely to sops's
+  `LoadPlainFile` doing an extra whole decode for a uniqueness check.
+- `Encrypted: true` is decided by a regex over the value text rather than by the
+  file's rules, so a plaintext value shaped like ciphertext is badged encrypted.
+- The scan budget counts files, not directories: 25 000 directories reports
+  `wasTruncated = false`.
+- `replaceItemAt` — not the writer's `chmod` — decides the final mode of the
+  secrets file, contradicting the comment above it.
+
 ## Where it stands
 
-`swift test` 675 collected under both toolchains at the last full run (626/623
+`swift test` 685 collected at the last full run (626/623
 executed — the difference is bundle-gated localization tests that structurally
 cannot run under the native build system), green under ThreadSanitizer, Go
 green, 38/38 snapshots.
