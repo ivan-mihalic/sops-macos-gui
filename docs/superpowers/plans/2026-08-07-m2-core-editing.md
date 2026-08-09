@@ -992,6 +992,56 @@ and still open; these are the two additions the fix wave itself surfaced.
     because fixtures legitimately pin exact LF-only bytes, and no test helper
     reads a file whose line endings the app does not control.
 
+---
+
+## Still open after the second review (Tasks 22, 2026-08-08)
+
+The second whole-branch review's three blocking findings are closed — the outer
+sidebar exit, `TestResultRecoversToo`'s substring check, and a ThreadSanitizer-
+confirmed race in `ProjectScanner.concurrentMap` — plus the two overclaiming
+comments and both AST-rule gaps. What it found and judged legitimate M3 work:
+
+12. **A transiently unreadable `projects.json` is quarantined and the app then
+    cannot say so.** `ProjectStore.load(from:)` cannot tell "corrupt" from
+    "temporarily unreadable" — mode 000, an ACL, an unmounted volume, a file
+    held open by a sync client all take the quarantine branch and **move the
+    user's real project list**. The damage is permanent; the disclosure is not:
+    the second launch shows zero projects with `loadError == nil`, and the
+    sidebar renders "no projects" as a fact.
+13. **`ProjectStore.persist` bypasses `AtomicFileWriter` and re-creates the
+    defect that type documents.** It calls `replaceItemAt` directly, without
+    `resolvingSymlinksInPath()`, so a symlinked
+    `~/Library/Application Support/cz.mihalic.SopsGUI` (a dotfiles repo, another
+    volume) makes **every add and remove fail permanently**, reported through an
+    internal `Error.unreadable` whose name means the opposite. It also writes
+    `projects.json` at the umask default — mode 644, so every local account can
+    read the absolute path of every project. No secret values, but
+    `AtomicFileWriter:152` guards exactly this for its own files.
+14. **A clipboard manager that *normalises* the copied entry still gets a
+    permanent stay.** It moves `changeCount` *and* breaks the digest, so neither
+    branch fires, and `pending` is already `nil` by then so `clearOnTermination`
+    cannot catch it either. Narrower than the pre-fix behaviour, which refused
+    to clear on *any* change of count — but Task 21's commit message reads as
+    though the hole is closed, and it is only smaller. Related: `clearContents()`
+    destroys the whole pasteboard item, so a later copy of the same string from
+    another app loses its other flavours too.
+15. **No timeout on the deferred quit, and ⌘Q during a save is entirely
+    silent.** `.waitForSaveInFlight` → `.terminateCancel` with no dialog and no
+    retry: ⌘Q simply does nothing, and a logout or shutdown is cancelled without
+    explanation. `isSaving` clears only in `save()`'s `defer`, which blocks on a
+    raw `Thread` into Go, so a wedged engine makes the app unquittable except by
+    Force Quit — which skips `applicationWillTerminate`, so the copied secret
+    stays on the pasteboard.
+16. **`rowIdentityGeneration` is invalidated on every save**, including
+    value-only saves where no path can have moved, so revealing a row, editing
+    an unrelated key and saving silently re-masks it. Fails safe (it hides more,
+    never less) — a usability regression, not a safety one.
+17. **The CLI round-trip gate vanishes silently off this machine.**
+    `EditorCompatibilityTests` hardcodes `/opt/homebrew/bin/sops` and
+    `age-keygen` behind `.enabled(if:)`. It really runs here. On CI, an Intel Mac
+    with `/usr/local`, or nix, the whole compatibility gate disappears and the
+    suite still reports green. The app itself uses `ToolLocator`.
+
 Also unverified rather than untrue: the `.confirmationDialog`'s three buttons
 render nowhere a test or a headless snapshot can reach — the *decision* behind
 them is now a pure function with 13 tests, but the buttons themselves are

@@ -121,6 +121,46 @@ func sops_thing(in *C.char, out **C.char) C.int {
 			expected: "calls C.GoString(…) outside any guard",
 		},
 		{
+			// The sibling of "work hoisted above an otherwise intact guard",
+			// and it survived that rule for a while: moved a few characters
+			// to the right, into the guard's own argument list, the same
+			// conversion was invisible. Go evaluates an argument list before
+			// entering the function, so this runs exactly as unguarded as the
+			// hoisted version — the rule had been keying on lexical position
+			// rather than on when the code runs.
+			name: "work smuggled into the guard's argument list",
+			source: `// sops_thing does a thing.
+//
+//export sops_thing
+func sops_thing(in *C.char, out **C.char) C.int {
+	payload, err := gobridge.Guard(gobridge.OpFor(C.GoString(in)), func() ([]byte, error) {
+		return gobridge.Do(nil)
+	})
+	return result(out, payload, err)
+}`,
+			expected: "calls C.GoString(…) outside any guard",
+		},
+		{
+			// Passes every other rule: the guard is present, unconditional,
+			// nothing runs outside it, and `result` is handed the very
+			// identifiers the guard bound. One assignment in between empties
+			// the answer, so a recovered panic returns status 0 with no
+			// payload — a blank document the user can then save over the real
+			// file.
+			name: "the guard's error is thrown away after it was bound",
+			source: `// sops_thing does a thing.
+//
+//export sops_thing
+func sops_thing(in *C.char, out **C.char) C.int {
+	payload, err := gobridge.Guard(gobridge.OpReading, func() ([]byte, error) {
+		return gobridge.Do(nil)
+	})
+	err = nil
+	return result(out, payload, err)
+}`,
+			expected: "reassigns err after the guard bound it",
+		},
+		{
 			name: "work left dangling after the guard",
 			source: `// sops_thing does a thing.
 //

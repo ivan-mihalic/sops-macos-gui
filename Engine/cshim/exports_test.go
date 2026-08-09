@@ -233,17 +233,43 @@ func complaintsAbout(fn *ast.FuncDecl) []string {
 		out = append(out, fn.Name.Name+" "+fmt.Sprintf(format, args...))
 	}
 
-	// Everything lexically inside a guard call — its closure included — is by
-	// definition guarded, so the walk stops descending there and whatever it
-	// still finds is, by construction, outside every guard.
+	// Everything lexically inside a guard call's *closure* is by definition
+	// guarded, so the walk stops descending there and whatever it still finds
+	// is, by construction, outside every guard.
+	//
+	// Its **arguments** are a different matter, and this distinction is the
+	// whole of rule 5. `gobridge.Guard(op, func() {…})` evaluates its argument
+	// list before `Guard` is entered, so a call written there runs unguarded
+	// even though it sits lexically inside the guard's parentheses. Pruning the
+	// whole `CallExpr`, which an earlier version did, made rule 2 depend on
+	// where the author put the work rather than on when it runs: hoisted to the
+	// previous statement it was caught, moved a few characters right into the
+	// argument list it was not.
 	var guardCalls, strayCalls []*ast.CallExpr
 	var strayDerefs []*ast.StarExpr
 	var strayReturns []*ast.ReturnStmt
+	inspectGuardArgs := func(call *ast.CallExpr) {
+		for _, arg := range call.Args {
+			if _, isClosure := arg.(*ast.FuncLit); isClosure {
+				continue
+			}
+			ast.Inspect(arg, func(n ast.Node) bool {
+				switch node := n.(type) {
+				case *ast.CallExpr:
+					strayCalls = append(strayCalls, node)
+				case *ast.StarExpr:
+					strayDerefs = append(strayDerefs, node)
+				}
+				return true
+			})
+		}
+	}
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		switch node := n.(type) {
 		case *ast.CallExpr:
 			if isGuardCall(node) {
 				guardCalls = append(guardCalls, node)
+				inspectGuardArgs(node)
 				return false
 			}
 			strayCalls = append(strayCalls, node)
@@ -298,6 +324,16 @@ func complaintsAbout(fn *ast.FuncDecl) []string {
 		if count := len(strayReturns); count != 1 {
 			say("has %d return statements outside its guard, expected exactly 1: "+
 				"an early return is a path that skips the guard", count)
+		}
+		// Rule 6. Rule 4 checks that `result` is handed the identifiers the
+		// guard bound; it says nothing about what those identifiers still
+		// hold by then. A single `err = nil` between the guard and the return
+		// satisfies every rule above and turns a recovered panic into status
+		// 0 with an empty payload — the shape that reaches the editor as a
+		// blank document the user then saves over their real file.
+		for _, name := range reboundAfterGuard(fn.Body) {
+			say("reassigns %s after the guard bound it: the guard's own answer is "+
+				"then discarded, and a recovered panic is reported as success", name)
 		}
 	} else if resultCall != nil || callsResultAnywhere(strayCalls) {
 		say("has no status to return but calls result anyway")
@@ -363,6 +399,42 @@ func guardCallIn(stmt ast.Stmt) *ast.CallExpr {
 		return nil
 	}
 	return call
+}
+
+// reboundAfterGuard returns, in source order, the names a guard assignment
+// bound and that a later top-level statement assigns to again.
+//
+// Only plain `=` counts. A second `:=` would shadow rather than overwrite and
+// rule 4 would catch the mismatch at the `result` call; it is the assignment
+// that keeps the same identifier while replacing what the guard put in it that
+// slips past every other rule.
+func reboundAfterGuard(body *ast.BlockStmt) []string {
+	bound := guardAssignedNames(body)
+	var rebound []string
+	seen := map[string]bool{}
+	sawGuard := false
+	for _, stmt := range body.List {
+		if guardCallIn(stmt) != nil {
+			sawGuard = true
+			continue
+		}
+		if !sawGuard {
+			continue
+		}
+		assign, ok := stmt.(*ast.AssignStmt)
+		if !ok || assign.Tok != token.ASSIGN {
+			continue
+		}
+		for _, lhs := range assign.Lhs {
+			ident, ok := lhs.(*ast.Ident)
+			if !ok || !bound[ident.Name] || seen[ident.Name] {
+				continue
+			}
+			seen[ident.Name] = true
+			rebound = append(rebound, ident.Name)
+		}
+	}
+	return rebound
 }
 
 // guardAssignedNames collects the identifiers the body's top-level guard

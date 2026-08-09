@@ -287,9 +287,25 @@ Ranked by value/effort; ✦ = recommended for v1:
 > tests the review caught certifying nothing now discriminate. 569 Swift tests under both
 > compilers, 156 Go, zero failures.
 >
-> **The tick stays off until a second whole-branch review passes.** The first review existed
-> because the tick had gone on without one; awarding it again on the strength of task reports
-> would repeat exactly the mistake recorded below.
+> **The second review ran, and returned "do not merge" as well** — three blocking findings, of
+> which the two that matter most are worth naming because both were *this* pattern again. The
+> outer sidebar turned out to be a third, unguarded exit from a dirty document: selecting About
+> destroyed the open document without a prompt *and* disarmed ⌘Q on the way out, while the doc
+> comment one view down claimed project-switch had been guarded "rather than being left as a
+> narrower hole". And `TestResultRecoversToo` was still the substring check its sibling had been
+> rewritten away from — the commit that rewrote the sibling claimed both. The third was a
+> ThreadSanitizer-confirmed data race the code's own comment argued could not happen.
+>
+> All three are closed (Task 22), along with both overclaiming comments — including this
+> section's own supporting claim that a new blind spot in the scanner "cannot compile", which a
+> review disproved by adding one and watching the suite stay green.
+>
+> **The tick is still off.** It has now been awarded once and withdrawn, and withheld once and
+> vindicated. Two reviews have each found something the previous round reported as finished, so
+> the honest reading is that a third review is what would earn it — not another round of task
+> reports, and not my own confidence. What the branch *is*: materially better than `master` on
+> every axis the reviews measured, with every blocking finding from both reviews closed and the
+> rest written down in the plan rather than lost.
 >
 > ---
 >
