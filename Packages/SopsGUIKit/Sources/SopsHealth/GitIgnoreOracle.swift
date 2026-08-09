@@ -22,7 +22,48 @@ import Foundation
 ///
 /// Read-only throughout: `rev-parse`, `check-ignore` and `ls-files` inspect,
 /// they do not write. Nothing here stages, creates or modifies a file.
+///
+/// **But read-only is not the same as harmless**, and that distinction cost
+/// this app an arbitrary-code-execution hole. See `safeArguments`.
 enum GitIgnoreOracle {
+
+    /// Every `git` invocation here starts with these, and none may be called
+    /// without them.
+    ///
+    /// ## What this closes
+    ///
+    /// `core.fsmonitor` is a **repository-local** config key whose value git
+    /// executes. A repository the user merely cloned or unpacked can set it in
+    /// its own `.git/config`, and then any git command that consults the index
+    /// runs that program. This oracle runs on every project scan, so the
+    /// sequence was: add a project → the scan finds a file named `.env` → the
+    /// attacker's script runs as the user.
+    ///
+    /// Verified, not theorised — git 2.54.0, a hook that touched a marker
+    /// file, driven through the same `check-ignore --stdin -z` call below:
+    /// the marker appeared. With `-c core.fsmonitor=` prepended it did not.
+    ///
+    /// `safe.directory` does not help: the user owns the directory they just
+    /// cloned into, which is exactly the case that check is designed to allow.
+    ///
+    /// This also breached the app's own hardest rule — "the app never mutates
+    /// the system" — by handing a third party the ability to do so. A
+    /// read-only *git subcommand* is not a read-only *operation* when git's
+    /// configuration can name a program to run.
+    ///
+    /// ## Why not `-c protocol.*` and friends too
+    ///
+    /// Nothing here fetches, so no transport config is reachable. If a
+    /// subcommand that touches the network is ever added, this list needs
+    /// revisiting — which is the other reason it is one constant rather than
+    /// three call sites.
+    private static let safeArguments = ["-c", "core.fsmonitor="]
+
+    /// `git -C <root> …` with the protective config in front of `-C`, where
+    /// git requires it: `-c` must precede the subcommand.
+    private static func gitArguments(root: URL, _ subcommand: [String]) -> [String] {
+        safeArguments + ["-C", root.path] + subcommand
+    }
 
     enum Verdict {
         /// git answered. `exposed` are the paths git does **not** ignore, and
@@ -54,7 +95,9 @@ enum GitIgnoreOracle {
 
     private static func isInsideWorkTree(root: URL, gitPath: String) -> Bool {
         guard let outcome = CommandRunner.run(
-            gitPath, arguments: ["-C", root.path, "rev-parse", "--is-inside-work-tree"], timeout: timeout)
+            gitPath,
+            arguments: gitArguments(root: root, ["rev-parse", "--is-inside-work-tree"]),
+            timeout: timeout)
         else { return false }
         return outcome.terminationStatus == 0
             && outcome.standardOutputText.trimmingCharacters(in: .whitespacesAndNewlines) == "true"
@@ -84,7 +127,7 @@ enum GitIgnoreOracle {
 
         guard let outcome = CommandRunner.run(
             gitPath,
-            arguments: ["-C", root.path, "check-ignore", "--stdin", "-z"],
+            arguments: gitArguments(root: root, ["check-ignore", "--stdin", "-z"]),
             standardInput: input,
             timeout: timeout
         ), !outcome.timedOut else { return nil }
@@ -102,7 +145,7 @@ enum GitIgnoreOracle {
         guard !paths.isEmpty else { return [] }
         guard let outcome = CommandRunner.run(
             gitPath,
-            arguments: ["-C", root.path, "ls-files", "-z", "--"] + paths.map(\.path),
+            arguments: gitArguments(root: root, ["ls-files", "-z", "--"] + paths.map(\.path)),
             timeout: timeout
         ), outcome.terminationStatus == 0, !outcome.timedOut else { return [] }
 
