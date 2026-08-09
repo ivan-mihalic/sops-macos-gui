@@ -458,6 +458,53 @@ Three defects that destroyed data, all reproduced before being touched.
 - `replaceItemAt` — not the writer's `chmod` — decides the final mode of the
   secrets file, contradicting the comment above it.
 
+### Round 15, mutation audit — 19 surviving mutations, none fixed
+
+Ran against pinned copies of `1931555`; the working tree was never written to.
+**Nothing below is fixed.** This is where the next round starts.
+
+| # | Guard that can be deleted with all 675 tests green | What the user gets |
+|---|---|---|
+| 15.17 | `AppShell.requestSectionSwitch`'s `.askAboutUnsavedChanges` case — `pendingSection = requested` → `selection = requested` | **Data loss.** The decision is computed correctly and thrown away: a user with unsaved secret edits clicks About or Settings, no sheet appears, the editor is torn down, edits gone. Every test covers the pure decision function or the source text; nothing reads `pendingSection` |
+| 15.18 | `AtomicFileWriter.flush()` entirely (`F_FULLFSYNC`/`fsync`) | A save that reported success, then a power loss, leaves a correctly-named, empty or truncated secrets file — the exact failure the class exists to prevent |
+| 15.19 | The staging file's `0600` → `0666` | Every save briefly exposes a world-readable copy of the full ciphertext; tests check only the final mode |
+| 15.20 | The explicit `setAttributes([.posixPermissions:])` | The user's `chmod 600` then rests entirely on undocumented `replaceItemAt` behaviour, which is what the comment says it refuses to rely on |
+| 15.21 | `ProjectStore`'s `guard !unsafeToWrite` | The test asserts the OS's `uchg` flag, not the app's guard; an unreadable-but-recoverable `projects.json` gets silently overwritten |
+| 15.22 | *Either* `refuseIfChanged` call (both are individually redundant) | Deleting the late one widens the second-writer race from microseconds to the whole stage-plus-fsync span; a concurrent `sops set` silently loses a key |
+| 15.23 | The temp-file cleanup `defer` | Every refused write leaves a `.tmp` holding the full new ciphertext in the project directory |
+| 15.24 | `HealthReport.standard`: `legacyKeyFilePaths` → `[]` | "No unprotected age key file was found" over a plaintext key in `~/Library/Application Support/sops/age/keys.txt` |
+| 15.25 | `HealthReport.standard`: `ToolLocator(searchPaths: [])` | Every tool reports missing; remediation tells the user to install what they have |
+| 15.26 | `HealthReport.standard`: `ProjectHealthCheck(source: NoProjects())` | The panel inspects nothing and reads as clean |
+| 15.27 | `WorktreeResolver`'s dangling-pointer existence guard | Shadowed by a later check, so the test's stated property is guarded by something it does not name |
+| 15.28 | `SecretRowViewLogic.maskWidth` 8 → 1 | Every masked secret renders as one bullet. The test re-derives its expectation from the constant under test; only `= 0` is caught |
+| 15.29 | A null row's type label → "Copy" | `everyKindHasADistinctLabel` asserts distinctness, never correctness; seven of eight labels are free text |
+| 15.30 | `CopyFeedback` 2 s → 29 s | "Copied" for 29 of the 30 seconds the clipboard holds the secret — the confirmation becomes the resting state |
+| 15.31 | `OnboardingState.restart()`'s `step = .welcome` | "Run the setup check again" reopens on the abandoned step. The test never advances the step, so its assertion is vacuous |
+| 15.32 | `ProjectSidebar`'s `selection = existing.id` on a duplicate add | The test cannot tell "the duplicate path selected it" from "the first add already had" |
+
+**A correction to this log, from that audit.** An earlier entry claimed
+`WorktreeResolverTests.bareRepository` "builds no fixture at all". That is
+**wrong**: `git init -q --bare` from that cwd exits 0 and creates the
+directory. The real defect is that the test is *insensitive* — a bare repo has
+no `.git` entry and a nonexistent directory has no `.git` entry, so both return
+`.notAGitRepository` through the same first guard, and the test passes
+identically either way. The separate point about `git()` ignoring
+`terminationStatus` stands and affects the whole file.
+
+**Two facts about the harness itself,** worth more than any single finding:
+
+- The baseline is **not deterministically green**. `realLoginShellAgrees` failed
+  ~25% of runs under load, because `ToolLocatorTests` calls `setenv("SHELL", …)`
+  process-wide and Swift Testing runs both suites in one process. It produced a
+  *spurious CAUGHT* in the audit's own results. Fixed in `9709a6c`, which pins
+  the shell explicitly — but any mutation audit run before that is suspect.
+- `swift test` intermittently **hangs at exit** with all work finished and the
+  main thread parked in `CFRunLoopRun`. Never under `--filter`.
+
+**Still genuinely un-mutation-tested:** `SopsEngineTests`. It is a thin FFI
+shim, so mutating it means editing `Engine/gobridge/*.go` and rebuilding the
+xcframework per mutation.
+
 ## Where it stands
 
 `swift test` 685 collected at the last full run (626/623
