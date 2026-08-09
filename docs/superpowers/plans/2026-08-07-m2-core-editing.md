@@ -1202,3 +1202,16 @@ thing a future reader will otherwise rediscover from scratch.
     containers) came back **10 of 10 byte-identical** apart from `mac` and
     `lastmodified`. The stores config is the only thing that breaks that, and
     it breaks it for the whole file.
+
+29. **The project sidebar does filesystem I/O on the main thread, per render.**
+    `ProjectSidebarModel.isMissing(_:)` is called from `body` once per row and
+    forwards to a `FileManager` existence check; `buildGroups(from:)` runs
+    `WorktreeResolver.kind(of:)`, up to four `fileExists` calls per project, on
+    every `rebuildGroups()`. Microseconds on a local disk. On a project sitting
+    on an unmounted or unreachable network volume, a single `stat` can block for
+    seconds, and this one runs on every SwiftUI update of the sidebar.
+    **Why it is not fixed here:** the remedy is a cached answer with a refresh
+    policy, and `ProjectStore.isMissing`'s doc comment deliberately argues for
+    re-checking on every call — a project's directory can vanish at any moment
+    and a stale "present" is its own lie. Choosing the staleness window is a
+    design decision, not a review edit. Found in iteration 11.
