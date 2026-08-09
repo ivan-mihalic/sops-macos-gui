@@ -229,7 +229,8 @@ public struct SecretEditorView: View {
         .onChange(of: unsavedState, initial: true) { _, state in
             unsavedChanges.update(
                 isDirty: state.isDirty, isSaving: state.isSaving,
-                save: { await viewModel.save() })
+                save: { await viewModel.save() },
+                awaitSaveInFlight: { await viewModel.awaitSaveInFlight() })
         }
         // Losing the front-app position, being hidden, or having the window
         // covered all mean the plaintext on screen is no longer in front of

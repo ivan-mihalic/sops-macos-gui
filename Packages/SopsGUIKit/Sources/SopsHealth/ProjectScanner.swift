@@ -752,15 +752,44 @@ public struct ProjectScanner {
     /// `DispatchQueue.concurrentPerform` below actually runs on.
     ///
     /// `@unchecked Sendable`: the compiler cannot see that every write below
-    /// targets a distinct array index (`box.values[index] = ...`, one
-    /// `index` per GCD iteration, never reused), so two threads never touch
-    /// the same element — safe by construction, not by locking, which is
-    /// exactly why this needs the escape hatch rather than a real lock. If
-    /// this invariant is ever broken by a future edit, this is where a data
-    /// race would reappear.
+    /// targets a distinct index (`box.buffer[index] = ...`, one `index` per
+    /// GCD iteration, never reused), so no two threads touch the same memory.
+    /// If that invariant is ever broken by a future edit, this is where a data
+    /// race would reappear — and see the `buffer` property below for the
+    /// version of this comment that was wrong, and what ThreadSanitizer said
+    /// about it.
     private final class ResultsBox<Output>: @unchecked Sendable {
-        var values: [Output?]
-        init(count: Int) { values = [Output?](repeating: nil, count: count) }
+        /// A manually managed buffer rather than an `Array`, and this is the
+        /// whole point of the type.
+        ///
+        /// The obvious version — `var values: [Output?]`, written as
+        /// `values[index] = …` — **is a data race**, and ThreadSanitizer says
+        /// so: `swift test --sanitize=thread --filter ProjectScanBoundsTests`
+        /// reported "Swift access race" on that line, two GCD workers
+        /// modifying the same variable. The reasoning that looked sound is
+        /// that distinct indices are distinct elements, so no two threads
+        /// touch the same memory. That part is true and irrelevant: `values`
+        /// is a *property*, and `values[index] = x` takes a `modify` access on
+        /// the whole property for the duration of the write. Those accesses
+        /// overlap across workers no matter how disjoint the indices are.
+        ///
+        /// An `UnsafeMutableBufferPointer` held in a `let` has no such
+        /// property access — the subscript writes through the pointer, so two
+        /// workers writing distinct indices genuinely do touch only distinct
+        /// memory. The `@unchecked Sendable` is now honest: the invariant it
+        /// stands on is "one writer per index", enforced by
+        /// `concurrentMap`'s disjoint batch ranges.
+        let buffer: UnsafeMutableBufferPointer<Output?>
+
+        init(count: Int) {
+            buffer = UnsafeMutableBufferPointer<Output?>.allocate(capacity: count)
+            buffer.initialize(repeating: nil)
+        }
+
+        deinit {
+            buffer.deinitialize()
+            buffer.deallocate()
+        }
     }
 
     /// Runs `transform` over `items` with at most `width` running
@@ -835,7 +864,7 @@ public struct ProjectScanner {
                 let batchStart = start
                 DispatchQueue.concurrentPerform(iterations: batchCount) { offset in
                     let index = batchStart + offset
-                    box.values[index] = transform(items[index])
+                    box.buffer[index] = transform(items[index])
                 }
                 start = end
             }
@@ -844,7 +873,7 @@ public struct ProjectScanner {
             // index range, and every batch runs). Force-unwrap documents
             // that invariant rather than silently coalescing a would-be bug
             // into a dropped result.
-            return box.values.map { $0! }
+            return box.buffer.map { $0! }
         }
     }
 

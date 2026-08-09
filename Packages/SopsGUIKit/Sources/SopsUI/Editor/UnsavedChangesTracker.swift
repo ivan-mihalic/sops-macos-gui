@@ -34,6 +34,13 @@ public final class UnsavedChangesTracker {
 
     private var saveAction: (() async -> SaveOutcome)?
 
+    /// Forwarded alongside `saveAction` for the same reason: a caller outside
+    /// the editor — the outer sidebar, the quit path — can see `isSaving` but
+    /// has no way to wait for it to finish. Without this, "re-ask once the
+    /// save lands" would have to be a poll, and a poll on a document's write
+    /// is how you end up sampling it in the wrong state.
+    private var awaitSaveAction: (() async -> Void)?
+
     public init() {}
 
     /// Called by the active editor whenever its document's `isDirty` or
@@ -41,10 +48,15 @@ public final class UnsavedChangesTracker {
     /// all, from `save()` below — never stored and called except in response to
     /// an explicit save request, and never retained past the next
     /// `update`/`clear`.
-    public func update(isDirty: Bool, isSaving: Bool, save: (() async -> SaveOutcome)?) {
+    public func update(
+        isDirty: Bool, isSaving: Bool,
+        save: (() async -> SaveOutcome)?,
+        awaitSaveInFlight: (() async -> Void)? = nil
+    ) {
         self.isDirty = isDirty
         self.isSaving = isSaving
         self.saveAction = save
+        self.awaitSaveAction = awaitSaveInFlight
     }
 
     /// Called when the active editor leaves — a file switch already resolved
@@ -56,6 +68,15 @@ public final class UnsavedChangesTracker {
         isDirty = false
         isSaving = false
         saveAction = nil
+        awaitSaveAction = nil
+    }
+
+    /// Returns once the registered document's save, if any, has finished.
+    /// Returns immediately when nothing is registered — "no document" and
+    /// "document not saving" are the same answer to the only question the
+    /// caller is asking.
+    public func awaitSaveInFlight() async {
+        await awaitSaveAction?()
     }
 
     /// Invokes the registered save action, if any. `nil` means there was

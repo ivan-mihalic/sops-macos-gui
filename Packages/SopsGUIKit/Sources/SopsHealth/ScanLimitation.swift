@@ -24,10 +24,33 @@ import Foundation
 ///
 /// So: every way this walk falls short of the whole tree is a case of this
 /// enum, and `ProjectScopeAccountant` switches over it **exhaustively** — no
-/// `default`, deliberately. A new way of not looking at something cannot
-/// compile until someone has written the sentence that admits to it and decided
-/// whether it may still be reported as OK. That is the property that was
-/// missing, and it is the only kind of guarantee that survives a third round.
+/// `default`, deliberately.
+///
+/// ## What that does and does not buy — read this before trusting it
+///
+/// An earlier version of this comment claimed "a new way of not looking at
+/// something cannot compile until someone has written the sentence that admits
+/// to it". **That is false, and a review demonstrated it**: a plausible
+/// size-cap `continue` added to `ProjectScanner.walk`, recording no
+/// `ScanLimitation` at all, compiled and left the whole suite green.
+///
+/// What is enforced, and was verified by mutation:
+///
+/// - Adding a **case** to this enum forces a sentence and a status decision at
+///   every site that switches over it. No `default` will absorb it.
+/// - A finding cannot be built around the accountant: `ScopedFinding`'s
+///   initialiser is `fileprivate` to `ProjectScopeDisclosure.swift`.
+/// - Mislabelling a tree-wide claim as being about one known path reddens
+///   existing tests, as does quietly restoring an exclusion
+///   (`.skipsHiddenFiles` → 34 issues).
+///
+/// What is **not** enforced: a new `continue` in the walk that records nothing.
+/// The enum cannot see a statement that never mentions it. Guarding that needs
+/// a test that pins the walk's own coverage — a fixture with a known file count
+/// asserted against what the scan reports having examined — which does not
+/// exist yet. Until it does, this type makes the honest path easy and the
+/// dishonest path visible in review; it does not make the dishonest path
+/// impossible. Do not let §9 or a task report say otherwise.
 public enum ScanLimitation: Sendable, Hashable {
     /// A directory this app always declines to enter, by name, anywhere in the
     /// tree — see `ProjectScanner.skippedDirectoryNames`.

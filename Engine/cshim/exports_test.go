@@ -74,26 +74,100 @@ func TestEveryExportedEntryPointRecoversFromPanics(t *testing.T) {
 // fatal everywhere. `result`'s own doc comment in main.go states the three
 // cases and why. All this test establishes is that the recover is still there.
 func TestResultRecoversToo(t *testing.T) {
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "main.go", nil, parser.ParseComments)
+	complaints, err := inspectResultRecovery(nil)
 	if err != nil {
 		t.Fatalf("parse main.go: %v", err)
 	}
-	source := readSource(t, "main.go")
+	for _, complaint := range complaints {
+		t.Error(complaint)
+	}
+}
+
+// inspectResultRecovery checks `result`'s own recover by structure rather than
+// by looking for the text "recover()" somewhere in the body.
+//
+// The substring version of this test passed with the whole deferred closure
+// deleted and `// TODO: restore the recover() here before shipping.` left in
+// its place — a comment is body text too. Its sibling
+// TestEveryExportedEntryPointRecoversFromPanics had already been rewritten onto
+// the AST for the same reason; this one was left behind, and the commit that
+// rewrote the sibling claimed both.
+//
+// Three rules, each for a mutation the substring check waved through:
+//
+//  1. The body contains a `defer` of a function literal — not a bare mention of
+//     recover in a comment, a string, or dead code.
+//  2. That literal calls the builtin `recover()`.
+//  3. It does something with the result. A `defer func() { recover() }()`
+//     swallows the panic and then falls off the end of the function, returning
+//     whatever the named results happen to hold — for `result` that is a zero
+//     status, i.e. success reported for a call that panicked.
+func inspectResultRecovery(src any) (complaints []string, err error) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "main.go", src, parser.ParseComments)
+	if err != nil {
+		return nil, err
+	}
 
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Name.Name != "result" || fn.Body == nil {
 			continue
 		}
-		start := fset.Position(fn.Body.Pos()).Offset
-		end := fset.Position(fn.Body.End()).Offset
-		if !strings.Contains(source[start:end], "recover()") {
-			t.Fatal("result does not recover; a nil out-parameter would then crash the host application")
+
+		var recoversAndActs bool
+		for _, stmt := range fn.Body.List {
+			deferred, ok := stmt.(*ast.DeferStmt)
+			if !ok {
+				continue
+			}
+			lit, ok := deferred.Call.Fun.(*ast.FuncLit)
+			if !ok || lit.Body == nil {
+				continue
+			}
+			// Rule 2 and 3 together: the recover call has to feed something —
+			// a condition, an assignment, a comparison — not stand alone as an
+			// expression statement.
+			ast.Inspect(lit.Body, func(n ast.Node) bool {
+				if stmt, ok := n.(*ast.ExprStmt); ok && isRecoverCall(stmt.X) {
+					// A bare `recover()` statement: rule 3 violated. Do not
+					// descend — the call underneath is this same call, and
+					// counting it would let the swallow-everything shape pass.
+					return false
+				}
+				if isRecoverCall(n) {
+					recoversAndActs = true
+					return false
+				}
+				return true
+			})
+			if recoversAndActs {
+				break
+			}
 		}
-		return
+
+		if !recoversAndActs {
+			complaints = append(complaints,
+				"result does not defer a closure that calls recover() and acts on its value; "+
+					"a panic in C.CString, or a nil out-parameter from Swift, would then "+
+					"terminate the host application")
+		}
+		return complaints, nil
 	}
-	t.Fatal("no function named result in main.go")
+
+	return []string{"no function named result in main.go"}, nil
+}
+
+// isRecoverCall reports whether n is a call to the builtin `recover`. It is a
+// builtin rather than a package function, so an unqualified identifier is the
+// only shape it can take.
+func isRecoverCall(n ast.Node) bool {
+	call, ok := n.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	ident, ok := call.Fun.(*ast.Ident)
+	return ok && ident.Name == "recover" && len(call.Args) == 0
 }
 
 // MARK: - The rule

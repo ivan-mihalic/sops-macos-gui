@@ -34,6 +34,10 @@ public struct AppShell: View {
         Section.allCases.filter { !Section.pinnedToBottom.contains($0) }
 
     @State private var selection: Section = .projects
+    /// A section the user asked for while the open document was dirty. Held
+    /// here until the prompt resolves — see `guardedSelection`.
+    @State private var pendingSection: Section?
+    @State private var sectionSaveErrorMessage: String?
     private let projects: ProjectSidebarModel
     private let keyStore: SessionKeyStore
     private let unsavedChanges: UnsavedChangesTracker
@@ -55,7 +59,7 @@ public struct AppShell: View {
 
     public var body: some View {
         NavigationSplitView {
-            List(selection: $selection) {
+            List(selection: guardedSelection) {
                 ForEach(Self.scrollingSections, id: \.self) { section in
                     Label(section.labelKey, systemImage: section.systemImage)
                         .tag(section)
@@ -65,14 +69,45 @@ public struct AppShell: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Divider()
                     ForEach(Section.pinnedToBottom, id: \.self) { section in
-                        PinnedSidebarRow(section: section, selection: $selection)
+                        PinnedSidebarRow(section: section, selection: guardedSelection)
                     }
                 }
                 .padding(.top, 6)
                 .padding(.bottom, 8)
                 .background(.bar)
             }
+            .disabled(unsavedChanges.isSaving)
             .navigationSplitViewColumnWidth(min: 200, ideal: 220)
+            .confirmationDialog(
+                LocalizedKey.editorUnsavedChangesTitle.text,
+                isPresented: Binding(
+                    get: { pendingSection != nil },
+                    set: { isPresented in if !isPresented { pendingSection = nil } }),
+                presenting: pendingSection
+            ) { section in
+                Button(LocalizedKey.editorSaveAndContinue.text) {
+                    Task { await saveThenLeaveProjects(to: section) }
+                }
+                Button(LocalizedKey.editorDiscardChanges.text, role: .destructive) {
+                    pendingSection = nil
+                    selection = section
+                }
+                Button(LocalizedKey.actionCancel.text, role: .cancel) {
+                    pendingSection = nil
+                }
+            } message: { _ in
+                Text(.editorUnsavedChangesMessage)
+            }
+            .alert(
+                LocalizedKey.editorSaveErrorTitle.text,
+                isPresented: Binding(
+                    get: { sectionSaveErrorMessage != nil },
+                    set: { isPresented in if !isPresented { sectionSaveErrorMessage = nil } })
+            ) {
+                Button(LocalizedKey.actionDone.text) { sectionSaveErrorMessage = nil }
+            } message: {
+                Text(sectionSaveErrorMessage ?? "")
+            }
         } detail: {
             // Only `.projects` has real content so far — About and Settings
             // are reached elsewhere (Settings opens via ⌘, as its own scene;
@@ -86,6 +121,101 @@ public struct AppShell: View {
                 Text(.detailNoSelection)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    // MARK: - Leaving Projects is leaving the open document
+
+    /// Every write to the outer sidebar's selection, routed through the same
+    /// `WorkspaceSwitchDecision` the file and project switches use.
+    ///
+    /// ## Why this exists
+    /// Selecting About or Settings takes `.projects` out of the `detail:`
+    /// switch, which destroys `ProjectWorkspaceView` and with it the `@State`
+    /// holding the open document — SwiftUI structural identity, no warning,
+    /// no prompt. Until this binding existed, that was a third exit from a
+    /// dirty document, and the only unguarded one: the file list and the
+    /// project sidebar were both routed through `requestFileSwitch` /
+    /// `requestProjectSwitch`, and the doc comment on `ProjectWorkspaceView`
+    /// claimed project-switch had been guarded *"rather than being left as a
+    /// narrower hole in the one property this milestone says must not break"*
+    /// — while this wider one sat one view up.
+    ///
+    /// Worse than losing the edits on its own: `ProjectWorkspaceView`'s
+    /// `onDisappear` calls `unsavedChanges.clear()`, so the same click also
+    /// disarmed ⌘Q. The user lost the document *and* the warning that would
+    /// have mentioned it.
+    ///
+    /// ## Why the tracker rather than the view model
+    /// `documentViewModel` lives inside `ProjectWorkspaceView` and is
+    /// deliberately not reachable from here. `UnsavedChangesTracker` is the
+    /// existing channel for exactly this question — the quit path already had
+    /// to ask it from outside the view for the same reason — so this reads the
+    /// same two flags ⌘Q does, rather than inventing a second notion of dirty.
+    private var guardedSelection: Binding<Section> {
+        Binding(
+            get: { selection },
+            set: { requested in requestSectionSwitch(to: requested) })
+    }
+
+    /// The question `guardedSelection` asks, as a pure function so a test can
+    /// ask it too.
+    ///
+    /// Internal rather than private for that reason alone. It delegates
+    /// straight to `WorkspaceSwitchDecision.forSwitch` and adds nothing — the
+    /// point is that leaving Projects is a document switch, decided by the
+    /// same rule as the other two, not that it needs a rule of its own.
+    ///
+    /// **What a test of this does not establish:** that `guardedSelection`
+    /// actually consults it. That binding is the only writer of `selection`,
+    /// which is verified by reading, in the same way and for the same reason
+    /// as the three `.confirmationDialog` buttons.
+    static func sectionSwitchDecision(
+        from current: Section, to requested: Section,
+        documentIsDirty: Bool, saveIsInFlight: Bool
+    ) -> WorkspaceSwitchDecision {
+        WorkspaceSwitchDecision.forSwitch(
+            from: current, to: requested,
+            documentIsDirty: documentIsDirty, saveIsInFlight: saveIsInFlight)
+    }
+
+    private func requestSectionSwitch(to requested: Section) {
+        switch Self.sectionSwitchDecision(
+            from: selection, to: requested,
+            documentIsDirty: unsavedChanges.isDirty,
+            saveIsInFlight: unsavedChanges.isSaving)
+        {
+        case .alreadyThere:
+            return
+        case .proceed:
+            selection = requested
+        case .askAboutUnsavedChanges:
+            pendingSection = requested
+        case .waitForSaveInFlight:
+            // Unreachable in practice — the sidebar is `.disabled` while a
+            // save is in flight — but decided rather than assumed, because
+            // "the control is disabled" is a claim about the view and this is
+            // a claim about the document. Re-asks once the save lands, the
+            // same 133–380 ms wait the other two switches take.
+            Task { @MainActor in
+                await unsavedChanges.awaitSaveInFlight()
+                requestSectionSwitch(to: requested)
+            }
+        }
+    }
+
+    private func saveThenLeaveProjects(to section: Section) async {
+        pendingSection = nil
+        switch await unsavedChanges.save() {
+        case .saved, nil:
+            // `nil` is "nothing was registered to save" — not a failure, and
+            // by then there is nothing left to lose by leaving.
+            selection = section
+        case .failed(let message):
+            // Stay on Projects. Leaving after a failed save would discard the
+            // edits the save was meant to preserve, which is the outcome the
+            // prompt existed to prevent.
+            sectionSaveErrorMessage = message
         }
     }
 }
