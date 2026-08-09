@@ -143,14 +143,31 @@ enum GitIgnoreOracle {
 
     private static func workTreeVerdict(root: URL, gitPath: String) -> WorkTreeVerdict {
         guard let outcome = runGit(gitPath, in: root, ["rev-parse", "--is-inside-work-tree"]),
-              !outcome.timedOut, outcome.outputComplete
+              !outcome.timedOut, outcome.standardOutputComplete
         else { return .unreadable }
 
         let answer = outcome.standardOutputText.trimmingCharacters(in: .whitespacesAndNewlines)
         if outcome.terminationStatus == 0 && answer == "true" { return .inside }
-        // `rev-parse` exits non-zero outside a work tree, which is a real
-        // answer. Any other non-zero with no recognisable output is not.
-        if outcome.terminationStatus != 0 || answer == "false" { return .outside }
+        if answer == "false" { return .outside }
+
+        // Iteration 8 said "git's silence is not git saying no" and then
+        // treated **any** non-zero exit as `.outside`, which is the other half
+        // of the same mistake: git's *failure* is not git saying no either.
+        // Measured against git 2.54.0, all three of these exited non-zero and
+        // were reported as "not inside a git repository":
+        //
+        //   - an unreadable directory        → 128, "cannot change to …: Permission denied"
+        //   - the root removed or unmounted  → 128, "cannot change to …: No such file or directory"
+        //   - a broken git (xcrun shim)      →   1, "invalid active developer path"
+        //
+        // The last is the canonical macOS "Command Line Tools are missing"
+        // state and is fully reachable, because `ToolLocator.locate` returns a
+        // tool even when its version probe produced nothing.
+        //
+        // So a non-zero exit only means "outside" when git says that is what
+        // it means. Everything else is an absence of an answer.
+        let complaint = outcome.standardErrorText.lowercased()
+        if complaint.contains("not a git repository") { return .outside }
         return .unreadable
     }
 
@@ -181,7 +198,7 @@ enum GitIgnoreOracle {
         // about files git is ignoring perfectly well — hence `outputComplete`.
         guard let outcome = runGit(
             gitPath, in: root, ["check-ignore", "--stdin", "-z"], standardInput: input),
-            !outcome.timedOut, outcome.outputComplete
+            !outcome.timedOut, outcome.standardOutputComplete
         else { return nil }
 
         switch outcome.terminationStatus {
@@ -197,7 +214,7 @@ enum GitIgnoreOracle {
         guard !paths.isEmpty else { return [] }
         guard let outcome = runGit(
             gitPath, in: root, ["ls-files", "-z", "--"] + paths.map(\.path)),
-            outcome.terminationStatus == 0, !outcome.timedOut, outcome.outputComplete
+            outcome.terminationStatus == 0, !outcome.timedOut, outcome.standardOutputComplete
         else { return [] }
 
         // ls-files prints paths relative to the repository root, so match on

@@ -292,3 +292,74 @@ struct GitIgnoreOracleVerdictTests {
             "an exit code was treated as an answer although the read never completed")
     }
 }
+
+/// git failing is not git saying "this is not a repository".
+@Suite("A failed git run is undetermined, not a verdict")
+struct GitIgnoreOracleFailureTests {
+
+    private static func fakeGit(_ script: String) throws -> URL {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("failgit-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let tool = dir.appendingPathComponent("git")
+        try ("#!/bin/sh\n" + script + "\n").write(to: tool, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
+        return tool
+    }
+
+    private func undeterminedReason(from git: URL) -> String? {
+        let verdict = GitIgnoreOracle.classify(
+            candidates: [], root: URL(fileURLWithPath: NSTemporaryDirectory()), gitPath: git.path)
+        if case .undetermined(let reason) = verdict { return reason }
+        return nil
+    }
+
+    /// Each of these exited non-zero for a reason that is not "outside a work
+    /// tree", and each was reported as "not inside a git repository".
+    @Test(
+        "a git that fails for its own reasons does not become a verdict about the project",
+        arguments: [
+            ("permission denied", "echo \"fatal: cannot change to 'x': Permission denied\" >&2; exit 128"),
+            ("root vanished", "echo \"fatal: cannot change to 'x': No such file or directory\" >&2; exit 128"),
+            ("broken toolchain", "echo 'xcrun: error: invalid active developer path' >&2; exit 1"),
+            ("dubious ownership", "echo 'fatal: detected dubious ownership in repository' >&2; exit 128"),
+        ])
+    func gitFailureIsNotAVerdict(_ scenario: (name: String, script: String)) throws {
+        let git = try Self.fakeGit(scenario.script)
+        defer { try? FileManager.default.removeItem(at: git.deletingLastPathComponent()) }
+
+        let reason = try #require(undeterminedReason(from: git), "expected .undetermined for \(scenario.name)")
+        #expect(
+            !reason.contains("not inside a git repository"),
+            "\(scenario.name) was reported as a confident verdict about the repository")
+    }
+
+    /// And the genuine answer still reads as itself — otherwise the fix would
+    /// have traded one wrong sentence for another.
+    @Test("git actually saying it is not a repository is still reported as that")
+    func genuineNotARepositoryIsPreserved() throws {
+        let git = try Self.fakeGit("echo 'fatal: not a git repository' >&2; exit 128")
+        defer { try? FileManager.default.removeItem(at: git.deletingLastPathComponent()) }
+
+        let reason = try #require(undeterminedReason(from: git))
+        #expect(reason.contains("not inside a git repository"))
+    }
+
+    /// stdout complete, stderr held open by a grandchild: the answer was read
+    /// in full, so it must be used. Iteration 7's single flag rejected it.
+    @Test("a complete stdout answer is used even when a grandchild holds stderr")
+    func stderrBlockedDoesNotDiscardTheAnswer() throws {
+        let git = try Self.fakeGit("""
+            echo true
+            sleep 20 >/dev/null 2>&1 &
+            exit 0
+            """)
+        defer { try? FileManager.default.removeItem(at: git.deletingLastPathComponent()) }
+
+        let verdict = GitIgnoreOracle.classify(
+            candidates: [], root: URL(fileURLWithPath: NSTemporaryDirectory()), gitPath: git.path)
+        if case .undetermined(let reason) = verdict {
+            Issue.record("a fully-read 'true' was discarded: \(reason)")
+        }
+    }
+}

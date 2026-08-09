@@ -8,8 +8,8 @@ struct CommandOutcome {
     /// True when the process had to be terminated because it outlived its
     /// timeout. Its output is then partial and its status meaningless.
     let timedOut: Bool
-    /// False when a reader thread was still blocked at the deadline, so the
-    /// captured streams may be short of what the child actually wrote.
+    /// False when the **stdout** reader was still blocked at the deadline, so
+    /// that stream may be short of what the child actually wrote.
     ///
     /// This exists because "empty" and "incomplete" needed separating, and one
     /// bool could not do it. EOF on a pipe waits for **every** process holding
@@ -23,7 +23,19 @@ struct CommandOutcome {
     /// reported as a plaintext leak. `ToolLocator` only wants whatever version
     /// string was printed, and a lingering grandchild is not a reason to call
     /// an installed tool missing.
-    let outputComplete: Bool
+    let standardOutputComplete: Bool
+    /// The same, for stderr. Separate because the two streams fail
+    /// independently: EOF waits on every process holding *that* pipe's write
+    /// end, so a grandchild can block one while the other closed cleanly.
+    ///
+    /// One flag for both was iteration 7's mistake, and it produced the
+    /// mirror image of the bug it fixed: `GitIgnoreOracle` reads only stdout,
+    /// but required a combined flag, so a fake git that answered `true` on
+    /// stdout, exited 0, and left a grandchild on stderr came back as
+    /// "git did not finish answering". The comment above the flag even said
+    /// stderr was deliberately excluded from the condition while the code six
+    /// lines down included it.
+    let standardErrorComplete: Bool
 
     var standardOutputText: String { String(decoding: standardOutput, as: UTF8.self) }
     var standardErrorText: String { String(decoding: standardError, as: UTF8.self) }
@@ -192,7 +204,8 @@ enum CommandRunner {
             standardError: errBox.get(),
             terminationStatus: process.terminationStatus,
             timedOut: timedOut,
-            outputComplete: outThread.isFinished && errThread.isFinished
+            standardOutputComplete: outThread.isFinished,
+            standardErrorComplete: errThread.isFinished
         )
     }
 

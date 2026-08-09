@@ -82,10 +82,33 @@ public struct SecretRow: Identifiable, Equatable, Sendable, Decodable {
     public let isEncrypted: Bool
 
     /// Stable across reloads of the same document, because it is derived from
-    /// the row's position in the file rather than from its contents — a row
-    /// keeps its identity when its value changes.
+    /// the row's path rather than from its value — a row keeps its identity
+    /// when its value changes.
+    ///
+    /// ## Why the path components are base64, not the text
+    ///
+    /// The previous form was `"\(component.count):\(component)"`, and a
+    /// length prefix does make a *byte* encoding injective. This is a Swift
+    /// `String`, and Swift string equality is canonical equivalence: `café`
+    /// written NFC and NFD are one value here and `.count` is 4 for both,
+    /// while go-yaml, sops and the C boundary see five bytes and six. Two
+    /// genuinely different keys therefore produced **one** `id`.
+    ///
+    /// What that cost: `SecretDocumentViewModel.pendingChangeSet()` looks each
+    /// baseline row up in `editedValues` by `id`, so both rows matched. One
+    /// edit became two `SecretEdit`s, one deletion became two `SecretRemoval`s,
+    /// and the untouched key was silently overwritten with the edited one's
+    /// value. The Go side cannot catch it — `planChanges` keys by bytes, so
+    /// those are legitimately distinct paths and nothing is contradictory.
+    ///
+    /// Base64 of the UTF-8 bytes is injective over exactly what the rest of
+    /// the stack considers distinct, and it needs no separator discipline
+    /// because the alphabet excludes `:`. Mixing NFC and NFD is not exotic on
+    /// macOS — HFS+ paths and pasted text produce it routinely — and the
+    /// failure mode was permanent loss of a secret the user never touched.
     public var id: String {
-        ([String(document)] + path.map { "\($0.count):\($0)" }).joined(separator: ":")
+        ([String(document)] + path.map { Data($0.utf8).base64EncodedString() })
+            .joined(separator: ":")
     }
 
     public init(

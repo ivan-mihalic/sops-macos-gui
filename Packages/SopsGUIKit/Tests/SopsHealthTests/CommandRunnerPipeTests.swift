@@ -145,7 +145,9 @@ struct CommandRunnerGrandchildTests {
         let result = try #require(
             outcome,
             "a complete stdout answer was discarded because a grandchild still held stderr")
-        #expect(!result.outputComplete, "a blocked reader must be reported as incomplete")
+        #expect(
+            result.standardOutputComplete,
+            "the grandchild's stdout is redirected to /dev/null, so stdout closed cleanly — flagging it incomplete is one stream speaking for the other")
         #expect(result.terminationStatus == 0)
         #expect(result.standardOutputText.trimmingCharacters(in: .whitespacesAndNewlines) == "true")
         #expect(!result.timedOut)
@@ -174,8 +176,11 @@ struct CommandRunnerPartialOutputTests {
             result.standardErrorText.contains("1.2.3"),
             "stderr came back empty because a grandchild kept the pipe open — a tool that reported its version reads as one that said nothing")
         #expect(
-            !result.outputComplete,
-            "the drain is flagged complete although a reader was still blocked, so GitIgnoreOracle would trust a possibly-short answer")
+            !result.standardErrorComplete,
+            "stderr is flagged complete although its reader was still blocked")
+        #expect(
+            !result.standardOutputComplete,
+            "this grandchild inherits stdout too, so stdout is genuinely incomplete and must say so")
     }
 
     @Test("ordinary stdout and stderr are both still complete")

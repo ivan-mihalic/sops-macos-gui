@@ -1158,3 +1158,47 @@ of picking an explanation the suite is now `.serialized` — the control test
 deliberately executes a hook — and the absence assertion settles for up to 1.5 s
 first, because an immediate check would pass while an asynchronously-invoked
 hook was still starting. Five further runs clean.
+
+---
+
+## Iteration 9 (2026-08-09) — two blockers that cannot be closed in this milestone
+
+Iteration 9 returned 26 findings. The ones fixed are in `git log`; these two are
+recorded because closing them is not a local change, and both are the kind of
+thing a future reader will otherwise rediscover from scratch.
+
+27. **`sops/audit` can call `os.Exit` from inside the bridge, and this repo's
+    own logger silencing hides it.** `sops.Tree.Encrypt`/`Decrypt` call
+    `audit.SubmitEvent` — verified live in our engine, three calls per
+    open-plus-save. `audit`'s package `init` reads `/etc/sops/audit.yaml`: a
+    malformed one is `log.Panicf` *in init*, before any `Guard` exists; an
+    unreachable Postgres backend is `log.Fatal` in init; and
+    `PostgresAuditor.Handle` is `log.Fatalf` on every failed INSERT — i.e.
+    `os.Exit(1)` in the middle of `save()`, taking the open document with it.
+    `document.go`'s init points every sops logger at `io.Discard`, so it exits
+    silently.
+    **Why it is not fixed here:** `audit.auditors` is package-private with only
+    a `Register` to add to it, and its `init` runs before ours, so there is
+    nothing to clear and nothing to intercept. `flag.Lookup("test.v")` means
+    `go test` can never reproduce it. The honest defences are a health-check
+    finding when `/etc/sops/audit.yaml` exists, or vendoring a patched `audit`.
+    Requires an admin-created file, which is why it is recorded rather than
+    treated as shipping-blocking.
+
+28. **Every save reindents the whole file when `.sops.yaml` sets
+    `stores.yaml.indent`.** All three store constructions —
+    `document.go:159`, `bridge.go:198`, `bridge.go:290` — pass
+    `config.NewStoresConfig()`, the *defaults*. `LoadStoresConfig` appears
+    nowhere in `Engine/`. The CLI builds it from the project's `.sops.yaml`, so
+    with `indent: 2` a no-op save through the bridge rewrites every line to 4,
+    and the next CLI write flips it back: permanent churn and merge conflicts
+    on exactly the files where conflicts are most dangerous.
+    **Why it is not fixed here:** the C boundary passes document *content*, not
+    paths, so the bridge cannot find the governing `.sops.yaml`. Closing it
+    means threading a config path through `sops_decrypt_to_rows`,
+    `sops_apply_edits` and `sops_apply_changes` and their Swift callers.
+    Context worth keeping: a 10-fixture byte-fidelity matrix (comments,
+    multi-document, anchors, flow style, quoted/folded/literal scalars, empty
+    containers) came back **10 of 10 byte-identical** apart from `mac` and
+    `lastmodified`. The stores config is the only thing that breaks that, and
+    it breaks it for the whole file.
