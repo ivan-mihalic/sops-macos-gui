@@ -453,6 +453,12 @@ Three defects that destroyed data, all reproduced before being touched.
   `LoadPlainFile` doing an extra whole decode for a uniqueness check.
 - `Encrypted: true` is decided by a regex over the value text rather than by the
   file's rules, so a plaintext value shaped like ciphertext is badged encrypted.
+- A symlink to a regular file is followed **outside the project root**, so a
+  scanned repository can make the app open and read any file the user can read
+  (`~/.ssh/id_rsa`, `~/.config/sops/age/keys.txt`) into process memory. Not a
+  secret leak — plaintext-candidate contents are discarded and only names and
+  age *public* keys reach a finding — but it is outside the declared scope and
+  undisclosed.
 - The scan budget counts files, not directories: 25 000 directories reports
   `wasTruncated = false`.
 - `replaceItemAt` — not the writer's `chmod` — decides the final mode of the
