@@ -8,6 +8,22 @@ struct CommandOutcome {
     /// True when the process had to be terminated because it outlived its
     /// timeout. Its output is then partial and its status meaningless.
     let timedOut: Bool
+    /// False when a reader thread was still blocked at the deadline, so the
+    /// captured streams may be short of what the child actually wrote.
+    ///
+    /// This exists because "empty" and "incomplete" needed separating, and one
+    /// bool could not do it. EOF on a pipe waits for **every** process holding
+    /// the write end, so a grandchild that outlives the child keeps a reader
+    /// blocked forever — while the child has already exited 0 and said
+    /// everything it was going to say.
+    ///
+    /// The two callers want opposite things. `GitIgnoreOracle` must have the
+    /// whole answer: a partial ignore list silently promotes the missing
+    /// entries to "not ignored", which is how a gitignored `.env` gets
+    /// reported as a plaintext leak. `ToolLocator` only wants whatever version
+    /// string was printed, and a lingering grandchild is not a reason to call
+    /// an installed tool missing.
+    let outputComplete: Bool
 
     var standardOutputText: String { String(decoding: standardOutput, as: UTF8.self) }
     var standardErrorText: String { String(decoding: standardError, as: UTF8.self) }
@@ -64,8 +80,29 @@ enum CommandRunner {
 
         let outBox = Box<Data>(Data())
         let errBox = Box<Data>(Data())
-        let outThread = Thread { outBox.set(outPipe.fileHandleForReading.readDataToEndOfFile()) }
-        let errThread = Thread { errBox.set(errPipe.fileHandleForReading.readDataToEndOfFile()) }
+        // Chunked rather than `readDataToEndOfFile()`, which is all-or-nothing:
+        // it sets the box only once EOF arrives, so a reader still blocked
+        // yields **empty** data, not partial data.
+        //
+        // That mattered for stderr. EOF waits on every process holding the
+        // write end, so a grandchild outliving the child keeps stderr open
+        // indefinitely — and `ToolLocator` parses stderr, because many tools
+        // print `--version` there. Measured: a fake tool printing its version
+        // to stderr with a lingering grandchild came back `version=nil, raw=""`
+        // — reported as "the tool ran fine and said nothing", which is the
+        // inversion this file calls worse than nothing three paragraphs down.
+        //
+        // Appending as data arrives means whatever the child actually wrote is
+        // available at the deadline whether or not the pipe ever closes.
+        func drain(_ handle: FileHandle, into box: Box<Data>) {
+            while true {
+                let chunk = handle.availableData
+                if chunk.isEmpty { return }
+                box.append(chunk)
+            }
+        }
+        let outThread = Thread { drain(outPipe.fileHandleForReading, into: outBox) }
+        let errThread = Thread { drain(errPipe.fileHandleForReading, into: errBox) }
         outThread.start()
         errThread.start()
 
@@ -150,15 +187,12 @@ enum CommandRunner {
         //
         // stderr is diagnostic here — no caller parses it for a decision — so
         // whatever arrived by the deadline is good enough for it.
-        if !outThread.isFinished {
-            return nil
-        }
-
         return CommandOutcome(
             standardOutput: outBox.get(),
             standardError: errBox.get(),
             terminationStatus: process.terminationStatus,
-            timedOut: timedOut
+            timedOut: timedOut,
+            outputComplete: outThread.isFinished && errThread.isFinished
         )
     }
 
@@ -183,8 +217,8 @@ enum CommandRunner {
 /// Minimal thread-safe box, used to hand data back from a drain thread without
 /// pulling in a heavier concurrency primitive.
 final class Box<Value>: @unchecked Sendable {
-    private var value: Value
-    private let lock = NSLock()
+    fileprivate var value: Value
+    fileprivate let lock = NSLock()
 
     init(_ value: Value) { self.value = value }
 
@@ -198,5 +232,15 @@ final class Box<Value>: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         value = newValue
+    }
+}
+
+extension Box where Value == Data {
+    /// Appends under the same lock, so a drain thread can publish partial
+    /// output as it arrives instead of only at EOF.
+    func append(_ chunk: Data) {
+        lock.lock()
+        defer { lock.unlock() }
+        value.append(chunk)
     }
 }

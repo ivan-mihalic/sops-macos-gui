@@ -146,9 +146,13 @@ enum GitIgnoreOracle {
         guard !candidates.isEmpty else { return [] }
         let input = Data(candidates.map { $0.path + "\0" }.joined().utf8)
 
+        // `outputComplete` is required here and nowhere else in this file:
+        // a short ignore list silently promotes every missing entry to
+        // "not ignored", which surfaces as a confident plaintext-leak report
+        // about files git is ignoring perfectly well.
         guard let outcome = runGit(
             gitPath, in: root, ["check-ignore", "--stdin", "-z"], standardInput: input),
-            !outcome.timedOut
+            !outcome.timedOut, outcome.outputComplete
         else { return nil }
 
         switch outcome.terminationStatus {
@@ -164,7 +168,7 @@ enum GitIgnoreOracle {
         guard !paths.isEmpty else { return [] }
         guard let outcome = runGit(
             gitPath, in: root, ["ls-files", "-z", "--"] + paths.map(\.path)),
-            outcome.terminationStatus == 0, !outcome.timedOut
+            outcome.terminationStatus == 0, !outcome.timedOut, outcome.outputComplete
         else { return [] }
 
         // ls-files prints paths relative to the repository root, so match on

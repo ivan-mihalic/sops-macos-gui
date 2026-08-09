@@ -145,8 +145,49 @@ struct CommandRunnerGrandchildTests {
         let result = try #require(
             outcome,
             "a complete stdout answer was discarded because a grandchild still held stderr")
+        #expect(!result.outputComplete, "a blocked reader must be reported as incomplete")
         #expect(result.terminationStatus == 0)
         #expect(result.standardOutputText.trimmingCharacters(in: .whitespacesAndNewlines) == "true")
         #expect(!result.timedOut)
+    }
+}
+
+/// stderr must survive a grandchild that never closes it.
+@Suite("Partial output is published as it arrives, not only at EOF")
+struct CommandRunnerPartialOutputTests {
+
+    /// `ToolLocator` parses stderr, because many tools print `--version`
+    /// there. With `readDataToEndOfFile` the box was only filled at EOF, and
+    /// EOF waits on every process holding the write end — so a lingering
+    /// grandchild turned a tool that answered correctly into
+    /// `terminationStatus: 0` with empty output. "The tool ran fine and said
+    /// nothing" is the inversion this file elsewhere calls worse than nothing.
+    @Test("stderr written before exit is returned even if a grandchild holds the pipe open")
+    func stderrSurvivesALingeringGrandchild() throws {
+        let outcome = CommandRunner.run(
+            "/bin/sh",
+            arguments: ["-c", "echo 1.2.3 >&2; sleep 25 & exit 0"],
+            timeout: 5)
+
+        let result = try #require(outcome, "the command did not run")
+        #expect(
+            result.standardErrorText.contains("1.2.3"),
+            "stderr came back empty because a grandchild kept the pipe open — a tool that reported its version reads as one that said nothing")
+        #expect(
+            !result.outputComplete,
+            "the drain is flagged complete although a reader was still blocked, so GitIgnoreOracle would trust a possibly-short answer")
+    }
+
+    @Test("ordinary stdout and stderr are both still complete")
+    func bothStreamsStillComplete() throws {
+        let outcome = CommandRunner.run(
+            "/bin/sh",
+            arguments: ["-c", "echo out; echo err >&2"],
+            timeout: 5)
+
+        let result = try #require(outcome)
+        #expect(result.standardOutputText.contains("out"))
+        #expect(result.standardErrorText.contains("err"))
+        #expect(result.terminationStatus == 0)
     }
 }

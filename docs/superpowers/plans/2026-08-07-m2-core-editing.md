@@ -1141,8 +1141,11 @@ guard that never ran. What remains:
     fails and only Discard can clear the dialog.
 25. **`SopsBridge` truncates a payload at the first NUL.** `String(cString:)`
     stops there. Harmless today because JSON escapes U+0000, but `decryptYAML`
-    returns raw plaintext. Worth noting: length-aware `sops_take_result` /
-    `sops_result_len` already exist in `cshim/main.go` and nothing calls them.
+    returns raw plaintext. **Correction (iteration 6):** an earlier version
+    of this item said length-aware `sops_take_result` / `sops_result_len`
+    already existed in `cshim/main.go`. They do not — `grep` finds zero
+    occurrences. The remedy this item pointed at was imaginary; a length-aware
+    boundary would have to be built.
 26. **Go error text reaches the UI and health findings verbatim on the save
     path.** `decryptToRows` deliberately suppresses its own decode error because
     the payload is plaintext; the save path does not apply the same rule, so the
