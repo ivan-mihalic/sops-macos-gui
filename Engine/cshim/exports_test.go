@@ -102,6 +102,14 @@ func TestResultRecoversToo(t *testing.T) {
 //     swallows the panic and then falls off the end of the function, returning
 //     whatever the named results happen to hold — for `result` that is a zero
 //     status, i.e. success reported for a call that panicked.
+//  4. No nested function literal. `recover` only works called directly by the
+//     deferred function, so `go func() { recover() }()` inside it is worse than
+//     no recover at all: the panic escapes and the test says OK.
+//  5. The closure assigns to a **named result**. This is the rule that means
+//     something on its own — rules 2 and 3 ask whether recover is called and
+//     used, this one asks whether the answer can reach the caller. It rejects
+//     `r := recover(); _ = r`, an `if recover() != nil {}` with an empty body,
+//     and anything else that notices the panic and returns success anyway.
 func inspectResultRecovery(src any) (complaints []string, err error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "main.go", src, parser.ParseComments)
@@ -125,7 +133,34 @@ func inspectResultRecovery(src any) (complaints []string, err error) {
 			if !ok || lit.Body == nil {
 				continue
 			}
-			// Rule 2 and 3 together: the recover call has to feed something —
+			// Rule 4: no nested function literal inside the deferred closure.
+			//
+			// `defer func() { go func() { recover() }() }()` satisfied every
+			// other rule here and is **worse than having no recover at all**:
+			// `recover` returns nil anywhere except directly inside the
+			// deferred function, so the panic escapes and terminates the host
+			// — while the test reports OK. A review found this after rules 1–3
+			// had been written specifically to stop the swallow shapes.
+			//
+			// Nothing legitimate in this position needs a closure, so refusing
+			// all of them costs nothing and does not rest on my guessing which
+			// nestings preserve the recover.
+			var nestedLiteral bool
+			ast.Inspect(lit.Body, func(n ast.Node) bool {
+				if n == ast.Node(lit) {
+					return true
+				}
+				if _, ok := n.(*ast.FuncLit); ok {
+					nestedLiteral = true
+					return false
+				}
+				return true
+			})
+			if nestedLiteral {
+				continue
+			}
+
+			// Rules 2 and 3 together: the recover call has to feed something —
 			// a condition, an assignment, a comparison — not stand alone as an
 			// expression statement.
 			ast.Inspect(lit.Body, func(n ast.Node) bool {
@@ -141,12 +176,22 @@ func inspectResultRecovery(src any) (complaints []string, err error) {
 				}
 				return true
 			})
+			// Rule 5: the closure must assign to one of the function's named
+			// results. Without this, every rule above can be satisfied by a
+			// closure that observes the panic and then lets `result` return
+			// its zero `status` — success, for a call that panicked.
+			if recoversAndActs && !assignsToNamedResult(fn, lit.Body) {
+				recoversAndActs = false
+				complaints = append(complaints,
+					"result recovers but never assigns to a named result: the panic is "+
+						"observed and then reported as success")
+			}
 			if recoversAndActs {
 				break
 			}
 		}
 
-		if !recoversAndActs {
+		if !recoversAndActs && len(complaints) == 0 {
 			complaints = append(complaints,
 				"result does not defer a closure that calls recover() and acts on its value; "+
 					"a panic in C.CString, or a nil out-parameter from Swift, would then "+
@@ -156,6 +201,44 @@ func inspectResultRecovery(src any) (complaints []string, err error) {
 	}
 
 	return []string{"no function named result in main.go"}, nil
+}
+
+// assignsToNamedResult reports whether body assigns to any of fn's named
+// result parameters. An unnamed result cannot be set from a deferred closure
+// at all, so a `result` whose status stopped being named would fail this and
+// should — that refactor silently removes the only way the recover can matter.
+func assignsToNamedResult(fn *ast.FuncDecl, body *ast.BlockStmt) bool {
+	names := map[string]bool{}
+	if fn.Type.Results != nil {
+		for _, field := range fn.Type.Results.List {
+			for _, ident := range field.Names {
+				if ident.Name != "_" {
+					names[ident.Name] = true
+				}
+			}
+		}
+	}
+	if len(names) == 0 {
+		return false
+	}
+
+	assigns := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		assign, ok := n.(*ast.AssignStmt)
+		if !ok || assign.Tok == token.DEFINE {
+			// `:=` declares a new variable that shadows the result rather
+			// than setting it — the shape that looks right and does nothing.
+			return true
+		}
+		for _, lhs := range assign.Lhs {
+			if ident, ok := lhs.(*ast.Ident); ok && names[ident.Name] {
+				assigns = true
+				return false
+			}
+		}
+		return true
+	})
+	return assigns
 }
 
 // isRecoverCall reports whether n is a call to the builtin `recover`. It is a
@@ -188,19 +271,69 @@ func isRecoverCall(n ast.Node) bool {
 //
 // Anything else is a complaint. See `complaintsAbout` for the four rules that
 // spell that out and what each one exists to catch.
+// When src is nil it parses **every** non-test Go file in this directory, not
+// just main.go.
+//
+// The single-file version was the hole a review drove a truck through: adding
+// `extra.go` with an unguarded `//export sops_decrypt_yaml_fast` left
+// `go test ./cshim/` reporting `ok`, while `libprobe.h` gained a real,
+// callable, completely unprotected entry point. `exportedEntryPointCount` did
+// not help either — it counted the exports found in main.go, so a *moved*
+// export reddened the count and a *new* one in another file did not. That is
+// precisely the "tenth entry point six months from now" this test says, in its
+// own comment, that it exists to catch.
 func inspectGuardWiring(src any) (exports []string, complaints []string, err error) {
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "main.go", src, parser.ParseComments)
-	if err != nil {
-		return nil, nil, err
-	}
-	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Doc == nil || fn.Body == nil || !hasExportDirective(fn.Doc) {
-			continue
+
+	var files []*ast.File
+	if src != nil {
+		// A synthetic fixture: one in-memory file, named main.go so parse
+		// errors read sensibly.
+		file, parseErr := parser.ParseFile(fset, "main.go", src, parser.ParseComments)
+		if parseErr != nil {
+			return nil, nil, parseErr
 		}
-		exports = append(exports, fn.Name.Name)
-		complaints = append(complaints, complaintsAbout(fn)...)
+		files = []*ast.File{file}
+	} else {
+		pkgs, parseErr := parser.ParseDir(fset, ".", func(info os.FileInfo) bool {
+			return !strings.HasSuffix(info.Name(), "_test.go")
+		}, parser.ParseComments)
+		if parseErr != nil {
+			return nil, nil, parseErr
+		}
+		// Every package in this directory, not a named one: a stray file
+		// declaring `package cshim2` would otherwise be skipped silently, and
+		// cgo would still refuse to build it — so if it is here and it parses,
+		// it is in scope.
+		var names []string
+		for name := range pkgs {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			var paths []string
+			for path := range pkgs[name].Files {
+				paths = append(paths, path)
+			}
+			sort.Strings(paths)
+			for _, path := range paths {
+				files = append(files, pkgs[name].Files[path])
+			}
+		}
+		if len(files) == 0 {
+			return nil, nil, fmt.Errorf("no non-test Go files found in this directory")
+		}
+	}
+
+	for _, file := range files {
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Doc == nil || fn.Body == nil || !hasExportDirective(fn.Doc) {
+				continue
+			}
+			exports = append(exports, fn.Name.Name)
+			complaints = append(complaints, complaintsAbout(fn)...)
+		}
 	}
 	sort.Strings(exports)
 	return exports, complaints, nil
