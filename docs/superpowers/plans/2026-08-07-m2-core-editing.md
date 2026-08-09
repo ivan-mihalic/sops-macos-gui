@@ -1115,3 +1115,43 @@ quotes a secret it found; the accessibility mask is real and its tests are
 non-vacuous; the pasteboard markers and SHA-256-gated clear; `AtomicFileWriter`'s
 ordering; the ThreadSanitizer-clean scanner; the CLI round-trip actually running
 rather than skipping; and ADR 0001 holding throughout.
+
+---
+
+## Iteration 4 (2026-08-09) — still open, carried to M3
+
+Eight of the iteration's fourteen findings were fixed in `fa8dd85`; three of
+those eight were defects in iteration 3's own fixes, including a window-close
+guard that never ran. What remains:
+
+22. **`HealthReport.standard()` runs two synchronous login-shell probes on the
+    main actor** — `ToolLocator` shells out to `$SHELL -lc` twice per refresh,
+    ~95 ms each, measured on the main thread. Not a hang, but it is UI-blocking
+    work on every health run.
+23. **Remove Project persists the deletion before the unsaved-changes guard
+    asks.** `ProjectSidebar` → `ProjectStore.remove` writes `projects.json`
+    first; the prompt then appears over a project that no longer exists, and
+    Cancel cannot restore it — `cancelPendingSwitch()` sets `selection` to an id
+    that is no longer in `groups`. The document stays open and saveable; the
+    project registration is gone with no undo.
+24. **Settings › Key › Forget orphans an open dirty document.** Settings is its
+    own scene, outside `guardedSelection`, so nothing asks. Afterwards
+    `SecretDocumentViewModel.save()` returns `.failed("no decryption key is
+    configured")`, which means every "Save and …" button in all three prompts
+    fails and only Discard can clear the dialog.
+25. **`SopsBridge` truncates a payload at the first NUL.** `String(cString:)`
+    stops there. Harmless today because JSON escapes U+0000, but `decryptYAML`
+    returns raw plaintext. Worth noting: length-aware `sops_take_result` /
+    `sops_result_len` already exist in `cshim/main.go` and nothing calls them.
+26. **Go error text reaches the UI and health findings verbatim on the save
+    path.** `decryptToRows` deliberately suppresses its own decode error because
+    the payload is plaintext; the save path does not apply the same rule, so the
+    never-log constraint rests entirely on the Go side never including document
+    content in a message.
+
+**Resolved rather than deferred:** the ACE mitigation test that a review saw red
+1 of 5 runs. Not reproduced in 11 further runs (8 isolated, 3 full), so instead
+of picking an explanation the suite is now `.serialized` — the control test
+deliberately executes a hook — and the absence assertion settles for up to 1.5 s
+first, because an immediate check would pass while an asynchronously-invoked
+hook was still starting. Five further runs clean.

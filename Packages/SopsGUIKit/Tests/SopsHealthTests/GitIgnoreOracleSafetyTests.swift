@@ -15,7 +15,22 @@ import Testing
 ///
 /// `safe.directory` does not help — the user owns the directory they just
 /// cloned into, which is precisely the case that check exists to allow.
-@Suite("A scanned repository cannot make the app run its code")
+///
+/// ## Why this suite is serialized, and why the absence check waits
+///
+/// A review reported this red in 1 of 5 full runs and could not reproduce it in
+/// 11 more; I could not reproduce it in 11 either (8 isolated, 3 full). That is
+/// not the same as "it is fine" — for an arbitrary-code-execution property, an
+/// unexplained red is the one result you cannot file away.
+///
+/// So two things were done rather than one explanation being picked. The suite
+/// is `.serialized`, because the control test below deliberately *does* execute
+/// a hook and running the two concurrently is the obvious way for one to be
+/// blamed for the other. And the absence assertion settles first: git may
+/// invoke an fsmonitor hook asynchronously, so checking immediately could pass
+/// while the hook was still starting — a false negative in the direction that
+/// matters, and a plausible source of an occasional red.
+@Suite("A scanned repository cannot make the app run its code", .serialized)
 struct GitIgnoreOracleSafetyTests {
 
     private static var gitPath: String? {
@@ -54,6 +69,13 @@ struct GitIgnoreOracleSafetyTests {
         try "SECRET=not-a-real-value\n".write(to: dotEnv, atomically: true, encoding: .utf8)
 
         _ = GitIgnoreOracle.classify(candidates: [dotEnv], root: repo, gitPath: git)
+
+        // Settle before asserting absence — an immediate check would pass while
+        // an asynchronously-invoked hook was still starting.
+        let deadline = Date().addingTimeInterval(1.5)
+        while Date() < deadline, !FileManager.default.fileExists(atPath: marker.path) {
+            usleep(50_000)
+        }
 
         #expect(
             !FileManager.default.fileExists(atPath: marker.path),
