@@ -780,6 +780,19 @@ public struct ProjectScanner {
                 // A symlink to a regular file needs no disclosure at all: the
                 // tail read `open`s the path, and `open` follows the link, so
                 // the file behind it is read exactly like any other.
+                //
+                // Anything else behind the link is not a file to read, and one
+                // of them is a trap: the direct branch below skips FIFOs,
+                // sockets and device nodes precisely because there is nothing
+                // to read, but the symlink branch used to check only for a
+                // *directory* target. A symlink to a FIFO therefore reached
+                // `tailBytes`, which calls `open(path, O_RDONLY)` with no
+                // `O_NONBLOCK` and no timeout, and a FIFO with no writer blocks
+                // there forever — inside `DispatchQueue.concurrentPerform`,
+                // where cancelling the Task cannot reach it. One symlink in a
+                // scanned repository hung the health scan for the rest of the
+                // session. Verified: the scan never returned.
+                guard (linkTarget.st_mode & S_IFMT) == S_IFREG else { continue }
             } else if values.isDirectory == true {
                 let name = url.lastPathComponent
                 if Self.skippedDirectoryNames.contains(name) {

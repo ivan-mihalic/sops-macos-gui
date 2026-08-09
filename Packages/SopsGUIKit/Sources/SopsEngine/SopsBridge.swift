@@ -157,11 +157,32 @@ public enum SopsBridge {
     }
 }
 
-extension String {
+public extension String {
     /// The generated header takes non-const `char*`, so hand it a mutable copy.
     /// The pointer is valid only for the duration of `body`.
     func withGoString<R>(_ body: (UnsafeMutablePointer<CChar>) -> R) -> R {
         var bytes = Array(utf8CString)
         return bytes.withUnsafeMutableBufferPointer { body($0.baseAddress!) }
+    }
+
+    /// Whether this string can cross a NUL-terminated C boundary intact.
+    ///
+    /// A raw NUL is valid UTF-8, so it survives `String(contentsOf:)` and
+    /// reaches `withGoString`, where `utf8CString` ends the argument early and
+    /// **everything after it is silently gone**. Two complete, individually
+    /// valid SOPS documents joined by one NUL byte open without complaint
+    /// showing only the first document's rows — and the next save writes back
+    /// what was shown, permanently deleting the second document's secrets. The
+    /// user never saw them and nothing reported anything. The real `sops` CLI
+    /// refuses the same file (`yaml: control characters are not allowed`), so
+    /// this was also a read-direction divergence from the CLI that ADR 0001
+    /// requires round-tripping with.
+    ///
+    /// The durable fix is a length-prefixed boundary, which ADR 0001 already
+    /// anticipates for the binary format. Until that exists, refusing is the
+    /// honest answer: this app cannot read the file, and saying so beats
+    /// showing half of it.
+    public var crossesCBoundaryIntact: Bool {
+        !utf8.contains(0)
     }
 }

@@ -304,6 +304,46 @@ public final class SecretDocumentViewModel {
             return
         }
 
+        // A load that produced no fingerprint over a file that *is* there did
+        // not read what it thinks it read. `FileFingerprint.of` answers `nil`
+        // for anything that is not a regular file — a dangling symlink
+        // included — and the fingerprint and the read are two separate
+        // syscalls, so a symlink flipped between them yields a successful load
+        // with no fingerprint. The save then resolves the link and overwrites
+        // whatever it points at *now*, reporting success: reproduced
+        // overwriting a file outside the repository with SOPS ciphertext while
+        // the real document went unchanged, at 20–28% of loads under a flipping
+        // symlink.
+        //
+        // Refused here rather than in `AtomicFileWriter`: `expecting: nil` is a
+        // legitimate contract there — writing through a symlink and creating a
+        // file that was never there both rely on it, and both are covered by
+        // tests that encode them as intended. Tightening the writer reddened
+        // eight of them. What is not legitimate is *this* type reaching a save
+        // with no fingerprint for a file it just read.
+        if fingerprintFile(fileURL) == nil, FileManager.default.fileExists(atPath: fileURL.path) {
+            resetToEmpty()
+            loadState = .failed(
+                "this file changed while it was being opened, so this app cannot tell what it read: "
+                + fileURL.lastPathComponent)
+            return
+        }
+
+        // A raw NUL is valid UTF-8, so it survives the read and then ends the
+        // argument early at the C boundary — everything after it is silently
+        // gone. Two complete SOPS documents joined by one NUL byte opened
+        // showing only the first, and the next save wrote back what was shown,
+        // deleting the second document's secrets permanently. The real `sops`
+        // CLI refuses the same file. Refusing is the honest answer until the
+        // boundary is length-prefixed; showing half a file is not.
+        guard contents.crossesCBoundaryIntact else {
+            resetToEmpty()
+            loadState = .failed(
+                "this file contains a NUL byte, which this app cannot read without silently "
+                + "dropping everything after it: " + fileURL.lastPathComponent)
+            return
+        }
+
         // `body` receives the key and immediately hops off this actor itself
         // (`Self.decrypt`, below) — the key is never copied out into a local
         // variable here. See `SessionKeyStore.withKey(_:)`'s async overload.
