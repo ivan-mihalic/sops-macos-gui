@@ -24,13 +24,33 @@ let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
 let iconset = root
     .appendingPathComponent("App/Assets.xcassets/AppIcon.appiconset", isDirectory: true)
 
-/// macOS icons do not fill their canvas: the artwork sits in a rounded square
-/// inset from the edge, and the system's own grid puts that square at 824/1024
-/// with a corner radius of 185/1024. Matching it is why the icon looks the same
-/// size as its neighbours in the Dock instead of slightly too big.
+/// Full-bleed: the plate fills the canvas edge to edge.
+///
+/// It used to follow Apple's grid, which insets the artwork to 824/1024 with a
+/// 185 corner radius — that inset is why a stock icon lines up with its
+/// neighbours in the Dock rather than looking slightly too big. Asked for
+/// explicitly and kept deliberately: the icon is also drawn at 96 pt in the
+/// About pane and in `docs/GUIDE.md`, where the inset read as a small icon
+/// floating in a box rather than as an icon.
+///
+/// The trade is real and worth naming: against apps that do follow the grid,
+/// this one now sits marginally larger in the Dock.
+///
+/// The corner radius is the grid's own ratio carried over rather than a new
+/// number — 185/824 of the plate, which at a full 1024 canvas is 230. Keeping
+/// the ratio is what makes it still read as a macOS icon at 16 pt.
 let canvas: CGFloat = 1024
-let plateInset: CGFloat = 100
-let plateRadius: CGFloat = 185
+let plateInset: CGFloat = 0
+let plateRadius: CGFloat = 230
+
+/// Everything below the plate is drawn in the coordinates it was designed in,
+/// against the old 824 plate, then scaled about the centre to the plate that is
+/// actually being drawn. Two reasons for the indirection rather than 30 edited
+/// constants: the padlock's proportions stay exactly as they were reviewed, and
+/// changing `plateInset` above still produces a correct icon instead of a
+/// correctly-sized plate with an undersized lock in it.
+let designPlate: CGFloat = 824
+let artScale: CGFloat = (canvas - plateInset * 2) / designPlate
 
 func drawIcon(into context: CGContext) {
     context.setAllowsAntialiasing(true)
@@ -61,14 +81,28 @@ func drawIcon(into context: CGContext) {
 
     // A hairline along the top edge — the one cue that keeps the plate from
     // looking flat against a dark Dock.
+    //
+    // Clipped to the plate, which matters now that the plate reaches the
+    // canvas edge: a 6 pt stroke is centred on the path, so without this the
+    // outer 3 pt would be cut off by the bitmap on three sides and survive on
+    // none — a hairline that thins out where it leaves the canvas.
     context.saveGState()
     context.addPath(platePath)
+    context.clip()
+    context.addPath(platePath)
     context.setStrokeColor(CGColor(colorSpace: space, components: [1, 1, 1, 0.14])!)
-    context.setLineWidth(6)
+    context.setLineWidth(12)
     context.strokePath()
     context.restoreGState()
 
-    // The padlock. Body first, then the shackle behind it.
+    // The padlock, in design coordinates. See `artScale`.
+    context.saveGState()
+    context.translateBy(x: canvas / 2, y: canvas / 2)
+    context.scaleBy(x: artScale, y: artScale)
+    context.translateBy(x: -canvas / 2, y: -canvas / 2)
+    defer { context.restoreGState() }
+
+    // Body first, then the shackle behind it.
     let bodyWidth: CGFloat = 420
     let bodyHeight: CGFloat = 330
     let body = CGRect(x: (canvas - bodyWidth) / 2, y: 300, width: bodyWidth, height: bodyHeight)
@@ -93,14 +127,27 @@ func drawIcon(into context: CGContext) {
     context.strokePath()
     context.restoreGState()
 
+    // Body, with the keyhole punched out of it — inside a transparency layer,
+    // which is the whole point of the layer.
+    //
+    // This used to `.destinationOut` straight onto the context, and the comment
+    // above it claimed the plate showed through. It did not: `destinationOut`
+    // clears the destination *alpha*, so the keyhole was a hole through the
+    // entire icon, plate included. Invisible on the white backgrounds this was
+    // ever looked at against — the About pane, a Finder list — and a red hole
+    // the moment you composite it over anything else, which a Dock and a
+    // wallpaper both are. Found by compositing the PNG over flat red.
+    //
+    // Inside `beginTransparencyLayer`, `destinationOut` reaches only what the
+    // layer itself drew, so the hole is punched in the body and the plate
+    // underneath survives.
     context.saveGState()
+    context.beginTransparencyLayer(auxiliaryInfo: nil)
+
     context.addPath(CGPath(roundedRect: body, cornerWidth: 64, cornerHeight: 64, transform: nil))
     context.setFillColor(CGColor(colorSpace: space, components: [0.98, 0.80, 0.35, 1])!)
     context.fillPath()
-    context.restoreGState()
 
-    // Keyhole, punched out of the body so the plate shows through.
-    context.saveGState()
     let keyholeCentre = CGPoint(x: canvas / 2, y: body.midY + 28)
     let keyhole = CGMutablePath()
     keyhole.addEllipse(in: CGRect(x: keyholeCentre.x - 44, y: keyholeCentre.y - 44,
@@ -112,6 +159,8 @@ func drawIcon(into context: CGContext) {
     context.addPath(keyhole)
     context.setBlendMode(.destinationOut)
     context.fillPath()
+
+    context.endTransparencyLayer()
     context.restoreGState()
 }
 
