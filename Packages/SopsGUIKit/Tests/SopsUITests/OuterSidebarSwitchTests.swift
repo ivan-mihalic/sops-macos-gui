@@ -250,8 +250,16 @@ struct OuterSidebarWiringTests {
             source.contains("request: { requested in requestSectionSwitch(to: requested) }"),
             "the binding's request handler no longer calls requestSectionSwitch — a click on About writes selection directly and the open document dies unasked")
         #expect(
-            source.contains("switch Self.sectionSwitchDecision("),
+            source.contains("Self.sectionSwitchDecision("),
             "requestSectionSwitch no longer consults sectionSwitchDecision")
+        // The decision's *effect* used to be applied inline here, where nothing
+        // could observe it — swapping `pendingSection` for `selection` in the
+        // ask branch passed all 685 tests and silently lost the user's edits.
+        // It goes through `Self.applying(...)` now, and every branch of that is
+        // asserted behaviourally in `SectionSwitchEffectTests`.
+        #expect(
+            source.contains("Self.applying("),
+            "requestSectionSwitch applies the decision inline again, where no test can see it")
     }
 }
 

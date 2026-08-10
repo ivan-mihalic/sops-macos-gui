@@ -201,18 +201,61 @@ public struct AppShell: View {
             documentIsDirty: documentIsDirty, saveIsInFlight: saveIsInFlight)
     }
 
+    /// This view's two pieces of switch state, so the transition below can be a
+    /// pure function.
+    ///
+    /// Extracted because the decision was computed correctly and **connected to
+    /// nothing observable**: changing the `.askAboutUnsavedChanges` line from
+    /// `pendingSection = requested` to `selection = requested` passed all 685
+    /// tests. That change is silent data loss — a user with unsaved secret
+    /// edits clicks About or Settings, no sheet appears, the editor is torn
+    /// down, the edits are gone, which is the entire reason this guard exists.
+    /// `OuterSidebarSwitchTests` covered the pure decision,
+    /// `OuterSidebarWiringTests` covered the source text, and nothing read
+    /// `pendingSection`.
+    struct SectionSwitchState: Equatable {
+        var selection: Section
+        var pendingSection: Section?
+    }
+
+    /// The state a decision produces. Total and pure, so every branch is
+    /// asserted in `SectionSwitchEffectTests` — including the one that must
+    /// never move `selection`.
+    static func applying(_ decision: WorkspaceSwitchDecision,
+                         requested: Section,
+                         to state: SectionSwitchState) -> SectionSwitchState {
+        var next = state
+        switch decision {
+        case .alreadyThere:
+            break
+        case .proceed:
+            next.selection = requested
+        case .askAboutUnsavedChanges:
+            // Deliberately only `pendingSection`. Moving `selection` here is
+            // the data loss described above.
+            next.pendingSection = requested
+        case .waitForSaveInFlight:
+            // Nothing yet — the caller re-asks once the save lands.
+            break
+        }
+        return next
+    }
+
     private func requestSectionSwitch(to requested: Section) {
-        switch Self.sectionSwitchDecision(
+        let decision = Self.sectionSwitchDecision(
             from: selection, to: requested,
             documentIsDirty: unsavedChanges.isDirty,
             saveIsInFlight: unsavedChanges.isSaving)
-        {
-        case .alreadyThere:
+
+        let next = Self.applying(
+            decision, requested: requested,
+            to: SectionSwitchState(selection: selection, pendingSection: pendingSection))
+        selection = next.selection
+        pendingSection = next.pendingSection
+
+        switch decision {
+        case .alreadyThere, .proceed, .askAboutUnsavedChanges:
             return
-        case .proceed:
-            selection = requested
-        case .askAboutUnsavedChanges:
-            pendingSection = requested
         case .waitForSaveInFlight:
             // Unreachable in practice — the sidebar is `.disabled` while a
             // save is in flight — but decided rather than assumed, because
