@@ -135,6 +135,29 @@ public struct AppShell: View {
             } message: {
                 Text(sectionSaveErrorMessage ?? "")
             }
+        } content: {
+            // The middle column of a three-column `NavigationSplitView` — the
+            // shape Apple's own three-pane apps use, and the reason this is no
+            // longer a sidebar plus three side-by-side panes.
+            //
+            // Always the project list, including while About or Settings is
+            // showing, the way Mail keeps the message list up while you read a
+            // message. Switching on `selection` and returning `EmptyView()` for
+            // those two was tried and is a trap: `NavigationSplitView` does not
+            // treat an empty column as an absent one, and About's minimum
+            // height jumped to 1382 pt.
+            //
+            // Nothing about the unsaved-changes guard moved. `ProjectSidebar`
+            // still writes `projects.selection` and `ProjectWorkspaceView`'s
+            // `.onChange(of: projects.selection)` still routes that through
+            // `requestProjectSwitch`. Which column a view sits in does not
+            // change who asks before discarding a document — which is why this
+            // needed no edit to `WorkspaceSwitchDecision` or any of its three
+            // callers, and why all six of the test files that pin them stayed
+            // green through it.
+            ProjectSidebar(model: projects)
+                .navigationSplitViewColumnWidth(min: 200, ideal: 240)
+                .disabled(unsavedChanges.isSaving)
         } detail: {
             switch selection {
             case .projects:
@@ -407,19 +430,12 @@ private struct ProjectWorkspaceView: View {
         // split view with three columns, which is what this is now — the
         // outer one supplies the sidebar, and these three panes sit in its
         // detail.
+        // Two panes, not three: the project list lives in the window's
+        // `content:` column now (see `AppShell.body`). What stays here is the
+        // pair that belongs together — the selected project's files and the
+        // document being edited — along with the guards that protect the open
+        // document, which did not move and did not change.
         HSplitView {
-            ProjectSidebar(model: projects)
-                .frame(minWidth: 180, idealWidth: 220, maxHeight: .infinity)
-                // Everything that can leave the open document is unavailable
-                // while that document is being written, for the same reason
-                // `SecretEditorView` already disables its own rows and
-                // toolbar: a save is not interruptible, so a control that
-                // looks live but cannot be honoured until the save lands
-                // should not look live. `requestProjectSwitch`/
-                // `requestFileSwitch` still handle the case, because a click
-                // can land in the instant before the disable takes effect and
-                // a correctness property may not rest on a `.disabled`.
-                .disabled(openDocumentIsSaving)
             fileListPane
                 .frame(minWidth: 180, idealWidth: 240, maxHeight: .infinity)
                 .disabled(openDocumentIsSaving)

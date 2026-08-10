@@ -76,6 +76,46 @@ throughout, never a raw key like `sidebar.projects`.
   outside of that specific slot is unaffected — see `Snapshot.swift`'s header for what was tried.
   Use the standalone `ProjectSidebar`/`HealthPanel` snapshots to actually check sidebar content.
 
+## Test fixtures fill the disk — clean up before you finish
+
+The suite builds its scratch trees as `$TMPDIR/<label>-<UUID>` and, with almost
+no exceptions, never deletes them. macOS does not reap `$TMPDIR` while the login
+session is alive, so every `swift test` is a permanent deposit.
+
+Measured on 2026-08-10, after three days of iterating here: **244 376 leftover
+entries, 117 GB.** The bulk was `ProjectHealthCheckLargeFileTests` — 2 529
+`large-*` directories holding 506 copies of a 200 MB `huge-asset.bin`, 113 GB by
+itself. The rest came from `project-*`, `vm-fixture-*`, `sops-spike-*` (101 246
+of those alone), `repo-*`, `atomicwriter-*`, `shell-harness-*`, `cli-decrypt-*`
+and ~70 other labels. The disk was down to 71 GB free on a 926 GB volume and the
+cause was invisible from the repo — nothing in the working tree grows.
+
+**Obligations, in order:**
+
+1. **Ran the suite in this session? Run the cleanup before you report done.**
+   ```bash
+   ./Scripts/clean-test-temp.sh            # dry run: count + reclaimable size
+   ./Scripts/clean-test-temp.sh --apply
+   ```
+   It removes `$TMPDIR` entries whose name ends in a UUID — the shape every
+   fixture helper here produces — and only those older than 60 minutes, so a run
+   in another terminal is never pulled out from under itself. Use
+   `--min-age 0` only when you know nothing else is running.
+2. **Writing a new test that touches the filesystem? Delete the tree yourself.**
+   Do not add another helper that leaks. In a `Testing` suite:
+   ```swift
+   let root = try ProjectFixture.makeDirectory("thing")
+   defer { try? FileManager.default.removeItem(at: root) }
+   ```
+   A `deinit` on the suite type works too when the tree is per-suite rather than
+   per-test. The existing helpers — `ProjectFixture.makeDirectory`,
+   `makeProjectRoot`, `scratchDirectory` — return a URL and clean up nothing;
+   that is the defect, not the pattern to copy.
+3. **Anything writing hundreds of MB is a fixture that must die in the same
+   test.** `huge-asset.bin` is 200 MB per invocation. A leaked one is not noise.
+
+Quick check at any point: `du -sh "$TMPDIR"`. Healthy is under a gigabyte.
+
 ## Hard constraints
 
 - **arm64-only.** One slice, everywhere.

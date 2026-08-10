@@ -499,3 +499,37 @@ struct DetailPageHeightTests {
             """))
     }
 }
+
+@Suite("Moving the project list to its own column did not unwire its guard")
+struct ThreeColumnGuardWiringTests {
+
+    /// The project list moved out of `ProjectWorkspaceView`'s `HSplitView` and
+    /// into the window's `content:` column, to make the app a real
+    /// three-column `NavigationSplitView` — measured effect: the minimum window
+    /// width fell from 1138 pt to 910 pt, and columns collapse natively.
+    ///
+    /// The whole reason that move was safe is that it changed *where a view
+    /// sits*, not *who asks before discarding a document*. `ProjectSidebar`
+    /// writes `projects.selection`; `ProjectWorkspaceView` observes it and
+    /// routes through `requestProjectSwitch`. Both halves are asserted here,
+    /// because the failure if they ever come apart is silent: a click on
+    /// another project would take the open dirty document with it, which is
+    /// the defect `WorkspaceSwitchDecision` exists for and which this
+    /// milestone has already produced three times by other routes.
+    @Test("the project list writes the selection and the workspace still guards it")
+    func projectGuardStillWired() throws {
+        let source = try String(contentsOf: MainWindowSizeTests.repositoryRoot
+            .appendingPathComponent("Packages/SopsGUIKit/Sources/SopsUI/AppShell.swift"),
+            encoding: .utf8)
+
+        #expect(source.contains("} content: {"),
+                Comment(rawValue: "the app is back to a two-column split view"))
+        #expect(source.contains(".onChange(of: projects.selection, initial: true)"),
+                Comment(rawValue: """
+                    nothing observes the project selection any more — a click on another \
+                    project would discard an open dirty document with no prompt
+                    """))
+        #expect(source.contains("requestProjectSwitch(to: newValue)"),
+                Comment(rawValue: "the project selection no longer routes through its guard"))
+    }
+}
