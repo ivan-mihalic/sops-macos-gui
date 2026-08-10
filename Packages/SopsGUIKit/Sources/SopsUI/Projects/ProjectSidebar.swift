@@ -229,16 +229,27 @@ public struct ProjectSidebar: View {
             }
 
             Divider()
-            HStack {
-                Button {
-                    presentOpenPanel()
-                } label: {
-                    Label(.actionAddProject, systemImage: "plus")
-                }
-                .buttonStyle(.plain)
-                Spacer()
+            // The whole footer row is the button, not just the words.
+            //
+            // Measured on the running app with `Scripts/ui-probe.swift`:
+            // `AXButton "Add Project…" 101x16` sitting in a 220 pt sidebar —
+            // click anywhere but the text and nothing happened. Same defect
+            // as the About/Settings rows had, same cause: `.buttonStyle(.plain)`
+            // makes the hit region the *rendered* content, and padding renders
+            // nothing.
+            //
+            // The `Spacer()` that used to sit beside it is gone: it pushed the
+            // label left inside a row the button did not own, which is exactly
+            // how the dead area got there.
+            Button {
+                presentOpenPanel()
+            } label: {
+                Label(.actionAddProject, systemImage: "plus")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .contentShape(Rectangle())
             }
-            .padding(8)
+            .buttonStyle(.plain)
         }
         .background(isDropTargeted ? Color.accentColor.opacity(0.08) : Color.clear)
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted, perform: handleDrop)

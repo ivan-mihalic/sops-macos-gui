@@ -1,3 +1,4 @@
+import SopsProjects
 import SwiftUI
 import Foundation
 import SopsHealth
@@ -366,4 +367,46 @@ struct SidebarHitAreaTests {
         #expect(source.contains("ForEach(Section.pinnedToBottom"),
                 Comment(rawValue: "the About/Settings rows are not in the sidebar list at all"))
     }
+}
+
+
+@Suite("Click targets are the size of the control, not of its glyph")
+@MainActor
+struct ClickTargetTests {
+
+    /// Measured on the running app with `Scripts/ui-probe.swift`, walking the
+    /// project → file list → editor flow with a seeded `ProjectStore`:
+    ///
+    ///     AXButton "Add Project…"            101x16
+    ///     AXButton "Remove the selected key"  37x11
+    ///     AXButton "Add a key"                37x20
+    ///
+    /// All three are `.buttonStyle(.plain)`-style controls whose hit region is
+    /// whatever they draw. "Add Project…" was 101 pt of text in a 220 pt
+    /// sidebar footer; the minus button was **eleven points tall**, because a
+    /// `minus` glyph is a short bar — and its plus neighbour was 20, so the
+    /// pair did not even match.
+    @Test("the Add Project control fills the sidebar footer")
+    func addProjectFillsTheFooter() throws {
+        let width: CGFloat = 240
+        let nodes = AXProbe.tree(size: CGSize(width: width, height: 400)) {
+            ProjectSidebar(model: ProjectSidebarModel(store: ProjectStore(fileURL: Self.throwaway)))
+        }
+        guard let button = nodes.first(where: {
+            $0.label.hasPrefix("Add Project") && $0.role.contains("Button")
+        }) else {
+            Issue.record("no Add Project button in the rendered tree")
+            return
+        }
+        #expect(button.frame.width > width * 0.7, Comment(rawValue: """
+            Add Project… is \(Int(button.frame.width)) pt wide in a \(Int(width)) pt sidebar, \
+            so most of the footer row does nothing when clicked
+            """))
+    }
+
+    /// A store in a throwaway directory — never `ProjectStore.defaultFileURL`,
+    /// which is the user's real project list.
+    static let throwaway = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("click-target-tests-\(UUID().uuidString)")
+        .appendingPathComponent("projects.json")
 }

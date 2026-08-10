@@ -300,7 +300,15 @@ public struct SecretEditorView: View {
             Button {
                 if let selectedRowID { viewModel.removeRow(id: selectedRowID) }
             } label: {
+                // A square hit area, not the glyph's own bounds. Measured on
+                // the running app: `AXButton "Remove the selected key" 37x11`
+                // — eleven points tall, because a `minus` glyph is a short
+                // horizontal bar and the button shrank to it. The `plus` next
+                // to it came out 37x20 for the same reason, so the two
+                // controls were different sizes as well as too small.
                 Image(systemName: "minus")
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
             }
             .disabled(!canRemoveSelection || isSaving)
             .help(canRemoveSelection
@@ -313,6 +321,8 @@ public struct SecretEditorView: View {
                     destination: viewModel.addDestination(forSelectedRowID: selectedRowID))
             } label: {
                 Image(systemName: "plus")
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
             }
             .disabled(viewModel.loadState != .loaded || isSaving)
             .help(LocalizedKey.editorAddRow.text)

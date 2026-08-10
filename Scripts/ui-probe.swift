@@ -30,6 +30,7 @@
 //   xcrun swift Scripts/ui-probe.swift limits <windowIndex>
 //   xcrun swift Scripts/ui-probe.swift tree <windowIndex> [maxDepth]
 //   xcrun swift Scripts/ui-probe.swift press <windowIndex> "<title or label>"
+//   xcrun swift Scripts/ui-probe.swift selectrow <windowIndex> "<row label>"
 //
 // Requires the controlling process to be trusted for Accessibility. It is
 // checked up front rather than failing later with an opaque -25204.
@@ -213,6 +214,31 @@ case "tree":
     guard arguments.count >= 2, let index = Int(arguments[1]) else { fail("usage: tree <i> [depth]") }
     let maxDepth = arguments.count > 2 ? Int(arguments[2]) ?? 6 : 6
     dump(window(at: index), depth: 0, maxDepth: maxDepth)
+
+case "selectrow":
+    // Selecting a list row is not a press: `AXPress` on the row's static text
+    // does nothing, and the row itself often has no press action. The row is
+    // selected by setting `AXSelected`, which is what an assistive client does.
+    guard arguments.count == 3, let index = Int(arguments[1]) else {
+        fail("usage: selectrow <i> <label>")
+    }
+    func rowContaining(_ element: AXUIElement, _ label: String, depth: Int = 0) -> AXUIElement? {
+        if depth > 40 { return nil }
+        let role = string(element, kAXRoleAttribute as String)
+        if role == (kAXRowRole as String), find(in: element, matching: label) != nil {
+            return element
+        }
+        for child in children(element) {
+            if let hit = rowContaining(child, label, depth: depth + 1) { return hit }
+        }
+        return nil
+    }
+    guard let row = rowContaining(window(at: index), arguments[2]) else {
+        fail("no row containing \(arguments[2])")
+    }
+    let selected = AXUIElementSetAttributeValue(
+        row, kAXSelectedAttribute as CFString, kCFBooleanTrue)
+    print(selected == .success ? "selected" : "select failed: \(selected.rawValue)")
 
 case "press":
     guard arguments.count == 3, let index = Int(arguments[1]) else { fail("usage: press <i> <label>") }
