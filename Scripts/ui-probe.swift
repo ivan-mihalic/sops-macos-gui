@@ -294,7 +294,12 @@ case "setvalue":
 
 case "press":
     guard arguments.count == 3, let index = Int(arguments[1]) else { fail("usage: press <i> <label>") }
-    guard let element = find(in: window(at: index), matching: arguments[2]) else {
+    // The window first, then the whole application. An open `Menu`'s items are
+    // not children of the window — AppKit puts them in a menu window of their
+    // own — so a window-only search finds the menu button and then cannot find
+    // anything inside it.
+    guard let element = find(in: window(at: index), matching: arguments[2])
+            ?? find(in: app, matching: arguments[2]) else {
         fail("no element titled \(arguments[2])")
     }
     let result = AXUIElementPerformAction(element, kAXPressAction as CFString)

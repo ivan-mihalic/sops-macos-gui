@@ -120,6 +120,16 @@ enum SnapshotRenderer {
     /// propagates up to a nonzero exit code rather than a silently-written
     /// empty or placeholder file.
     static func png(for snapshot: Snapshot) -> Data? {
+        // Increased Contrast is deliberately not offered here, and it was
+        // tried. `NSAppearance(named: .accessibilityHighContrastAqua)` resolves
+        // and can be assigned, and the resulting PNG came out **byte-identical**
+        // to the ordinary one — verified with `cmp`. SwiftUI derives
+        // `\.colorSchemeContrast` from the *system* setting
+        // (`NSWorkspace.accessibilityDisplayShouldIncreaseContrast`), not from a
+        // view's appearance, and this app's surfaces use SwiftUI colours rather
+        // than AppKit-drawn chrome. Shipping those images would have been a
+        // catalog full of snapshots claiming an appearance they were not
+        // rendered in.
         let appearance = NSAppearance(named: snapshot.colorScheme == .dark ? .darkAqua : .aqua)
         // See "Forcing native chrome to the right appearance" above.
         NSApplication.shared.appearance = appearance
