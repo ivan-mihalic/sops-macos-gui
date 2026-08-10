@@ -1,5 +1,10 @@
 # Build artifacts
 Engine/build/
+# xcodebuild's derived data. `mac-release`'s swift-xcodegen driver points
+# -derivedDataPath here, so a release run drops a ~100 MB static archive and a
+# signed .app into the working tree — one `git add -A` away from a push GitHub
+# rejects outright (measured: libsopsbridge.a is 109 MB, over the hard limit).
+/build/
 .build/
 DerivedData/
 *.xcframework

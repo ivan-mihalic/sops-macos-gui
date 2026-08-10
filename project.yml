@@ -10,6 +10,10 @@ settings:
     MARKETING_VERSION: "0.1.0"
     # Sparkle compares builds by CFBundleVersion (sparkle:version), so this has
     # to rise on every published build even when the marketing version does not.
+    # Placeholder only — the real value is baked in by
+    # `Scripts/bake-build-number.sh` after the build (`git rev-list --count
+    # HEAD`). Do not raise this by hand; raising it here would go stale the
+    # moment someone forgot, which is the failure it replaces.
     CURRENT_PROJECT_VERSION: "1"
     ARCHS: arm64
     ONLY_ACTIVE_ARCH: YES
@@ -53,6 +57,13 @@ targets:
         # user's consent for the *engine* freshness check; the app updater asks
         # separately, on first run.
         SUEnableAutomaticChecks: false
+    postbuildScripts:
+      # Sparkle compares builds by CFBundleVersion, so it has to be a real
+      # monotonic number rather than the placeholder in `settings`. See the
+      # script.
+      - name: "Bake build number and commit into Info.plist"
+        basedOnDependencyAnalysis: false
+        script: bash "$SRCROOT/Scripts/bake-build-number.sh"
     dependencies:
       - package: Sparkle
       - package: SopsGUIKit
