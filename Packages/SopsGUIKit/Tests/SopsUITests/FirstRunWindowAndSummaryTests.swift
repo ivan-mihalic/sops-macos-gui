@@ -213,17 +213,6 @@ struct AboutAndSettingsTests {
         #expect(facts.versionLine == "0.1.0 (123)")
     }
 
-    /// Settings is a separate scene, not a pane — selecting a sidebar row can
-    /// never show it. The row has to open the window.
-    @Test("the Settings row opens the Settings window instead of selecting a pane")
-    func settingsRowOpensTheWindow() throws {
-        let source = try String(contentsOf: MainWindowSizeTests.repositoryRoot
-            .appendingPathComponent("Packages/SopsGUIKit/Sources/SopsUI/AppShell.swift"),
-            encoding: .utf8)
-        #expect(source.contains("SettingsLink"),
-                Comment(rawValue: "the Settings row still just changes `selection`, which shows a placeholder"))
-    }
-
     @Test("the About row shows the About pane")
     func aboutRowShowsThePane() throws {
         let source = try String(contentsOf: MainWindowSizeTests.repositoryRoot
@@ -237,3 +226,106 @@ struct AboutAndSettingsTests {
 /// Only here so `Bundle(for:)` can name a bundle that has none of the app's
 /// Info.plist keys.
 private final class EmptyBundleMarker {}
+
+@Suite("A restored window frame that makes no sense is corrected")
+struct RestoredWindowFrameTests {
+
+    /// The frame actually found in `cz.mihalic.SopsGUI` after the user's first
+    /// two launches:
+    ///
+    ///     NSWindow Frame …AppShell, SheetPresentationModifier…,
+    ///       ConfirmationDialogModifier…, AlertModifier…-1-AppWindow-1
+    ///       = "1950 774 2177 450 0 0 3360 1859"
+    ///
+    /// 2177 pt wide and 450 pt tall. That is where "obrovské okno" came from,
+    /// and it is why `.defaultSize` did nothing: SwiftUI derives the frame
+    /// autosave *name* from the content view's type, modifiers included. Adding
+    /// `.confirmationDialog` and `.alert` to the root renamed the key, the
+    /// user's size was forgotten, and SwiftUI invented that one — and
+    /// `.defaultSize` is only consulted when there is no saved frame at all.
+    ///
+    /// So the fix cannot live in the scene. It is AppKit: a stable autosave
+    /// name so the key stops moving, and this function to reject a frame that
+    /// was never a size anyone chose.
+    @Test("the frame the user actually got is rejected")
+    func theObservedBadFrameIsRejected() {
+        let corrected = MainWindowMetrics.correctedSize(
+            for: CGSize(width: 2177, height: 450),
+            visibleFrame: CGSize(width: 3360, height: 1859))
+        #expect(corrected == MainWindowMetrics.idealSize)
+    }
+
+    /// The whole point of restoring a frame is honouring what the user chose.
+    /// A wide window is a legitimate choice on a wide display and must survive.
+    @Test("a large but sane frame the user chose is left alone")
+    func aSaneFrameSurvives() {
+        #expect(MainWindowMetrics.correctedSize(
+            for: CGSize(width: 2177, height: 1400),
+            visibleFrame: CGSize(width: 3360, height: 1859)) == nil)
+        #expect(MainWindowMetrics.correctedSize(
+            for: MainWindowMetrics.idealSize,
+            visibleFrame: CGSize(width: 3360, height: 1859)) == nil)
+    }
+
+    /// Unplugging the external display leaves a saved frame larger than the
+    /// laptop screen. The window has to come back down or its title bar is off
+    /// the top of the display and cannot be grabbed.
+    @Test("a frame from a bigger display is brought back on screen")
+    func frameFromABiggerDisplayIsClamped() {
+        let corrected = try? #require(MainWindowMetrics.correctedSize(
+            for: CGSize(width: 2600, height: 1500),
+            visibleFrame: CGSize(width: 1440, height: 847)))
+        #expect(corrected?.width ?? .infinity <= 1440)
+        #expect(corrected?.height ?? .infinity <= 847)
+    }
+
+    /// Too small is as unusable as too large — below the minimum the three
+    /// panes overlap into nothing.
+    @Test("a frame below the usable minimum is grown")
+    func tooSmallIsGrown() {
+        #expect(MainWindowMetrics.correctedSize(
+            for: CGSize(width: 300, height: 300),
+            visibleFrame: CGSize(width: 1440, height: 847)) == MainWindowMetrics.idealSize)
+    }
+
+    /// The two AppKit facts SwiftUI would not guarantee. Read from source for
+    /// the same reason as the other scene assertions — and specifically
+    /// because the last attempt at this bug *was* a SwiftUI modifier, it
+    /// passed its own test, and the window stayed 2177 pt wide.
+    @Test("the window gets a stable autosave name and is forced resizable")
+    func windowIsConfiguredInAppKit() throws {
+        let source = try String(contentsOf: MainWindowSizeTests.repositoryRoot
+            .appendingPathComponent("App/SopsGUIApp.swift"), encoding: .utf8)
+
+        #expect(source.contains("setFrameAutosaveName"),
+                Comment(rawValue: "the autosave key is still derived from the view type, so it moves on every release"))
+        #expect(source.contains("styleMask.insert(.resizable)"),
+                Comment(rawValue: "nothing guarantees the window can be resized"))
+        #expect(source.contains("MainWindowMetrics.correctedSize"),
+                Comment(rawValue: "a restored nonsense frame is never corrected"))
+    }
+}
+
+@Suite("Settings and About are panes in the main window")
+struct InlineSettingsTests {
+
+    /// Reported after 0.1.1: clicking Settings opened a separate window.
+    /// `SettingsLink` was the fix for "the row does nothing", but the row
+    /// should show the panes in the detail column like About does, not send
+    /// the user to another window.
+    @Test("the Settings row fills the detail column instead of opening a window")
+    func settingsRendersInline() throws {
+        let source = try String(contentsOf: MainWindowSizeTests.repositoryRoot
+            .appendingPathComponent("Packages/SopsGUIKit/Sources/SopsUI/AppShell.swift"),
+            encoding: .utf8)
+        // `SettingsLink {` — the call, not the word. Both this file and
+        // AppShell's own comment explain why the link was removed, so a bare
+        // substring match reads its own explanation and fails. Exactly the
+        // trap `OuterSidebarSwitchTests` records for `#filePath` assertions.
+        #expect(!source.contains("SettingsLink {"),
+                Comment(rawValue: "the Settings row still opens a separate window"))
+        #expect(source.contains("SettingsPaneView("),
+                Comment(rawValue: "the detail column has no settings pane"))
+        #expect(source.contains("AboutView()"))
+    }
+}

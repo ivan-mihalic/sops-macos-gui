@@ -17,6 +17,7 @@ enum Catalog {
         snapshots += healthFindingRow()
         snapshots += await onboardingWizard()
         snapshots += about()
+        snapshots += settingsPane()
         snapshots += keyImportView()
         snapshots += updateSettingsPanel()
         snapshots += try projectSidebar()
@@ -38,6 +39,16 @@ enum Catalog {
         }]
     }
 
+    // MARK: - Settings, as it appears inside the main window
+
+    private static func settingsPane() -> [Snapshot] {
+        let health = HealthViewModel(report: HealthReport(checks: []))
+        let keyStore = SessionKeyStore()
+        return [Snapshot("settings-pane", size: CGSize(width: 760, height: 560)) {
+            SettingsPaneView(health: health, keyStore: keyStore)
+        }]
+    }
+
     // MARK: - AppShell, both appearances
 
     private static func appShell() async throws -> [Snapshot] {
@@ -50,7 +61,8 @@ enum Catalog {
                 size: CGSize(width: 1200, height: 760),
                 colorScheme: scheme
             ) {
-                AppShell(projects: projects, keyStore: keyStore, unsavedChanges: unsavedChanges)
+                AppShell(projects: projects, keyStore: keyStore, unsavedChanges: unsavedChanges,
+                         health: HealthViewModel(report: HealthReport(checks: [])))
             }
         }
     }

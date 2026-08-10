@@ -41,6 +41,11 @@ public struct AppShell: View {
     private let projects: ProjectSidebarModel
     private let keyStore: SessionKeyStore
     private let unsavedChanges: UnsavedChangesTracker
+    /// The same report the wizard and ⌘, show — one instance, because the
+    /// Settings row now renders the Health pane in place and two view models
+    /// would give the sidebar and ⌘, different answers about the same machine.
+    private let health: HealthViewModel
+    private let onUpdateConsentChanged: @MainActor () -> Void
 
     /// None of the three have defaults: the caller (`SopsGUIApp`) owns the
     /// single `ProjectStore`/`SessionKeyStore` instances the health check is
@@ -51,10 +56,16 @@ public struct AppShell: View {
     /// silently. `unsavedChanges` is shared the same way, with the app's own
     /// quit command as its other reader — see `UnsavedChangesTracker`'s doc
     /// comment.
-    public init(projects: ProjectSidebarModel, keyStore: SessionKeyStore, unsavedChanges: UnsavedChangesTracker) {
+    public init(projects: ProjectSidebarModel,
+                keyStore: SessionKeyStore,
+                unsavedChanges: UnsavedChangesTracker,
+                health: HealthViewModel,
+                onUpdateConsentChanged: @escaping @MainActor () -> Void = {}) {
         self.projects = projects
         self.keyStore = keyStore
         self.unsavedChanges = unsavedChanges
+        self.health = health
+        self.onUpdateConsentChanged = onUpdateConsentChanged
     }
 
     public var body: some View {
@@ -115,14 +126,8 @@ public struct AppShell: View {
             case .about:
                 AboutView()
             case .settings:
-                // Unreachable in practice: the Settings row is a `SettingsLink`
-                // (see `PinnedSidebarRow`), so clicking it opens the Settings
-                // scene and never moves `selection` here. Kept because the case
-                // is still in the enum — PROPOSAL §4 lists Settings among the
-                // pinned rows — and because a silent `default` here is how the
-                // About row came to render nothing at all.
-                Text(.detailNoSelection)
-                    .foregroundStyle(.secondary)
+                SettingsPaneView(health: health, keyStore: keyStore,
+                                 onUpdateConsentChanged: onUpdateConsentChanged)
             }
         }
     }
@@ -576,21 +581,14 @@ private struct PinnedSidebarRow: View {
     private var isSelected: Bool { selection == section }
 
     var body: some View {
-        // Settings is a *scene*, not a pane. Selecting a sidebar row could
-        // never show it, and until this existed the row set `selection` and
-        // the detail column fell through to the no-selection placeholder — so
-        // clicking Settings in the shipped app did nothing at all. `SettingsLink`
-        // is the supported way to open that scene from a view; sending
-        // `showSettingsWindow:` by selector is the other way and breaks
-        // silently whenever Apple renames it, which it has already done once.
-        Group {
-            if section == .settings {
-                SettingsLink { label }
-            } else {
-                Button { selection = section } label: { label }
-            }
-        }
-        .buttonStyle(.plain)
+        // Every pinned row selects, including Settings. It briefly used
+        // `SettingsLink` — which fixed "the row does nothing" by opening the
+        // Settings *scene* — but that made one row in the sidebar behave
+        // unlike all the others: it threw up a separate window instead of
+        // filling the detail column. The panes live in `SettingsPaneView` now
+        // and are shown in place.
+        Button { selection = section } label: { label }
+            .buttonStyle(.plain)
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(isSelected ? Color.accentColor : Color.clear)

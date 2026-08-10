@@ -41,4 +41,30 @@ public enum MainWindowMetrics {
         CGSize(width: min(idealSize.width, visible.width),
                height: min(idealSize.height, visible.height))
     }
+
+    /// The size a *restored* window should be given, or `nil` to leave it as
+    /// the user left it.
+    ///
+    /// Restoring a frame exists to honour a choice the user made, so this
+    /// second-guesses one only when the frame cannot be a choice:
+    ///
+    /// - **Bigger than the screen.** Either it came from a display that is no
+    ///   longer attached, or SwiftUI invented it. Either way part of the
+    ///   window — including the title bar that would let the user drag it
+    ///   back — is off the display.
+    /// - **Below `minimumSize`.** The three panes have minimum widths that add
+    ///   up; under this the layout collapses.
+    ///
+    /// Anything in between is left alone, however unusual: a 2177 pt wide
+    /// window on a 3360 pt display is a perfectly reasonable thing to want.
+    ///
+    /// The frame this was written for was 2177 x 450 — wide enough to look
+    /// broken and short enough to be unusable, and produced by neither the app
+    /// nor the user. See `RestoredWindowFrameTests` for where it came from.
+    public static func correctedSize(for current: CGSize, visibleFrame: CGSize) -> CGSize? {
+        let fits = current.width <= visibleFrame.width && current.height <= visibleFrame.height
+        let usable = current.width >= minimumSize.width && current.height >= minimumSize.height
+        guard !fits || !usable else { return nil }
+        return defaultSize(forVisibleFrame: visibleFrame)
+    }
 }

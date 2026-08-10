@@ -97,6 +97,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Idempotent, because `.onAppear` can fire more than once for the same
     /// window and chaining a proxy onto a proxy would make `windowShouldClose`
     /// ask twice.
+    /// Everything about the main window that SwiftUI either does not control
+    /// or controls badly.
+    ///
+    /// The bug this exists for: SwiftUI derives a window's frame-autosave key
+    /// from the *type* of its content view, modifiers included. Adding
+    /// `.confirmationDialog` and `.alert` to the root renamed the key, the
+    /// user's saved size was orphaned, and SwiftUI wrote a new frame of
+    /// 2177 x 450 — read straight out of `cz.mihalic.SopsGUI` after two
+    /// launches. `.defaultSize` could not help: it applies only when there is
+    /// no saved frame, and there was one. The first attempt at this bug was a
+    /// SwiftUI modifier, it passed its own test, and the window stayed
+    /// 2177 pt wide.
+    ///
+    /// So: a stable autosave name that no future modifier can move, a forced
+    /// `.resizable`, a real minimum, and a frame that gets corrected when it
+    /// is not a size anyone could have chosen.
+    private func configureMainWindow(_ window: NSWindow) {
+        // Named by us, not by the view hierarchy. This is the whole fix for
+        // the size being forgotten on every release.
+        window.setFrameAutosaveName("cz.mihalic.SopsGUI.main")
+        window.styleMask.insert(.resizable)
+        window.minSize = NSSize(width: MainWindowMetrics.minimumSize.width,
+                                height: MainWindowMetrics.minimumSize.height)
+
+        let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+        guard let visible else { return }
+        guard let corrected = MainWindowMetrics.correctedSize(
+            for: window.frame.size, visibleFrame: visible.size) else { return }
+
+        // Centred rather than left where it was: a frame this function
+        // rejected is one whose origin is not trustworthy either — the 2177 pt
+        // window's was 1950 pt from the left, i.e. mostly off to the side.
+        var frame = window.frame
+        frame.size = NSSize(width: corrected.width, height: corrected.height)
+        frame.origin = NSPoint(x: visible.midX - corrected.width / 2,
+                               y: visible.midY - corrected.height / 2)
+        window.setFrame(frame, display: true)
+    }
+
     func installWindowCloseGuards() {
         // Removing the New Window menu item took the *menu* away; window
         // tabbing puts the capability back. Measured on a scene of this exact
@@ -129,6 +168,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if window.identifier?.rawValue.localizedCaseInsensitiveContains("settings") == true {
                 continue
             }
+            configureMainWindow(window)
             let guardDelegate = WindowCloseGuard(forwarding: window.delegate) { [weak self] in
                 self?.windowShouldClose(window) ?? true
             }
@@ -277,7 +317,9 @@ struct SopsGUIApp: App {
 
     var body: some Scene {
         WindowGroup {
-            AppShell(projects: projects, keyStore: keyStore, unsavedChanges: unsavedChanges)
+            AppShell(projects: projects, keyStore: keyStore, unsavedChanges: unsavedChanges,
+                     health: health,
+                     onUpdateConsentChanged: { appUpdater.refreshConsent() })
                 .sheet(isPresented: $isShowingOnboarding) {
                     OnboardingWizard(health: health, state: onboarding)
                 }
@@ -399,15 +441,11 @@ struct SopsGUIApp: App {
 
         // ⌘, is wired automatically by the Settings scene (PROPOSAL.md §4).
         Settings {
-            TabView {
-                HealthPanel(model: health)
-                    .tabItem { Label(.settingsTabHealth, systemImage: "stethoscope") }
-                KeyImportView(store: keyStore)
-                    .tabItem { Label(.settingsTabKey, systemImage: "key") }
-                UpdateSettingsPanel(onConsentChanged: { appUpdater.refreshConsent() })
-                    .tabItem { Label(.settingsTabUpdates, systemImage: "arrow.down.circle") }
-            }
-            .frame(width: 620, height: 480)
+            // The same view the sidebar's Settings row shows, so ⌘, and the
+            // row cannot drift into showing different content.
+            SettingsPaneView(health: health, keyStore: keyStore,
+                             onUpdateConsentChanged: { appUpdater.refreshConsent() })
+                .frame(width: 620, height: 480)
         }
     }
 
