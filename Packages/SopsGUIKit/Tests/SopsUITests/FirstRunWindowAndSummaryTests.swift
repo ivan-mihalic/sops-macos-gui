@@ -410,3 +410,58 @@ struct ClickTargetTests {
         .appendingPathComponent("click-target-tests-\(UUID().uuidString)")
         .appendingPathComponent("projects.json")
 }
+
+@Suite("Status is never carried by colour alone")
+@MainActor
+struct ColourIndependenceTests {
+
+    /// Increased Contrast could not be *rendered* — see `Snapshot.swift`: the
+    /// high-contrast `NSAppearance` produced a byte-identical PNG, because
+    /// SwiftUI takes `\.colorSchemeContrast` from the system setting and this
+    /// app draws with SwiftUI colours rather than AppKit chrome.
+    ///
+    /// This asserts the thing that setting exists to protect instead, and it is
+    /// the same requirement Apple's guidance states directly: meaning must not
+    /// depend on colour. A user with Increased Contrast on, a colour-vision
+    /// deficiency, or a monochrome display has to be able to tell an `.ok`
+    /// finding from a `.problem` one.
+    ///
+    /// Two channels are checked, because either alone can regress: the glyph
+    /// and the spoken/label text.
+    @Test("every health status has its own glyph and its own words")
+    func statusesDifferBeyondColour() {
+        let statuses: [HealthStatus] = [
+            .ok, .warning, .problem,
+            .skipped(reason: "nothing to look at"),
+            .unknown(reason: "could not tell"),
+        ]
+
+        // Asserted against the mapping, not against the rendered tree. The
+        // rendered version of this test was written first and is why this
+        // comment exists: SwiftUI does not publish an SF Symbol's name as an
+        // accessibility label, so giving `.warning` and `.problem` the same
+        // glyph left it green. A test that cannot fail is not a test.
+        let glyphs = Set(statuses.map(HealthFindingRow.glyph(for:)))
+        #expect(glyphs.count == statuses.count, Comment(rawValue: """
+            \(statuses.count) statuses share only \(glyphs.count) glyphs, so at least two are \
+            told apart by tint alone: \(glyphs.sorted())
+            """))
+
+        let words = Set(statuses.map(HealthFindingRow.statusWords(for:)))
+        #expect(words.count == statuses.count, Comment(rawValue: """
+            \(statuses.count) statuses share only \(words.count) descriptions
+            """))
+    }
+
+    /// The other place colour could have been load-bearing: a masked value
+    /// versus a revealed one. It is a different *string*, not a different
+    /// shade, and the reveal control says which state it is in.
+    @Test("a masked value is not merely a differently-coloured one")
+    func maskingIsNotAColour() {
+        #expect(SecretRowViewLogic.maskedValue(for: "correct-horse-battery")
+                != "correct-horse-battery")
+        #expect(SecretRowViewLogic.maskedValue(for: "a")
+                == SecretRowViewLogic.maskedValue(for: "a-much-longer-secret"),
+                "a fixed-width mask, so the glyph count does not leak the length")
+    }
+}

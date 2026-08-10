@@ -90,13 +90,33 @@ public struct HealthFindingRow: View {
         .padding(.vertical, 6)
     }
 
-    private var glyph: String {
-        switch finding.status {
+    private var glyph: String { Self.glyph(for: finding.status) }
+
+    /// Not `private`, and not an instance member: `ColourIndependenceTests`
+    /// asserts that no two statuses share a glyph, which is the thing
+    /// Increased Contrast and colour-vision deficiency both depend on. Reading
+    /// it off the rendered accessibility tree was tried and does not work —
+    /// SwiftUI does not publish a symbol name as a label, so a mutation that
+    /// gave two statuses the same glyph left that test green.
+    static func glyph(for status: HealthStatus) -> String {
+        switch status {
         case .ok: "checkmark.circle.fill"
         case .warning: "exclamationmark.triangle.fill"
         case .problem: "xmark.octagon.fill"
         case .skipped: "minus.circle"
         case .unknown: "questionmark.circle"
+        }
+    }
+
+    /// Same reason as `glyph(for:)`: the words next to the icon are the second
+    /// channel, and they have to differ too.
+    static func statusWords(for status: HealthStatus) -> String {
+        switch status {
+        case .ok: LocalizedKey.statusOK.text
+        case .warning: LocalizedKey.statusWarning.text
+        case .problem: LocalizedKey.statusProblem.text
+        case .skipped: LocalizedKey.statusSkipped.text
+        case .unknown: LocalizedKey.statusUnknown.text
         }
     }
 
@@ -109,13 +129,5 @@ public struct HealthFindingRow: View {
         }
     }
 
-    private var statusDescription: String {
-        switch finding.status {
-        case .ok: LocalizedKey.statusOK.text
-        case .warning: LocalizedKey.statusWarning.text
-        case .problem: LocalizedKey.statusProblem.text
-        case .skipped: LocalizedKey.statusSkipped.text
-        case .unknown: LocalizedKey.statusUnknown.text
-        }
-    }
+    private var statusDescription: String { Self.statusWords(for: finding.status) }
 }
