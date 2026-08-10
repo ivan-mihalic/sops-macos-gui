@@ -1,3 +1,4 @@
+import AppKit
 import SopsEngine
 import SwiftUI
 
@@ -63,16 +64,25 @@ public struct AboutFacts: Equatable, Sendable {
 /// The About pane, shown in the detail column for the sidebar's About row.
 public struct AboutView: View {
     private let facts: AboutFacts
+    private let icon: NSImage
 
-    public init(facts: AboutFacts = .read()) {
+    public init(facts: AboutFacts = .read(), icon: NSImage = NSApplication.shared.applicationIconImage) {
         self.facts = facts
+        self.icon = icon
     }
 
     public var body: some View {
         VStack(spacing: 16) {
-            Image(systemName: "lock.doc")
-                .font(.system(size: 56))
-                .foregroundStyle(.secondary)
+            // The app's own icon, the way every macOS About panel shows it —
+            // not an SF Symbol standing in for one. `NSApplication`'s icon is
+            // the running bundle's, so this is right in the shipped app and
+            // shows the host tool's icon under the snapshot renderer, which is
+            // why `Catalog` passes an explicit image instead.
+            Image(nsImage: icon)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 96, height: 96)
+                .accessibilityLabel(LocalizedKey.aboutAppName.text)
 
             VStack(spacing: 4) {
                 Text(.aboutAppName).font(.title2).bold()

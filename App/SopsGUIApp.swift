@@ -118,22 +118,83 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // the size being forgotten on every release.
         window.setFrameAutosaveName("cz.mihalic.SopsGUI.main")
         window.styleMask.insert(.resizable)
-        window.minSize = NSSize(width: MainWindowMetrics.minimumSize.width,
-                                height: MainWindowMetrics.minimumSize.height)
 
-        let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
-        guard let visible else { return }
-        guard let corrected = MainWindowMetrics.correctedSize(
-            for: window.frame.size, visibleFrame: visible.size) else { return }
+        // The frame is decided on a **later run-loop turn**, not here.
+        //
+        // SwiftUI restores its own remembered frame on the turn after
+        // `onAppear`, so anything set at this point is silently undone. This
+        // was measured rather than guessed, after two previous fixes to the
+        // same bug "worked" and changed nothing:
+        //
+        //     configureMainWindow frame = 1600x1000
+        //     reset=true corrected=(1180,760)
+        //     afterSetFrame     = 1180x760      ← the write landed
+        //     nextRunLoopTurn   = 1600x1000     ← SwiftUI put it back
+        //
+        // Deferring puts this after the restore instead of before it.
+        DispatchQueue.main.async { [weak self] in
+            self?.applyFrameDecision(to: window, attempt: 0)
+        }
+    }
+
+    /// Gives `window` the size the app decided on, once SwiftUI has finished
+    /// restoring whatever it remembered.
+    ///
+    /// `attempt` bounds the retry at one. The write can lose a second race on
+    /// a slower machine, and re-asserting once covers that — but it must never
+    /// become a loop that fights the user's own dragging.
+    private func applyFrameDecision(to window: NSWindow, attempt: Int) {
+        guard let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame else {
+            return
+        }
+
+        // One-time: users upgrading from 0.1.0–0.1.2 carry a frame SwiftUI
+        // invented (2177 x 1353 on the machine this was found on), and it is
+        // indistinguishable from a chosen one — it fits the display and clears
+        // the minimum. See `MainWindowMetrics.shouldResetFrame`.
+        let defaults = UserDefaults.standard
+        let reset = attempt == 0 && MainWindowMetrics.shouldResetFrame(
+            recordedGeneration: defaults.string(forKey: MainWindowMetrics.frameResetGenerationKey))
+        if reset {
+            defaults.set(MainWindowMetrics.frameResetGeneration,
+                         forKey: MainWindowMetrics.frameResetGenerationKey)
+        }
+
+        let corrected = reset
+            ? MainWindowMetrics.defaultSize(forVisibleFrame: visible.size)
+            : MainWindowMetrics.correctedSize(for: window.frame.size, visibleFrame: visible.size)
+        guard let corrected else { return }
 
         // Centred rather than left where it was: a frame this function
         // rejected is one whose origin is not trustworthy either — the 2177 pt
         // window's was 1950 pt from the left, i.e. mostly off to the side.
+        // No `window.minSize` here, and that is a finding rather than an
+        // omission. It was tried both in `configureMainWindow` and on the
+        // deferred turn, and SwiftUI re-imposes its own content-derived floor
+        // continuously — the measured minimum stayed 1138 x 189 either way.
+        //
+        // 1138 is the honest width: `HSplitView` will not compress the three
+        // panes below it. 189 is a permissive height floor; the layout tracks
+        // the window down to it without overflowing, it is just cramped.
+        // Raising it needs the columns to collapse rather than the window to
+        // refuse, which is the three-column `NavigationSplitView` restructure
+        // recorded in `MainWindowMetrics.minimumSize`.
+
         var frame = window.frame
         frame.size = NSSize(width: corrected.width, height: corrected.height)
         frame.origin = NSPoint(x: visible.midX - corrected.width / 2,
                                y: visible.midY - corrected.height / 2)
         window.setFrame(frame, display: true)
+
+        guard attempt == 0 else { return }
+        DispatchQueue.main.async { [weak self] in
+            // Only if it was undone again. A window already the right size is
+            // left alone, so this cannot stamp on a resize the user has
+            // started in the meantime.
+            guard abs(window.frame.width - corrected.width) > 1
+                    || abs(window.frame.height - corrected.height) > 1 else { return }
+            self?.applyFrameDecision(to: window, attempt: 1)
+        }
     }
 
     func installWindowCloseGuards() {
@@ -386,6 +447,27 @@ struct SopsGUIApp: App {
         .defaultSize(MainWindowMetrics.defaultSize(
             forVisibleFrame: NSScreen.main?.visibleFrame.size
                 ?? MainWindowMetrics.idealSize))
+        // NOT `.contentMinSize`, and not `.contentSize` either. Both derive
+        // the window's limits from whatever the detail column currently holds,
+        // so the limits changed every time the user clicked a sidebar row —
+        // measured with `Scripts/ui-probe.swift`:
+        //
+        //     Projects  min 1138x189     About  min 352x1353     Settings  min 270x179
+        //
+        // On Projects the window could not be narrowed; on About it could not
+        // be shortened. That is the "some screens resize and some don't" the
+        // report described, and no amount of tuning the panes fixes the shape
+        // of it: a window's minimum size is a property of the window, not of
+        // the page inside it. It is set once, in AppKit, in
+        // `AppDelegate.configureMainWindow`.
+        // `.contentMinSize`: the window's *minimum* comes from the content and
+        // its maximum is unbounded. `.contentSize` was tried and is wrong — it
+        // takes the maximum from the content too, which capped the window at
+        // 2492 pt wide on a 3360 pt display (measured).
+        //
+        // For this to give a stable minimum, the content has to declare one
+        // that does not depend on which pane is showing — see `AppShell`'s
+        // root `.frame(minWidth:minHeight:)`.
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(after: .appInfo) {
@@ -445,7 +527,13 @@ struct SopsGUIApp: App {
             // row cannot drift into showing different content.
             SettingsPaneView(health: health, keyStore: keyStore,
                              onUpdateConsentChanged: { appUpdater.refreshConsent() })
-                .frame(width: 620, height: 480)
+                // A range, not a fixed slab. It was `width: 620, height: 480`,
+                // which made ⌘, open a window that could not be resized at
+                // all — one more "this screen doesn't resize". The Health tab
+                // is a list of findings whose length depends on the machine,
+                // so a fixed height is exactly wrong for it.
+                .frame(minWidth: 560, idealWidth: 660,
+                       minHeight: 420, idealHeight: 520)
         }
     }
 

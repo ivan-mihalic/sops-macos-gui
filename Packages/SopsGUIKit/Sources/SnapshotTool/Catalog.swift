@@ -32,10 +32,31 @@ enum Catalog {
     /// bundle has none of the app's Info.plist keys, so the real reader would
     /// render "unknown (unknown)" and the image would show nothing about the
     /// layout that matters.
+    /// The shipped app icon, found from this file's own location rather than
+    /// from the working directory — `snapshots.sh` runs the tool from
+    /// `Packages/SopsGUIKit`, so a repo-relative path silently missed and the
+    /// snapshot rendered a generic folder.
+    private static func repositoryIcon() -> NSImage {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // SnapshotTool
+            .deletingLastPathComponent()   // Sources
+            .deletingLastPathComponent()   // SopsGUIKit
+            .deletingLastPathComponent()   // Packages
+            .deletingLastPathComponent()   // repository root
+        let icon = root.appendingPathComponent(
+            "App/Assets.xcassets/AppIcon.appiconset/icon_512x512.png")
+        return NSImage(contentsOf: icon) ?? NSApplication.shared.applicationIconImage
+    }
+
     private static func about() -> [Snapshot] {
         [Snapshot("about", size: CGSize(width: 620, height: 520)) {
-            AboutView(facts: AboutFacts(version: "0.1.0", build: "123", commit: "d85cae8",
-                                        sops: "3.13.0", age: "1.2.1"))
+            AboutView(facts: AboutFacts(version: "0.1.3", build: "127", commit: "abc1234",
+                                        sops: "3.13.3", age: "1.3.1"),
+                      // The real app icon, read from the repository. The
+                      // default is `NSApplication.shared.applicationIconImage`,
+                      // which under this tool is the *tool's* icon — so the
+                      // snapshot would show something the app never displays.
+                      icon: repositoryIcon())
         }]
     }
 

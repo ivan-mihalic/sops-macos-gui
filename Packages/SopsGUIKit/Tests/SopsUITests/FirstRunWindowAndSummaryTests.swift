@@ -1,3 +1,4 @@
+import SwiftUI
 import Foundation
 import SopsHealth
 import Testing
@@ -327,5 +328,42 @@ struct InlineSettingsTests {
         #expect(source.contains("SettingsPaneView("),
                 Comment(rawValue: "the detail column has no settings pane"))
         #expect(source.contains("AboutView()"))
+    }
+}
+
+@Suite("A sidebar row is clickable across its whole width")
+@MainActor
+struct SidebarHitAreaTests {
+
+    /// Measured on the running app with `Scripts/ui-probe.swift` before the
+    /// fix:
+    ///
+    ///     AXButton "About"     58x16
+    ///     AXButton "Settings"  73x16
+    ///     AXRow    "Projects"  220x32
+    ///
+    /// The two bottom rows were hand-rolled `Button`s in a `safeAreaInset`,
+    /// clickable only on the glyph and the word; the row above them, being a
+    /// real `List` row, took a click anywhere. After rebuilding the sidebar as
+    /// one `List` with two sections, the same probe reads `204x24` for both —
+    /// full width, like every other row.
+    ///
+    /// This asserts the *structure* that guarantees it, because a `List` row's
+    /// hit area is SwiftUI's business and testing it would be testing SwiftUI.
+    /// What is this app's business is not hand-rolling rows again.
+    @Test("the bottom sections are List rows, not hand-rolled buttons")
+    func bottomRowsAreListRows() throws {
+        let source = try String(contentsOf: MainWindowSizeTests.repositoryRoot
+            .appendingPathComponent("Packages/SopsGUIKit/Sources/SopsUI/AppShell.swift"),
+            encoding: .utf8)
+
+        #expect(!source.contains("struct PinnedSidebarRow"),
+                Comment(rawValue: "the hand-rolled row is back; its hit area is its text"))
+        #expect(!source.contains(".safeAreaInset(edge: .bottom)"),
+                Comment(rawValue: """
+                    the sidebar pins rows in a bottom inset again — that is what stopped it                     compressing vertically and left the split group 1301 pt tall in a 612 pt window
+                    """))
+        #expect(source.contains("ForEach(Section.pinnedToBottom"),
+                Comment(rawValue: "the About/Settings rows are not in the sidebar list at all"))
     }
 }

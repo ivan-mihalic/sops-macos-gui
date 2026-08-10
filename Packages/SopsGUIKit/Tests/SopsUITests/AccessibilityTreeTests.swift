@@ -40,6 +40,12 @@ enum AXProbe {
         let label: String
         let value: String
         let help: String
+        /// The element's own frame, which is what a click actually has to land
+        /// in. Added because a sidebar row that *looked* right was only
+        /// clickable on its 58 pt of text inside a 220 pt row — a defect no
+        /// role-and-label assertion can see, and one a user hits on the first
+        /// click.
+        let frame: CGRect
     }
 
     static func tree(size: CGSize, _ build: @MainActor () -> some View) -> [Node] {
@@ -104,9 +110,18 @@ enum AXProbe {
             return "\(raw)"
         }
 
+        func frame() -> CGRect {
+            let selector = Selector(("accessibilityFrame"))
+            guard object.responds(to: selector) else { return .zero }
+            // `perform` cannot return a struct; the informal protocol's getter
+            // is read through KVC instead, which boxes it in an NSValue.
+            return (object.value(forKey: "accessibilityFrame") as? NSValue)?.rectValue ?? .zero
+        }
+
         let node = Node(
             role: string("accessibilityRole"), label: string("accessibilityLabel"),
-            value: string("accessibilityValue"), help: string("accessibilityHelp"))
+            value: string("accessibilityValue"), help: string("accessibilityHelp"),
+            frame: frame())
         if !(node.role.isEmpty && node.label.isEmpty && node.value.isEmpty) {
             nodes.append(node)
         }

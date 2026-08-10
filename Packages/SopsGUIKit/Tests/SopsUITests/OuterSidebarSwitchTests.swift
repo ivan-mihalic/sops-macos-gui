@@ -210,15 +210,31 @@ struct OuterSidebarWiringTests {
             "AppShell passes $selection somewhere — that write skips WorkspaceSwitchDecision and destroys an open dirty document with no prompt")
     }
 
-    @Test("both sidebar controls take the guarded binding")
+    /// Every row in the sidebar goes through the unsaved-changes guard.
+    ///
+    /// This used to check two things, because there were two kinds of row: the
+    /// `List` and the hand-rolled `PinnedSidebarRow`s in a bottom inset, each
+    /// wired to `guardedSelection` separately. Rebuilding the sidebar as one
+    /// `List` with two sections removed the second wiring entirely — and with
+    /// it the possibility of adding a row that forgets the guard, which is why
+    /// this is now a stronger property than the one it replaces rather than a
+    /// weaker one.
+    ///
+    /// The About and Settings rows still have to be *in* that list, though:
+    /// moving them back out to any other control is exactly how the guard gets
+    /// bypassed again, so both halves are asserted.
+    @Test("every sidebar row goes through the guarded binding")
     func bothControlsAreGuarded() throws {
         let source = try Self.appShellSource
         #expect(
             source.contains("List(selection: guardedSelection)"),
             "the sidebar List no longer takes guardedSelection")
         #expect(
-            source.contains("PinnedSidebarRow(section: section, selection: guardedSelection)"),
-            "the pinned rows (About, Settings) no longer take guardedSelection")
+            source.contains("ForEach(Section.pinnedToBottom"),
+            "About and Settings are no longer rows of the guarded List")
+        #expect(
+            source.contains("ForEach(Self.scrollingSections"),
+            "the main sections are no longer rows of the guarded List")
     }
 
     @Test("the guard is disabled during a save, like the other two exits")

@@ -70,7 +70,12 @@ public struct OnboardingWizard: View {
             }
         }
         .padding(20)
-        .frame(width: 640, height: 520)
+        // A floor and a preferred size, not a fixed one. At `width: 640,
+        // height: 520` the sheet could not grow, so a machine with many
+        // findings scrolled a list inside a box that had room to spare, and a
+        // user with larger text got clipped rows with no way out.
+        .frame(minWidth: 560, idealWidth: 640, maxWidth: .infinity,
+               minHeight: 460, idealHeight: 560, maxHeight: .infinity)
         .task { await health.refresh() }
     }
 

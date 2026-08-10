@@ -175,7 +175,27 @@ enum CommandRunner {
                 kill(process.processIdentifier, SIGKILL)
             }
         }
-        process.waitUntilExit()
+        // NOT `process.waitUntilExit()`, and this is the difference between a
+        // usable app and one that hangs forever.
+        //
+        // `waitUntilExit()` does not block the thread — it **runs a nested run
+        // loop**. On the main thread that lets AppKit's display cycle back in,
+        // which lays out the view currently inside its own `init`, which calls
+        // straight back here. Measured on the live app: clicking Settings put
+        // `KeyImportView.init` → here → `waitUntilExit` → run loop →
+        // `NSHostingView.layout()` → `KeyImportView.init` on one stack, with no
+        // bottom. The window stayed on screen and every accessibility query
+        // returned `kAXErrorCannotComplete`.
+        //
+        // The busy-wait above already proves this loop is affordable — it is
+        // the same one, without a deadline, because by here the process has
+        // either exited or been SIGKILLed and cannot outlive this.
+        //
+        // See `MainThreadReentrancyTests`, which counts run-loop activity
+        // while a command runs and fails if any occurs.
+        while process.isRunning {
+            usleep(2_000)
+        }
 
         // Both readers hit EOF once the process exits and the write ends close;
         // give them a bounded moment to finish draining.

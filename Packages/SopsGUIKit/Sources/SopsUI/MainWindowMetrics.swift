@@ -24,7 +24,24 @@ public enum MainWindowMetrics {
     /// three-pane layout stops being usable. Also what
     /// `.windowResizability(.contentMinSize)` reads to decide how small the
     /// user may make it.
-    public static let minimumSize = CGSize(width: 880, height: 560)
+    /// Measured, not chosen. `Scripts/ui-probe.swift` was walked down in steps
+    /// against the running app: at 1150 pt the content fitted the window, and
+    /// at 1100 the split group stayed 1138 pt wide and hung 19 pt off each
+    /// edge. `HSplitView` will not compress its panes below their content, so
+    /// 1138 is what the three panes plus the sidebar actually need.
+    ///
+    /// It was 880, which was a number this file made up. The window happily
+    /// resized to it and the layout spilled out of both sides — a minimum that
+    /// is smaller than the content is not a minimum, it is a lie the window
+    /// tells the user.
+    ///
+    /// The honest way to make this smaller is to need less: a single
+    /// three-column `NavigationSplitView` collapses columns as the window
+    /// narrows, which is what Apple's own three-pane apps do and what this
+    /// should become. That is a real restructure — the outer sidebar and the
+    /// project list would merge into one column — and it is recorded rather
+    /// than half-done here.
+    public static let minimumSize = CGSize(width: 1140, height: 620)
 
     /// `idealSize`, shrunk only as far as it must be to fit on `visibleFrame`.
     ///
@@ -66,5 +83,31 @@ public enum MainWindowMetrics {
         let usable = current.width >= minimumSize.width && current.height >= minimumSize.height
         guard !fits || !usable else { return nil }
         return defaultSize(forVisibleFrame: visibleFrame)
+    }
+
+    /// `UserDefaults` key recording which generation of the default window
+    /// geometry this user has already been given.
+    public static let frameResetGenerationKey = "window.frameResetGeneration"
+
+    /// Bumped by hand when a release deliberately changes what a good default
+    /// window looks like. Not the build number: every build would then reset
+    /// the window and stamp on a size the user had chosen.
+    public static let frameResetGeneration = "2"
+
+    /// Whether this launch should discard the restored frame and start from
+    /// `defaultSize` once.
+    ///
+    /// Restoring a frame normally wins, and `correctedSize(for:visibleFrame:)`
+    /// only overrides one that cannot be a choice. That is not enough for a
+    /// user who already has a bad frame saved: 2177 x 1353 fits on their
+    /// display and is above the minimum, so it is indistinguishable from a
+    /// deliberate one — and it was not deliberate, it was invented by SwiftUI
+    /// after a modifier change orphaned the old autosave key.
+    ///
+    /// So exactly once, when the recorded generation does not match, the
+    /// window goes back to the size the app actually chose. After that the
+    /// user's own resizing sticks, because the autosave name no longer moves.
+    public static func shouldResetFrame(recordedGeneration: String?) -> Bool {
+        recordedGeneration != frameResetGeneration
     }
 }

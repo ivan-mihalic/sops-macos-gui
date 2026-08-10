@@ -70,22 +70,38 @@ public struct AppShell: View {
 
     public var body: some View {
         NavigationSplitView {
+            // One `List`, two sections — not a `List` plus a `safeAreaInset`
+            // holding hand-rolled `Button` rows, which is what this was.
+            //
+            // That arrangement was wrong twice over, both measured on the
+            // running app with `Scripts/ui-probe.swift`:
+            //
+            // - The custom rows were clickable only where they drew:
+            //   `AXButton "About" 58x16` inside a 220 pt sidebar, while the
+            //   real `List` row above them took a click anywhere. A sidebar
+            //   with two kinds of row, one of which mostly ignores you.
+            // - The inset made the sidebar refuse to compress vertically. The
+            //   split group stayed 1301 pt tall in a 612 pt window and hung
+            //   off the top — "v detailu About se rozbije layout".
+            //
+            // A `List` row is full-width and selectable by construction, and
+            // a trailing `Section` is how macOS sidebars group secondary
+            // destinations. Nothing to hand-roll and nothing to pin.
             List(selection: guardedSelection) {
-                ForEach(Self.scrollingSections, id: \.self) { section in
-                    Label(section.labelKey, systemImage: section.systemImage)
-                        .tag(section)
-                }
-            }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Divider()
-                    ForEach(Section.pinnedToBottom, id: \.self) { section in
-                        PinnedSidebarRow(section: section, selection: guardedSelection)
+                // `SwiftUI.Section`, qualified: inside `AppShell` the bare
+                // name is this type's own `Section` enum.
+                SwiftUI.Section {
+                    ForEach(Self.scrollingSections, id: \.self) { section in
+                        Label(section.labelKey, systemImage: section.systemImage)
+                            .tag(section)
                     }
                 }
-                .padding(.top, 6)
-                .padding(.bottom, 8)
-                .background(.bar)
+                SwiftUI.Section {
+                    ForEach(Section.pinnedToBottom, id: \.self) { section in
+                        Label(section.labelKey, systemImage: section.systemImage)
+                            .tag(section)
+                    }
+                }
             }
             .disabled(unsavedChanges.isSaving)
             .navigationSplitViewColumnWidth(min: 200, ideal: 220)
@@ -130,6 +146,19 @@ public struct AppShell: View {
                                  onUpdateConsentChanged: onUpdateConsentChanged)
             }
         }
+        // The window's minimum size, stated once, here.
+        //
+        // `.windowResizability(.contentMinSize)` reads the minimum off this
+        // view, so without a minimum of its own the window inherited whatever
+        // the *current* pane happened to demand. Measured with
+        // `Scripts/ui-probe.swift`: 1138x189 on Projects, 352x1353 on About,
+        // 270x179 on Settings — the window's limits changed under the user
+        // every time they clicked a sidebar row, which is the "some screens
+        // resize and some don't" in the report.
+        //
+        // `maxWidth`/`maxHeight` `.infinity` so the panes grow into a window
+        // the user enlarges rather than leaving the extra space blank.
+
     }
 
     // MARK: - Leaving Projects is leaving the open document
@@ -348,9 +377,26 @@ private struct ProjectWorkspaceView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        // One `HSplitView`, not a second `NavigationSplitView`.
+        //
+        // This used to be `NavigationSplitView { ProjectSidebar } detail: {
+        // HSplitView { files; editor } }`, nested inside `AppShell`'s own
+        // `NavigationSplitView`. Measured on the running app with
+        // `Scripts/ui-probe.swift`, that produced a window whose **minimum
+        // width was 2177 pt** — it could not be narrowed at all — and an
+        // accessibility tree with two elements both called "Sidebar" and two
+        // sidebar-toggle buttons, one of which did nothing visible.
+        //
+        // `NavigationSplitView` is a top-level container: it owns the window's
+        // sidebar column, its toggle and its collapse behaviour. Nesting one
+        // inside another's detail column gives you two of each and adds their
+        // minimum widths together. Apple's own three-pane apps use a single
+        // split view with three columns, which is what this is now — the
+        // outer one supplies the sidebar, and these three panes sit in its
+        // detail.
+        HSplitView {
             ProjectSidebar(model: projects)
-                .navigationSplitViewColumnWidth(min: 200, ideal: 220)
+                .frame(minWidth: 180, idealWidth: 220, maxHeight: .infinity)
                 // Everything that can leave the open document is unavailable
                 // while that document is being written, for the same reason
                 // `SecretEditorView` already disables its own rows and
@@ -361,14 +407,11 @@ private struct ProjectWorkspaceView: View {
                 // can land in the instant before the disable takes effect and
                 // a correctness property may not rest on a `.disabled`.
                 .disabled(openDocumentIsSaving)
-        } detail: {
-            HSplitView {
-                fileListPane
-                    .frame(minWidth: 220, idealWidth: 260, maxHeight: .infinity)
-                    .disabled(openDocumentIsSaving)
-                editorPane
-                    .frame(minWidth: 360, maxHeight: .infinity)
-            }
+            fileListPane
+                .frame(minWidth: 180, idealWidth: 240, maxHeight: .infinity)
+                .disabled(openDocumentIsSaving)
+            editorPane
+                .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
         }
         .onChange(of: projects.selection, initial: true) { _, newValue in
             requestProjectSwitch(to: newValue)
@@ -574,33 +617,3 @@ private struct ProjectWorkspaceView: View {
 /// `safeAreaInset` doesn't reliably self-size to its two rows even with
 /// `.fixedSize(vertical: true)` — it rendered at zero height. Plain buttons
 /// laid out in a `VStack` size themselves correctly at every window height.
-private struct PinnedSidebarRow: View {
-    let section: AppShell.Section
-    @Binding var selection: AppShell.Section
-
-    private var isSelected: Bool { selection == section }
-
-    var body: some View {
-        // Every pinned row selects, including Settings. It briefly used
-        // `SettingsLink` — which fixed "the row does nothing" by opening the
-        // Settings *scene* — but that made one row in the sidebar behave
-        // unlike all the others: it threw up a separate window instead of
-        // filling the detail column. The panes live in `SettingsPaneView` now
-        // and are shown in place.
-        Button { selection = section } label: { label }
-            .buttonStyle(.plain)
-        .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(isSelected ? Color.accentColor : Color.clear)
-        )
-        .foregroundStyle(isSelected ? Color.white : Color.primary)
-        .padding(.horizontal, 8)
-    }
-
-    private var label: some View {
-        Label(section.labelKey, systemImage: section.systemImage)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 4)
-            .padding(.horizontal, 8)
-    }
-}
