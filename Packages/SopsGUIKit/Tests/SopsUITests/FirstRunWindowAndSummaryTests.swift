@@ -465,3 +465,37 @@ struct ColourIndependenceTests {
                 "a fixed-width mask, so the glyph count does not leak the length")
     }
 }
+
+@Suite("A detail page never pins the window's height")
+struct DetailPageHeightTests {
+
+    /// The About row grew the window to 1382 pt and then would not let it
+    /// shrink — at any width, gradually or in one jump. Measured on the running
+    /// app after 0.1.5 shipped, so this was a live defect, not a regression
+    /// from the work that found it.
+    ///
+    /// Nothing about the view in isolation predicts it: `AboutView`'s own
+    /// `fittingSize` is 358 pt. It only appears in the split view's detail
+    /// column, and substituting a plain `Text` there let the same window
+    /// shrink to 700 immediately — which is how it was pinned down after the
+    /// app icon, the frame modifiers and the three-column restructure had each
+    /// been ruled out by measurement.
+    ///
+    /// The fix is that a page which might not fit scrolls. A `ScrollView`
+    /// proposes no minimum height, so the window is free; and a user with
+    /// larger text or a short window needs it to scroll anyway.
+    ///
+    /// Asserted on the source because the failure is a *window* property and
+    /// this package cannot open one — the live measurement is in
+    /// `docs/ui-review-2026-08-10.md`, finding 14.
+    @Test("the About page is scrollable, so it cannot set a floor on the window")
+    func aboutPageScrolls() throws {
+        let source = try String(contentsOf: MainWindowSizeTests.repositoryRoot
+            .appendingPathComponent("Packages/SopsGUIKit/Sources/SopsUI/AppShell.swift"),
+            encoding: .utf8)
+        #expect(source.contains("ScrollView { AboutView() }"), Comment(rawValue: """
+            AboutView sits directly in the detail column again — it pinned the window's \
+            minimum height at 1382 pt the last time it did
+            """))
+    }
+}

@@ -140,7 +140,20 @@ public struct AppShell: View {
             case .projects:
                 ProjectWorkspaceView(projects: projects, keyStore: keyStore, unsavedChanges: unsavedChanges)
             case .about:
-                AboutView()
+                // In a `ScrollView`, and that is load-bearing rather than
+                // decorative. Placed directly in the detail column, `AboutView`
+                // pinned the *window's* minimum height at 1382 pt — selecting
+                // the About row grew the window and it could not be made
+                // shorter again, at any width. Measured on the running app;
+                // substituting a plain `Text` let the same window shrink to
+                // 700 immediately, and `AboutView`'s own `fittingSize` is
+                // 358 pt, so nothing about the view in isolation predicts it.
+                //
+                // A `ScrollView` proposes no minimum height of its own, so the
+                // window is free again — and a page that might not fit should
+                // scroll anyway, which is what a user with larger text or a
+                // short window needs from it.
+                ScrollView { AboutView() }
             case .settings:
                 SettingsPaneView(health: health, keyStore: keyStore,
                                  onUpdateConsentChanged: onUpdateConsentChanged)

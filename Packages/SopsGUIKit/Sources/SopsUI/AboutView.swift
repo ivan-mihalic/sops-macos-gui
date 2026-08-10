@@ -71,6 +71,34 @@ public struct AboutView: View {
         self.icon = icon
     }
 
+    private let iconSide: CGFloat = 96
+
+    /// A copy of `icon` that *is* `side` points, rather than a large image
+    /// asked to draw small.
+    ///
+    /// `Image(nsImage:).resizable().frame(width:height:)` draws at the right
+    /// size and still proposes the source image's own dimensions to the
+    /// layout. With the real 512 pt app icon that pinned the About pane's
+    /// height, and through it the whole window's: measured on the running app,
+    /// the window could not be made shorter than **1382 pt** on the About row,
+    /// at any width, gradually or in one jump. Substituting a plain `Text` for
+    /// this view let the same window shrink to 700 immediately, which is how
+    /// the image was identified.
+    ///
+    /// `AboutView` on its own reports a fitting height of 358 pt, so this was
+    /// invisible to every isolated render — it only appears with a real
+    /// multi-representation `NSImage` inside the split view's detail column.
+    private static func sized(_ icon: NSImage, to side: CGFloat) -> NSImage {
+        let target = NSSize(width: side, height: side)
+        let resized = NSImage(size: target)
+        resized.lockFocus()
+        NSGraphicsContext.current?.imageInterpolation = .high
+        icon.draw(in: NSRect(origin: .zero, size: target),
+                  from: .zero, operation: .copy, fraction: 1)
+        resized.unlockFocus()
+        return resized
+    }
+
     public var body: some View {
         VStack(spacing: 16) {
             // The app's own icon, the way every macOS About panel shows it —
@@ -78,10 +106,7 @@ public struct AboutView: View {
             // the running bundle's, so this is right in the shipped app and
             // shows the host tool's icon under the snapshot renderer, which is
             // why `Catalog` passes an explicit image instead.
-            Image(nsImage: icon)
-                .resizable()
-                .interpolation(.high)
-                .frame(width: 96, height: 96)
+            Image(nsImage: Self.sized(icon, to: iconSide))
                 .accessibilityLabel(LocalizedKey.aboutAppName.text)
 
             VStack(spacing: 4) {
