@@ -53,6 +53,12 @@ throughout, never a raw key like `sidebar.projects`.
   `Aqua` session exists on the same machine — so bringing up a real window and grabbing it steals
   focus on the machine owner's desktop at best, and at worst `screencapture` just returns black or
   a bare desktop because the window is registered with the window server but never composited.
+- Two renderers, opposite lifecycles: **`./Scripts/snapshots.sh`** writes the review
+  set to gitignored `.snapshots/`, **`./Scripts/guide-snapshots.sh`** writes only the
+  `guide-` entries to **committed** `docs/images/` for `docs/GUIDE.md`. Guide entries
+  live in `SnapshotTool/Guide.swift` and mirror the walkthrough project the guide has
+  the reader build; `Catalog.swift`'s fixtures are layout stress cases and make poor
+  instructional images. Do not merge the two entry points.
 - Instead: **`./Scripts/snapshots.sh`** — renders a catalog of views to PNG
   (`Packages/SopsGUIKit/.snapshots/`, gitignored, never committed). No window server, no display,
   no permissions prompt; deterministic enough to diff between commits.

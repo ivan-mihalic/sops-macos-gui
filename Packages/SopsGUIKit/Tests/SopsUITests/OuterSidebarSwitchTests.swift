@@ -235,6 +235,14 @@ struct OuterSidebarWiringTests {
         #expect(
             source.contains("ForEach(Self.scrollingSections"),
             "the main sections are no longer rows of the guarded List")
+        // The `List` moved out of `AppShell` and into `SectionSidebarList`
+        // (same file, so the three checks above still read the right source).
+        // That split adds a hop the three of them cannot see: they would all
+        // pass with `SectionSidebarList(guardedSelection: $selection)` at the
+        // call site, which is the unguarded write they exist to forbid.
+        #expect(
+            source.contains("SectionSidebarList(guardedSelection: guardedSelection)"),
+            "AppShell builds the sidebar list with something other than the guarded binding")
     }
 
     @Test("the guard is disabled during a save, like the other two exits")

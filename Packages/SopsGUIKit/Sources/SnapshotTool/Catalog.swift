@@ -23,6 +23,10 @@ enum Catalog {
         snapshots += try projectSidebar()
         snapshots += try await secretEditor()
         snapshots += try await fileList()
+        // The guide's images. In the same catalog so one run can produce
+        // both sets, but `Scripts/guide-snapshots.sh` filters to `guide-`
+        // and writes them somewhere committed — see `Guide.swift`.
+        snapshots += try await Guide.all()
         return snapshots
     }
 
@@ -36,7 +40,7 @@ enum Catalog {
     /// from the working directory — `snapshots.sh` runs the tool from
     /// `Packages/SopsGUIKit`, so a repo-relative path silently missed and the
     /// snapshot rendered a generic folder.
-    private static func repositoryIcon() -> NSImage {
+    static func repositoryIcon() -> NSImage {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()   // SnapshotTool
             .deletingLastPathComponent()   // Sources

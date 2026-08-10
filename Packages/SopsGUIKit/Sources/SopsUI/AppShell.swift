@@ -30,7 +30,7 @@ public struct AppShell: View {
 
     /// Everything not pinned to the bottom, in declaration order. Derived from
     /// `pinnedToBottom` so there is one source of truth for the split.
-    private static let scrollingSections: [Section] =
+    fileprivate static let scrollingSections: [Section] =
         Section.allCases.filter { !Section.pinnedToBottom.contains($0) }
 
     @State private var selection: Section = .projects
@@ -136,39 +136,7 @@ public struct AppShell: View {
     /// sections and the guard on them cannot differ between them.
     @ViewBuilder
     private var sectionSidebar: some View {
-            // One `List`, two sections — not a `List` plus a `safeAreaInset`
-            // holding hand-rolled `Button` rows, which is what this was.
-            //
-            // That arrangement was wrong twice over, both measured on the
-            // running app with `Scripts/ui-probe.swift`:
-            //
-            // - The custom rows were clickable only where they drew:
-            //   `AXButton "About" 58x16` inside a 220 pt sidebar, while the
-            //   real `List` row above them took a click anywhere. A sidebar
-            //   with two kinds of row, one of which mostly ignores you.
-            // - The inset made the sidebar refuse to compress vertically. The
-            //   split group stayed 1301 pt tall in a 612 pt window and hung
-            //   off the top — "v detailu About se rozbije layout".
-            //
-            // A `List` row is full-width and selectable by construction, and
-            // a trailing `Section` is how macOS sidebars group secondary
-            // destinations. Nothing to hand-roll and nothing to pin.
-            List(selection: guardedSelection) {
-                // `SwiftUI.Section`, qualified: inside `AppShell` the bare
-                // name is this type's own `Section` enum.
-                SwiftUI.Section {
-                    ForEach(Self.scrollingSections, id: \.self) { section in
-                        Label(section.labelKey, systemImage: section.systemImage)
-                            .tag(section)
-                    }
-                }
-                SwiftUI.Section {
-                    ForEach(Section.pinnedToBottom, id: \.self) { section in
-                        Label(section.labelKey, systemImage: section.systemImage)
-                            .tag(section)
-                    }
-                }
-            }
+            SectionSidebarList(guardedSelection: guardedSelection)
             .disabled(unsavedChanges.isSaving)
             .navigationSplitViewColumnWidth(min: 200, ideal: 220)
             .confirmationDialog(
@@ -683,3 +651,76 @@ private struct ProjectWorkspaceView: View {
 /// `safeAreaInset` doesn't reliably self-size to its two rows even with
 /// `.fixedSize(vertical: true)` — it rendered at zero height. Plain buttons
 /// laid out in a `VStack` size themselves correctly at every window height.
+
+/// The sections list, on its own.
+///
+/// Extracted from `AppShell` for one reason: the headless snapshot tool
+/// cannot render a `NavigationSplitView`'s own `sidebar:` column — it comes
+/// back blank (see this repo's CLAUDE.md, "Visual verification"). Standing
+/// alone, the same `List` renders, which is what `docs/GUIDE.md` shows the
+/// reader. Behaviour is unchanged: `AppShell` passes exactly the binding it
+/// used to pass to `List` directly.
+///
+/// The property is called `guardedSelection` because that is what it must be
+/// handed. Writing to it is what asks `AppShell` for a section switch, and
+/// that request is what prompts before discarding an unsaved document —
+/// `$selection` here would silently discard it. `OuterSidebarSwitchTests`
+/// checks both halves of that sentence.
+public struct SectionSidebarList: View {
+    /// The same spelling `AppShell` uses, so the rows below read identically
+    /// in both places — and so `OuterSidebarSwitchTests`' source-text check
+    /// for `ForEach(Section.pinnedToBottom` still describes real code.
+    typealias Section = AppShell.Section
+
+    /// A stored `Binding`, not `@Binding`. The projected-value spelling
+    /// (`$guardedSelection`) would read the same to the compiler and worse to
+    /// a reader: what `List` must be handed here is the *guarded* binding, and
+    /// naming it plainly at the use site is the point.
+    /// The same array `AppShell` derives from `pinnedToBottom`, aliased so
+    /// there is still exactly one source of truth for the split.
+    private static let scrollingSections = AppShell.scrollingSections
+
+    private let guardedSelection: Binding<Section>
+
+    public init(guardedSelection: Binding<AppShell.Section>) {
+        self.guardedSelection = guardedSelection
+    }
+
+    public var body: some View {
+        // One `List`, two sections — not a `List` plus a `safeAreaInset`
+        // holding hand-rolled `Button` rows, which is what this was.
+        //
+        // That arrangement was wrong twice over, both measured on the
+        // running app with `Scripts/ui-probe.swift`:
+        //
+        // - The custom rows were clickable only where they drew:
+        //   `AXButton "About" 58x16` inside a 220 pt sidebar, while the
+        //   real `List` row above them took a click anywhere. A sidebar
+        //   with two kinds of row, one of which mostly ignores you.
+        // - The inset made the sidebar refuse to compress vertically. The
+        //   split group stayed 1301 pt tall in a 612 pt window and hung
+        //   off the top — "v detailu About se rozbije layout".
+        //
+        // A `List` row is full-width and selectable by construction, and
+        // a trailing `Section` is how macOS sidebars group secondary
+        // destinations. Nothing to hand-roll and nothing to pin.
+        List(selection: guardedSelection) {
+            // `SwiftUI.Section`, qualified: `Section` unqualified resolves
+            // to `AppShell.Section` wherever that type is in scope, and
+            // keeping the same spelling here as in `AppShell` means the
+            // rows read identically in both places.
+            SwiftUI.Section {
+                ForEach(Self.scrollingSections, id: \.self) { section in
+                    Label(section.labelKey, systemImage: section.systemImage)
+                        .tag(section)
+                }
+            }
+            SwiftUI.Section {
+                ForEach(Section.pinnedToBottom, id: \.self) { section in
+                    Label(section.labelKey, systemImage: section.systemImage)
+                        .tag(section)
+                }
+            }
+        }
+    }
+}
