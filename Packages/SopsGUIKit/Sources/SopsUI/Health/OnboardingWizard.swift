@@ -39,6 +39,24 @@ public struct OnboardingWizard: View {
                 Button(LocalizedKey.actionBack.text) { state.back() }
                     .disabled(state.step == .welcome)
                 Spacer()
+                // Re-run the checks without leaving the wizard.
+                //
+                // Reported from the first signed build: the user installed the
+                // command-line tools by hand while this was open, and the only
+                // way to make the app look again was to close the wizard and
+                // re-open it from the menu — the findings on screen were from
+                // a scan that ran before the install. Every step is a view of
+                // one scan, so this belongs next to the navigation rather than
+                // inside any single step.
+                //
+                // Disabled while a scan is in flight: `refresh()` makes an
+                // in-flight run go around again rather than starting a second
+                // one, so a double-press is harmless, but a button that looks
+                // live while nothing visibly changes reads as broken.
+                Button(LocalizedKey.actionCheckAgain.text) {
+                    Task { await health.refresh() }
+                }
+                .disabled(health.isRunning)
                 if state.step == .summary {
                     Button(LocalizedKey.actionDone.text) {
                         state.finish()
@@ -151,6 +169,20 @@ public struct OnboardingWizard: View {
             }
             Text(.onboardingSummaryFooter)
                 .foregroundStyle(.secondary)
+
+            // The verdict above is a claim; this is what it rests on.
+            //
+            // Without it the last step said "Some things need fixing." and
+            // stopped — the findings that produced that sentence were four
+            // steps back, and a user reading it could not tell what was wrong.
+            // See `OnboardingSummaryState.evidence(in:)`.
+            let attention = OnboardingSummaryState.evidence(in: health.findings)
+            if !attention.isEmpty {
+                Divider()
+                Text(.onboardingSummaryEvidence).font(.headline)
+                List(attention) { HealthFindingRow(finding: $0, copyFeedback: copyFeedback) }
+                    .scrollOverflowFade()
+            }
 
             // A finding whose id prefix matches no known category appears on
             // none of the four steps, yet still drives the verdict above.

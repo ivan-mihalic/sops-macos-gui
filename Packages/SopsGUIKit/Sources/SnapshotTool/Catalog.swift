@@ -16,12 +16,26 @@ enum Catalog {
         snapshots += await healthPanel()
         snapshots += healthFindingRow()
         snapshots += await onboardingWizard()
+        snapshots += about()
         snapshots += keyImportView()
         snapshots += updateSettingsPanel()
         snapshots += try projectSidebar()
         snapshots += try await secretEditor()
         snapshots += try await fileList()
         return snapshots
+    }
+
+    // MARK: - About
+
+    /// Fixed facts rather than `AboutFacts.read()`: the snapshot tool's own
+    /// bundle has none of the app's Info.plist keys, so the real reader would
+    /// render "unknown (unknown)" and the image would show nothing about the
+    /// layout that matters.
+    private static func about() -> [Snapshot] {
+        [Snapshot("about", size: CGSize(width: 620, height: 520)) {
+            AboutView(facts: AboutFacts(version: "0.1.0", build: "123", commit: "d85cae8",
+                                        sops: "3.13.0", age: "1.2.1"))
+        }]
     }
 
     // MARK: - AppShell, both appearances

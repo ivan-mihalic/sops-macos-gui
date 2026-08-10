@@ -136,4 +136,41 @@ public enum OnboardingSummaryState: Equatable, Sendable {
         guard !findings.isEmpty else { return .nothingChecked }
         return .verdict(HealthReport.worstStatus(in: findings))
     }
+
+    /// The findings the summary must show underneath its verdict, worst first.
+    ///
+    /// The summary used to be a single sentence — "Some things need fixing." —
+    /// over nothing. A user who read it could not tell *what* needed fixing
+    /// without walking back through all four category steps and comparing
+    /// them, which is what actually happened on the first signed build.
+    ///
+    /// This app's standing rule is that it never states something it has not
+    /// shown the basis for. That rule was written about false all-clears, but
+    /// it cuts the same way here: a bad verdict with the evidence hidden is
+    /// still a claim the user cannot check.
+    ///
+    /// `.skipped` and `.unknown` are excluded on purpose. Both mean "no
+    /// verdict was reached", and the wizard already gives them a neutral glyph
+    /// and neutral wording for that reason; listing them under a heading that
+    /// says something needs attention would contradict the line directly above
+    /// them. Categorisation is not consulted either — a finding whose id
+    /// matches no category prefix appears on none of the four steps, so the
+    /// summary is the only place it can be seen at all.
+    public static func evidence(in findings: [HealthFinding]) -> [HealthFinding] {
+        func rank(_ status: HealthStatus) -> Int? {
+            switch status {
+            case .problem: 0
+            case .warning: 1
+            case .ok, .skipped, .unknown: nil
+            }
+        }
+        // Sorting on (rank, original index) rather than rank alone: Swift's
+        // sort is not stable, so without the tiebreak two findings of equal
+        // severity could swap between runs and the list would be
+        // non-deterministic for no reason a user could see.
+        return findings.enumerated()
+            .compactMap { index, finding in rank(finding.status).map { ($0, index, finding) } }
+            .sorted { ($0.0, $0.1) < ($1.0, $1.1) }
+            .map(\.2)
+    }
 }

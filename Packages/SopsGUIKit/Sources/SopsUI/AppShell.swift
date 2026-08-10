@@ -109,15 +109,18 @@ public struct AppShell: View {
                 Text(sectionSaveErrorMessage ?? "")
             }
         } detail: {
-            // Only `.projects` has real content so far — About and Settings
-            // are reached elsewhere (Settings opens via ⌘, as its own scene;
-            // About has no view yet). Selecting either still shows the
-            // placeholder rather than the project list, which would be a
-            // confusing thing to land on from an unrelated sidebar row.
             switch selection {
             case .projects:
                 ProjectWorkspaceView(projects: projects, keyStore: keyStore, unsavedChanges: unsavedChanges)
-            case .about, .settings:
+            case .about:
+                AboutView()
+            case .settings:
+                // Unreachable in practice: the Settings row is a `SettingsLink`
+                // (see `PinnedSidebarRow`), so clicking it opens the Settings
+                // scene and never moves `selection` here. Kept because the case
+                // is still in the enum — PROPOSAL §4 lists Settings among the
+                // pinned rows — and because a silent `default` here is how the
+                // About row came to render nothing at all.
                 Text(.detailNoSelection)
                     .foregroundStyle(.secondary)
             }
@@ -573,13 +576,19 @@ private struct PinnedSidebarRow: View {
     private var isSelected: Bool { selection == section }
 
     var body: some View {
-        Button {
-            selection = section
-        } label: {
-            Label(section.labelKey, systemImage: section.systemImage)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 4)
-                .padding(.horizontal, 8)
+        // Settings is a *scene*, not a pane. Selecting a sidebar row could
+        // never show it, and until this existed the row set `selection` and
+        // the detail column fell through to the no-selection placeholder — so
+        // clicking Settings in the shipped app did nothing at all. `SettingsLink`
+        // is the supported way to open that scene from a view; sending
+        // `showSettingsWindow:` by selector is the other way and breaks
+        // silently whenever Apple renames it, which it has already done once.
+        Group {
+            if section == .settings {
+                SettingsLink { label }
+            } else {
+                Button { selection = section } label: { label }
+            }
         }
         .buttonStyle(.plain)
         .background(
@@ -588,5 +597,12 @@ private struct PinnedSidebarRow: View {
         )
         .foregroundStyle(isSelected ? Color.white : Color.primary)
         .padding(.horizontal, 8)
+    }
+
+    private var label: some View {
+        Label(section.labelKey, systemImage: section.systemImage)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 4)
+            .padding(.horizontal, 8)
     }
 }

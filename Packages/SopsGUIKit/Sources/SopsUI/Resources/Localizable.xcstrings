@@ -1,6 +1,61 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "about.app-name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SOPS GUI"
+          }
+        }
+      }
+    },
+    "about.engine.age": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Embedded age"
+          }
+        }
+      }
+    },
+    "about.engine.sops": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Embedded sops"
+          }
+        }
+      }
+    },
+    "about.privacy-note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This app decrypts in its own process. Nothing you open, and no key you import, is sent anywhere."
+          }
+        }
+      }
+    },
+    "about.releases-link": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Release notes and downloads"
+          }
+        }
+      }
+    },
     "action.add": {
       "extractionState": "manual",
       "localizations": {
@@ -41,6 +96,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Cancel"
+          }
+        }
+      }
+    },
+    "action.check-again": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check Again"
           }
         }
       }
@@ -1086,6 +1152,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "How your key is protected on this Mac."
+          }
+        }
+      }
+    },
+    "onboarding.summary.evidence": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "What needs attention"
           }
         }
       }

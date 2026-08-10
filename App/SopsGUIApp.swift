@@ -333,6 +333,18 @@ struct SopsGUIApp: App {
                     Text(quitSaveErrorMessage ?? "")
                 }
         }
+        // The window used to have no size of its own. `WindowGroup`'s default
+        // resizability is `.automatic`, which sizes the window from its
+        // content's ideal dimensions — and `AppShell` is a
+        // `NavigationSplitView` whose panes all say `maxWidth: .infinity`, so
+        // the first launch on a large display produced a window as wide as the
+        // screen that then could not be resized. Both halves of that are fixed
+        // here: a chosen default size (see `MainWindowMetrics`) and a
+        // resizability that only pins the *minimum*.
+        .defaultSize(MainWindowMetrics.defaultSize(
+            forVisibleFrame: NSScreen.main?.visibleFrame.size
+                ?? MainWindowMetrics.idealSize))
+        .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(after: .appInfo) {
                 CheckForUpdatesMenuItem(updater: appUpdater.updater)

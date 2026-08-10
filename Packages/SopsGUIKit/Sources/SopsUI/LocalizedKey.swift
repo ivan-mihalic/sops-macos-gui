@@ -88,6 +88,12 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case actionDone = "action.done"
     case actionRunSetupCheck = "action.run-setup-check"
     case actionCheckForUpdates = "action.check-for-updates"
+    case actionCheckAgain = "action.check-again"
+    case aboutAppName = "about.app-name"
+    case aboutEngineSops = "about.engine.sops"
+    case aboutEngineAge = "about.engine.age"
+    case aboutReleasesLink = "about.releases-link"
+    case aboutPrivacyNote = "about.privacy-note"
     case onboardingWelcomeTitle = "onboarding.welcome.title"
     case onboardingSummaryTitle = "onboarding.summary.title"
     case onboardingWelcomeSubtitle = "onboarding.welcome.subtitle"
@@ -103,6 +109,7 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case onboardingSummaryWarning = "onboarding.summary.warning"
     case onboardingSummaryProblem = "onboarding.summary.problem"
     case onboardingSummaryFooter = "onboarding.summary.footer"
+    case onboardingSummaryEvidence = "onboarding.summary.evidence"
     // Deliberately distinct from `.warning`: `.skipped` means a check's subject
     // doesn't exist yet (no projects added, a feature not shipped) — there is
     // nothing to look at, so "worth a look" would be false. See OnboardingWizard.
