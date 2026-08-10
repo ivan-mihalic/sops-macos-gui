@@ -7,12 +7,19 @@ options:
 settings:
   base:
     SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    # Sparkle compares builds by CFBundleVersion (sparkle:version), so this has
+    # to rise on every published build even when the marketing version does not.
+    CURRENT_PROJECT_VERSION: "1"
     ARCHS: arm64
     ONLY_ACTIVE_ARCH: YES
     ENABLE_HARDENED_RUNTIME: YES
 packages:
   SopsGUIKit:
     path: Packages/SopsGUIKit
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: 2.6.0
 targets:
   SopsGUI:
     type: application
@@ -25,7 +32,29 @@ targets:
         CFBundleName: SOPS GUI
         LSApplicationCategoryType: public.app-category.developer-tools
         LSMinimumSystemVersion: "26.0"
+        # One source for the version. `release.conf`'s VERSION_CMD reads
+        # MARKETING_VERSION below, and these two forward it into the bundle —
+        # the same shape ui-tester uses. Before this the version was hardcoded
+        # `1.0` in Info.plist, which no release process could see.
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        # The feed lives in the PUBLIC sops-macos-gui-releases repository
+        # because this source repository is private and Sparkle cannot read a
+        # feed it has to authenticate for.
+        SUFeedURL: "https://raw.githubusercontent.com/ivan-mihalic/sops-macos-gui-releases/main/appcast.xml"
+        # Public half of the EdDSA pair whose private half lives in this
+        # machine's keychain under the account `sops-macos-gui`. Public by
+        # definition — Sparkle uses it to verify that an archive was signed by
+        # that key before it will install anything.
+        SUPublicEDKey: "C+WU1rWFtdIP3f/qSw12EWcV7RqLSDn4D6A91/uishw="
+        # No silent background checks: this app is about not doing things to
+        # the user's machine behind their back, and an updater that phones home
+        # on its own contradicts that. Settings › Updates already carries the
+        # user's consent for the *engine* freshness check; the app updater asks
+        # separately, on first run.
+        SUEnableAutomaticChecks: false
     dependencies:
+      - package: Sparkle
       - package: SopsGUIKit
         product: SopsUI
       - package: SopsGUIKit

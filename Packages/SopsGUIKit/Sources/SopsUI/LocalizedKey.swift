@@ -87,6 +87,7 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case actionContinue = "action.continue"
     case actionDone = "action.done"
     case actionRunSetupCheck = "action.run-setup-check"
+    case actionCheckForUpdates = "action.check-for-updates"
     case onboardingWelcomeTitle = "onboarding.welcome.title"
     case onboardingSummaryTitle = "onboarding.summary.title"
     case onboardingWelcomeSubtitle = "onboarding.welcome.subtitle"

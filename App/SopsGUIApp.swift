@@ -231,6 +231,9 @@ struct SopsGUIApp: App {
     // the Key panel must be visible to the next health run without a
     // relaunch, and two separate instances would silently desync.
     private let keyStore = SessionKeyStore()
+    /// Sparkle. Created before `health`, because the report below is built
+    /// from its status provider — see `AppUpdater`.
+    private let appUpdater = AppUpdater()
     @State private var projects: ProjectSidebarModel
     // Rebuilt from scratch on every refresh rather than captured once at
     // launch, so a project added through the sidebar mid-session is seen the
@@ -258,10 +261,17 @@ struct SopsGUIApp: App {
     init() {
         let store = projectStore
         let keys = keyStore
+        let updates = appUpdater.statusProvider
         _projects = State(initialValue: ProjectSidebarModel(store: store))
         _health = State(initialValue: HealthViewModel(reportBuilder: {
             .standard(updateChecksEnabled: { UpdateCheckConsent.isEnabled() },
-                      projects: store.healthSource, keyStore: keys.healthSource)
+                      projects: store.healthSource, keyStore: keys.healthSource,
+                      // The real thing since 0.1.0. `UnshippedAppUpdates` — the
+                      // stub that made `security.app-updates` permanently
+                      // `.skipped` — is gone from the app; it survives as the
+                      // package's default so `SopsGUIKit` still builds without
+                      // Sparkle.
+                      appUpdates: updates)
         }))
     }
 
@@ -325,6 +335,7 @@ struct SopsGUIApp: App {
         }
         .commands {
             CommandGroup(after: .appInfo) {
+                CheckForUpdatesMenuItem(updater: appUpdater.updater)
                 Button(LocalizedKey.actionRunSetupCheck.text) {
                     onboarding.restart()
                     isShowingOnboarding = true
@@ -381,7 +392,7 @@ struct SopsGUIApp: App {
                     .tabItem { Label(.settingsTabHealth, systemImage: "stethoscope") }
                 KeyImportView(store: keyStore)
                     .tabItem { Label(.settingsTabKey, systemImage: "key") }
-                UpdateSettingsPanel()
+                UpdateSettingsPanel(onConsentChanged: { appUpdater.refreshConsent() })
                     .tabItem { Label(.settingsTabUpdates, systemImage: "arrow.down.circle") }
             }
             .frame(width: 620, height: 480)

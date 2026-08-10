@@ -28,3 +28,6 @@ SopsGUI.xcodeproj/
 
 # SDD execution records — ledger, task reports, screenshots. Kept locally, not in git.
 .superpowers/
+
+# Release artifacts (DMG/ZIP). Built locally by mac-release; never committed.
+dist/

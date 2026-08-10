@@ -277,7 +277,7 @@ public struct SecurityPostureCheck: HealthCheck {
             HealthFinding(id: "security.app-updates", title: "App updates", status: .warning,
                           detail: "Version \(version) has been released and this Mac is not running it yet.",
                           remediation: Remediation(
-                              explanation: "Install the update from the About window. Updating the app is also what updates the encryption engine compiled into it."))
+                              explanation: "Choose \"Check for Updates…\" from the SopsGUI menu to install it. Updating the app is also what updates the encryption engine compiled into it."))
         case .couldNotCheck(let reason):
             HealthFinding(id: "security.app-updates", title: "App updates",
                           status: .unknown(reason: reason),
@@ -287,7 +287,7 @@ public struct SecurityPostureCheck: HealthCheck {
                           status: .unknown(reason: "Update checks are turned off, so this app did not look for a newer version of itself."),
                           detail: "Nothing was sent anywhere. This is not a statement about whether an update exists.",
                           remediation: Remediation(
-                              explanation: "Turn on \"Check for engine updates\" in Settings › Updates if you want this app to look."))
+                              explanation: "Turn on \"Check for updates\" in Settings › Updates if you want this app to look, or choose \"Check for Updates…\" from the SopsGUI menu to look once now without turning anything on."))
         case .unavailable(let reason):
             HealthFinding(id: "security.app-updates", title: "App updates",
                           status: .skipped(reason: reason),

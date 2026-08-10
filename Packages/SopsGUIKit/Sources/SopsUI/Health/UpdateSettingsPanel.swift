@@ -16,10 +16,19 @@ import SopsHealth
 /// pressing Re-run in the Health tab changes the result immediately.
 public struct UpdateSettingsPanel: View {
     private let defaults: UserDefaults
+    /// Called after the flag is written, so whatever else reads it can pick
+    /// the change up in *this* session. Sparkle needs that: its
+    /// `automaticallyChecksForUpdates` is a property on a live object, not a
+    /// closure re-read per run like the health report's, so without this the
+    /// toggle would appear to work and take effect only after a relaunch.
+    /// Defaults to doing nothing, which is what every test and snapshot wants.
+    private let onConsentChanged: @MainActor () -> Void
     @State private var isEnabled: Bool
 
-    public init(defaults: UserDefaults = .standard) {
+    public init(defaults: UserDefaults = .standard,
+                onConsentChanged: @escaping @MainActor () -> Void = {}) {
         self.defaults = defaults
+        self.onConsentChanged = onConsentChanged
         _isEnabled = State(initialValue: UpdateCheckConsent.isEnabled(in: defaults))
     }
 
@@ -29,6 +38,7 @@ public struct UpdateSettingsPanel: View {
                 Toggle(LocalizedKey.settingsUpdatesToggle.text, isOn: $isEnabled)
                     .onChange(of: isEnabled) { _, newValue in
                         UpdateCheckConsent.setEnabled(newValue, in: defaults)
+                        onConsentChanged()
                     }
             } footer: {
                 VStack(alignment: .leading, spacing: 8) {

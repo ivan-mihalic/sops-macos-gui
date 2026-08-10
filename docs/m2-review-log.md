@@ -347,7 +347,7 @@ before it called finished.
 | 15.2 | Welcome screen: "Where something needs fixing, you get the command and run it yourself." Four reachable findings carry no command, and the whole engine category **can never** carry one by design | to fix (copy, not checks) |
 | 15.3 | Tools/Engine/Security snapshot fixtures are hand-written prose no check emits — only the project findings were made real last round. Two divergences matter: the fixture drops the code's "latest **known** release" hedge, and shows the `~/.config/…` key path the code carries 20 lines of comment about *not* being read on macOS | to fix |
 | 15.4 | `security.os` cannot fail: `LSMinimumSystemVersion` is 26.0 and the check's floor is 26.0. The comment claims raising 14.0→26.0 *cured* the vacuity; both are equally unreachable under a 26.0 launch floor | to fix |
-| 15.5 | `appUpdateFinding` tells the user to flip "Check for engine updates" (which provably gates only `EngineFreshnessCheck`) and to install from "the About window" (which has no view). Both branches dead today, live the moment M5 lands | to fix |
+| 15.5 | `appUpdateFinding` tells the user to flip "Check for engine updates" (which provably gates only `EngineFreshnessCheck`) and to install from "the About window" (which has no view). Both branches dead today, live the moment M5 lands | fixed in 0.1.0 — Sparkle shipped, so both branches are live. One consent flag now gates both network lookups (`AppUpdater` reads `UpdateCheckConsent` and `UpdateSettingsPanel` calls back into it, so the toggle takes effect in the session that flipped it); the toggle is relabelled "Check for updates"; the remediation points at the "Check for Updates…" menu item that exists instead of an About window that does not |
 | 15.6 | The Copy button wipes the clipboard after 30 s and no string in the app says so; the health/key Copy buttons share the identical "Copy" label and deliberately do *not* clear; and the secret copy is the one with no "Copied" feedback | to fix |
 
 **Checked clean by that agent:** wizard gating against partial scans;
@@ -405,16 +405,8 @@ Four reviews. 20 findings.
   the `~/.config/…` key path the code documents as one sops does not read on
   macOS.
 - `appUpdateFinding` points at a Settings toggle that provably gates only
-  `EngineFreshnessCheck`, and at an About window with no view. Dead today, live
-  when M5 lands.
-- The Copy button clears the clipboard after 30 s and no string in the app says
-  so; the health and key-import Copy buttons share the identical label and
-  deliberately do not clear.
-- From round 14, still open: `HealthReport.standard`'s wiring (three of four
-  branches can be neutered with the suite green), six `ProjectStore` /
-  `AtomicFileWriter` durability and permission guards, and
-  `WorktreeResolverTests`' `git()` helper ignoring exit status so
-  `bareRepository` builds no fixture at all.
+  `EngineFreshnessCheck`, and at an About window with no view. **Fixed in
+  0.1.0** — see 15.5 above.
 
 ### Round 15, remaining reviews — fixed in `db331a5`
 

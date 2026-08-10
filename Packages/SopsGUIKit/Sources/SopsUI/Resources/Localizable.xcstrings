@@ -45,6 +45,17 @@
         }
       }
     },
+    "action.check-for-updates": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check for Updates…"
+          }
+        }
+      }
+    },
     "action.continue": {
       "extractionState": "manual",
       "localizations": {
@@ -1415,7 +1426,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "When this is on, the health check asks GitHub for the latest sops and age releases and compares them against the versions built into this app. It is a version comparison, not a vulnerability scan — this app never claims to know whether a version is safe."
+            "value": "When this is on, this app asks GitHub for the latest sops and age releases and compares them against the versions built into it, and it looks once a day for a newer version of the app itself. Both are version comparisons, not vulnerability scans — this app never claims to know whether a version is safe. Nothing is ever downloaded or installed without you pressing Install first."
           }
         }
       }
@@ -1426,7 +1437,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This is the only network request this app makes on its own. It sends no identifier for you or this Mac, and it is off until you turn it on. The health check separately runs your login shell to find your command-line tools, then each tool to read its version — including sops, which it explicitly tells not to check GitHub for a newer sops."
+            "value": "These are the only network requests this app makes on its own. They send no identifier for you or this Mac, and they are off until you turn them on — you can still check for an app update by hand at any time from the app menu. The health check separately runs your login shell to find your command-line tools, then each tool to read its version — including sops, which it explicitly tells not to check GitHub for a newer sops."
           }
         }
       }
@@ -1437,7 +1448,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Check for engine updates"
+            "value": "Check for updates"
           }
         }
       }
