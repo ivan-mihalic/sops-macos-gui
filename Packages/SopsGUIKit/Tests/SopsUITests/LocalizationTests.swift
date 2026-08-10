@@ -38,11 +38,52 @@ struct LocalizationTests {
                 struct StringUnit: Decodable {
                     let value: String
                 }
+                /// A plural (or device, or width) split. Only `plural` is used
+                /// here; the container is keyed by category name — `one`,
+                /// `other`, and whatever else a language needs.
+                struct Variations: Decodable {
+                    let plural: [String: Localization]?
+                }
+                /// Xcode's shape when the varying number is not the only
+                /// argument: the top-level `stringUnit` carries a `%#@name@`
+                /// token and the real forms live under `substitutions[name]`.
+                struct Substitution: Decodable {
+                    let argNum: Int?
+                    let formatSpecifier: String?
+                    let variations: Variations?
+                }
                 let stringUnit: StringUnit?
+                let variations: Variations?
+                let substitutions: [String: Substitution]?
             }
             let localizations: [String: Localization]?
         }
         let strings: [String: Entry]
+    }
+
+    /// Every English form a key can produce, whichever shape it is written in:
+    /// a plain `stringUnit`, a direct plural split, or a `%#@token@` with the
+    /// forms under `substitutions`. Flattened so a check can look at all of
+    /// them without caring which shape the catalog happens to use.
+    private static func englishForms(_ entry: StringCatalog.Entry) -> [String] {
+        guard let english = entry.localizations?["en"] else { return [] }
+        var forms: [String] = []
+        if let value = english.stringUnit?.value { forms.append(value) }
+        forms += (english.variations?.plural?.values ?? [:].values)
+            .compactMap { $0.stringUnit?.value }
+        for substitution in english.substitutions?.values ?? [:].values {
+            forms += (substitution.variations?.plural?.values ?? [:].values)
+                .compactMap { $0.stringUnit?.value }
+        }
+        return forms
+    }
+
+    /// True when the key pluralizes properly — a direct plural split, or a
+    /// substitution that carries one.
+    private static func hasPluralForms(_ entry: StringCatalog.Entry) -> Bool {
+        guard let english = entry.localizations?["en"] else { return false }
+        if english.variations?.plural != nil { return true }
+        return english.substitutions?.values.contains { $0.variations?.plural != nil } ?? false
     }
 
     /// `Tests/SopsUITests/LocalizationTests.swift` → package root → the catalog's
@@ -59,8 +100,13 @@ struct LocalizationTests {
         return try? JSONDecoder().decode(StringCatalog.self, from: data)
     }()
 
-    private static func englishValue(for key: LocalizedKey) -> String? {
-        catalog?.strings[key.rawValue]?.localizations?["en"]?.stringUnit?.value
+    /// Every English form for a key, in whichever shape the catalog writes it.
+    /// Not `stringUnit` alone: a pluralized entry has no top-level string unit
+    /// at all, so reading only that reported `files.other-format.note` as a
+    /// *missing* entry the moment it was pluralized properly.
+    private static func englishForms(for key: LocalizedKey) -> [String] {
+        guard let entry = catalog?.strings[key.rawValue] else { return [] }
+        return englishForms(entry)
     }
 
     // Every view added in any task must add its keys here. A key with no catalog
@@ -70,9 +116,13 @@ struct LocalizationTests {
     @Test("every key this module uses has a non-empty English catalog entry",
           arguments: LocalizedKey.allCases)
     func everyKeyHasCatalogEntry(key: LocalizedKey) throws {
-        let value = try #require(Self.englishValue(for: key),
-                                  "missing catalog entry for \(key.rawValue) in Localizable.xcstrings")
-        #expect(!value.isEmpty, "empty English catalog entry for \(key.rawValue) in Localizable.xcstrings")
+        let forms = Self.englishForms(for: key)
+        #expect(!forms.isEmpty,
+                "missing catalog entry for \(key.rawValue) in Localizable.xcstrings")
+        for form in forms {
+            #expect(!form.isEmpty,
+                    "empty English catalog entry for \(key.rawValue) in Localizable.xcstrings")
+        }
     }
 
     /// No shipped string may name an age key file's path.
@@ -94,12 +144,79 @@ struct LocalizationTests {
         let catalog = try #require(Self.catalog)
         let forbidden = ["keys.txt", "~/.config", "sops/age", "Application Support"]
 
+        // Every form, not just the top-level one: a path written into a plural
+        // variation is exactly as shipped as one written anywhere else.
         for (key, entry) in catalog.strings {
-            guard let value = entry.localizations?["en"]?.stringUnit?.value else { continue }
-            for fragment in forbidden {
-                #expect(!value.contains(fragment),
-                        "\(key) names \"\(fragment)\": a key-file path belongs to LegacyKeyFileImportOptions at runtime, not to a translatable string — \"\(value)\"")
+            for value in Self.englishForms(entry) {
+                for fragment in forbidden {
+                    #expect(!value.contains(fragment),
+                            "\(key) names \"\(fragment)\": a key-file path belongs to LegacyKeyFileImportOptions at runtime, not to a translatable string — \"\(value)\"")
+                }
             }
+        }
+    }
+
+    /// `file(s)`, `item(s)`, `entry(ies)` — the shape that turns a count into a
+    /// sentence no language reads naturally, English included.
+    ///
+    /// It is not a cosmetic complaint. `%d file(s) use a sops format…` is what
+    /// the file list actually drew under the one case that is most common —
+    /// exactly one file — and it drew it wrong twice over: the parenthesis and
+    /// the verb ("use" for a single file). It was found by looking at a
+    /// rendered PNG for `docs/GUIDE.md`, not by any test, which is why there is
+    /// now a test.
+    ///
+    /// Reads the catalog JSON, so it holds under both of this machine's
+    /// compilers (see this suite's header).
+    @Test("no English string fakes a plural with (s)")
+    func noParentheticalPlurals() throws {
+        let catalog = try #require(Self.catalog)
+        for (key, entry) in catalog.strings {
+            for form in Self.englishForms(entry) {
+                #expect(!form.contains("(s)") && !form.contains("(es)") && !form.contains("(ies)"),
+                        "\(key) fakes a plural: \"\(form)\" — use a plural variation in the catalog instead")
+            }
+        }
+    }
+
+    /// Keys whose English text formats a count but legitimately need no plural
+    /// split, each with the reason the singular case cannot occur. An entry
+    /// here is a claim about the call site, so it states which one.
+    ///
+    /// Deliberately not a blanket exemption for "error strings" or similar: the
+    /// value of the check below is that adding a counted string forces this
+    /// question to be answered once, in writing.
+    private static let countedStringsWithNoSingularCase: [String: String] = [
+        // `SessionKeyStore.importFromKeysFileContents` throws
+        // `.multipleKeysInFile(count:)` only after finding **more than one**
+        // non-comment line, so the count is 2 or greater by construction.
+        "key.error.multiple-keys":
+            "raised only when a keys.txt holds more than one key, so the count is never 1",
+    ]
+
+    @Test("every string that formats a count pluralizes on it")
+    func countedStringsPluralize() throws {
+        let catalog = try #require(Self.catalog)
+        // `%d`, `%lld`, `%2$d` — a decimal specifier in any of the spellings
+        // this catalog uses, positional or not.
+        let countSpecifier = try Regex(#"%(\d+\$)?l*d"#)
+
+        for (key, entry) in catalog.strings {
+            let forms = Self.englishForms(entry)
+            // `%#@token@` counts too. Once a key is written with a
+            // substitution its own forms hold `%arg` rather than `%d`, so
+            // matching only on a decimal specifier would quietly stop checking
+            // the very keys this rule already reached — including a future one
+            // whose substitution carries no plural split at all.
+            let formatsACount = forms.contains { $0.contains(countSpecifier) || $0.contains("%#@") }
+            guard formatsACount else { continue }
+            if let reason = Self.countedStringsWithNoSingularCase[key] {
+                #expect(!Self.hasPluralForms(entry),
+                        "\(key) is listed as having no singular case (\(reason)) but now pluralizes — remove the exemption")
+                continue
+            }
+            #expect(Self.hasPluralForms(entry),
+                    "\(key) formats a count with no plural variation: \"\(forms.first ?? "")\" — a count of 1 will read wrong. Add one, or list the key in countedStringsWithNoSingularCase with the reason 1 cannot occur.")
         }
     }
 
@@ -136,5 +253,31 @@ struct LocalizationTests {
           arguments: LocalizedKey.allCases)
     func everyKeyResolves(key: LocalizedKey) {
         #expect(key.text != key.rawValue, "missing catalog entry for \(key.rawValue)")
+    }
+
+    /// That the plural variations actually *resolve* — the half the catalog-JSON
+    /// checks above cannot see.
+    ///
+    /// Both call sites go through `String(format: LocalizedKey…text, count)`, so
+    /// what matters is not only that the catalog holds two forms but that
+    /// `String(localized:bundle:)` hands back the `%#@…@` template and
+    /// `String(format:)` expands it against the count. A catalog entry that is
+    /// shaped right and resolves wrong would leave the app printing a literal
+    /// `%#@count@` at the user, which is worse than the `(s)` it replaced.
+    @Test("counted strings read correctly at one and at many",
+          .enabled(if: LocalizationTests.bundleHasMacOSLayout,
+                   "swift test's native build system never compiles .xcstrings, so every key falls back to its raw value; run under xcodebuild or swift test --build-system swiftbuild to exercise this"))
+    func pluralsResolve() {
+        let one = String(format: LocalizedKey.filesOtherFormatNote.text, 1)
+        let many = String(format: LocalizedKey.filesOtherFormatNote.text, 3)
+        #expect(one.hasPrefix("1 file uses a sops format"), "one-file footnote reads: \(one)")
+        #expect(many.hasPrefix("3 files use a sops format"), "many-file footnote reads: \(many)")
+        #expect(!one.contains("%"), "unexpanded format specifier in: \(one)")
+
+        let oneMore = String(format: LocalizedKey.projectsErrorDropPartial.text, "That folder isn't readable.", 1)
+        let manyMore = String(format: LocalizedKey.projectsErrorDropPartial.text, "That folder isn't readable.", 4)
+        #expect(oneMore.contains("1 more item in that drop"), "one-extra drop error reads: \(oneMore)")
+        #expect(manyMore.contains("4 more items in that drop"), "many-extra drop error reads: \(manyMore)")
+        #expect(!oneMore.contains("%"), "unexpanded format specifier in: \(oneMore)")
     }
 }

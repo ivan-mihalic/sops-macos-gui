@@ -764,9 +764,21 @@
       "extractionState": "manual",
       "localizations": {
         "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%d file(s) use a sops format this app doesn't open yet (dotenv, JSON, or INI)."
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%d file uses a sops format this app doesn't open yet (dotenv, JSON, or INI)."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%d files use a sops format this app doesn't open yet (dotenv, JSON, or INI)."
+                }
+              }
+            }
           }
         }
       }
@@ -1371,7 +1383,29 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "%1$@ (%2$d more item(s) in that drop had problems too.)"
+            "value": "%1$@ (%#@more@ in that drop had problems too.)"
+          },
+          "substitutions": {
+            "more": {
+              "argNum": 2,
+              "formatSpecifier": "d",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg more item"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg more items"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
