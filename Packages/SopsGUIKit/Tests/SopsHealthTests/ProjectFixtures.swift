@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import SopsEngine
 
 /// Fixture builders shared by the project-health test suites.
@@ -17,7 +18,11 @@ enum ProjectFixture {
     static func makeDirectory(_ label: String = "project") throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(label)-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(root)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(root)
+        // Deleted when this process exits — see `ScratchDirectoryRegistry`.
+        ScratchDirectoryRegistry.shared.register(root)
         return root
     }
 
@@ -108,3 +113,4 @@ enum ProjectFixture {
         return output
     }
 }
+

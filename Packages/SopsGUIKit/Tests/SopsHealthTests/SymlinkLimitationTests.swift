@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import Testing
 @testable import SopsHealth
 
@@ -31,10 +32,13 @@ struct SymlinkLimitationTests {
     func readableSymlinkTargetIsScanned() async throws {
         let sandbox = FileManager.default.temporaryDirectory
             .appendingPathComponent("symlink-ok-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(sandbox)
         let root = sandbox.appendingPathComponent("project")
         let outside = sandbox.appendingPathComponent("outside")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(root)
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(outside)
         defer { try? FileManager.default.removeItem(at: sandbox) }
 
         let target = outside.appendingPathComponent("secrets.yaml")
@@ -54,10 +58,13 @@ struct SymlinkLimitationTests {
     func unreadableSymlinkTargetIsALimitation() async throws {
         let sandbox = FileManager.default.temporaryDirectory
             .appendingPathComponent("symlink-locked-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(sandbox)
         let root = sandbox.appendingPathComponent("project")
         let vault = sandbox.appendingPathComponent("vault")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(root)
         try FileManager.default.createDirectory(at: vault, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(vault)
         defer {
             try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: vault.path)
             try? FileManager.default.removeItem(at: sandbox)
@@ -88,7 +95,9 @@ struct SymlinkLimitationTests {
     func staleLinksAreNotLimitations(_ shape: String) async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("symlink-stale-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(root)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(root)
         defer { try? FileManager.default.removeItem(at: root) }
 
         switch shape {
@@ -119,7 +128,9 @@ struct SymlinkLimitationTests {
     func danglingSymlinkIsNotALimitation() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("symlink-dangling-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(root)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(root)
         defer { try? FileManager.default.removeItem(at: root) }
 
         try FileManager.default.createSymbolicLink(

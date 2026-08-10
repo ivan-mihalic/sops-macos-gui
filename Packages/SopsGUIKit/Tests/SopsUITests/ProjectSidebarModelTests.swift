@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import Testing
 @testable import SopsUI
 import SopsProjects
@@ -10,13 +11,16 @@ struct ProjectSidebarModelTests {
     private func makeStore() -> (ProjectStore, URL) {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("sidebar-projects-\(UUID().uuidString).json")
+        ScratchDirectoryRegistry.shared.register(url)
         return (ProjectStore(fileURL: url), url)
     }
 
     private func makeDirectory() throws -> String {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("proj-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(url)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(url)
         return url.path
     }
 
@@ -26,9 +30,12 @@ struct ProjectSidebarModelTests {
     private func makeRepoWithWorktree() throws -> (main: String, worktree: String) {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("repo-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(base)
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(base)
         let main = base.appendingPathComponent("main")
         try FileManager.default.createDirectory(at: main, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(main)
 
         try git(["init", "-q"], in: main)
         try "x".write(to: main.appendingPathComponent("f.txt"), atomically: true, encoding: .utf8)
@@ -151,6 +158,7 @@ struct ProjectSidebarModelTests {
         let (store, _) = makeStore()
         let file = FileManager.default.temporaryDirectory
             .appendingPathComponent("f-\(UUID().uuidString).txt")
+        ScratchDirectoryRegistry.shared.register(file)
         try "x".write(to: file, atomically: true, encoding: .utf8)
         let model = ProjectSidebarModel(store: store)
 
@@ -168,6 +176,8 @@ struct ProjectSidebarModelTests {
 
         let file = FileManager.default.temporaryDirectory
             .appendingPathComponent("f-\(UUID().uuidString).txt")
+
+        ScratchDirectoryRegistry.shared.register(file)
         try "x".write(to: file, atomically: true, encoding: .utf8)
         model.addProject(path: file.path)
         #expect(model.lastError != nil)
@@ -242,6 +252,7 @@ struct ProjectSidebarModelTests {
     func unreadableStoreSurfacesErrorAtConstruction() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("sidebar-projects-\(UUID().uuidString).json")
+        ScratchDirectoryRegistry.shared.register(url)
         try "not json at all".write(to: url, atomically: true, encoding: .utf8)
         let store = ProjectStore(fileURL: url)
 

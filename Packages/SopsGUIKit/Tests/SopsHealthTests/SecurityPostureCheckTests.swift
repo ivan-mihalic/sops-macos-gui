@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import Testing
 @testable import SopsHealth
 
@@ -79,7 +80,9 @@ struct SecurityPostureCheckTests {
     func legacyKeyFileWarns() async throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("posture-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(dir)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(dir)
         let keyFile = dir.appendingPathComponent("keys.txt")
         try "# created by age-keygen\n".write(to: keyFile, atomically: true, encoding: .utf8)
 
@@ -105,7 +108,9 @@ struct SecurityPostureCheckTests {
     func legacyKeyFilePathAsDirectoryIsOK() async throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("posture-dir-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(dir)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(dir)
         defer { try? FileManager.default.removeItem(at: dir) }
 
         let legacy = finding(await makeCheck(legacyKeyFilePaths: [dir.path]).run(),
@@ -190,7 +195,9 @@ struct SecurityPostureCheckTests {
     func neverLeaksKeyMaterial() async throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("posture-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(dir)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(dir)
         let keyFile = dir.appendingPathComponent("keys.txt")
         try "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQ\n".write(to: keyFile, atomically: true, encoding: .utf8)
 
@@ -214,7 +221,9 @@ struct SecurityPostureCheckTests {
     func legacyKeyFileWarnsEvenWhenUnreadable() async throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("posture-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(dir)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(dir)
         let keyFile = dir.appendingPathComponent("keys.txt")
         try "AGE-SECRET-KEY-1QUNREADABLEUNREADABLEUNREADABLE\n".write(
             to: keyFile, atomically: true, encoding: .utf8)

@@ -13,7 +13,12 @@ let package = Package(
     ],
     targets: [
         .target(name: "SopsUI", dependencies: ["SopsEngine", "SopsHealth", "SopsProjects"], resources: [.process("Resources")]),
-        .testTarget(name: "SopsUITests", dependencies: ["SopsUI", "SopsEngine"]),
+        // Test-only: deletes scratch directories when the test process exits.
+        // A target rather than a helper per suite, because there are four test
+        // targets and 75+ fixture label prefixes between them — see the type's
+        // own comment for the audit that made that necessary.
+        .target(name: "ScratchCleanup"),
+        .testTarget(name: "SopsUITests", dependencies: ["SopsUI", "SopsEngine", "ScratchCleanup"]),
         .binaryTarget(
             name: "CSopsBridge",
             path: "../../Engine/build/SopsBridge.xcframework"
@@ -27,11 +32,11 @@ let package = Package(
                 .linkedLibrary("resolv"),
             ]
         ),
-        .testTarget(name: "SopsEngineTests", dependencies: ["SopsEngine"]),
+        .testTarget(name: "SopsEngineTests", dependencies: ["SopsEngine", "ScratchCleanup"]),
         .target(name: "SopsHealth", dependencies: ["SopsEngine"]),
-        .testTarget(name: "SopsHealthTests", dependencies: ["SopsHealth", "SopsEngine"]),
+        .testTarget(name: "SopsHealthTests", dependencies: ["SopsHealth", "SopsEngine", "ScratchCleanup"]),
         .target(name: "SopsProjects", dependencies: ["SopsHealth"]),
-        .testTarget(name: "SopsProjectsTests", dependencies: ["SopsProjects"]),
+        .testTarget(name: "SopsProjectsTests", dependencies: ["SopsProjects", "ScratchCleanup"]),
 
         // MARK: SnapshotTool — headless visual snapshots (`swift run snapshots`).
         // Dev tool only: nothing in `App/` or `SopsGUI.xcodeproj` depends on

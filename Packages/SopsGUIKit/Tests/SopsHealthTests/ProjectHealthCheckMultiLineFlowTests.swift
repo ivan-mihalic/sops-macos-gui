@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import Testing
 import SopsEngine
 @testable import SopsHealth
@@ -67,10 +68,14 @@ struct ProjectHealthCheckMultiLineFlowTests {
 
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("multiline-flow-" + UUID().uuidString)
+
+        ScratchDirectoryRegistry.shared.register(root)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(root)
         try sopsYAML.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
         let secretsDir = root.appendingPathComponent("secrets")
         try FileManager.default.createDirectory(at: secretsDir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(secretsDir)
         try encrypted.write(to: secretsDir.appendingPathComponent("prod.yaml"), atomically: true, encoding: .utf8)
 
         // Sanity: the .sops.yaml itself parses via the bridge, and both real

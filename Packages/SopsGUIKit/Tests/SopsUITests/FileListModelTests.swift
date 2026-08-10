@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import Testing
 @testable import SopsUI
 
@@ -24,7 +25,9 @@ struct FileListModelTests {
     private func makeProject() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("file-list-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(root)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(root)
         return root
     }
 
@@ -162,6 +165,7 @@ struct FileListModelTests {
     func missingRootIsReported() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("does-not-exist-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(root)
 
         let model = FileListModel(projectRoot: root)
         await model.refresh()

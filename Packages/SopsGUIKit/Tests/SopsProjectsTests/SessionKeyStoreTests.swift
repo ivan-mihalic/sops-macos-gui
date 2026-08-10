@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import Testing
 @testable import SopsProjects
 import SopsHealth
@@ -281,7 +282,9 @@ struct SessionKeyStoreTests {
     func importFromLegacyKeyFileReadsTheFile() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("session-key-store-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(dir)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(dir)
         defer { try? FileManager.default.removeItem(at: dir) }
         let keysFile = dir.appendingPathComponent("keys.txt")
         try "# created by age-keygen\n\(validKey)\n".write(to: keysFile, atomically: true, encoding: .utf8)

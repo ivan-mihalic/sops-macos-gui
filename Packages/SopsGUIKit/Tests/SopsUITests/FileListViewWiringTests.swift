@@ -1,3 +1,4 @@
+import ScratchCleanup
 import AppKit
 import SopsHealth
 import SwiftUI
@@ -31,7 +32,9 @@ struct FileListViewWiringTests {
     private func project(_ name: String) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("filelist-view-\(name)-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(root)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(root)
         return root
     }
 

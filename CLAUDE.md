@@ -78,9 +78,20 @@ throughout, never a raw key like `sidebar.projects`.
 
 ## Test fixtures fill the disk — clean up before you finish
 
-The suite builds its scratch trees as `$TMPDIR/<label>-<UUID>` and, with almost
-no exceptions, never deletes them. macOS does not reap `$TMPDIR` while the login
-session is alive, so every `swift test` is a permanent deposit.
+The suite builds its scratch trees as `$TMPDIR/<label>-<UUID>`. macOS does not
+reap `$TMPDIR` while the login session is alive, so anything a run leaves behind
+is a permanent deposit — nothing in the working tree grows, `git status` stays
+clean, and the disk fills anyway.
+
+**Fixed on 2026-08-10, but not completely.** Every scratch builder now registers
+what it creates with `ScratchCleanup.ScratchDirectoryRegistry`, which deletes
+the lot when the test process exits. Measured across a full run before and
+after: **450 leftover entries per run → 12**, and of those twelve, ten are
+macOS's own (`TemporaryDirectory.*`, `xcrun_db`, `TemporaryItems`) and two are
+quarantine files written by `ProjectStore` itself, whose names cannot be known
+in advance. `atexit` does not run when a process is killed or crashes — and
+`swift test` here does occasionally hang at exit — so the script below is still
+the backstop, not a formality.
 
 Measured on 2026-08-10, after three days of iterating here: **244 376 leftover
 entries, 117 GB.** The bulk was `ProjectHealthCheckLargeFileTests` — 2 529
@@ -101,16 +112,24 @@ cause was invisible from the repo — nothing in the working tree grows.
    fixture helper here produces — and only those older than 60 minutes, so a run
    in another terminal is never pulled out from under itself. Use
    `--min-age 0` only when you know nothing else is running.
-2. **Writing a new test that touches the filesystem? Delete the tree yourself.**
-   Do not add another helper that leaks. In a `Testing` suite:
+2. **Writing a new test that touches the filesystem? Register what you create.**
+   The existing helpers do it for you — `ProjectFixture.makeDirectory`,
+   `makeProjectRoot`, `scratchDirectory` all register now, so using one is
+   enough. Building a path yourself is the case to watch:
    ```swift
-   let root = try ProjectFixture.makeDirectory("thing")
-   defer { try? FileManager.default.removeItem(at: root) }
+   let root = try ScratchDirectoryRegistry.shared.makeDirectory("thing")
+
+   // or, for a path handed to a subprocess that creates the file itself:
+   let log = FileManager.default.temporaryDirectory
+       .appendingPathComponent("capture-\(UUID().uuidString).log")
+       .registeredForCleanup()
    ```
-   A `deinit` on the suite type works too when the tree is per-suite rather than
-   per-test. The existing helpers — `ProjectFixture.makeDirectory`,
-   `makeProjectRoot`, `scratchDirectory` — return a URL and clean up nothing;
-   that is the defect, not the pattern to copy.
+   A `defer { try? FileManager.default.removeItem(at: root) }` is still better
+   when the tree is large — it frees the space during the run rather than at the
+   end of it. Registration is the floor, not the ceiling.
+
+   Keep the `<label>-<UUID>` shape: `Scripts/clean-test-temp.sh` matches on it,
+   and a fixture named otherwise is one the backstop cannot sweep.
 3. **Anything writing hundreds of MB is a fixture that must die in the same
    test.** `huge-asset.bin` is 200 MB per invocation. A leaked one is not noise.
 

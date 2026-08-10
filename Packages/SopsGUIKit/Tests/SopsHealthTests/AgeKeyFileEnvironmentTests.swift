@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import Testing
 @testable import SopsHealth
 
@@ -192,6 +193,7 @@ struct AgeKeyFileNoisyShellTests {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("noisy-shell-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(directory)
         try profile.write(to: directory.appendingPathComponent(".zprofile"),
                           atomically: true, encoding: .utf8)
         return directory

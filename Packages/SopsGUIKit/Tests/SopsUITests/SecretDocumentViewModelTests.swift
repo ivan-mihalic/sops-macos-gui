@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import Testing
 import SopsEngine
 import SopsProjects
@@ -75,7 +76,10 @@ private struct AgeKeyPair {
 private func scratchDirectory(_ label: String = "vm-fixture") throws -> URL {
     let dir = FileManager.default.temporaryDirectory
         .appendingPathComponent("\(label)-" + UUID().uuidString)
+    ScratchDirectoryRegistry.shared.register(dir)
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(dir)
+    ScratchDirectoryRegistry.shared.register(dir)
     return dir
 }
 
@@ -1723,3 +1727,4 @@ struct SecretDocumentPadlockTests {
         #expect(vm.rows == (try await rowsAsTheFileHasThem(fileURL, key: key)))
     }
 }
+

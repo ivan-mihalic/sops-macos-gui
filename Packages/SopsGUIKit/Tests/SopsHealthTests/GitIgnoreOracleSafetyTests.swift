@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import Testing
 @testable import SopsHealth
 
@@ -55,6 +56,7 @@ struct GitIgnoreOracleSafetyTests {
             .appendingPathComponent("fsmonitor-\(UUID().uuidString)")
         let repo = sandbox.appendingPathComponent("repo")
         try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(repo)
         defer { try? FileManager.default.removeItem(at: sandbox) }
 
         let marker = sandbox.appendingPathComponent("EXECUTED")
@@ -94,6 +96,7 @@ struct GitIgnoreOracleSafetyTests {
             .appendingPathComponent("fsmonitor-control-\(UUID().uuidString)")
         let repo = sandbox.appendingPathComponent("repo")
         try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(repo)
         defer { try? FileManager.default.removeItem(at: sandbox) }
 
         let marker = sandbox.appendingPathComponent("EXECUTED")
@@ -216,6 +219,7 @@ struct GitIgnoreOracleVerdictTests {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("fakegit-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(dir)
         let tool = dir.appendingPathComponent("git")
         try ("#!/bin/sh\n" + script + "\n").write(to: tool, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
@@ -305,6 +309,7 @@ struct GitIgnoreOracleFailureTests {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("failgit-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(dir)
         let tool = dir.appendingPathComponent("git")
         try ("#!/bin/sh\n" + script + "\n").write(to: tool, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
@@ -361,7 +366,9 @@ struct GitIgnoreOracleFailureTests {
         let plain = sandbox.appendingPathComponent("plain")
         let damaged = sandbox.appendingPathComponent("damaged")
         try FileManager.default.createDirectory(at: plain, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(plain)
         try FileManager.default.createDirectory(at: damaged, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(damaged)
         defer { try? FileManager.default.removeItem(at: sandbox) }
 
         Self.run(git, ["-C", damaged.path, "init", "-q", "."])
@@ -406,6 +413,7 @@ struct GitIgnoreOracleFailureTests {
         let repository = sandbox.appendingPathComponent("repo")
         let project = repository.appendingPathComponent("services/config")
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(project)
         defer { try? FileManager.default.removeItem(at: sandbox) }
 
         Self.run(git, ["-C", repository.path, "init", "-q", "."])
@@ -439,6 +447,7 @@ struct GitIgnoreOracleFailureTests {
             .appendingPathComponent("realgit-plain-\(UUID().uuidString)")
         let nested = sandbox.appendingPathComponent("a/b/c")
         try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(nested)
         defer { try? FileManager.default.removeItem(at: sandbox) }
 
         guard case .undetermined(let reason) =
@@ -515,6 +524,7 @@ struct GitIgnoreOracleFailureTests {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("plain-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(root)
         defer { try? FileManager.default.removeItem(at: root) }
 
         let verdict = GitIgnoreOracle.classify(candidates: [], root: root, gitPath: git.path)

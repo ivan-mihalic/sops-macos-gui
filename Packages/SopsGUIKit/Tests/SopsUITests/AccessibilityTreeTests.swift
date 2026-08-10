@@ -1,3 +1,4 @@
+import ScratchCleanup
 import AppKit
 import SopsEngine
 import SopsHealth
@@ -422,7 +423,9 @@ struct AccessibilityTreeTests {
     func showingTheViewImportsNothing() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("keyfile-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(directory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(directory)
         defer { try? FileManager.default.removeItem(at: directory) }
         let keyFile = directory.appendingPathComponent("keys.txt")
 

@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import Testing
 @testable import SopsProjects
 
@@ -25,9 +26,11 @@ struct ProjectPresenceTests {
     func unreadableParentIsNotMissing() throws {
         let sandbox = FileManager.default.temporaryDirectory
             .appendingPathComponent("presence-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(sandbox)
         let parent = sandbox.appendingPathComponent("locked")
         let root = parent.appendingPathComponent("project")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(root)
         defer {
             try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: parent.path)
             try? FileManager.default.removeItem(at: sandbox)
@@ -50,8 +53,10 @@ struct ProjectPresenceTests {
     func deletedProjectIsMissing() throws {
         let sandbox = FileManager.default.temporaryDirectory
             .appendingPathComponent("presence-gone-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(sandbox)
         let root = sandbox.appendingPathComponent("project")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(root)
         defer { try? FileManager.default.removeItem(at: sandbox) }
 
         let store = try store(sandbox)
@@ -66,8 +71,10 @@ struct ProjectPresenceTests {
     func fileInPlaceOfDirectoryIsMissing() throws {
         let sandbox = FileManager.default.temporaryDirectory
             .appendingPathComponent("presence-file-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(sandbox)
         let root = sandbox.appendingPathComponent("project")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(root)
         defer { try? FileManager.default.removeItem(at: sandbox) }
 
         let store = try store(sandbox)
@@ -82,8 +89,10 @@ struct ProjectPresenceTests {
     func ordinaryProjectIsPresent() throws {
         let sandbox = FileManager.default.temporaryDirectory
             .appendingPathComponent("presence-ok-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(sandbox)
         let root = sandbox.appendingPathComponent("project")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(root)
         defer { try? FileManager.default.removeItem(at: sandbox) }
 
         let store = try store(sandbox)

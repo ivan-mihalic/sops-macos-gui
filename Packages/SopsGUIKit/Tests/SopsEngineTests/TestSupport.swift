@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 
 /// A throwaway age identity, generated per test via `age-keygen`.
 /// Nothing here is ever written into the repository.
@@ -41,7 +42,9 @@ struct TempFile {
     init(named name: String, contents: String) throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("sops-spike-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(dir)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(dir)
         let url = dir.appendingPathComponent(name)
         try contents.write(to: url, atomically: true, encoding: .utf8)
         path = url.path

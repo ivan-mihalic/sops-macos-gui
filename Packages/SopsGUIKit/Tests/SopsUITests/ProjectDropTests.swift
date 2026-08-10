@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import SopsProjects
 import Testing
 @testable import SopsUI
@@ -70,7 +71,9 @@ struct ProjectDropBatchTests {
     private func model() throws -> ProjectSidebarModel {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("drop-batch-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(directory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(directory)
         return ProjectSidebarModel(
             store: try ProjectStore(fileURL: directory.appendingPathComponent("projects.json")))
     }
@@ -78,7 +81,9 @@ struct ProjectDropBatchTests {
     private func folder() throws -> String {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("drop-folder-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(url)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(url)
         return url.path
     }
 

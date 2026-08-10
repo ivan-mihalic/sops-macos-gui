@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import Testing
 @testable import SopsHealth
 
@@ -48,8 +49,10 @@ struct ProjectScanPerformanceTests {
     private func makePinnedTree(matchingCount: Int, margin: Int) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("pin-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(root)
         let src = root.appendingPathComponent("src")
         try FileManager.default.createDirectory(at: src, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(src)
 
         for i in 0..<matchingCount {
             try Self.encryptedContent.write(
@@ -67,6 +70,7 @@ struct ProjectScanPerformanceTests {
 
         let excludedDir = root.appendingPathComponent("node_modules")
         try FileManager.default.createDirectory(at: excludedDir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(excludedDir)
         try "LEAKED=1".write(to: excludedDir.appendingPathComponent("leak.env"), atomically: true, encoding: .utf8)
 
         return root
@@ -133,8 +137,10 @@ struct ProjectScanPerformanceTests {
     func repeatedScansAreDeterministic() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("determinism-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(root)
         let src = root.appendingPathComponent("src")
         try FileManager.default.createDirectory(at: src, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(src)
         defer { try? FileManager.default.removeItem(at: root) }
 
         for i in 0..<40 {

@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import Testing
 import SopsEngine
 @testable import SopsHealth
@@ -86,6 +87,7 @@ private func realAgeKeyPair() throws -> RealAgeKey {
 private func makeTempDir() throws -> URL {
     let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ext-" + UUID().uuidString)
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(dir)
     return dir
 }
 

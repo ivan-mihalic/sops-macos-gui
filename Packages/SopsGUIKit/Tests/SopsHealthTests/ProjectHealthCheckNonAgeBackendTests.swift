@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import Testing
 import SopsEngine
 @testable import SopsHealth
@@ -12,7 +13,9 @@ private struct FakeProjects: ProjectSourceProviding {
 private func makeProject(sopsYAML: String, files: [String: String]) throws -> String {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("backend-" + UUID().uuidString)
+    ScratchDirectoryRegistry.shared.register(root)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(root)
     try sopsYAML.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
     for (name, contents) in files {
         let url = root.appendingPathComponent(name)
@@ -111,6 +114,7 @@ private enum RealPGPFixture {
 
         let workDir = FileManager.default.temporaryDirectory.appendingPathComponent("pgp-src-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(workDir)
         let plainFile = workDir.appendingPathComponent("secrets.yaml")
         try plaintext.write(to: plainFile, atomically: true, encoding: .utf8)
 
@@ -277,6 +281,7 @@ enum GPGAvailability {
         defer { try? FileManager.default.removeItem(at: home) }
         do {
             try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(home)
         } catch { return false }
 
         let socketPath = home.appendingPathComponent("S.probe").path

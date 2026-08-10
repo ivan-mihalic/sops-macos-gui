@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import Testing
 @testable import SopsHealth
 
@@ -9,7 +10,13 @@ private struct FakeProjects: ProjectSourceProviding {
 private func makeProjectRoot() throws -> URL {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("large-" + UUID().uuidString)
+    ScratchDirectoryRegistry.shared.register(root)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(root)
+    // This suite writes a 200 MB `huge-asset.bin` per run. It was the single
+    // largest contributor to the fixture pile-up — 506 copies, 113 GB — so it
+    // registers like everything else rather than relying on anyone noticing.
+    ScratchDirectoryRegistry.shared.register(root)
     return root
 }
 
@@ -126,6 +133,7 @@ struct ProjectHealthCheckLargeFileTests {
 
         let secretsDir = root.appendingPathComponent("secrets")
         try FileManager.default.createDirectory(at: secretsDir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(secretsDir)
         let fileURL = secretsDir.appendingPathComponent("prod.yaml")
 
         // 20 MB of bulk content (well past maxSniffedFileBytes) followed by
@@ -183,6 +191,7 @@ struct ProjectHealthCheckLargeFileTests {
 
         let secretsDir = root.appendingPathComponent("secrets")
         try FileManager.default.createDirectory(at: secretsDir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(secretsDir)
         let fileURL = secretsDir.appendingPathComponent("prod.yaml")
 
         try writeFileWithBulkPrefix(at: fileURL, minBulkBytes: 20_000_000,
@@ -300,6 +309,7 @@ struct ProjectHealthCheckLargeFileTests {
 
         let secretsDir = root.appendingPathComponent("secrets")
         try FileManager.default.createDirectory(at: secretsDir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(secretsDir)
 
         let check = ProjectHealthCheck(source: FakeProjects(
             projects: [InspectedProject(name: "demo", rootPath: root.path)]))

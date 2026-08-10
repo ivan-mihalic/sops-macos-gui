@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import Testing
 @testable import SopsHealth
 
@@ -19,7 +20,9 @@ private func makeProject(
 ) throws -> String {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("project-" + UUID().uuidString)
+    ScratchDirectoryRegistry.shared.register(root)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(root)
     try ProjectFixture.gitInit(root)
     if let sopsYAML {
         try sopsYAML.write(to: root.appendingPathComponent(".sops.yaml"),

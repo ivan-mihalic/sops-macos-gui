@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import Testing
 @testable import SopsHealth
 
@@ -27,7 +28,9 @@ struct ToolLocatorTests {
     func findsToolOutsideProcessPath() async throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("locator-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(dir)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(dir)
         let script = dir.appendingPathComponent("faketool")
         try "#!/bin/sh\necho 'faketool version 9.8.7'\n".write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
@@ -87,6 +90,7 @@ struct ToolLocatorTests {
     func directoryIsNotAnExecutable() async throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("locator-dir-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(dir)
         try FileManager.default.createDirectory(
             at: dir.appendingPathComponent("docker"), withIntermediateDirectories: true)
 
@@ -102,12 +106,16 @@ struct ToolLocatorTests {
     func directoryDoesNotShadowARealToolLaterInThePath() async throws {
         let decoyDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("locator-decoy-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(decoyDir)
         try FileManager.default.createDirectory(
             at: decoyDir.appendingPathComponent("faketool"), withIntermediateDirectories: true)
 
         let realDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("locator-real-" + UUID().uuidString)
+
+        ScratchDirectoryRegistry.shared.register(realDir)
         try FileManager.default.createDirectory(at: realDir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(realDir)
         let script = realDir.appendingPathComponent("faketool")
         try "#!/bin/sh\necho 'faketool version 9.8.7'\n".write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
@@ -123,7 +131,9 @@ struct ToolLocatorTests {
     func nonExecutableFileIsNotATool() async throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("locator-plain-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(dir)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(dir)
         let file = dir.appendingPathComponent("sops")
         try "not a program".write(to: file, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
@@ -144,7 +154,9 @@ struct ToolLocatorTests {
         // this fails -- unlike loginShellPathIsRicherThanProcessPath above.
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("shellprobe-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(dir)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(dir)
         let sentinelDir = dir.appendingPathComponent("sentinel-\(UUID().uuidString)").path
         let fakeShell = dir.appendingPathComponent("fakeshell")
         // Ignores its arguments entirely and always reports the sentinel PATH --
@@ -173,7 +185,9 @@ struct ToolLocatorTests {
     func handlesOutputLargerThanPipeBuffer() async throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("bigoutput-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(dir)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(dir)
         let script = dir.appendingPathComponent("bigtool")
         // macOS pipe buffers are ~64 KB. A naive "wait for exit, then read"
         // capture deadlocks against this: the child blocks on write() once the

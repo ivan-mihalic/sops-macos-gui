@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import Testing
 import SopsEngine
 @testable import SopsHealth
@@ -188,6 +189,7 @@ struct ProjectScanDisclosureTests {
                                  to: root, at: ".sops.yaml")
         let src = root.appendingPathComponent("src")
         try FileManager.default.createDirectory(at: src, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(src)
         for i in 0..<(ProjectScanner.maxScannedFiles + 50) {
             try "x".write(to: src.appendingPathComponent("f\(i).txt"), atomically: true, encoding: .utf8)
         }
@@ -300,6 +302,7 @@ struct ProjectScanDisclosureTests {
     func missingRootHasNoScopeParagraph() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("gone-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(root)
 
         let findings = await run(root)
 

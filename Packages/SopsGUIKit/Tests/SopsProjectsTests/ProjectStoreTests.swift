@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import Testing
 @testable import SopsProjects
 
@@ -12,13 +13,16 @@ struct ProjectStoreTests {
     private func makeStore() -> (ProjectStore, URL) {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("projects-\(UUID().uuidString).json")
+        ScratchDirectoryRegistry.shared.register(url)
         return (ProjectStore(fileURL: url), url)
     }
 
     private func makeDirectory() throws -> String {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("proj-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(url)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(url)
         return url.path
     }
 
@@ -49,6 +53,7 @@ struct ProjectStoreTests {
         let (store, _) = makeStore()
         let file = FileManager.default.temporaryDirectory
             .appendingPathComponent("f-\(UUID().uuidString).txt")
+        ScratchDirectoryRegistry.shared.register(file)
         try "x".write(to: file, atomically: true, encoding: .utf8)
 
         #expect(throws: ProjectStore.Error.self) { try store.add(path: file.path) }
@@ -72,6 +77,7 @@ struct ProjectStoreTests {
     func toleratesCorruptFile() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("projects-\(UUID().uuidString).json")
+        ScratchDirectoryRegistry.shared.register(url)
         try "not json at all".write(to: url, atomically: true, encoding: .utf8)
 
         let store = ProjectStore(fileURL: url)
@@ -86,6 +92,7 @@ struct ProjectStoreTests {
     func missingFileIsNotAnError() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("projects-\(UUID().uuidString).json")
+        ScratchDirectoryRegistry.shared.register(url)
 
         let store = ProjectStore(fileURL: url)
 
@@ -127,6 +134,7 @@ struct ProjectStoreTests {
     func loadsPreDisplayPathStoreFile() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("projects-\(UUID().uuidString).json")
+        ScratchDirectoryRegistry.shared.register(url)
         try Self.preDisplayPathJSON.write(to: url, atomically: true, encoding: .utf8)
 
         let store = ProjectStore(fileURL: url)
@@ -154,7 +162,9 @@ struct ProjectStoreTests {
     func quarantinesUnreadableFileBeforeAddCanDestroyIt() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("store-dir-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(dir)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(dir)
         let url = dir.appendingPathComponent("projects.json")
         let originalBytes = "this is not json, but might be salvageable by hand: {\"id\":"
         try originalBytes.write(to: url, atomically: true, encoding: .utf8)
@@ -190,7 +200,9 @@ struct ProjectStoreTests {
     func quarantinesUnreadableFileBeforeRemoveCanDestroyIt() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("store-dir-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(dir)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(dir)
         let url = dir.appendingPathComponent("projects.json")
         let originalBytes = "also not json — second scenario, remove instead of add"
         try originalBytes.write(to: url, atomically: true, encoding: .utf8)
@@ -221,7 +233,9 @@ struct ProjectStoreTests {
     func writesAreRefusedWhenQuarantineItselfFails() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("store-dir-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(dir)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(dir)
         let url = dir.appendingPathComponent("projects.json")
         let originalBytes = "not json, and this file cannot even be moved aside"
         try originalBytes.write(to: url, atomically: true, encoding: .utf8)
@@ -248,7 +262,9 @@ struct ProjectStoreTests {
     func normalAddDoesNotQuarantineAnything() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("store-dir-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(dir)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(dir)
         let url = dir.appendingPathComponent("projects.json")
         let store = ProjectStore(fileURL: url)
         #expect(store.loadError == nil)
@@ -273,7 +289,9 @@ struct ProjectStoreTests {
     func repeatedQuarantinesWithinOneSecondDoNotCollide() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("store-dir-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(dir)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(dir)
         let url = dir.appendingPathComponent("projects.json")
 
         for attempt in 0..<3 {
@@ -323,7 +341,9 @@ struct ProjectStoreTests {
     func addDoesNotMutateOnPersistFailure() throws {
         let storeDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("store-dir-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(storeDir)
         try FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(storeDir)
         let url = storeDir.appendingPathComponent("projects.json")
         let store = ProjectStore(fileURL: url)
 
@@ -404,6 +424,8 @@ struct ProjectStoreTests {
 
         let symlink = FileManager.default.temporaryDirectory
             .appendingPathComponent("symlink-\(UUID().uuidString)")
+
+        ScratchDirectoryRegistry.shared.register(symlink)
         try FileManager.default.createSymbolicLink(
             at: symlink, withDestinationURL: URL(fileURLWithPath: path))
 
@@ -428,6 +450,8 @@ struct ProjectStoreTests {
 
         let symlink = FileManager.default.temporaryDirectory
             .appendingPathComponent("symlink-\(UUID().uuidString)")
+
+        ScratchDirectoryRegistry.shared.register(symlink)
         try FileManager.default.createSymbolicLink(
             at: symlink, withDestinationURL: URL(fileURLWithPath: target))
 
@@ -462,6 +486,7 @@ struct ProjectStoreTests {
         let target = try makeDirectory()
         let symlink = FileManager.default.temporaryDirectory
             .appendingPathComponent("symlink-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(symlink)
         try FileManager.default.createSymbolicLink(
             at: symlink, withDestinationURL: URL(fileURLWithPath: target))
 

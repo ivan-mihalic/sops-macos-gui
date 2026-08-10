@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import Testing
 @testable import SopsHealth
 
@@ -98,8 +99,10 @@ struct AgeKeyFileLocationTests {
     func directoryIsNotAKeyFile() throws {
         let home = FileManager.default.temporaryDirectory
             .appendingPathComponent("home-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(home)
         let directory = home.appendingPathComponent(".config/sops/age/keys.txt")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(directory)
         defer { try? FileManager.default.removeItem(at: home) }
 
         let paths = AgeKeyFileLocations.candidates(
@@ -160,8 +163,10 @@ struct AgeKeyFileLocationTests {
     func keyFileInLibraryLocationIsFound() async throws {
         let home = FileManager.default.temporaryDirectory
             .appendingPathComponent("home-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(home)
         let library = home.appendingPathComponent("Library/Application Support/sops/age")
         try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(library)
         let keyFile = library.appendingPathComponent("keys.txt")
         try "# created by age-keygen\n".write(to: keyFile, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: home) }
@@ -180,10 +185,12 @@ struct AgeKeyFileLocationTests {
     func twoKeyFilesAreBothNamed() async throws {
         let home = FileManager.default.temporaryDirectory
             .appendingPathComponent("home-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(home)
         var written: [String] = []
         for relative in ["Library/Application Support/sops/age", ".config/sops/age"] {
             let directory = home.appendingPathComponent(relative)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(directory)
             let keyFile = directory.appendingPathComponent("keys.txt")
             try "# created by age-keygen\n".write(to: keyFile, atomically: true, encoding: .utf8)
             written.append(keyFile.path)

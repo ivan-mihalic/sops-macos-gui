@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import Testing
 @testable import SopsProjects
 
@@ -9,9 +10,12 @@ struct WorktreeResolverTests {
     private func makeRepoWithWorktree() throws -> (main: String, worktree: String) {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("repo-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(base)
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(base)
         let main = base.appendingPathComponent("main")
         try FileManager.default.createDirectory(at: main, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(main)
 
         try git(["init", "-q"], in: main)
         try "x".write(to: main.appendingPathComponent("f.txt"), atomically: true, encoding: .utf8)
@@ -44,7 +48,9 @@ struct WorktreeResolverTests {
     func plainDirectory() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("plain-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(dir)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(dir)
         #expect(WorktreeResolver.kind(of: dir.path) == .notAGitRepository)
     }
 
@@ -72,9 +78,12 @@ struct WorktreeResolverTests {
     func nestedWorktreeInsideMainCheckout() throws {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("repo-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(base)
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(base)
         let main = base.appendingPathComponent("main")
         try FileManager.default.createDirectory(at: main, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(main)
 
         try git(["init", "-q"], in: main)
         try "x".write(to: main.appendingPathComponent("f.txt"), atomically: true, encoding: .utf8)
@@ -105,6 +114,7 @@ struct WorktreeResolverTests {
     func bareRepository() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("bare-" + UUID().uuidString + ".git")
+        ScratchDirectoryRegistry.shared.register(dir)
         try git(["init", "-q", "--bare", dir.path], in: FileManager.default.temporaryDirectory)
         #expect(WorktreeResolver.kind(of: dir.path) == .notAGitRepository)
     }
@@ -122,10 +132,13 @@ struct WorktreeResolverTests {
     func submoduleIsNotAWorktree() throws {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("repo-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(base)
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(base)
 
         let sub = base.appendingPathComponent("sub")
         try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(sub)
         try git(["init", "-q"], in: sub)
         try "y".write(to: sub.appendingPathComponent("g.txt"), atomically: true, encoding: .utf8)
         try git(["add", "."], in: sub)
@@ -133,6 +146,7 @@ struct WorktreeResolverTests {
 
         let parent = base.appendingPathComponent("parent")
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(parent)
         try git(["init", "-q"], in: parent)
         try git(
             ["-c", "protocol.file.allow=always", "-c", "user.email=t@t", "-c", "user.name=t",
@@ -148,6 +162,7 @@ struct WorktreeResolverTests {
     func notADirectory() throws {
         let file = FileManager.default.temporaryDirectory
             .appendingPathComponent("notadir-" + UUID().uuidString + ".txt")
+        ScratchDirectoryRegistry.shared.register(file)
         try "hello".write(to: file, atomically: true, encoding: .utf8)
         #expect(WorktreeResolver.kind(of: file.path) == .notAGitRepository)
     }
@@ -156,7 +171,9 @@ struct WorktreeResolverTests {
     func emptyGitFile() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("emptygit-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(dir)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(dir)
         try "".write(toFile: dir.appendingPathComponent(".git").path, atomically: true, encoding: .utf8)
         #expect(WorktreeResolver.kind(of: dir.path) == .notAGitRepository)
     }
@@ -165,7 +182,9 @@ struct WorktreeResolverTests {
     func noGitdirPrefix() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("badgit-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(dir)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(dir)
         try "this is not a pointer\n".write(
             toFile: dir.appendingPathComponent(".git").path, atomically: true, encoding: .utf8)
         #expect(WorktreeResolver.kind(of: dir.path) == .notAGitRepository)
@@ -201,13 +220,17 @@ struct WorktreeResolverTests {
     func gitdirPointsAtEmptyDirectory() throws {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("emptytarget-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(base)
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(base)
 
         let repo = base.appendingPathComponent("repo")
         try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(repo)
 
         let target = base.appendingPathComponent("just-an-empty-folder")
         try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(target)
 
         try "gitdir: \(target.path)"
             .write(toFile: repo.appendingPathComponent(".git").path, atomically: true, encoding: .utf8)
@@ -230,13 +253,16 @@ struct WorktreeResolverTests {
     func hollowDirectoryShapedLikeAWorktreeIsRejected() throws {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("shapeattack-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(base)
         let hollowWorktreeDir = base
             .appendingPathComponent("fake-main/.git/worktrees/fake-name")
         try FileManager.default.createDirectory(at: hollowWorktreeDir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(hollowWorktreeDir)
         // Deliberately nothing inside hollowWorktreeDir: no HEAD, no commondir.
 
         let victim = base.appendingPathComponent("victim")
         try FileManager.default.createDirectory(at: victim, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(victim)
         try "gitdir: \(hollowWorktreeDir.path)"
             .write(toFile: victim.appendingPathComponent(".git").path, atomically: true, encoding: .utf8)
 

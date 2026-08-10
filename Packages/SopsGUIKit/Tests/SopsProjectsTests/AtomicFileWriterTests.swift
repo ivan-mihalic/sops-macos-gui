@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import Testing
 
 @testable import SopsProjects
@@ -20,7 +21,9 @@ struct AtomicFileWriterTests {
     ) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(label)-\(UUID().uuidString)", isDirectory: true)
+        ScratchDirectoryRegistry.shared.register(url)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(url)
         return url
     }
 
@@ -278,6 +281,7 @@ struct AtomicFileWriterTests {
         let directory = try makeScratchDirectory()
         let targetDirectory = directory.appendingPathComponent("shared", isDirectory: true)
         try FileManager.default.createDirectory(at: targetDirectory, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(targetDirectory)
 
         let target = targetDirectory.appendingPathComponent("real.yaml")
         try Data("before".utf8).write(to: target)
@@ -420,6 +424,7 @@ struct AtomicFileWriterTests {
         let directory = try makeScratchDirectory()
         let targetDirectory = directory.appendingPathComponent("shared", isDirectory: true)
         try FileManager.default.createDirectory(at: targetDirectory, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(targetDirectory)
         let target = targetDirectory.appendingPathComponent("real.yaml")
         try Data("before".utf8).write(to: target)
         let link = directory.appendingPathComponent("secrets.yaml")

@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import Testing
 
 @testable import SopsEngine
@@ -307,7 +308,9 @@ struct DocumentChangeHygieneTests {
 /// `stderr` redirection by sharing state across parallel execution.
 private func capturingStandardError<R>(_ body: () throws -> R) throws -> (R, String) {
     let path = FileManager.default.temporaryDirectory
-        .appendingPathComponent("stderr-\(UUID().uuidString).log").path
+        .appendingPathComponent("stderr-\(UUID().uuidString).log")
+        .registeredForCleanup()
+        .path
     FileManager.default.createFile(atPath: path, contents: nil)
 
     let captured = open(path, O_WRONLY)

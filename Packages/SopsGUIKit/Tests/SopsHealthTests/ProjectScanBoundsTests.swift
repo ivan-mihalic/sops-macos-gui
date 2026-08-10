@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import Testing
 import SopsEngine
 @testable import SopsHealth
@@ -10,8 +11,10 @@ struct ProjectScanBoundsTests {
     private func makeTree(dirName: String, count: Int) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("scan-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(root)
         let noise = root.appendingPathComponent(dirName)
         try FileManager.default.createDirectory(at: noise, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(noise)
         for i in 0..<count {
             try "x".write(to: noise.appendingPathComponent("f\(i).txt"), atomically: true, encoding: .utf8)
         }
@@ -75,8 +78,10 @@ struct ProjectScanBoundsTests {
     func truncationBlocksOK() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("scan-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(root)
         let noise = root.appendingPathComponent("src")
         try FileManager.default.createDirectory(at: noise, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(noise)
         defer { try? FileManager.default.removeItem(at: root) }
 
         let devKey = "age1ykd0u99qxpdl4yr57lwqv5rt9e473p6hhdps2a5q5ddmt0x6ryaqkjpx4f"
@@ -143,6 +148,7 @@ struct ProjectScanBoundsTests {
     func missingRootIsReportedNotSilentlyEmpty() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("does-not-exist-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(root)
         // Deliberately never created.
 
         let scanned = await ProjectScanner.scan(root: root)
@@ -161,7 +167,9 @@ struct ProjectScanBoundsTests {
     func genuinelyEmptyRootIsNotReportedAsMissing() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("empty-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(root)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(root)
         defer { try? FileManager.default.removeItem(at: root) }
 
         let scanned = await ProjectScanner.scan(root: root)
@@ -181,7 +189,9 @@ struct ProjectScanBoundsTests {
     func unreadableRootIsNotReportedAsMissing() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("unreadable-root-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(root)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(root)
         try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: root.path)
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
                 try? FileManager.default.removeItem(at: root) }
@@ -205,8 +215,10 @@ struct ProjectScanBoundsTests {
     func unreadableParentIsNotReportedAsMissingProject() async throws {
         let parent = FileManager.default.temporaryDirectory
             .appendingPathComponent("locked-parent-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(parent)
         let root = parent.appendingPathComponent("project")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(root)
         try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: parent.path)
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: parent.path)
                 try? FileManager.default.removeItem(at: parent) }

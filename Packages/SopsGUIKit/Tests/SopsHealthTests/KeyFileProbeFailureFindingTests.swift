@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import Testing
 @testable import SopsHealth
 
@@ -53,7 +54,9 @@ struct KeyFileProbeFailureFindingTests {
     func foundKeyStillWarns() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("probe-failure-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(directory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(directory)
         defer { try? FileManager.default.removeItem(at: directory) }
         let keyFile = directory.appendingPathComponent("keys.txt")
         try "not a real key".write(to: keyFile, atomically: true, encoding: .utf8)

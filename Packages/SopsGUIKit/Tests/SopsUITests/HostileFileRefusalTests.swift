@@ -1,4 +1,5 @@
 import Foundation
+import ScratchCleanup
 import SopsEngine
 import SopsProjects
 import Testing
@@ -56,7 +57,9 @@ struct HostileFileRefusalTests {
     func absentFingerprintOverExistingFileIsRefused() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("hostile-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(directory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(directory)
         defer { try? FileManager.default.removeItem(at: directory) }
         let path = directory.appendingPathComponent("secrets.yaml")
         try "alpha: one\n".write(to: path, atomically: true, encoding: .utf8)
