@@ -151,6 +151,18 @@ func dump(_ element: AXUIElement, depth: Int, maxDepth: Int, indent: String = ""
     }
 }
 
+/// First element with `role`, depth-first. The key-import field is a
+/// `TextEditor`, whose accessibility label sits on a wrapper rather than on the
+/// editable element itself, so labels alone do not reach it.
+func findByRole(in element: AXUIElement, role: String, depth: Int = 0) -> AXUIElement? {
+    if depth > 40 { return nil }
+    if string(element, kAXRoleAttribute as String) == role { return element }
+    for child in children(element) {
+        if let hit = findByRole(in: child, role: role, depth: depth + 1) { return hit }
+    }
+    return nil
+}
+
 func find(in element: AXUIElement, matching label: String, depth: Int = 0) -> AXUIElement? {
     if depth > 40 { return nil }
     let candidates = [string(element, kAXTitleAttribute as String),
@@ -239,6 +251,46 @@ case "selectrow":
     let selected = AXUIElementSetAttributeValue(
         row, kAXSelectedAttribute as CFString, kCFBooleanTrue)
     print(selected == .success ? "selected" : "select failed: \(selected.rawValue)")
+
+case "setvalue":
+    // Reads the text from a **file**, never from an argument.
+    //
+    // The one thing this is used for is pasting an age private key into the
+    // key-import field, and an argument is visible to `ps` for as long as the
+    // process lives. The content is never echoed either — this prints the
+    // length and nothing else, which is enough to tell "it went in" from "the
+    // field was not found" without putting key material anywhere.
+    guard arguments.count == 4, let index = Int(arguments[1]) else {
+        fail("usage: setvalue <i> <label> <path-to-file-with-text>")
+    }
+    guard let text = try? String(contentsOfFile: arguments[3], encoding: .utf8) else {
+        fail("cannot read \(arguments[3])")
+    }
+    guard let field = find(in: window(at: index), matching: arguments[2])
+            ?? findByRole(in: window(at: index), role: kAXTextAreaRole as String) else {
+        fail("no element labelled \(arguments[2]) and no text area")
+    }
+    // Through `AXSelectedText`, not `AXValue`.
+    //
+    // Setting `AXValue` on a SwiftUI `TextEditor` writes into the underlying
+    // `NSTextView` without going through its editing path, so the SwiftUI
+    // binding never learns about it — measured: the text landed, and the
+    // Import button stayed disabled with the status still "No key is
+    // imported." Replacing the selection is an *edit*, which notifies the
+    // delegate and updates the binding.
+    var range = CFRange(location: 0, length: 0)
+    if let existing = string(field, kAXValueAttribute as String) {
+        range.length = existing.count
+    }
+    if let rangeValue = AXValueCreate(.cfRange, &range) {
+        AXUIElementSetAttributeValue(
+            field, kAXSelectedTextRangeAttribute as CFString, rangeValue)
+    }
+    let wrote = AXUIElementSetAttributeValue(
+        field, kAXSelectedTextAttribute as CFString, text as CFString)
+    print(wrote == .success
+          ? "inserted \(text.count) characters"
+          : "insert failed: \(wrote.rawValue)")
 
 case "press":
     guard arguments.count == 3, let index = Int(arguments[1]) else { fail("usage: press <i> <label>") }

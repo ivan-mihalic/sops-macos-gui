@@ -730,7 +730,15 @@ private struct SecretRowView: View {
                 }
                 .textFieldStyle(.roundedBorder)
                 .font(.system(.body, design: .monospaced))
-                .frame(minWidth: 160, idealWidth: 220)
+                // `minWidth` 100, not 160. The value field and the two
+                // trailing buttons were competing for the same space, and the
+                // field won: rendered at 380 pt the copy button vanished from
+                // some rows and not others — whichever rows had a shorter key
+                // kept theirs — and at 320 pt it was sliced in half by the
+                // pane edge. The field is the thing that can afford to be
+                // narrower; a control the user cannot click is not a layout
+                // trade-off, it is a missing feature.
+                .frame(minWidth: 100, idealWidth: 220)
                 .onChange(of: text) { _, newValue in onChange(newValue) }
                 .onChange(of: row.value) { _, newValue in
                     // The baseline changed out from under this row — a
@@ -745,19 +753,31 @@ private struct SecretRowView: View {
                     if newValue != text { text = newValue }
                 }
 
-                Button(action: onToggleReveal) {
-                    Image(systemName: isRevealed ? "eye.slash" : "eye")
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel(isRevealed ? LocalizedKey.editorHideValue.text : LocalizedKey.editorRevealValue.text)
+                // Reserved width, so the two controls are laid out before the
+                // field gets what is left instead of after. This is also what
+                // makes them line up down the column: sized to content, each
+                // row's pair sat wherever that row's value field happened to
+                // end, which was visibly ragged.
+                HStack(spacing: 4) {
+                    Button(action: onToggleReveal) {
+                        Image(systemName: isRevealed ? "eye.slash" : "eye")
+                            .frame(width: 20, height: 20)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel(isRevealed ? LocalizedKey.editorHideValue.text : LocalizedKey.editorRevealValue.text)
 
-                Button {
-                    ClipboardClearing.copy(row.value)
-                } label: {
-                    Image(systemName: "doc.on.doc")
+                    Button {
+                        ClipboardClearing.copy(row.value)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                            .frame(width: 20, height: 20)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel(LocalizedKey.actionCopy.text)
                 }
-                .buttonStyle(.borderless)
-                .accessibilityLabel(LocalizedKey.actionCopy.text)
+                .fixedSize()
             } else {
                 Text(SecretRowViewLogic.kindLabel(row.kind).text)
                     .font(.system(.body, design: .monospaced))

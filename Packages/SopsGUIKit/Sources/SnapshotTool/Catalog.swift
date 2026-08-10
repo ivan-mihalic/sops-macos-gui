@@ -49,7 +49,13 @@ enum Catalog {
     }
 
     private static func about() -> [Snapshot] {
-        [Snapshot("about", size: CGSize(width: 620, height: 520)) {
+        let facts = AboutFacts(version: "0.1.4", build: "128", commit: "abc1234",
+                               sops: "3.13.3", age: "1.3.1")
+        return [
+            Snapshot("about-dark", size: CGSize(width: 620, height: 520), colorScheme: .dark) {
+                AboutView(facts: facts, icon: repositoryIcon())
+            },
+            Snapshot("about", size: CGSize(width: 620, height: 520)) {
             AboutView(facts: AboutFacts(version: "0.1.3", build: "127", commit: "abc1234",
                                         sops: "3.13.3", age: "1.3.1"),
                       // The real app icon, read from the repository. The
@@ -57,7 +63,8 @@ enum Catalog {
                       // which under this tool is the *tool's* icon — so the
                       // snapshot would show something the app never displays.
                       icon: repositoryIcon())
-        }]
+            },
+        ]
     }
 
     // MARK: - Settings, as it appears inside the main window
@@ -65,9 +72,15 @@ enum Catalog {
     private static func settingsPane() -> [Snapshot] {
         let health = HealthViewModel(report: HealthReport(checks: []))
         let keyStore = SessionKeyStore()
-        return [Snapshot("settings-pane", size: CGSize(width: 760, height: 560)) {
-            SettingsPaneView(health: health, keyStore: keyStore)
-        }]
+        return [
+            Snapshot("settings-pane", size: CGSize(width: 760, height: 560)) {
+                SettingsPaneView(health: health, keyStore: keyStore)
+            },
+            Snapshot("settings-pane-dark", size: CGSize(width: 760, height: 560),
+                     colorScheme: .dark) {
+                SettingsPaneView(health: health, keyStore: keyStore)
+            },
+        ]
     }
 
     // MARK: - AppShell, both appearances
@@ -321,6 +334,38 @@ enum Catalog {
         return [
             editor("editor-loading", unloaded, fileName: "loading.yaml"),
             editor("editor-loaded", loaded, fileName: "production.secrets.yaml"),
+            // The same document at the two ends of the range the window
+            // actually allows. `ui-probe` can measure that the *window*
+            // resizes; only a render shows whether the editor's own columns
+            // survive it. 320 is the editor pane's declared minimum, 1100 a
+            // wide window's share of it.
+            Snapshot("editor-loaded-narrow", size: CGSize(width: 320, height: 560)) {
+                SecretEditorView(viewModel: loaded, fileName: "production.secrets.yaml",
+                                 unsavedChanges: UnsavedChangesTracker())
+            },
+            Snapshot("editor-w380", size: CGSize(width: 380, height: 300)) {
+                SecretEditorView(viewModel: loaded, fileName: "p.yaml",
+                                 unsavedChanges: UnsavedChangesTracker())
+            },
+            Snapshot("editor-w440", size: CGSize(width: 440, height: 300)) {
+                SecretEditorView(viewModel: loaded, fileName: "p.yaml",
+                                 unsavedChanges: UnsavedChangesTracker())
+            },
+            Snapshot("editor-w500", size: CGSize(width: 500, height: 300)) {
+                SecretEditorView(viewModel: loaded, fileName: "p.yaml",
+                                 unsavedChanges: UnsavedChangesTracker())
+            },
+            Snapshot("editor-loaded-wide", size: CGSize(width: 1100, height: 560)) {
+                SecretEditorView(viewModel: loaded, fileName: "production.secrets.yaml",
+                                 unsavedChanges: UnsavedChangesTracker())
+            },
+            // Dark. The app has never had a dark snapshot of anything except
+            // `AppShell`, so every surface below was shipped without anyone
+            // looking at it in the appearance half the users run.
+            Snapshot("editor-loaded-dark", size: editorSize, colorScheme: .dark) {
+                SecretEditorView(viewModel: loaded, fileName: "production.secrets.yaml",
+                                 unsavedChanges: UnsavedChangesTracker())
+            },
             editor("editor-empty-document", empty, fileName: "empty.secrets.yaml"),
             editor("editor-needs-key", needsKey, fileName: "needs-key.secrets.yaml"),
             editor("editor-load-failed", failed, fileName: "wrong-key.secrets.yaml"),
