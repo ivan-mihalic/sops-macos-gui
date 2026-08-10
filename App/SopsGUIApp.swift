@@ -380,7 +380,15 @@ struct SopsGUIApp: App {
         WindowGroup {
             AppShell(projects: projects, keyStore: keyStore, unsavedChanges: unsavedChanges,
                      health: health,
-                     onUpdateConsentChanged: { appUpdater.refreshConsent() })
+                     onUpdateConsentChanged: { appUpdater.refreshConsent() },
+                     // The same call the "Check for Updates…" menu item makes.
+                     // Unlike the menu item this one does not grey itself out
+                     // while a check is in flight — that needs the KVO model in
+                     // `CheckForUpdatesMenuItem`, which cannot move into
+                     // `SopsUI` because Sparkle is not a dependency there.
+                     // Pressing it twice is harmless: Sparkle ignores the
+                     // second while the first is running.
+                     onCheckForUpdates: { appUpdater.updater.checkForUpdates() })
                 .sheet(isPresented: $isShowingOnboarding) {
                     OnboardingWizard(health: health, state: onboarding)
                 }

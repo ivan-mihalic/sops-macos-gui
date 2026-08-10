@@ -220,7 +220,7 @@ struct AboutAndSettingsTests {
         let source = try String(contentsOf: MainWindowSizeTests.repositoryRoot
             .appendingPathComponent("Packages/SopsGUIKit/Sources/SopsUI/AppShell.swift"),
             encoding: .utf8)
-        #expect(source.contains("AboutView()"),
+        #expect(source.contains("AboutView("),
                 Comment(rawValue: "About still renders the no-selection placeholder"))
     }
 }
@@ -328,7 +328,7 @@ struct InlineSettingsTests {
                 Comment(rawValue: "the Settings row still opens a separate window"))
         #expect(source.contains("SettingsPaneView("),
                 Comment(rawValue: "the detail column has no settings pane"))
-        #expect(source.contains("AboutView()"))
+        #expect(source.contains("AboutView("))
     }
 }
 
@@ -493,7 +493,7 @@ struct DetailPageHeightTests {
         let source = try String(contentsOf: MainWindowSizeTests.repositoryRoot
             .appendingPathComponent("Packages/SopsGUIKit/Sources/SopsUI/AppShell.swift"),
             encoding: .utf8)
-        #expect(source.contains("ScrollView { AboutView() }"), Comment(rawValue: """
+        #expect(source.contains("ScrollView { AboutView("), Comment(rawValue: """
             AboutView sits directly in the detail column again — it pinned the window's \
             minimum height at 1382 pt the last time it did
             """))

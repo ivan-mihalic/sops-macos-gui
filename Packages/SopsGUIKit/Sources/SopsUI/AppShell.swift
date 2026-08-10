@@ -46,6 +46,9 @@ public struct AppShell: View {
     /// would give the sidebar and ⌘, different answers about the same machine.
     private let health: HealthViewModel
     private let onUpdateConsentChanged: @MainActor () -> Void
+    /// Passed straight through to `AboutView`. `nil` in every test and
+    /// snapshot, because Sparkle is not a dependency of this package.
+    private let onCheckForUpdates: (@MainActor () -> Void)?
 
     /// None of the three have defaults: the caller (`SopsGUIApp`) owns the
     /// single `ProjectStore`/`SessionKeyStore` instances the health check is
@@ -60,16 +63,79 @@ public struct AppShell: View {
                 keyStore: SessionKeyStore,
                 unsavedChanges: UnsavedChangesTracker,
                 health: HealthViewModel,
-                onUpdateConsentChanged: @escaping @MainActor () -> Void = {}) {
+                onUpdateConsentChanged: @escaping @MainActor () -> Void = {},
+                onCheckForUpdates: (@MainActor () -> Void)? = nil) {
         self.projects = projects
         self.keyStore = keyStore
         self.unsavedChanges = unsavedChanges
         self.health = health
         self.onUpdateConsentChanged = onUpdateConsentChanged
+        self.onCheckForUpdates = onCheckForUpdates
     }
 
     public var body: some View {
-        NavigationSplitView {
+        // Two shapes, and the switch between them is the point.
+        //
+        // Projects is a three-column app: sections, the project list, then the
+        // files and the open document. About and Settings are single pages
+        // with nothing to list beside them — a column of projects next to the
+        // About page is a list the user cannot act on without leaving the page
+        // they came to read.
+        //
+        // Returning `EmptyView()` from `content:` was tried and does not do
+        // this: `NavigationSplitView` keeps the column and draws it blank.
+        // Measured on the running app — a 408 pt empty stripe between the
+        // sidebar and the About page. The column has to not be declared at
+        // all, which is why this is two `NavigationSplitView`s rather than one
+        // with a conditional middle.
+        //
+        // Leaving Projects already destroys `ProjectWorkspaceView`, and is
+        // already guarded by `requestSectionSwitch` (see `guardedSelection`),
+        // so rebuilding the split view on that same transition adds no new way
+        // to lose an open document.
+        Group {
+            if selection == .projects {
+                NavigationSplitView {
+                    sectionSidebar
+                } content: {
+                    ProjectSidebar(model: projects)
+                        .navigationSplitViewColumnWidth(min: 200, ideal: 240)
+                        // Same reason as the sidebar: a save is not
+                        // interruptible, so a control that cannot be honoured
+                        // until it lands should not look live.
+                        .disabled(unsavedChanges.isSaving)
+                } detail: {
+                    ProjectWorkspaceView(projects: projects, keyStore: keyStore,
+                                         unsavedChanges: unsavedChanges)
+                }
+            } else {
+                NavigationSplitView {
+                    sectionSidebar
+                } detail: {
+                    singlePage
+                }
+            }
+        }
+        // The window's minimum size, stated once, here.
+        //
+        // `.windowResizability(.contentMinSize)` reads the minimum off this
+        // view, so without a minimum of its own the window inherited whatever
+        // the *current* pane happened to demand. Measured with
+        // `Scripts/ui-probe.swift`: 1138x189 on Projects, 352x1353 on About,
+        // 270x179 on Settings — the window's limits changed under the user
+        // every time they clicked a sidebar row, which is the "some screens
+        // resize and some don't" in the report.
+        //
+        // `maxWidth`/`maxHeight` `.infinity` so the panes grow into a window
+        // the user enlarges rather than leaving the extra space blank.
+
+    }
+
+
+    /// The window's sidebar. One `List`, shared by both shapes above, so the
+    /// sections and the guard on them cannot differ between them.
+    @ViewBuilder
+    private var sectionSidebar: some View {
             // One `List`, two sections — not a `List` plus a `safeAreaInset`
             // holding hand-rolled `Button` rows, which is what this was.
             //
@@ -135,33 +201,18 @@ public struct AppShell: View {
             } message: {
                 Text(sectionSaveErrorMessage ?? "")
             }
-        } content: {
-            // The middle column of a three-column `NavigationSplitView` — the
-            // shape Apple's own three-pane apps use, and the reason this is no
-            // longer a sidebar plus three side-by-side panes.
-            //
-            // Always the project list, including while About or Settings is
-            // showing, the way Mail keeps the message list up while you read a
-            // message. Switching on `selection` and returning `EmptyView()` for
-            // those two was tried and is a trap: `NavigationSplitView` does not
-            // treat an empty column as an absent one, and About's minimum
-            // height jumped to 1382 pt.
-            //
-            // Nothing about the unsaved-changes guard moved. `ProjectSidebar`
-            // still writes `projects.selection` and `ProjectWorkspaceView`'s
-            // `.onChange(of: projects.selection)` still routes that through
-            // `requestProjectSwitch`. Which column a view sits in does not
-            // change who asks before discarding a document — which is why this
-            // needed no edit to `WorkspaceSwitchDecision` or any of its three
-            // callers, and why all six of the test files that pin them stayed
-            // green through it.
-            ProjectSidebar(model: projects)
-                .navigationSplitViewColumnWidth(min: 200, ideal: 240)
-                .disabled(unsavedChanges.isSaving)
-        } detail: {
+    }
+
+    /// About and Settings: one page, no middle column.
+    @ViewBuilder
+    private var singlePage: some View {
             switch selection {
             case .projects:
-                ProjectWorkspaceView(projects: projects, keyStore: keyStore, unsavedChanges: unsavedChanges)
+                // Unreachable: `body` only builds this branch for the other
+                // two sections. Spelled out rather than absorbed by a
+                // `default`, because a silent catch-all here is exactly how
+                // the About row came to render nothing at all in 0.1.1.
+                EmptyView()
             case .about:
                 // In a `ScrollView`, and that is load-bearing rather than
                 // decorative. Placed directly in the detail column, `AboutView`
@@ -176,25 +227,11 @@ public struct AppShell: View {
                 // window is free again — and a page that might not fit should
                 // scroll anyway, which is what a user with larger text or a
                 // short window needs from it.
-                ScrollView { AboutView() }
+                ScrollView { AboutView(checkForUpdates: onCheckForUpdates) }
             case .settings:
                 SettingsPaneView(health: health, keyStore: keyStore,
                                  onUpdateConsentChanged: onUpdateConsentChanged)
             }
-        }
-        // The window's minimum size, stated once, here.
-        //
-        // `.windowResizability(.contentMinSize)` reads the minimum off this
-        // view, so without a minimum of its own the window inherited whatever
-        // the *current* pane happened to demand. Measured with
-        // `Scripts/ui-probe.swift`: 1138x189 on Projects, 352x1353 on About,
-        // 270x179 on Settings — the window's limits changed under the user
-        // every time they clicked a sidebar row, which is the "some screens
-        // resize and some don't" in the report.
-        //
-        // `maxWidth`/`maxHeight` `.infinity` so the panes grow into a window
-        // the user enlarges rather than leaving the extra space blank.
-
     }
 
     // MARK: - Leaving Projects is leaving the open document

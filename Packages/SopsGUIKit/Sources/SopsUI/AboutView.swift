@@ -66,9 +66,20 @@ public struct AboutView: View {
     private let facts: AboutFacts
     private let icon: NSImage
 
-    public init(facts: AboutFacts = .read(), icon: NSImage = NSApplication.shared.applicationIconImage) {
+    /// What to do when the user asks this pane to look for a new version.
+    ///
+    /// A closure rather than the updater itself: Sparkle lives in the app
+    /// target and `SopsUI` must keep building — and testing — without it, which
+    /// is the same seam `AppUpdateStatusProviding` uses for the health check.
+    /// `nil` hides the control, which is what every snapshot and test gets.
+    private let checkForUpdates: (@MainActor () -> Void)?
+
+    public init(facts: AboutFacts = .read(),
+                icon: NSImage = NSApplication.shared.applicationIconImage,
+                checkForUpdates: (@MainActor () -> Void)? = nil) {
         self.facts = facts
         self.icon = icon
+        self.checkForUpdates = checkForUpdates
     }
 
     private let iconSide: CGFloat = 96
@@ -130,6 +141,11 @@ public struct AboutView: View {
             .font(.callout)
             .textSelection(.enabled)
             .frame(maxWidth: 320)
+
+            if let checkForUpdates {
+                Button(LocalizedKey.actionCheckForUpdates.text) { checkForUpdates() }
+                    .controlSize(.large)
+            }
 
             Link(LocalizedKey.aboutReleasesLink.text,
                  destination: URL(string: "https://github.com/ivan-mihalic/sops-macos-gui-releases")!)

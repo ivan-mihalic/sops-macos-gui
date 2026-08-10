@@ -53,7 +53,7 @@ enum Catalog {
                                sops: "3.13.3", age: "1.3.1")
         return [
             Snapshot("about-dark", size: CGSize(width: 620, height: 520), colorScheme: .dark) {
-                AboutView(facts: facts, icon: repositoryIcon())
+                AboutView(facts: facts, icon: repositoryIcon(), checkForUpdates: {})
             },
             Snapshot("about", size: CGSize(width: 620, height: 520)) {
             AboutView(facts: AboutFacts(version: "0.1.3", build: "127", commit: "abc1234",
@@ -62,7 +62,10 @@ enum Catalog {
                       // default is `NSApplication.shared.applicationIconImage`,
                       // which under this tool is the *tool's* icon — so the
                       // snapshot would show something the app never displays.
-                      icon: repositoryIcon())
+                      icon: repositoryIcon(),
+                      // Non-nil so the control renders. In the app this calls
+                      // Sparkle; here it only has to exist for the layout.
+                      checkForUpdates: {})
             },
         ]
     }
