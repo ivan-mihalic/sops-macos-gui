@@ -410,6 +410,7 @@ private struct ProjectWorkspaceView: View {
     @State private var documentViewModel: SecretDocumentViewModel?
     @State private var pendingSwitch: PendingSwitch?
     @State private var switchSaveErrorMessage: String?
+    @State private var projectAccessRequest: ProjectAccessRequest?
 
     init(projects: ProjectSidebarModel, keyStore: SessionKeyStore, unsavedChanges: UnsavedChangesTracker) {
         self.projects = projects
@@ -481,17 +482,68 @@ private struct ProjectWorkspaceView: View {
         }
     }
 
+    /// The Project Access sheet's subject: a fresh model built at the moment
+    /// the button is pressed, so it always starts from what the project's
+    /// `.sops.yaml` and files say right now. Same shape, and the same reason,
+    /// as `SecretEditorView.AccessRequest`.
+    private struct ProjectAccessRequest: Identifiable {
+        let id = UUID()
+        let model: ProjectAccessModel
+    }
+
     @ViewBuilder
     private var fileListPane: some View {
         if let fileListModel {
-            FileListView(
-                model: fileListModel,
-                selection: Binding(
-                    get: { selectedFileURL },
-                    set: { requestFileSwitch(to: $0) })
-            )
+            VStack(spacing: 0) {
+                FileListView(
+                    model: fileListModel,
+                    selection: Binding(
+                        get: { selectedFileURL },
+                        set: { requestFileSwitch(to: $0) })
+                )
+                projectAccessBar(projectRoot: fileListModel.projectRoot)
+            }
+            .sheet(item: $projectAccessRequest) { request in
+                ProjectAccessView(
+                    model: request.model,
+                    onClose: { projectAccessRequest = nil },
+                    onFilesApplied: {
+                        // A project apply may have re-wrapped the very file
+                        // the editor has open: its bytes moved, so the
+                        // document view model's save-time fingerprint is
+                        // stale and the next Save would refuse it as changed
+                        // on disk. Reloading resyncs it — the same resync
+                        // `SecretEditorView` performs after the single-file
+                        // panel applies. Safe to do unconditionally because
+                        // the button that opened this sheet is gated on a
+                        // clean document, so there is nothing to discard.
+                        Task { await documentViewModel?.load() }
+                        Task { await fileListModel.refresh() }
+                    })
+            }
         } else {
             centeredPlaceholder(.filesNoProjectSelected)
+        }
+    }
+
+    private func projectAccessBar(projectRoot: URL) -> some View {
+        let canOpen = ProjectAccessGate.canOpen(
+            hasProject: true, documentIsDirty: openDocumentIsDirty,
+            documentIsSaving: openDocumentIsSaving)
+        return VStack(spacing: 0) {
+            Divider()
+            Button {
+                projectAccessRequest = ProjectAccessRequest(
+                    model: ProjectAccessModel(projectRoot: projectRoot, keyStore: keyStore))
+            } label: {
+                Label(.projectAccessButton, systemImage: "person.2.badge.key")
+                    .frame(maxWidth: .infinity)
+            }
+            .disabled(!canOpen)
+            .help(canOpen
+                ? LocalizedKey.projectAccessButton.text
+                : LocalizedKey.projectAccessDisabledUnsavedChanges.text)
+            .padding(8)
         }
     }
 

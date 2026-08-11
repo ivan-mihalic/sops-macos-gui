@@ -286,6 +286,73 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // `RecipientAccessModel.stageAdd`/`stageRemove`'s symmetry.
     case accessUndoRemoval = "access.undo-removal"
 
+    // MARK: Task 4 (recipient management) — project access panel
+
+    case projectAccessButton = "project-access.button"
+    // The project panel re-wraps every file the creation rule governs, which
+    // may include the document open in the editor. Applying while that
+    // document has unsaved edits would rewrite the file underneath them —
+    // the same data-loss shape `SecretEditorView.canOpenAccessPanel` closes
+    // for the single-file panel, and gated the same way.
+    case projectAccessDisabledUnsavedChanges = "project-access.disabled-unsaved-changes"
+    case projectAccessTitle = "project-access.title"
+    case projectAccessScanning = "project-access.scanning"
+    // Formatted with the count of files the governing rule covers, and the
+    // count of encrypted files found in total.
+    case projectAccessFilesSummary = "project-access.files-summary"
+    // Files that are encrypted but that some *other* creation rule governs.
+    // Stated rather than silently skipped: a project apply that quietly left
+    // files out would be the confident-about-what-it-did-not-touch claim
+    // PROPOSAL §6 D forbids.
+    case projectAccessUnmatchedNote = "project-access.unmatched-note"
+    case projectAccessScanIncompleteTitle = "project-access.scan-incomplete.title"
+    // The two ways a project can produce an *empty* scan that is not an
+    // answer about anything. Reported rather than folded into "no encrypted
+    // files found here", which would be a confident statement about a
+    // directory the walk never got into — the one thing PROPOSAL §6 D says
+    // this app must never do. See `ScannedTree.rootMissing`/`rootUnreadable`.
+    case projectAccessRootMissing = "project-access.root-missing"
+    case projectAccessRootUnreadable = "project-access.root-unreadable"
+    case projectAccessNoConfig = "project-access.no-config"
+    case projectAccessNoFiles = "project-access.no-files"
+    case projectAccessConfigSectionTitle = "project-access.config-section.title"
+    // The heading over the sentence the *bridge* produced explaining which
+    // `.sops.yaml` shape it will not rewrite — see
+    // `ProjectRecipientApplier.Plan.configRefusal`. The sentence itself is
+    // engine text shown verbatim, like a health finding's, because it names
+    // the specific shape found.
+    case projectAccessConfigReadOnlyTitle = "project-access.config-read-only.title"
+    case projectAccessConfigErrorTitle = "project-access.config-error.title"
+    case projectAccessConfigUpToDate = "project-access.config-up-to-date"
+    case projectAccessConfigWritten = "project-access.config-written"
+    case projectAccessUpdateConfigButton = "project-access.update-config-button"
+    case projectAccessUpdateConfigConfirmTitle = "project-access.update-config-confirm.title"
+    case projectAccessUpdateConfigConfirmMessage = "project-access.update-config-confirm.message"
+    case projectAccessUpdateConfigConfirmButton = "project-access.update-config-confirm.button"
+    case projectAccessApplyFilesButton = "project-access.apply-files-button"
+    case projectAccessApplyFilesConfirmTitle = "project-access.apply-files-confirm.title"
+    // Formatted with the number of files that would be re-wrapped.
+    case projectAccessApplyFilesConfirmMessage = "project-access.apply-files-confirm.message"
+    // The destructive variant, formatted with the comma-joined labels (or
+    // public keys) about to lose access *and* the file count. Removing a
+    // recipient across a whole project is the most destructive thing this
+    // panel can do, so it names who loses access before it happens.
+    case projectAccessApplyFilesRemovalMessage = "project-access.apply-files-removal.message"
+    case projectAccessApplyFilesConfirmButton = "project-access.apply-files-confirm.button"
+    case projectAccessCancelRun = "project-access.cancel-run"
+    case projectAccessResultsTitle = "project-access.results.title"
+    case projectAccessResultUpdated = "project-access.result.updated"
+    case projectAccessResultUnchanged = "project-access.result.unchanged"
+    case projectAccessResultFailed = "project-access.result.failed"
+    // Formatted with updated / unchanged / failed counts.
+    case projectAccessResultsSummary = "project-access.results.summary"
+    // Formatted with the count of files a cancelled run never reached.
+    case projectAccessCancelledNote = "project-access.cancelled-note"
+    case projectAccessApplyingLabel = "project-access.applying-label"
+    case projectAccessErrorTitle = "project-access.error.title"
+    case projectAccessErrorEmptyRecipients = "project-access.error.empty-recipients"
+    case projectAccessErrorNoFiles = "project-access.error.no-files"
+
     /// The resolved English text. Used in views and asserted in tests.
     public var text: String {
         String(localized: String.LocalizationValue(rawValue), bundle: .module)

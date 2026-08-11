@@ -52,7 +52,7 @@ import (
 // refusals (wrong key, bad MAC, not a SOPS file) without matching on prose.
 const EngineFaultMarker = "the sops engine faulted"
 
-// The operations the eleven exported entry points perform. A fault says which
+// The operations the twelve exported entry points perform. A fault says which
 // one it happened in: it is the only classification a user can act on, and a
 // fixed string cannot carry document content.
 const (
@@ -60,6 +60,11 @@ const (
 	OpSaving            = "saving this file"
 	OpEncrypting        = "encrypting this file"
 	OpReadingConfig     = "reading the project configuration"
+	// Named for what a user asked for, not for what the bridge does: this
+	// operation only ever *computes* the new project configuration text (see
+	// UpdateConfigRecipients — it writes nothing), but a fault during it is
+	// reported to someone who pressed a button called "update".
+	OpUpdatingConfig    = "updating the project configuration"
 	OpReportingVersions = "reporting its versions"
 	OpReleasing         = "releasing memory"
 )

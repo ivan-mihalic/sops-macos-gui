@@ -185,6 +185,33 @@ func sops_inspect_config_backends(confPath *C.char, out **C.char) C.int {
 	return result(out, payload, err)
 }
 
+// sops_update_config_recipients computes what the .sops.yaml at confPath would
+// look like if the creation rule governing targetFile declared exactly the age
+// recipients in recipientsJSON (a JSON string array). candidatesJSON is a JSON
+// string array of absolute paths to classify — the result says which of them
+// the same rule governs.
+//
+// It never writes anything: on success *out carries the JSON encoding of a
+// ConfigRecipientUpdate (see gobridge/configwrite.go) holding the proposed
+// text, and the Swift side writes it — atomically, and only after the user has
+// confirmed — or does not. A shape this app will not rewrite is not a failure
+// here: it comes back with `writable: false` and a sentence saying why.
+//
+//export sops_update_config_recipients
+func sops_update_config_recipients(
+	confPath *C.char, targetFile *C.char, recipientsJSON *C.char, candidatesJSON *C.char, out **C.char,
+) C.int {
+	payload, err := gobridge.Guard(gobridge.OpUpdatingConfig, func() ([]byte, error) {
+		return gobridge.UpdateConfigRecipientsJSON(
+			C.GoString(confPath),
+			C.GoString(targetFile),
+			[]byte(C.GoString(recipientsJSON)),
+			[]byte(C.GoString(candidatesJSON)),
+		)
+	})
+	return result(out, payload, err)
+}
+
 // sops_decrypt_to_rows decrypts a SOPS YAML document into the ordered list of
 // editable rows the editor renders. On success *out carries the JSON encoding
 // of a []gobridge.Row (see gobridge/document.go) — always an array, never
