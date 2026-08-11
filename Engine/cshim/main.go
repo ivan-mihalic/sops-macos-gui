@@ -130,6 +130,33 @@ func sops_decrypt_yaml(encrypted *C.char, agePrivateKey *C.char, out **C.char) C
 	return result(out, plain, err)
 }
 
+// sops_recipients returns the document's native age recipient list as JSON.
+// Metadata is public, so this operation never needs an age identity.
+//
+//export sops_recipients
+func sops_recipients(encrypted *C.char, out **C.char) C.int {
+	payload, err := gobridge.Guard(gobridge.OpReading, func() ([]byte, error) {
+		return gobridge.RecipientsJSON([]byte(C.GoString(encrypted)))
+	})
+	return result(out, payload, err)
+}
+
+// sops_update_recipients explicitly replaces the document's recipient list.
+// recipientsJSON is a JSON string array; accepting a structured list avoids
+// comma-delimited ambiguity at the C boundary.
+//
+//export sops_update_recipients
+func sops_update_recipients(encrypted *C.char, recipientsJSON *C.char, agePrivateKey *C.char, out **C.char) C.int {
+	payload, err := gobridge.Guard(gobridge.OpSaving, func() ([]byte, error) {
+		return gobridge.UpdateRecipientsJSON(
+			[]byte(C.GoString(encrypted)),
+			[]byte(C.GoString(recipientsJSON)),
+			C.GoString(agePrivateKey),
+		)
+	})
+	return result(out, payload, err)
+}
+
 // sops_lookup_creation_rule resolves which .sops.yaml creation rule governs
 // targetFile, using sops's own config parser (github.com/getsops/sops/v3/config)
 // rather than any bespoke parsing on either side of the boundary. On success

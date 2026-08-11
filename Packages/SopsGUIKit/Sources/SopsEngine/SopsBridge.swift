@@ -67,6 +67,49 @@ public enum SopsBridge {
         }
     }
 
+    /// Returns the native age recipients stored in this document's SOPS
+    /// metadata. Reading recipient metadata requires no private identity.
+    public static func recipients(in encrypted: String) throws -> [String] {
+        let json = try call { out in
+            encrypted.withGoString { encryptedPtr in
+                sops_recipients(encryptedPtr, out)
+            }
+        }
+        guard let data = json.data(using: .utf8) else {
+            throw SopsBridgeError(description: "bridge returned non-UTF8 JSON for recipients")
+        }
+        do {
+            return try JSONDecoder().decode([String].self, from: data)
+        } catch {
+            throw SopsBridgeError(description: "could not decode recipient JSON")
+        }
+    }
+
+    /// Explicitly replaces the document's native age recipient set, re-wrapping
+    /// the existing data key with the supplied private identity. It never reads
+    /// a project config or a key from the environment.
+    public static func updateRecipients(
+        _ encrypted: String,
+        to recipients: [String],
+        agePrivateKey: String
+    ) throws -> String {
+        let recipientsJSON: String
+        do {
+            recipientsJSON = String(decoding: try JSONEncoder().encode(recipients), as: UTF8.self)
+        } catch {
+            throw SopsBridgeError(description: "could not encode recipient list")
+        }
+        return try call { out in
+            encrypted.withGoString { encryptedPtr in
+                recipientsJSON.withGoString { recipientsPtr in
+                    agePrivateKey.withGoString { keyPtr in
+                        sops_update_recipients(encryptedPtr, recipientsPtr, keyPtr, out)
+                    }
+                }
+            }
+        }
+    }
+
     /// Resolves which creation rule in the `.sops.yaml` at `configPath`
     /// governs `targetFilePath`, via sops's own config parser end to end.
     /// `targetFilePath` must be absolute — sops matches each rule's
