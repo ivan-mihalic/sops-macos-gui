@@ -489,6 +489,15 @@ struct LocalizationTests {
         let removalAtMany = String(
             format: LocalizedKey.projectAccessApplyFilesRemovalMessage.text, "Alice", 4)
         #expect(!removalAtOne.contains("%"), "unexpanded format specifier in: \(removalAtOne)")
+        // The `one` form must describe scope ("1 of this project's files"), not
+        // assert the project's total file count ("this project's one encrypted
+        // file") — the rule's scope can be a strict subset of the project, so
+        // the latter phrasing misstates the project in a destructive
+        // confirmation shown immediately before files are re-wrapped.
+        #expect(removalAtOne.contains("1 of this project's files"),
+                "the removal confirmation at one reads: \(removalAtOne)")
+        #expect(!removalAtOne.contains("one encrypted file"),
+                "the removal confirmation at one must not claim the project's total file count: \(removalAtOne)")
         #expect(removalAtMany.contains("4 of this project's files"),
                 "the removal confirmation at many reads: \(removalAtMany)")
     }
