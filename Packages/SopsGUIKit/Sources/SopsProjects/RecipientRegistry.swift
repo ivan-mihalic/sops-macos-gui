@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// The role a named age public key has for the people maintaining a project.
 /// This is descriptive only: SOPS metadata and `.sops.yaml` remain the access
@@ -38,16 +39,41 @@ public struct RecipientRecord: Codable, Identifiable, Equatable, Sendable {
 /// project directory. It is not an access-control source: labels here only
 /// help people recognize the actual age recipients stored in SOPS metadata.
 public enum RecipientRegistry {
+    /// A concrete state observed at the registry path. Unlike an optional
+    /// fingerprint, this cannot silently turn a guarded save into an
+    /// unconditional one when the registry did not yet exist.
+    public enum ExpectedState: Equatable, Sendable {
+        case absent
+        case existing(FileFingerprint)
+    }
+
     public enum Error: Swift.Error, Equatable, Sendable {
         case emptyLabel
         case invalidAgeRecipient
         case duplicateAgeRecipient(String)
+        case duplicateID(UUID)
+        case privateIdentityNotAllowed
         case recordNotFound(UUID)
+        case changedOnDisk
+        case pathEscapesProject
+        case couldNotSave
     }
 
     /// Returns an empty directory for a project that has not created one yet.
     public static func load(in project: URL) throws -> [RecipientRecord] {
         try loadSnapshot(in: project).records
+    }
+
+    /// The state a caller must carry from its read/preview to a later save.
+    /// It distinguishes a registry that was absent from an API caller that
+    /// simply chose not to check for concurrent writes.
+    public static func expectedState(in project: URL) throws -> ExpectedState {
+        let locations = try resolveLocations(in: project, createDirectory: false)
+        guard FileManager.default.fileExists(atPath: locations.destination.path) else { return .absent }
+        guard let fingerprint = FileFingerprint.of(locations.destination) else {
+            throw Error.changedOnDisk
+        }
+        return .existing(fingerprint)
     }
 
     /// Reads a registry together with the fingerprint of the exact bytes read.
@@ -57,64 +83,96 @@ public enum RecipientRegistry {
     /// takes its write expectation: that later fingerprint would bless bytes
     /// this caller never read.
     private static func loadSnapshot(in project: URL) throws -> (
-        records: [RecipientRecord], fingerprint: FileFingerprint?
+        records: [RecipientRecord], state: ExpectedState
     ) {
-        let url = fileURL(in: project)
-        guard FileManager.default.fileExists(atPath: url.path) else { return ([], nil) }
-        let before = FileFingerprint.of(url)
-        let records = try JSONDecoder().decode([RecipientRecord].self, from: Data(contentsOf: url))
-        guard before == FileFingerprint.of(url) else {
-            throw AtomicFileWriter.Error.destinationChangedOnDisk(path: url.path)
+        let locations = try resolveLocations(in: project, createDirectory: false)
+        guard FileManager.default.fileExists(atPath: locations.destination.path) else { return ([], .absent) }
+        guard let before = FileFingerprint.of(locations.destination) else { throw Error.changedOnDisk }
+        let records = try JSONDecoder().decode([RecipientRecord].self, from: Data(contentsOf: locations.destination))
+        guard FileFingerprint.of(locations.destination) == before else {
+            throw Error.changedOnDisk
         }
         try validate(records)
-        return (records, before)
+        return (records, .existing(before))
     }
 
     /// Validates and atomically replaces the project's recipient directory.
-    public static func save(
-        _ records: [RecipientRecord], in project: URL, expecting: FileFingerprint? = nil
-    ) throws {
-        try validate(records)
+    public static func save(_ records: [RecipientRecord], in project: URL) throws {
+        try save(records, in: project, expecting: expectedState(in: project))
+    }
 
-        let directory = directoryURL(in: project)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    /// Saves only if the registry is exactly the explicit state observed by
+    /// the caller. `.absent` is an atomic create-if-absent, never `nil`.
+    public static func save(_ records: [RecipientRecord], in project: URL, expecting: ExpectedState) throws {
+        try validate(records)
+        let locations = try resolveLocations(in: project, createDirectory: true)
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(records)
-        _ = try AtomicFileWriter.write(data, to: fileURL(in: project), expecting: expecting)
+        switch expecting {
+        case .existing(let fingerprint):
+            do {
+                _ = try AtomicFileWriter.write(data, to: locations.destination, expecting: fingerprint)
+            } catch is AtomicFileWriter.Error {
+                throw Error.changedOnDisk
+            }
+        case .absent:
+            try create(data, at: locations.destination, in: locations.directory)
+        }
     }
 
     /// Inserts a new record or replaces the record bearing the same UUID.
     @discardableResult
-    public static func upsert(
-        _ record: RecipientRecord, in project: URL, expecting: FileFingerprint? = nil
-    ) throws -> [RecipientRecord] {
+    public static func upsert(_ record: RecipientRecord, in project: URL) throws -> [RecipientRecord] {
         let snapshot = try loadSnapshot(in: project)
         var records = snapshot.records
-        let observed = expecting ?? snapshot.fingerprint
         if let index = records.firstIndex(where: { $0.id == record.id }) {
             records[index] = record
         } else {
             records.append(record)
         }
-        try save(records, in: project, expecting: observed)
+        try save(records, in: project, expecting: snapshot.state)
+        return records
+    }
+
+    @discardableResult
+    public static func upsert(
+        _ record: RecipientRecord, in project: URL, expecting: ExpectedState
+    ) throws -> [RecipientRecord] {
+        var records = try load(in: project)
+        if let index = records.firstIndex(where: { $0.id == record.id }) {
+            records[index] = record
+        } else {
+            records.append(record)
+        }
+        try save(records, in: project, expecting: expecting)
         return records
     }
 
     /// Removes a record by ID and persists the resulting directory.
     @discardableResult
-    public static func remove(
-        _ id: UUID, in project: URL, expecting: FileFingerprint? = nil
-    ) throws -> [RecipientRecord] {
+    public static func remove(_ id: UUID, in project: URL) throws -> [RecipientRecord] {
         let snapshot = try loadSnapshot(in: project)
         var records = snapshot.records
-        let observed = expecting ?? snapshot.fingerprint
         guard let index = records.firstIndex(where: { $0.id == id }) else {
             throw Error.recordNotFound(id)
         }
         records.remove(at: index)
-        try save(records, in: project, expecting: observed)
+        try save(records, in: project, expecting: snapshot.state)
+        return records
+    }
+
+    @discardableResult
+    public static func remove(
+        _ id: UUID, in project: URL, expecting: ExpectedState
+    ) throws -> [RecipientRecord] {
+        var records = try load(in: project)
+        guard let index = records.firstIndex(where: { $0.id == id }) else {
+            throw Error.recordNotFound(id)
+        }
+        records.remove(at: index)
+        try save(records, in: project, expecting: expecting)
         return records
     }
 
@@ -128,16 +186,86 @@ public enum RecipientRegistry {
 
     private static func validate(_ records: [RecipientRecord]) throws {
         var recipientIDs = Set<String>()
+        var recordIDs = Set<UUID>()
         for record in records {
             guard !record.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw Error.emptyLabel
             }
+            guard !containsPrivateIdentityShape(record.label),
+                  !containsPrivateIdentityShape(record.note ?? ""),
+                  !containsPrivateIdentityShape(record.ageRecipient) else {
+                throw Error.privateIdentityNotAllowed
+            }
             guard looksLikeNativeAgeRecipient(record.ageRecipient) else {
                 throw Error.invalidAgeRecipient
             }
+            guard recordIDs.insert(record.id).inserted else { throw Error.duplicateID(record.id) }
             guard recipientIDs.insert(record.ageRecipient).inserted else {
                 throw Error.duplicateAgeRecipient(record.ageRecipient)
             }
+        }
+    }
+
+    private static func containsPrivateIdentityShape(_ value: String) -> Bool {
+        value.localizedCaseInsensitiveContains("AGE-SECRET-KEY-1")
+    }
+
+    private static func resolveLocations(in project: URL, createDirectory: Bool) throws -> (
+        root: URL, directory: URL, destination: URL
+    ) {
+        let root = project.standardizedFileURL.resolvingSymlinksInPath()
+        var rootIsDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: root.path, isDirectory: &rootIsDirectory), rootIsDirectory.boolValue else {
+            throw Error.pathEscapesProject
+        }
+        let directory = root.appendingPathComponent(".sops-gui", isDirectory: true)
+        if FileManager.default.fileExists(atPath: directory.path) {
+            guard isInside(resolvedForContainment(directory), root: root) else {
+                throw Error.pathEscapesProject
+            }
+        } else if createDirectory {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        }
+        let destination = directory.appendingPathComponent("recipients.json")
+        guard isInside(resolvedForContainment(destination), root: root) else { throw Error.pathEscapesProject }
+        return (root, directory, destination)
+    }
+
+    private static func isInside(_ url: URL, root: URL) -> Bool {
+        let path = url.standardizedFileURL.path
+        let rootPath = root.standardizedFileURL.path
+        return path == rootPath || path.hasPrefix(rootPath + "/")
+    }
+
+    /// `resolvingSymlinksInPath` leaves a dangling final symlink unchanged.
+    /// That is normally convenient, but here it would make a link to a
+    /// not-yet-created file outside the project look contained, so inspect the
+    /// final link target ourselves before resolving the rest of its path.
+    private static func resolvedForContainment(_ url: URL) -> URL {
+        var info = stat()
+        guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFLNK,
+              let target = try? FileManager.default.destinationOfSymbolicLink(atPath: url.path) else {
+            return url.resolvingSymlinksInPath()
+        }
+        return URL(fileURLWithPath: target, relativeTo: url.deletingLastPathComponent())
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+    }
+
+    /// `link` publishes the completed staged file only when no destination
+    /// exists. Unlike pre-creating an empty destination, this is atomic for
+    /// readers and rejects a concurrent first creator with `EEXIST`.
+    private static func create(_ data: Data, at destination: URL, in directory: URL) throws {
+        let staged = directory.appendingPathComponent(".recipients.\(UUID().uuidString).create")
+        defer { try? FileManager.default.removeItem(at: staged) }
+        do {
+            _ = try AtomicFileWriter.write(data, to: staged)
+        } catch {
+            throw Error.couldNotSave
+        }
+        guard link(staged.path, destination.path) == 0 else {
+            if errno == EEXIST { throw Error.changedOnDisk }
+            throw Error.couldNotSave
         }
     }
 
