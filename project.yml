@@ -7,7 +7,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "0.1.11"
+    MARKETING_VERSION: "0.1.12"
     # Sparkle compares builds by CFBundleVersion (sparkle:version), so this has
     # to rise on every published build even when the marketing version does not.
     # Placeholder only — the real value is baked in by
