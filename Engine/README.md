@@ -38,3 +38,22 @@ cd ../Packages/SopsGUIKit && swift test   # Swift-level round-trips against the 
 Both suites generate throwaway age keys at runtime and hand them to the CLI via
 `SOPS_AGE_KEY_FILE`, so your own `~/.config/sops/age/keys.txt` can never affect a result.
 No key material is written into the repo.
+
+### `go test ./...` needs no `-timeout` of its own
+
+Recorded because it has been raised as a risk once already, on a figure of ~594s
+against `go test`'s 600s default — which would make the suite a coin flip on any
+slower machine. Measured here on 2026-08-11, `go clean -testcache` first:
+
+| | wall clock | inside the test binary |
+|---|---|---|
+| `go test ./...` | 13.1s | gobridge 10.1s, cshim 0.7s |
+| `go test -race ./...` | 41.3s | gobridge 19.7s, cshim 2.0s |
+
+Two orders of magnitude of headroom, so nothing is set. And the 594s figure
+cannot have been the timeout in any case: `-timeout` is handed to the compiled
+test binary and starts when that binary runs, so however long `go build` spends
+on the sops dependency tree, it is never counted against it. If a future run
+does approach the limit, the fix is to find what got slow — Go has no
+per-repository default to raise, only the process environment (`GOFLAGS`) or a
+wrapper, and a wrapper only protects people who use it.
