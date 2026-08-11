@@ -52,7 +52,7 @@ import (
 // refusals (wrong key, bad MAC, not a SOPS file) without matching on prose.
 const EngineFaultMarker = "the sops engine faulted"
 
-// The operations the nine exported entry points perform. A fault says which
+// The operations the eleven exported entry points perform. A fault says which
 // one it happened in: it is the only classification a user can act on, and a
 // fixed string cannot carry document content.
 const (

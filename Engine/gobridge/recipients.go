@@ -59,12 +59,15 @@ func UpdateRecipients(encrypted []byte, recipients []string, agePrivateKey strin
 	if err != nil {
 		return nil, err
 	}
+	// Refuse unsupported metadata before handling an identity or decrypting any
+	// document content. The re-wrap operation is only defined for one native age
+	// key group.
+	if _, err := Recipients(encrypted); err != nil {
+		return nil, err
+	}
 
 	doc, err := loadAndDecrypt(encrypted, agePrivateKey)
 	if err != nil {
-		return nil, err
-	}
-	if _, err := recipientsFromMetadata(doc.tree.Metadata); err != nil {
 		return nil, err
 	}
 
@@ -128,7 +131,7 @@ func nativeAgeMasterKeys(recipients []string) ([]*sopsage.MasterKey, error) {
 	for _, supplied := range recipients {
 		recipient := strings.TrimSpace(supplied)
 		if recipient == "" {
-			continue
+			return nil, errRecipientInvalid
 		}
 		if strings.HasPrefix(recipient, agePrivateKeyPrefix) {
 			return nil, errRecipientPrivate

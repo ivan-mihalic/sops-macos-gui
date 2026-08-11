@@ -4,6 +4,12 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/getsops/sops/v3"
+	sopsage "github.com/getsops/sops/v3/age"
+	"github.com/getsops/sops/v3/cmd/sops/common"
+	"github.com/getsops/sops/v3/config"
+	"github.com/getsops/sops/v3/pgp"
 )
 
 // The C shim can only pass a single string across the boundary, so recipients
@@ -81,10 +87,12 @@ func TestUpdateRecipientsRefusesUnsafeRecipientArguments(t *testing.T) {
 		recipients []string
 		want       error
 	}{
-		"empty":   {nil, errRecipientsEmpty},
-		"private": {[]string{owner.Private}, errRecipientPrivate},
-		"plugin":  {[]string{"age1yubikey1qwbmkfqzrqzc4dm5dqrgcnpq6r0dsmrpqzr"}, errRecipientPlugin},
-		"invalid": {[]string{"not-an-age-recipient"}, errRecipientInvalid},
+		"empty":           {nil, errRecipientsEmpty},
+		"private":         {[]string{owner.Private}, errRecipientPrivate},
+		"plugin":          {[]string{"age1yubikey1qwbmkfqzrqzc4dm5dqrgcnpq6r0dsmrpqzr"}, errRecipientPlugin},
+		"invalid":         {[]string{"not-an-age-recipient"}, errRecipientInvalid},
+		"empty item":      {[]string{owner.Public, ""}, errRecipientInvalid},
+		"whitespace item": {[]string{owner.Public, " \t\n "}, errRecipientInvalid},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := UpdateRecipients(encrypted, tc.recipients, owner.Private)
@@ -92,11 +100,78 @@ func TestUpdateRecipientsRefusesUnsafeRecipientArguments(t *testing.T) {
 				t.Fatal("unsafe recipients were accepted")
 			}
 			if err.Error() != tc.want.Error() {
-				t.Fatalf("UpdateRecipients error = %q, want fixed text %q", err, tc.want)
+				t.Fatalf("UpdateRecipients did not return the expected fixed error text")
 			}
 			if strings.Contains(err.Error(), owner.Private) {
-				t.Fatalf("error leaked private identity: %v", err)
+				t.Fatal("error leaked private identity")
 			}
 		})
+	}
+}
+
+const recipientMetadataCanary = "METADATA-MUST-NOT-LEAK-9AE2"
+
+func TestRecipientAPIsRefuseNonNativeAgeOnlyMetadata(t *testing.T) {
+	owner := newAgeKeyPair(t)
+	encrypted := encryptWithCLI(t, owner, plainYAML)
+
+	for name, mutate := range map[string]func(*sops.Tree){
+		"multiple groups": func(tree *sops.Tree) {
+			tree.Metadata.KeyGroups = append(tree.Metadata.KeyGroups, tree.Metadata.KeyGroups[0])
+		},
+		"mixed backend": func(tree *sops.Tree) {
+			tree.Metadata.KeyGroups[0] = append(tree.Metadata.KeyGroups[0], &pgp.MasterKey{
+				Fingerprint: recipientMetadataCanary,
+			})
+		},
+		"plugin hybrid": func(tree *sops.Tree) {
+			tree.Metadata.KeyGroups[0] = append(tree.Metadata.KeyGroups[0], &sopsage.MasterKey{
+				Recipient: "age1plugin1" + recipientMetadataCanary,
+			})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			malformed := mutateRecipientMetadata(t, encrypted, mutate)
+
+			_, err := Recipients(malformed)
+			assertRecipientMetadataRefusal(t, "Recipients", err, owner)
+
+			_, err = UpdateRecipients(malformed, []string{owner.Public}, owner.Private)
+			assertRecipientMetadataRefusal(t, "UpdateRecipients", err, owner)
+		})
+	}
+}
+
+func mutateRecipientMetadata(t *testing.T, encrypted []byte, mutate func(*sops.Tree)) []byte {
+	t.Helper()
+	sf, err := FormatYAML.toSopsFormat()
+	if err != nil {
+		t.Fatalf("YAML format: %v", err)
+	}
+	store := common.StoreForFormat(sf, config.NewStoresConfig())
+	tree, err := store.LoadEncryptedFile(encrypted)
+	if err != nil {
+		t.Fatalf("load encrypted fixture: %v", err)
+	}
+	mutate(&tree)
+	out, err := store.EmitEncryptedFile(tree)
+	if err != nil {
+		t.Fatalf("emit metadata fixture: %v", err)
+	}
+	return out
+}
+
+func assertRecipientMetadataRefusal(t *testing.T, api string, err error, owner ageKeyPair) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s accepted non-native-age metadata", api)
+	}
+	if err.Error() != errDocumentNotAgeOnly.Error() {
+		t.Fatalf("%s did not return the expected fixed error text", api)
+	}
+	for _, secret := range []string{owner.Private, recipientMetadataCanary} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("%s error leaked protected input", api)
+		}
 	}
 }
