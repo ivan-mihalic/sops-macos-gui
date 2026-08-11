@@ -543,14 +543,38 @@ func TestUpdateConfigRecipients_RefusesCreationRulesThatAreNotAList(t *testing.T
 	}
 }
 
-// No error this entry point can produce may name one of this package's own Go
-// types: it is read out loud to a user who has never heard of gobridge.
-func TestUpdateConfigRecipients_ErrorsNeverNameThisPackagesTypes(t *testing.T) {
+// No text this entry point can produce may name a Go type: it is read out loud
+// to a user who has never heard of gobridge, or of Go.
+//
+// # What this can and cannot promise
+//
+// It screens for Go type syntax, not for this package's own type names alone,
+// because the defect class does not care where the string came from. Two of
+// the fixtures below prove that: `age:` holding a mapping used to reach the
+// user as `expected string, []string, or nil, got map[string]interface {}` —
+// getsops/sops's own parseKeyField message, relayed verbatim. This repo does
+// not author that sentence and cannot rewrite it, so the only honest fix was
+// to refuse the shape before sops is asked about it, which is what
+// reasonAgeNotRecipients does.
+//
+// The limit that remains, stated rather than papered over: this is a screen
+// over an enumerated set of configs, not a proof about every string
+// getsops/sops can emit. A shape nobody has thought of, reaching a sops error
+// path nobody has hit, can still relay upstream text this repo never wrote.
+// What closes such a case is another fixture here plus a refusal ahead of the
+// call — never a claim that the class is already closed.
+func TestUpdateConfigRecipients_ErrorsNeverNameGoTypes(t *testing.T) {
 	a := newAgeKeyPair(t)
 	for name, config := range map[string]string{
-		"not a list":          "creation_rules:\n  foo: bar\n",
-		"rule is not a map":   "creation_rules:\n  - nonsense\n",
-		"path_regex is a map": "creation_rules:\n  - path_regex:\n      a: b\n",
+		"not a list":             "creation_rules:\n  foo: bar\n",
+		"rule is not a map":      "creation_rules:\n  - nonsense\n",
+		"rule list is an alias":  "base: &base\n  path_regex: .*\n  age: " + a.Public + "\ncreation_rules:\n  - *base\n",
+		"path_regex is a map":    "creation_rules:\n  - path_regex:\n      a: b\n",
+		"age is a map":           "creation_rules:\n  - path_regex: .*\n    age:\n      team: alice\n",
+		"age is a list of maps":  "creation_rules:\n  - path_regex: .*\n    age:\n      - team: alice\n",
+		"age is a number":        "creation_rules:\n  - path_regex: .*\n    age: 12345\n",
+		"key_groups is a scalar": "creation_rules:\n  - path_regex: .*\n    key_groups: nonsense\n",
+		"shamir is not a number": "creation_rules:\n  - path_regex: .*\n    shamir_threshold: two\n",
 	} {
 		got, _, err := update(t, config, "db.yaml", []string{a.Public})
 		text := ""
@@ -559,8 +583,16 @@ func TestUpdateConfigRecipients_ErrorsNeverNameThisPackagesTypes(t *testing.T) {
 		} else {
 			text = got.Reason
 		}
-		if strings.Contains(text, "gobridge") || strings.Contains(text, "writeCreationRule") {
-			t.Errorf("%s: user-facing text names this package's own types: %q", name, text)
+		// `interface {}`, `[]string` and `map[string]` are how a Go type
+		// reaches a string: %T, %v on a reflect.Type, and yaml.v3's own
+		// "cannot unmarshal X into Y". None of them can appear in a sentence
+		// written for a user.
+		for _, token := range []string{
+			"gobridge", "writeCreationRule", "interface {}", "map[string]", "[]string", "struct {",
+		} {
+			if strings.Contains(text, token) {
+				t.Errorf("%s: user-facing text names a Go type (%q): %q", name, token, text)
+			}
 		}
 	}
 }
@@ -859,5 +891,141 @@ func TestUpdateConfigRecipients_FilesGovernedByOtherRulesIsAlwaysAnArray(t *test
 	}
 	if !strings.Contains(string(payload), `"filesGovernedByOtherRules":[`) {
 		t.Errorf("filesGovernedByOtherRules must marshal as an array: %s", payload)
+	}
+}
+
+// MARK: - Refusals that also widen a caller's scope still disclose other rules
+
+// F1. Three refusals leave the Swift side without a governing rule index, and
+// its scope then falls back to *every* encrypted file it found — so these are
+// exactly the refusals where "which files does some other rule govern" has to
+// be answered. An empty list there does not read as "not computed"; it reads
+// as "no such files", which is the one thing it must never say when rules do
+// exist. Each of these three configs parses well enough to answer the
+// question; the refusal is about a shape this app will not rewrite, not about
+// a document it could not read.
+func TestUpdateConfigRecipients_ScopeWideningRefusalsStillDiscloseOtherRules(t *testing.T) {
+	a := newAgeKeyPair(t)
+	rules := "creation_rules:\n  - path_regex: ^prod/.*\\.yaml$\n    age: " + a.Public + "\n"
+
+	for name, config := range map[string]string{
+		"more than one document": rules + "---\nunrelated: true\n",
+		"mixed line endings":     strings.Replace(rules, "creation_rules:\n", "creation_rules:\r\n", 1),
+		"a rule list built from an alias": "base: &base\n  path_regex: ^prod/.*\\.yaml$\n  age: " +
+			a.Public + "\ncreation_rules:\n  - *base\n",
+	} {
+		got, dir, err := update(t, config, "dev/local.yaml", []string{a.Public},
+			"dev/local.yaml", "prod/db.yaml")
+		if err != nil {
+			t.Errorf("%s: expected a refusal, got the error %v", name, err)
+			continue
+		}
+		if got.Writable {
+			t.Errorf("%s: Writable = true for a shape this app must refuse", name)
+			continue
+		}
+		want := []string{filepath.Join(dir, "prod/db.yaml")}
+		if !equalStrings(got.FilesGovernedByOtherRules, want) {
+			t.Errorf("%s: FilesGovernedByOtherRules = %v, want %v",
+				name, got.FilesGovernedByOtherRules, want)
+		}
+	}
+}
+
+// The complement of the test above, and the reason its doc comment is worded
+// the way it is: a document that genuinely holds no usable rule discloses
+// nothing, because there is nothing to disclose. Empty here is the truth, not
+// a gap.
+func TestUpdateConfigRecipients_RefusalsWithNoUsableRulesDiscloseNothing(t *testing.T) {
+	a := newAgeKeyPair(t)
+	for name, config := range map[string]string{
+		"creation_rules is a mapping":         "creation_rules:\n  foo: bar\n",
+		"creation_rules is a list of scalars": "creation_rules:\n  - nonsense\n",
+		"no creation_rules at all":            "stores:\n  yaml:\n    indent: 2\n",
+	} {
+		got, _, err := update(t, config, "dev/local.yaml", []string{a.Public},
+			"dev/local.yaml", "prod/db.yaml")
+		if err != nil {
+			t.Errorf("%s: expected a refusal, got the error %v", name, err)
+			continue
+		}
+		if len(got.FilesGovernedByOtherRules) != 0 {
+			t.Errorf("%s: FilesGovernedByOtherRules = %v, want empty",
+				name, got.FilesGovernedByOtherRules)
+		}
+	}
+}
+
+// MARK: - An anchored rule list is named as one
+
+// F7. `creation_rules:` holding `- *base` is not a list of rules as far as the
+// node tree is concerned, so it used to come back as "is not a list of rules".
+// True, but not the most useful true sentence available: the user's config is
+// built from an anchor, and nothing in that sentence points at it.
+func TestUpdateConfigRecipients_AnAnchoredRuleListNamesTheAnchor(t *testing.T) {
+	a := newAgeKeyPair(t)
+	r := refusal(t, "base: &base\n  path_regex: .*\\.yaml$\n  age: "+a.Public+
+		"\ncreation_rules:\n  - *base\n", "db.yaml")
+	if r != reasonCreationRulesAnchored {
+		t.Errorf("Reason = %q, want the anchored-rule-list sentence", r)
+	}
+	if !strings.Contains(strings.ToLower(r), "anchor") {
+		t.Errorf("the reason must name the anchor, got %q", r)
+	}
+}
+
+// And the plain shapes keep the plain sentence: widening the anchor case must
+// not swallow "creation_rules is a mapping".
+func TestUpdateConfigRecipients_APlainNonListStillSaysNotAList(t *testing.T) {
+	if r := refusal(t, "creation_rules:\n  foo: bar\n", "db.yaml"); r != reasonCreationRulesNotAList {
+		t.Errorf("Reason = %q, want the not-a-list sentence", r)
+	}
+}
+
+// MARK: - An age value neither reading can make sense of
+
+// F8. sops's own config parser rejects an `age:` mapping with
+// `expected string, []string, or nil, got map[string]interface {}` — Go type
+// names in front of a user, which is the class
+// TestUpdateConfigRecipients_ErrorsNeverNameThisPackagesTypes exists to catch,
+// arriving from getsops/sops rather than from here. The shape is knowable
+// before that call, so it is refused in a sentence instead.
+func TestUpdateConfigRecipients_RefusesAnAgeValueThatIsNotRecipients(t *testing.T) {
+	for name, age := range map[string]string{
+		"a mapping":            "\n      team: alice",
+		"a list holding a map": "\n      - team: alice",
+		"a number":             " 12345",
+	} {
+		r := refusal(t, "creation_rules:\n  - path_regex: .*\\.yaml$\n    age:"+age+"\n", "db.yaml")
+		if r != reasonKeyFieldShape("age") {
+			t.Errorf("%s: Reason = %q, want the age-shape sentence", name, r)
+		}
+	}
+}
+
+// The same guard for the other key lists sops runs through parseKeyField. Only
+// the *selected* rule is checked, because only the selected rule is the one
+// sops parses.
+func TestUpdateConfigRecipients_RefusesAnyKeyListThatIsNotAValueOrAList(t *testing.T) {
+	for _, field := range []string{"kms", "pgp", "gcp_kms", "azure_keyvault", "hc_vault_transit_uri"} {
+		r := refusal(t, "creation_rules:\n  - path_regex: .*\\.yaml$\n    "+field+":\n      team: alice\n", "db.yaml")
+		if r != reasonKeyFieldShape(field) {
+			t.Errorf("%s: Reason = %q, want the %s-shape sentence", field, r, field)
+		}
+	}
+}
+
+// A rule setting whose *type* the narrow decode cannot read at all — this is
+// the decode this package owns, and its message names this package's own Go
+// types, so it must never be relayed.
+func TestUpdateConfigRecipients_RefusesARuleSettingOfTheWrongKind(t *testing.T) {
+	for name, config := range map[string]string{
+		"key_groups is a scalar":       "creation_rules:\n  - path_regex: .*\n    key_groups: nonsense\n",
+		"shamir_threshold is a word":   "creation_rules:\n  - path_regex: .*\n    shamir_threshold: two\n",
+		"unencrypted_suffix is a list": "creation_rules:\n  - path_regex: .*\n    unencrypted_suffix:\n      - a\n",
+	} {
+		if r := refusal(t, config, "db.yaml"); r != reasonRuleFieldNotDecodable {
+			t.Errorf("%s: Reason = %q, want the wrong-kind-of-setting sentence", name, r)
+		}
 	}
 }

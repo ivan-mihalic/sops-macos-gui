@@ -55,9 +55,20 @@ type ConfigRecipientUpdate struct {
 	// like that has to be able to say so before it acts, which it cannot do
 	// from MatchedFiles alone — that list is empty in exactly this case.
 	//
+	// It is answered on refusals too, and for the same reason: every refusal
+	// returned before a rule index is established sets RuleIndex = -1 and so
+	// widens the caller's scope in exactly the way above. See `disclosing`.
+	//
 	// Empty (never nil) when no candidates were supplied, when the config
 	// declares no usable rules, or when every candidate is governed by
-	// RuleIndex itself. Path strings only; nothing is opened.
+	// RuleIndex itself.
+	//
+	// And empty — unavoidably — when the document cannot be decoded into
+	// creation rules at all: a `creation_rules:` holding a mapping or a list
+	// of scalars, or a rule setting of a kind sops cannot use. There are no
+	// rules to have governed anything in that case, so empty is the answer and
+	// not a gap; what it must never be read as is "this app did not look".
+	// Path strings only; nothing is opened.
 	FilesGovernedByOtherRules []string `json:"filesGovernedByOtherRules"`
 	// Changed is true when Config differs from what is on disk. False when the
 	// rule already declares exactly the requested set — in which case Config
@@ -149,6 +160,13 @@ type ConfigRecipientUpdate struct {
 //     the narrow struct decode, so a `creation_rules:` holding a mapping or a
 //     list of scalars produces that sentence rather than a decode error naming
 //     one of this package's own Go types;
+//   - creation_rules is a list built from a YAML anchor (`- *base`), which is
+//     the same shape as the one above and is named as the anchor it is;
+//   - a creation rule holds a setting of a kind sops cannot use there, or a
+//     key list — age, kms, pgp, gcp_kms, azure_keyvault, hc_vault_transit_uri
+//     — written as neither one value nor a list of them. Both are refused
+//     ahead of the decoder and ahead of sops's own loader, whose messages for
+//     them name Go types;
 //   - the two readings above disagree (see readingsDisagree — a net nothing
 //     that can be written as a .sops.yaml reaches).
 //
@@ -223,7 +241,7 @@ func UpdateConfigRecipients(
 	crlf := bytes.Count(raw, []byte("\r\n"))
 	bareLF := bytes.Count(raw, []byte("\n")) - crlf
 	if crlf > 0 && bareLF > 0 {
-		return refuse(reasonMixedLineEndings), nil
+		return refuse(reasonMixedLineEndings).disclosing(raw, confPath, candidates), nil
 	}
 
 	documents, err := countYAMLDocuments(raw)
@@ -231,7 +249,10 @@ func UpdateConfigRecipients(
 		return nil, fmt.Errorf("could not read %s: %w", filepath.Base(confPath), err)
 	}
 	if documents > 1 {
-		return refuse(reasonMultipleDocuments), nil
+		// The decode `disclosing` runs reads the first document only, which is
+		// the one sops itself reads (config.LoadCreationRuleForFile), so the
+		// rules it reports are the rules in force.
+		return refuse(reasonMultipleDocuments).disclosing(raw, confPath, candidates), nil
 	}
 
 	var root yaml.Node
@@ -261,12 +282,26 @@ func UpdateConfigRecipients(
 		return refuse(reasonNoCreationRules), nil
 	}
 	if !isRuleList(rulesNode) {
-		return refuse(reasonCreationRulesNotAList), nil
+		// An anchored rule list (`creation_rules:` then `- *base`) is not a
+		// list of mappings as far as the node tree is concerned, so it lands
+		// here — but "is not a list of rules" is not the most useful true
+		// sentence available to someone whose config is built from anchors,
+		// and it points nowhere. The alias is the thing to name. The struct
+		// decode resolves the alias, so the disclosure below is real.
+		if containsAnchorOrAlias(rulesNode) {
+			return refuse(reasonCreationRulesAnchored).disclosing(raw, confPath, candidates), nil
+		}
+		return refuse(reasonCreationRulesNotAList).disclosing(raw, confPath, candidates), nil
 	}
 
 	var decoded writeConfigFile
 	if err := yaml.Unmarshal(raw, &decoded); err != nil {
-		return nil, fmt.Errorf("could not read %s: %w", filepath.Base(confPath), err)
+		// The document parsed and creation_rules is a list of mappings, so
+		// this is not malformed YAML — it is a rule setting whose value is not
+		// the kind sops expects there. Relaying the decoder's own message
+		// would put one of this package's Go types (`[]interface {}`, `int`)
+		// in front of a user; see TestUpdateConfigRecipients_ErrorsNeverNameGoTypes.
+		return refuse(reasonRuleFieldNotDecodable), nil
 	}
 
 	if len(decoded.CreationRules) == 0 {
@@ -292,6 +327,20 @@ func UpdateConfigRecipients(
 		// the one thing that fallback cannot be honest about without being
 		// told, so it is answered even on this refusal path.
 		refusal := refuse(reasonNoMatchingRule)
+		refusal.FilesGovernedByOtherRules = filesGovernedElsewhere(
+			index, decoded.CreationRules, configDir, candidates)
+		return refusal, nil
+	}
+
+	// Ahead of sops's own loader, because sops's answer to a key list written
+	// as neither a value nor a list of them names Go types at the user
+	// (`expected string, []string, or nil, got map[string]interface {}`) and
+	// this bridge relays its errors verbatim. The shape is knowable from the
+	// decode already in hand, so it is refused in a sentence instead.
+	if field := unusableKeyField(decoded.CreationRules[index]); field != "" {
+		refusal := refuse(reasonKeyFieldShape(field))
+		refusal.RuleIndex = index
+		refusal.MatchedFiles = filesGovernedBy(index, decoded.CreationRules, configDir, candidates)
 		refusal.FilesGovernedByOtherRules = filesGovernedElsewhere(
 			index, decoded.CreationRules, configDir, candidates)
 		return refusal, nil
@@ -424,6 +473,13 @@ const (
 		"nothing to update. Add a creation rule whose path_regex matches them, then try again."
 	reasonCreationRulesNotAList = "The creation_rules entry in this project's .sops.yaml is not a list of " +
 		"rules, so this app cannot tell which rule governs these files. Edit .sops.yaml by hand."
+	reasonCreationRulesAnchored = "The creation_rules list in this project's .sops.yaml is built from a YAML " +
+		"anchor (an entry written as *name rather than as the rule itself), so this app cannot tell what " +
+		"else would change if it rewrote one. Write the rules out in full, or edit .sops.yaml by hand."
+	reasonRuleFieldNotDecodable = "A creation rule in this project's .sops.yaml has a setting whose value is " +
+		"not the kind sops expects there — a list where a single value belongs, or a word where a number " +
+		"belongs. This app cannot tell what the rule declares, so it will not rewrite it. Edit .sops.yaml " +
+		"by hand."
 	reasonKeyGroups = "The matching creation rule uses key_groups, which splits its keys into separate " +
 		"groups. This app only rewrites a rule with a single flat list of age recipients, because it " +
 		"cannot know which group a recipient belongs in. Edit .sops.yaml by hand to change this rule."
@@ -473,6 +529,51 @@ func reasonOtherBackends(identifiers []string) string {
 		"these files in a way it cannot describe. Edit .sops.yaml by hand to change this rule."
 }
 
+// reasonKeyFieldShape is the sentence for a creation-rule key list — `age:`,
+// `pgp:`, `kms:` and the rest — written as neither a single value nor a list
+// of them.
+//
+// It exists to be said *before* sops is asked about the config, because sops's
+// own answer to the same shape is `expected string, []string, or nil, got
+// map[string]interface {}` (config.parseKeyField, v3.13.3 config/config.go
+// line 225), relayed straight to a user who has never heard of Go. The field
+// name is a YAML key, which is prose a user wrote themselves; nothing of the
+// value reaches this string. See
+// TestUpdateConfigRecipients_ErrorsNeverNameGoTypes.
+func reasonKeyFieldShape(field string) string {
+	return "The " + field + " entry in the creation rule that governs these files is written as neither one " +
+		"value nor a list of values, so neither this app nor sops itself can read it. Write " + field +
+		" as a single entry or as a list of entries, then try again."
+}
+
+// unusableKeyField names the first creation-rule key list of `rule` that sops's
+// own parseKeyField would reject, or "" when every one of them is a shape sops
+// can read.
+//
+// The fields are exactly the ones sops runs through parseKeyField for the rule
+// it selected (config.getKeyGroupsFromCreationRule → GetKMSKeys, GetAgeKeys,
+// GetPGPKeys, GetGCPKMSKeys, GetAzureKeyVaultKeys, GetVaultURIs), and only for
+// that rule — a broken key list in a rule sops never selects is never parsed,
+// so it is not refused here either.
+func unusableKeyField(rule writeCreationRule) string {
+	for _, field := range []struct {
+		name  string
+		value any
+	}{
+		{"age", rule.Age},
+		{"kms", rule.KMS},
+		{"pgp", rule.PGP},
+		{"gcp_kms", rule.GCPKMS},
+		{"azure_keyvault", rule.AzureKeyVault},
+		{"hc_vault_transit_uri", rule.VaultURI},
+	} {
+		if _, ok := parseAgeField(field.value); !ok {
+			return field.name
+		}
+	}
+	return ""
+}
+
 func joinWithAnd(names []string) string {
 	switch len(names) {
 	case 0:
@@ -492,6 +593,40 @@ func refuse(reason string) *ConfigRecipientUpdate {
 		MatchedFiles:              []string{},
 		FilesGovernedByOtherRules: []string{},
 	}
+}
+
+// disclosing answers "which of these candidates does some creation rule
+// govern" on a refusal that never got as far as selecting a rule.
+//
+// It is not cosmetic. Every refusal returned before an index is established
+// leaves the caller with RuleIndex = -1, and the Swift side reads that as "no
+// governing rule identified" and widens the files it will re-wrap to *every*
+// encrypted file it found (ProjectRecipientApplier.Plan.filesInScope). These
+// are therefore precisely the refusals where "a different rule decides this
+// file's keys" has to be said — and an empty FilesGovernedByOtherRules does
+// not read as "not computed", it reads as "no such files".
+//
+// The rules are re-derived from `raw` with the same narrow decode the rest of
+// this file uses, because a refusal can be returned before that decode has
+// happened (mixed line endings and multiple documents are both checked on the
+// bytes). A document the decode cannot read at all discloses nothing, which is
+// the honest answer rather than a silent empty list: there are no rules to
+// have governed anything.
+func (u *ConfigRecipientUpdate) disclosing(raw []byte, confPath string, candidates []string) *ConfigRecipientUpdate {
+	if len(candidates) == 0 {
+		return u
+	}
+	var decoded writeConfigFile
+	if err := yaml.Unmarshal(raw, &decoded); err != nil || len(decoded.CreationRules) == 0 {
+		return u
+	}
+	configDir, err := filepath.Abs(filepath.Dir(confPath))
+	if err != nil {
+		return u
+	}
+	// index = -1: no rule is "this rule", so every rule is another rule.
+	u.FilesGovernedByOtherRules = filesGovernedElsewhere(-1, decoded.CreationRules, configDir, candidates)
+	return u
 }
 
 // refusing turns a partially populated result — one that already knows which
