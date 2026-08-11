@@ -285,6 +285,12 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // control again re-adds it to the staged set. See
     // `RecipientAccessModel.stageAdd`/`stageRemove`'s symmetry.
     case accessUndoRemoval = "access.undo-removal"
+    // Formatted with how many age recipients this file's SOPS metadata names
+    // more than once. sops does not deduplicate a flat age list, so this is a
+    // shape a real file can have; the panel collapses each key to one row
+    // (multiplicity is not access) and says so here rather than tidying it
+    // away without a word. See `RecipientAccessModel.duplicatedRecipients`.
+    case accessDuplicateRecipients = "access.duplicate-recipients"
 
     // MARK: Task 4 (recipient management) — project access panel
 
@@ -321,6 +327,16 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // renders only in the branch where a rule *was* identified, which is the
     // one branch that does not need it.
     case projectAccessOtherRulesInScope = "project-access.other-rules-in-scope"
+    // The heading over the list of files an apply would re-wrap, shown before
+    // the run rather than only as results after it. The counts above it say
+    // how many; this says which — the question a user actually has to answer
+    // before pressing a button that rewrites files.
+    case projectAccessFilesPreviewTitle = "project-access.files-preview.title"
+    // Formatted with how many files in scope the preview did not draw. The
+    // preview is bounded (`ProjectAccessView.filesPreviewLimit`) so a project
+    // with thousands of encrypted files costs what a small one costs; the
+    // remainder is stated rather than left to be inferred from the count above.
+    case projectAccessFilesPreviewMore = "project-access.files-preview.more"
     case projectAccessScanIncompleteTitle = "project-access.scan-incomplete.title"
     // The two ways a project can produce an *empty* scan that is not an
     // answer about anything. Reported rather than folded into "no encrypted
@@ -344,6 +360,17 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case projectAccessUpdateConfigButton = "project-access.update-config-button"
     case projectAccessUpdateConfigConfirmTitle = "project-access.update-config-confirm.title"
     case projectAccessUpdateConfigConfirmMessage = "project-access.update-config-confirm.message"
+    // Who the rewritten creation rule gains, and who it loses. Formatted with
+    // the comma-joined labels (or public keys, for anyone the registry does not
+    // know), exactly like the other two confirmations in this feature — this
+    // was the one mutating action of the three whose dialog named nobody.
+    //
+    // `…loses` carries the whole point of the distinction: dropping a recipient
+    // from a creation rule takes nothing away from them. Every file already on
+    // disk still decrypts for them, because their key is still in that file's
+    // own SOPS metadata. Only "Apply to Files" changes that.
+    case projectAccessConfigGains = "project-access.update-config-confirm.gains"
+    case projectAccessConfigLoses = "project-access.update-config-confirm.loses"
     case projectAccessUpdateConfigConfirmButton = "project-access.update-config-confirm.button"
     case projectAccessApplyFilesButton = "project-access.apply-files-button"
     case projectAccessApplyFilesConfirmTitle = "project-access.apply-files-confirm.title"
@@ -373,6 +400,9 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // `.sops.yaml` text on hand belongs to an older set. Nothing is written —
     // writing it would drop the recipients staged since, silently.
     case projectAccessErrorStalePlan = "project-access.error.stale-plan"
+    // The creation-rule half of `access.duplicate-recipients`, formatted the
+    // same way and for the same reason.
+    case projectAccessDuplicateRecipients = "project-access.duplicate-recipients"
 
     // MARK: Recipient kinds — the registry's descriptive role for a key
 
@@ -382,6 +412,54 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case recipientKindDevice = "recipient.kind.device"
     case recipientKindServer = "recipient.kind.server"
     case recipientKindPerson = "recipient.kind.person"
+
+    // MARK: The registry editor — naming a key, and forgetting the name
+
+    // The two states of the row control that opens the editor. A recipient the
+    // registry has never heard of is offered a name; one it knows is offered an
+    // edit.
+    case recipientNameThis = "recipient.name-this"
+    case recipientEditLabel = "recipient.edit-label"
+    case recipientEditorTitleNew = "recipient.editor.title-new"
+    case recipientEditorTitleEdit = "recipient.editor.title-edit"
+    // Says what the registry *is*, on the one screen where a user is writing to
+    // it: a directory of names, never the authority on who can decrypt. Without
+    // this, an editor that says "Save" over a list of recipients invites exactly
+    // the wrong inference.
+    case recipientEditorRegistryExplanation = "recipient.editor.registry-explanation"
+    case recipientEditorKeyCaption = "recipient.editor.key-caption"
+    case recipientEditorLabelField = "recipient.editor.label-field"
+    case recipientEditorKindField = "recipient.editor.kind-field"
+    case recipientEditorNoteField = "recipient.editor.note-field"
+    case recipientEditorSave = "recipient.editor.save"
+    case recipientEditorSavingLabel = "recipient.editor.saving-label"
+
+    // Forgetting a name removes a nickname and **no access at all**: the
+    // recipient goes on decrypting everything they could decrypt before. The
+    // control, its accessibility label and its confirmation each say so
+    // independently, because a user may stop reading at any one of them — and a
+    // user who reads this as a revocation has been misled by the one tool whose
+    // job is to say who can read their secrets. It is equally deliberate that
+    // none of them is styled or worded as destructive: nothing is destroyed.
+    case recipientForgetLabel = "recipient.forget-label"
+    case recipientForgetLabelAccessibility = "recipient.forget-label.accessibility"
+    case recipientForgetConfirmTitle = "recipient.forget-confirm.title"
+    // Formatted with the name about to be forgotten.
+    case recipientForgetConfirmMessage = "recipient.forget-confirm.message"
+    case recipientForgetConfirmButton = "recipient.forget-confirm.button"
+
+    // Every refusal `RecipientRegistry` can give, as a fixed sentence. None
+    // quotes what was refused: the registry rejects private-key-shaped text in
+    // the label, the note and the recipient alike, and a refusal that echoed its
+    // input would be the leak the refusal exists to prevent.
+    case recipientEditorErrorEmptyLabel = "recipient.editor.error.empty-label"
+    case recipientEditorErrorInvalidRecipient = "recipient.editor.error.invalid-recipient"
+    case recipientEditorErrorDuplicate = "recipient.editor.error.duplicate"
+    case recipientEditorErrorPrivateIdentity = "recipient.editor.error.private-identity"
+    case recipientEditorErrorRecordNotFound = "recipient.editor.error.record-not-found"
+    case recipientEditorErrorChangedOnDisk = "recipient.editor.error.changed-on-disk"
+    case recipientEditorErrorPathEscapesProject = "recipient.editor.error.path-escapes-project"
+    case recipientEditorErrorCouldNotSave = "recipient.editor.error.could-not-save"
 
     /// The resolved English text. Used in views and asserted in tests.
     public var text: String {

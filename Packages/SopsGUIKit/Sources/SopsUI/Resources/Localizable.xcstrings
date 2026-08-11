@@ -122,6 +122,29 @@
         }
       }
     },
+    "access.duplicate-recipients": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "This file's SOPS metadata lists %d recipient more than once. Listing a key twice grants no extra access, so it appears once above. Applying any change here writes each key exactly once."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "This file's SOPS metadata lists %d recipients more than once. Listing a key twice grants no extra access, so each appears once above. Applying any change here writes each key exactly once."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "access.error.empty-recipients": {
       "extractionState": "manual",
       "localizations": {
@@ -1776,6 +1799,29 @@
         }
       }
     },
+    "project-access.duplicate-recipients": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "This project's creation rule lists %d recipient more than once. Listing a key twice grants no extra access, so it appears once above, and updating .sops.yaml writes each key exactly once."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "This project's creation rule lists %d recipients more than once. Listing a key twice grants no extra access, so each appears once above, and updating .sops.yaml writes each key exactly once."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "project-access.error.empty-recipients": {
       "extractionState": "manual",
       "localizations": {
@@ -1816,6 +1862,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Recipients were not applied"
+          }
+        }
+      }
+    },
+    "project-access.files-preview.more": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "…and %d more file, not listed here."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "…and %d more files, not listed here."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "project-access.files-preview.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Files this apply would re-wrap"
           }
         }
       }
@@ -2073,6 +2153,28 @@
         }
       }
     },
+    "project-access.update-config-confirm.gains": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ will be added to the creation rule: files encrypted or re-wrapped from now on will be readable by them."
+          }
+        }
+      }
+    },
+    "project-access.update-config-confirm.loses": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ will be dropped from the creation rule: new files will no longer be encrypted for them. This takes nothing away — every file already on disk still decrypts for them, because their key is still in that file's own metadata. Use Apply to Files to change that."
+          }
+        }
+      }
+    },
     "project-access.update-config-confirm.message": {
       "extractionState": "manual",
       "localizations": {
@@ -2249,6 +2351,259 @@
         }
       }
     },
+    "recipient.edit-label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit this recipient's name…"
+          }
+        }
+      }
+    },
+    "recipient.editor.error.changed-on-disk": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This project's directory of names changed while this was open, so nothing was written. Close this and try again to work from what is there now."
+          }
+        }
+      }
+    },
+    "recipient.editor.error.could-not-save": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This project's directory of names could not be written."
+          }
+        }
+      }
+    },
+    "recipient.editor.error.duplicate": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This project's directory already has a name for this public key. Edit that name instead of adding a second one."
+          }
+        }
+      }
+    },
+    "recipient.editor.error.empty-label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A name is required. Type one, or cancel to leave this recipient shown by its public key."
+          }
+        }
+      }
+    },
+    "recipient.editor.error.invalid-recipient": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This is not a native age recipient, so it cannot be named here. This build supports age1… X25519 recipients only."
+          }
+        }
+      }
+    },
+    "recipient.editor.error.path-escapes-project": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This project's .sops-gui directory is not a plain directory inside the project, so nothing was written to it."
+          }
+        }
+      }
+    },
+    "recipient.editor.error.private-identity": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That looks like a private identity. Nothing private-key-shaped is written to this file, in any field — it is a shared, version-controlled directory of names. Nothing was saved."
+          }
+        }
+      }
+    },
+    "recipient.editor.error.record-not-found": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This name is already gone — something else removed it while this was open."
+          }
+        }
+      }
+    },
+    "recipient.editor.key-caption": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Public key"
+          }
+        }
+      }
+    },
+    "recipient.editor.kind-field": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Type"
+          }
+        }
+      }
+    },
+    "recipient.editor.label-field": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Name"
+          }
+        }
+      }
+    },
+    "recipient.editor.note-field": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Note (optional)"
+          }
+        }
+      }
+    },
+    "recipient.editor.registry-explanation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Names are kept in this project's .sops-gui/recipients.json, a shared directory of labels. It holds no secrets and grants nothing: .sops.yaml and each file's own metadata decide who can decrypt what."
+          }
+        }
+      }
+    },
+    "recipient.editor.save": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save Name"
+          }
+        }
+      }
+    },
+    "recipient.editor.saving-label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saving this name…"
+          }
+        }
+      }
+    },
+    "recipient.editor.title-edit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit this recipient's name"
+          }
+        }
+      }
+    },
+    "recipient.editor.title-new": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Name this recipient"
+          }
+        }
+      }
+    },
+    "recipient.forget-confirm.button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Forget the Name"
+          }
+        }
+      }
+    },
+    "recipient.forget-confirm.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The name “%@” will be dropped from this project's directory of names, and this recipient will be shown by its age public key again.\n\nNothing about access changes. This recipient can still decrypt every file it can decrypt now. To actually take that away, remove the recipient in the Access panel and apply the change."
+          }
+        }
+      }
+    },
+    "recipient.forget-confirm.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Forget this name?"
+          }
+        }
+      }
+    },
+    "recipient.forget-label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Forget This Name"
+          }
+        }
+      }
+    },
+    "recipient.forget-label.accessibility": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Forget this recipient's name. Their access does not change: they can still decrypt everything they can decrypt now."
+          }
+        }
+      }
+    },
     "recipient.kind.device": {
       "extractionState": "manual",
       "localizations": {
@@ -2278,6 +2633,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Server"
+          }
+        }
+      }
+    },
+    "recipient.name-this": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Name this recipient…"
           }
         }
       }

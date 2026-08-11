@@ -17,13 +17,27 @@ Duplicita public key je odmítnuta. Registry je pouze adresář kontaktů;
 `.sops.yaml` je jediná autorita pro creation rules a skutečný access souboru je
 SOPS metadata v tom souboru.
 
-**Odloženo do dalšího milníku: editor registry uvnitř aplikace.** V této verzi
-je registry *jen čtený* — oba Access panely z něj berou `label` a `kind`, ale
-záznam vytvoří jen ruční editace `.sops-gui/recipients.json`. `RecipientRegistry
-.save/upsert/remove` proto zatím nemá produkčního volajícího (jen testy); není
-to opomenutí a API se nemá mazat. Žádný plan task editor nespecifikoval a
-přidávat ho mimo plán by znamenalo navrhovat UI bez zadání. Recipient, o kterém
-registry neví, se nikdy neskrývá — zobrazí se svým `age1…` klíčem.
+**Editor registry uvnitř aplikace — odklad zrušen, doplněno.** Do v0.1.11 byl
+registry *jen čtený*: oba Access panely z něj brali `label` a `kind`, ale záznam
+šel vytvořit jen ruční editací `.sops-gui/recipients.json`, takže
+`RecipientRegistry.save/upsert/remove` neměly produkčního volajícího. To už
+neplatí. Z každého řádku obou panelů se dá recipient **pojmenovat** (label, typ,
+volitelná poznámka; `upsert`), **přejmenovat** a **zapomenout jméno** (`remove`).
+
+Zapomenutí jména **neodebírá přístup** — recipient dešifruje přesně jako
+předtím. Je to jediná operace v tomto flow, která nemění nic než přezdívku, a
+proto ji ovládací prvek, jeho accessibility label i potvrzovací dialog říkají
+každý zvlášť; a proto zároveň *není* stylovaná jako destruktivní. Uživatel,
+který si „Remove" přečte jako „revoke", by byl uveden v omyl nástrojem, jehož
+celá práce je říkat, kdo umí přečíst jeho secrety.
+
+Zápis registry nesmí sáhnout na žádný encrypted soubor ani na `.sops.yaml` a
+nesmí shodit nastagované access změny: panel si po uložení jen znovu načte
+`registryRecords` (`reloadRegistry()`), nikdy nedělá `load()`. Ochrana proti
+souběžnému zápisu je `expecting:` overload — fingerprint pořízený při otevření
+sheetu; zůstává best-effort atomic podle přijatého rozhodnutí, lock se
+nepřidává. Recipient, o kterém registry neví, se nikdy neskrývá — zobrazí se
+svým `age1…` klíčem.
 
 ## Operace
 

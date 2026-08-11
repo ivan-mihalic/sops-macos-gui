@@ -501,4 +501,65 @@ struct LocalizationTests {
         #expect(removalAtMany.contains("4 of this project's files"),
                 "the removal confirmation at many reads: \(removalAtMany)")
     }
+
+    /// D3. Rewriting a creation rule does not change access to anything that
+    /// already exists, and the sentence that says who it drops has to carry that
+    /// or it reads as a revocation the app never performed.
+    ///
+    /// Against the catalog JSON, for this file's usual reason.
+    @Test("the config-update confirmation's removal sentence cannot be read as a revocation")
+    func configUpdateRemovalSentenceDisclaimsRevocation() throws {
+        let sentence = try #require(
+            Self.englishForms(for: .projectAccessConfigLoses).first,
+            "missing catalog entry for the config-update removal sentence")
+        #expect(sentence.lowercased().contains("new files"),
+                "the sentence must scope itself to new files: \(sentence)")
+        #expect(sentence.lowercased().contains("already"),
+                "the sentence must say files already on disk keep their access: \(sentence)")
+        #expect(sentence.lowercased().contains("apply to files"),
+                "the sentence must point at the control that does change access: \(sentence)")
+    }
+
+    /// Forgetting a registry label removes a nickname and no access at all. A
+    /// user who reads it as a revocation and moves on has been misled by the one
+    /// tool whose job is to say who can read their secrets — so each of the
+    /// three places the operation is described has to carry the distinction on
+    /// its own, because a user may stop reading at any of them.
+    @Test("nothing about forgetting a label reads as removing a recipient")
+    func forgettingALabelNeverReadsAsRevocation() throws {
+        for key in [
+            LocalizedKey.recipientForgetLabel, .recipientForgetLabelAccessibility,
+            .recipientForgetConfirmTitle, .recipientForgetConfirmMessage,
+            .recipientForgetConfirmButton,
+        ] {
+            for form in Self.englishForms(for: key) {
+                let text = form.lowercased()
+                #expect(!text.contains("revoke"),
+                        "\(key.rawValue) must not read as a revocation: \(form)")
+                #expect(!text.contains("remove this recipient"),
+                        "\(key.rawValue) must not read as removing the recipient: \(form)")
+            }
+        }
+    }
+
+    @Test("the forget control's accessibility label says access does not change")
+    func forgetAccessibilityLabelDisclaims() throws {
+        let text = try #require(
+            Self.englishForms(for: .recipientForgetLabelAccessibility).first).lowercased()
+        #expect(text.contains("access"), "the a11y label must speak to access: \(text)")
+        #expect(text.contains("not change") || text.contains("still"),
+                "the a11y label must say access is unchanged: \(text)")
+    }
+
+    @Test("the forget confirmation says they can still decrypt, and how to really revoke")
+    func forgetConfirmationDisclaims() throws {
+        let message = try #require(
+            Self.englishForms(for: .recipientForgetConfirmMessage).first).lowercased()
+        #expect(message.contains("decrypt"),
+                "the confirmation must say they can still decrypt: \(message)")
+        #expect(message.contains("nothing about access changes"),
+                "the confirmation must say access is unchanged, in as many words: \(message)")
+        #expect(message.contains("apply"),
+                "the confirmation must point at the control that does change access: \(message)")
+    }
 }

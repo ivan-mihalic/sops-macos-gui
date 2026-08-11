@@ -34,6 +34,7 @@ public struct ProjectAccessView: View {
     @State private var confirmingConfigUpdate = false
     @State private var confirmingFileApply = false
     @State private var errorMessage: String?
+    @State private var labelEdit: RecipientLabelEditRequest?
 
     public init(
         model: ProjectAccessModel,
@@ -90,7 +91,7 @@ public struct ProjectAccessView: View {
             }
             Button(LocalizedKey.actionCancel.text, role: .cancel) {}
         } message: {
-            Text(.projectAccessUpdateConfigConfirmMessage)
+            Text(configUpdateConfirmationMessage)
         }
         .confirmationDialog(
             LocalizedKey.projectAccessApplyFilesConfirmTitle.text,
@@ -117,6 +118,17 @@ public struct ProjectAccessView: View {
             Button(LocalizedKey.actionDone.text) { errorMessage = nil }
         } message: {
             Text(errorMessage ?? "")
+        }
+        // Naming a recipient writes the registry and nothing else, so what
+        // follows a save is `reloadRegistry()` — never `load()`, which would
+        // re-scan and discard the staged access edits this sheet is holding,
+        // and not `startRefreshingPlan()` either: a name changes nothing a plan
+        // is about.
+        .sheet(item: $labelEdit) { request in
+            RecipientLabelEditorView(
+                model: request.model,
+                onClose: { labelEdit = nil },
+                onChanged: { model.reloadRegistry() })
         }
         // Keyed on the run *finishing*, not on the result count: the last
         // result is appended by `onFileFinished` while `isApplyingFiles` is
@@ -198,10 +210,13 @@ public struct ProjectAccessView: View {
     private var loadedContent: some View {
         VStack(alignment: .leading, spacing: 10) {
             scope
+            filesPreview
             configSection
 
             List(model.entries) { entry in
-                ProjectAccessRow(entry: entry, onToggle: { toggleRemoval(for: entry) })
+                ProjectAccessRow(
+                    entry: entry, onToggle: { toggleRemoval(for: entry) },
+                    onEditLabel: { editLabel(for: entry) })
             }
             .frame(minHeight: 130, maxHeight: 200)
             .listStyle(.inset)
@@ -218,6 +233,19 @@ public struct ProjectAccessView: View {
 
             if let addRefusal, addRefusal == .duplicate {
                 Text(.accessAddDuplicate).font(.caption).foregroundStyle(.red)
+            }
+            // A key the creation rule names twice is collapsed into one row —
+            // multiplicity is not access — but never without saying so. See
+            // `ProjectAccessModel.duplicatedRecipients`.
+            if !model.duplicatedRecipients.isEmpty {
+                Text(
+                    String(
+                        format: LocalizedKey.projectAccessDuplicateRecipients.text,
+                        model.duplicatedRecipients.count)
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             }
             if !model.keyConfigured {
                 Label(.accessNeedsKeyBody, systemImage: "key.slash")
@@ -332,6 +360,95 @@ public struct ProjectAccessView: View {
         }
     }
 
+    /// The files an apply would re-wrap, named — before it re-wraps them.
+    ///
+    /// The counts above say how many; this says which, which is the question a
+    /// user has to answer before pressing a button that rewrites files. It
+    /// scrolls inside a fixed height and builds its rows lazily, so a project
+    /// with hundreds of encrypted files costs the same as one with two and does
+    /// not push the buttons off the sheet.
+    ///
+    /// Rows are identified positionally rather than by URL: `encryptedFiles`
+    /// does not deduplicate by resolved path, so a symlink and its target can
+    /// both appear, and identity-by-value would be the same `List`-with-two-
+    /// identical-ids defect the recipient rows just had.
+    ///
+    /// Not a `LazyVStack`: laziness is what would keep the cost flat, but a
+    /// lazy stack inside a `ScrollView` realises nothing at all under the
+    /// headless host these panels are checked through — measured, not assumed —
+    /// so the list would be untestable and, worse, would be untestable in the
+    /// direction that looks like it passes. `previewedFiles` bounds the cost
+    /// instead, by building a fixed number of rows and counting the rest.
+    @ViewBuilder
+    private var filesPreview: some View {
+        if let plan = model.plan, !model.filesToApply.isEmpty {
+            let preview = Self.previewedFiles(model.filesToApply)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(.projectAccessFilesPreviewTitle).font(.caption.weight(.semibold))
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 1) {
+                        ForEach(Array(preview.shown.enumerated()), id: \.offset) { _, file in
+                            // A path is not translatable, and resolved through
+                            // the catalog it would vanish under whichever build
+                            // system copies `.xcstrings` uncompiled — the same
+                            // reason `KeyImportView` renders paths this way.
+                            Text(verbatim: Self.previewPath(of: file, in: plan.projectRoot))
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        if preview.overflow > 0 {
+                            Text(
+                                String(
+                                    format: LocalizedKey.projectAccessFilesPreviewMore.text,
+                                    preview.overflow)
+                            )
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+                .frame(maxHeight: 96)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// How many previewed rows are ever built. A preview exists to answer "is
+    /// this the set I meant?", which the first screenful and an honest
+    /// remainder answer as well as an unbounded list would — and unlike an
+    /// unbounded list, at a cost that does not grow with the project.
+    static let filesPreviewLimit = 100
+
+    /// The files the preview draws, and how many it did not.
+    static func previewedFiles(_ files: [URL]) -> (shown: [URL], overflow: Int) {
+        guard files.count > filesPreviewLimit else { return (files, 0) }
+        return (Array(files.prefix(filesPreviewLimit)), files.count - filesPreviewLimit)
+    }
+
+    /// How a previewed file is named: its path relative to the project root, or
+    /// its own last component when it is not under the root at all.
+    ///
+    /// Both sides are resolved before the strip. `ProjectScanner` returns
+    /// entries with the directory prefix's symlinks already resolved
+    /// (`/var/…` → `/private/var/…`) while the project root keeps whatever
+    /// spelling it was added under, so a literal prefix strip is a no-op and
+    /// every file would be previewed by its absolute path. That exact mismatch
+    /// is what made every anchored `path_regex` fail to match for the whole of
+    /// this feature's development — see `ProjectRecipientApplier.ruleMatchingPath`.
+    /// This form is used only to *name* a file on screen; nothing is ever
+    /// written through it.
+    static func previewPath(of file: URL, in root: URL) -> String {
+        let rootPath = root.resolvingSymlinksInPath().standardizedFileURL.path
+        let filePath = file.resolvingSymlinksInPath().standardizedFileURL.path
+        let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        guard filePath.hasPrefix(prefix) else { return file.lastPathComponent }
+        return String(filePath.dropFirst(prefix.count))
+    }
+
     /// `detail` is engine-produced or fixed diagnostic text shown verbatim —
     /// the same treatment a health finding's own sentence gets, and for the
     /// same reason: it names the specific shape found, which no fixed
@@ -395,6 +512,14 @@ public struct ProjectAccessView: View {
         model.startRefreshingPlan()
     }
 
+    private func editLabel(for entry: RecipientAccessModel.AccessEntry) {
+        labelEdit = RecipientLabelEditRequest(
+            model: RecipientLabelEditorModel(
+                projectURL: model.projectRoot,
+                ageRecipient: entry.ageRecipient,
+                existing: model.registryRecords.first { $0.ageRecipient == entry.ageRecipient }))
+    }
+
     private func applyConfig() async {
         switch await model.applyConfig() {
         case .written, .nothingToWrite:
@@ -406,6 +531,44 @@ public struct ProjectAccessView: View {
         case .failed(let message):
             errorMessage = message
         }
+    }
+
+    /// What rewriting the creation rule changes, and for whom.
+    ///
+    /// This was the one mutating action of the three whose confirmation named
+    /// nobody. It described the reformatting a rewrite causes and said files on
+    /// disk are untouched, both true, but never who the rule would start or stop
+    /// encrypting *new* files for — while the other two dialogs both name the
+    /// people involved. Rewriting a rule really does not change access to
+    /// anything that exists, which is why it was left; the asymmetry inside one
+    /// feature is its own defect.
+    ///
+    /// The removal sentence carries the distinction rather than assuming the
+    /// reader supplies it: dropping a recipient here takes nothing away from
+    /// them. With nothing staged there is nobody to name, and the message is
+    /// exactly the mechanical disclosure it always was — an empty "and nobody
+    /// changes" sentence would be noise.
+    ///
+    /// Internal rather than private for the same reason
+    /// `fileApplyConfirmationMessage` is.
+    var configUpdateConfirmationMessage: String {
+        var parts: [String] = []
+        let gained = model.entries.filter { $0.status == .pendingAddition }
+        if !gained.isEmpty {
+            parts.append(
+                String(
+                    format: LocalizedKey.projectAccessConfigGains.text,
+                    gained.map { $0.label ?? $0.ageRecipient }.joined(separator: ", ")))
+        }
+        let lost = model.pendingRemovals
+        if !lost.isEmpty {
+            parts.append(
+                String(
+                    format: LocalizedKey.projectAccessConfigLoses.text,
+                    lost.map { $0.label ?? $0.ageRecipient }.joined(separator: ", ")))
+        }
+        parts.append(LocalizedKey.projectAccessUpdateConfigConfirmMessage.text)
+        return parts.joined(separator: "\n\n")
     }
 
     /// Internal rather than private so a test can read the exact sentence the
@@ -458,6 +621,23 @@ public struct ProjectAccessView: View {
 /// every file the creation rule governs, which may include the file open in
 /// the editor, and the reload that resyncs the editor's own save fingerprint
 /// afterwards discards every pending edit, addition and removal — silently.
+///
+/// ## Why this gate has one term fewer, deliberately
+/// `SecretEditorView.canOpenAccessPanel` also requires `loadState == .loaded`.
+/// This one **does not require a loaded document**, and the difference is a
+/// decision rather than an omission. The per-file panel's subject *is* the open
+/// document: without a successful load there is no file whose recipients it
+/// could be about, and the model it would build would have nothing to read. This
+/// panel's subject is the project. It scans the tree and reads `.sops.yaml`
+/// itself, from its own `.task`, and is perfectly meaningful with no document
+/// open at all — which is the ordinary case, since the file list is where the
+/// button lives. Requiring a loaded document here would disable the project
+/// panel for a user who has not opened anything yet, for no benefit.
+///
+/// The terms they *do* share are the unsaved-work ones, and those are identical
+/// on purpose: both panels can rewrite the file underneath an editor holding
+/// edits nobody saved. `AccessGateAsymmetryTests` pins both halves — that the
+/// load-state term is the only difference, and that this paragraph exists.
 enum ProjectAccessGate {
     static func canOpen(hasProject: Bool, documentIsDirty: Bool, documentIsSaving: Bool) -> Bool {
         hasProject && !documentIsDirty && !documentIsSaving
@@ -472,6 +652,7 @@ enum ProjectAccessGate {
 private struct ProjectAccessRow: View {
     let entry: RecipientAccessModel.AccessEntry
     let onToggle: () -> Void
+    let onEditLabel: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
@@ -488,6 +669,7 @@ private struct ProjectAccessRow: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
+                RecipientRowContent.note(entry.note)
             }
 
             RecipientKindBadge(kind: entry.kind)
@@ -497,6 +679,8 @@ private struct ProjectAccessRow: View {
             if let badge {
                 Text(badge.0).font(.caption2).foregroundStyle(badge.1)
             }
+
+            RecipientNamingButton(hasLabel: entry.label != nil, action: onEditLabel)
 
             Button(action: onToggle) {
                 Image(systemName: entry.status == .pendingRemoval ? "arrow.uturn.backward.circle" : "minus.circle")
