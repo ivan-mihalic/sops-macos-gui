@@ -314,6 +314,18 @@ public final class RecipientAccessModel {
         }
     }
 
+    /// Re-reads the project's registry, and *only* that.
+    ///
+    /// What the label editor calls after it writes a name. It deliberately does
+    /// not go through `load()`: a reload would re-read the document and reset
+    /// `stagedRecipients`, throwing away access edits the user staged and has
+    /// not applied — and naming a recipient is not an act on the document at
+    /// all. Nothing encrypted is read or written here.
+    public func reloadRegistry() {
+        guard let projectURL else { return }
+        registryRecords = loadRegistry(projectURL)
+    }
+
     private func reset() {
         currentRecipients = []
         stagedRecipients = []

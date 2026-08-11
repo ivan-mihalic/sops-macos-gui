@@ -34,6 +34,7 @@ public struct ProjectAccessView: View {
     @State private var confirmingConfigUpdate = false
     @State private var confirmingFileApply = false
     @State private var errorMessage: String?
+    @State private var labelEdit: RecipientLabelEditRequest?
 
     public init(
         model: ProjectAccessModel,
@@ -117,6 +118,17 @@ public struct ProjectAccessView: View {
             Button(LocalizedKey.actionDone.text) { errorMessage = nil }
         } message: {
             Text(errorMessage ?? "")
+        }
+        // Naming a recipient writes the registry and nothing else, so what
+        // follows a save is `reloadRegistry()` — never `load()`, which would
+        // re-scan and discard the staged access edits this sheet is holding,
+        // and not `startRefreshingPlan()` either: a name changes nothing a plan
+        // is about.
+        .sheet(item: $labelEdit) { request in
+            RecipientLabelEditorView(
+                model: request.model,
+                onClose: { labelEdit = nil },
+                onChanged: { model.reloadRegistry() })
         }
         // Keyed on the run *finishing*, not on the result count: the last
         // result is appended by `onFileFinished` while `isApplyingFiles` is
@@ -202,7 +214,9 @@ public struct ProjectAccessView: View {
             configSection
 
             List(model.entries) { entry in
-                ProjectAccessRow(entry: entry, onToggle: { toggleRemoval(for: entry) })
+                ProjectAccessRow(
+                    entry: entry, onToggle: { toggleRemoval(for: entry) },
+                    onEditLabel: { editLabel(for: entry) })
             }
             .frame(minHeight: 130, maxHeight: 200)
             .listStyle(.inset)
@@ -498,6 +512,14 @@ public struct ProjectAccessView: View {
         model.startRefreshingPlan()
     }
 
+    private func editLabel(for entry: RecipientAccessModel.AccessEntry) {
+        labelEdit = RecipientLabelEditRequest(
+            model: RecipientLabelEditorModel(
+                projectURL: model.projectRoot,
+                ageRecipient: entry.ageRecipient,
+                existing: model.registryRecords.first { $0.ageRecipient == entry.ageRecipient }))
+    }
+
     private func applyConfig() async {
         switch await model.applyConfig() {
         case .written, .nothingToWrite:
@@ -630,6 +652,7 @@ enum ProjectAccessGate {
 private struct ProjectAccessRow: View {
     let entry: RecipientAccessModel.AccessEntry
     let onToggle: () -> Void
+    let onEditLabel: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
@@ -646,6 +669,7 @@ private struct ProjectAccessRow: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
+                RecipientRowContent.note(entry.note)
             }
 
             RecipientKindBadge(kind: entry.kind)
@@ -655,6 +679,8 @@ private struct ProjectAccessRow: View {
             if let badge {
                 Text(badge.0).font(.caption2).foregroundStyle(badge.1)
             }
+
+            RecipientNamingButton(hasLabel: entry.label != nil, action: onEditLabel)
 
             Button(action: onToggle) {
                 Image(systemName: entry.status == .pendingRemoval ? "arrow.uturn.backward.circle" : "minus.circle")

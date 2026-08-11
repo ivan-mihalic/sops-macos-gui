@@ -413,6 +413,54 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case recipientKindServer = "recipient.kind.server"
     case recipientKindPerson = "recipient.kind.person"
 
+    // MARK: The registry editor — naming a key, and forgetting the name
+
+    // The two states of the row control that opens the editor. A recipient the
+    // registry has never heard of is offered a name; one it knows is offered an
+    // edit.
+    case recipientNameThis = "recipient.name-this"
+    case recipientEditLabel = "recipient.edit-label"
+    case recipientEditorTitleNew = "recipient.editor.title-new"
+    case recipientEditorTitleEdit = "recipient.editor.title-edit"
+    // Says what the registry *is*, on the one screen where a user is writing to
+    // it: a directory of names, never the authority on who can decrypt. Without
+    // this, an editor that says "Save" over a list of recipients invites exactly
+    // the wrong inference.
+    case recipientEditorRegistryExplanation = "recipient.editor.registry-explanation"
+    case recipientEditorKeyCaption = "recipient.editor.key-caption"
+    case recipientEditorLabelField = "recipient.editor.label-field"
+    case recipientEditorKindField = "recipient.editor.kind-field"
+    case recipientEditorNoteField = "recipient.editor.note-field"
+    case recipientEditorSave = "recipient.editor.save"
+    case recipientEditorSavingLabel = "recipient.editor.saving-label"
+
+    // Forgetting a name removes a nickname and **no access at all**: the
+    // recipient goes on decrypting everything they could decrypt before. The
+    // control, its accessibility label and its confirmation each say so
+    // independently, because a user may stop reading at any one of them — and a
+    // user who reads this as a revocation has been misled by the one tool whose
+    // job is to say who can read their secrets. It is equally deliberate that
+    // none of them is styled or worded as destructive: nothing is destroyed.
+    case recipientForgetLabel = "recipient.forget-label"
+    case recipientForgetLabelAccessibility = "recipient.forget-label.accessibility"
+    case recipientForgetConfirmTitle = "recipient.forget-confirm.title"
+    // Formatted with the name about to be forgotten.
+    case recipientForgetConfirmMessage = "recipient.forget-confirm.message"
+    case recipientForgetConfirmButton = "recipient.forget-confirm.button"
+
+    // Every refusal `RecipientRegistry` can give, as a fixed sentence. None
+    // quotes what was refused: the registry rejects private-key-shaped text in
+    // the label, the note and the recipient alike, and a refusal that echoed its
+    // input would be the leak the refusal exists to prevent.
+    case recipientEditorErrorEmptyLabel = "recipient.editor.error.empty-label"
+    case recipientEditorErrorInvalidRecipient = "recipient.editor.error.invalid-recipient"
+    case recipientEditorErrorDuplicate = "recipient.editor.error.duplicate"
+    case recipientEditorErrorPrivateIdentity = "recipient.editor.error.private-identity"
+    case recipientEditorErrorRecordNotFound = "recipient.editor.error.record-not-found"
+    case recipientEditorErrorChangedOnDisk = "recipient.editor.error.changed-on-disk"
+    case recipientEditorErrorPathEscapesProject = "recipient.editor.error.path-escapes-project"
+    case recipientEditorErrorCouldNotSave = "recipient.editor.error.could-not-save"
+
     /// The resolved English text. Used in views and asserted in tests.
     public var text: String {
         String(localized: String.LocalizationValue(rawValue), bundle: .module)

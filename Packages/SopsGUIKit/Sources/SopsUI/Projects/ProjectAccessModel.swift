@@ -234,6 +234,17 @@ public final class ProjectAccessModel {
         loadState = .loaded
     }
 
+    /// Re-reads the project's registry, and *only* that.
+    ///
+    /// What the label editor calls after it writes a name. Not `load()`, which
+    /// would re-scan the tree and reset `stagedRecipients`, discarding access
+    /// edits the user staged and has not applied; and not `refreshPlan()`,
+    /// because a name changes nothing a plan is about. Nothing encrypted is read
+    /// or written here.
+    public func reloadRegistry() {
+        registryRecords = loadRegistry(projectRoot)
+    }
+
     /// Re-plans against the current staged set, so the config preview
     /// (`plan.configUpdateText`, `plan.configRefusal`) matches what Apply
     /// would actually do. A scan plus one bridge call; it writes nothing.

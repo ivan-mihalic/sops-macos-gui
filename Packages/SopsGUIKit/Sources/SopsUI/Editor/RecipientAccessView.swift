@@ -32,6 +32,7 @@ public struct RecipientAccessView: View {
     @State private var addRefusal: RecipientAccessModel.StageAddRefusal?
     @State private var confirmingRemoval = false
     @State private var applyErrorMessage: String?
+    @State private var labelEdit: RecipientLabelEditRequest?
 
     public init(
         model: RecipientAccessModel,
@@ -101,6 +102,24 @@ public struct RecipientAccessView: View {
         } message: {
             Text(applyErrorMessage ?? "")
         }
+        // Naming a recipient writes the registry and nothing else, so what
+        // follows a save is `reloadRegistry()` — never `load()`, which would
+        // discard the staged access edits this sheet is holding.
+        .sheet(item: $labelEdit) { request in
+            RecipientLabelEditorView(
+                model: request.model,
+                onClose: { labelEdit = nil },
+                onChanged: { model.reloadRegistry() })
+        }
+    }
+
+    private func editLabel(for entry: RecipientAccessModel.AccessEntry) {
+        guard let projectURL = model.projectURL else { return }
+        labelEdit = RecipientLabelEditRequest(
+            model: RecipientLabelEditorModel(
+                projectURL: projectURL,
+                ageRecipient: entry.ageRecipient,
+                existing: model.registryRecords.first { $0.ageRecipient == entry.ageRecipient }))
     }
 
     private var canApply: Bool {
@@ -151,7 +170,9 @@ public struct RecipientAccessView: View {
     private var loadedContent: some View {
         VStack(alignment: .leading, spacing: 10) {
             List(model.entries) { entry in
-                RecipientAccessRow(entry: entry, onToggle: { toggleRemoval(for: entry) })
+                RecipientAccessRow(
+                    entry: entry, onToggle: { toggleRemoval(for: entry) },
+                    onEditLabel: model.projectURL == nil ? nil : { editLabel(for: entry) })
             }
             .frame(minHeight: 160, maxHeight: 260)
             .listStyle(.inset)
@@ -275,6 +296,43 @@ enum RecipientRowContent {
         case .person: .recipientKindPerson
         }
     }
+
+    /// The registry's optional note for a recipient, where one exists.
+    ///
+    /// Drawn since the label editor started collecting it: a field a user can
+    /// type into and never see again is a field that quietly stops being kept
+    /// up to date. Shown verbatim — it is user-written prose, not a translatable
+    /// string — and never a place a secret belongs, which is why
+    /// `RecipientRegistry` refuses anything private-key-shaped here as firmly as
+    /// it does in the recipient itself.
+    @ViewBuilder
+    static func note(_ note: String?) -> some View {
+        if let note, !note.isEmpty {
+            Text(verbatim: note)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+    }
+}
+
+/// The control that opens the label editor for one row, in its two states.
+///
+/// Shared by both panels for the reason `RecipientKindBadge` is: the two row
+/// views are near-identical and have already drifted apart once in exactly this
+/// seam.
+struct RecipientNamingButton: View {
+    let hasLabel: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: hasLabel ? "pencil" : "tag")
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel((hasLabel ? LocalizedKey.recipientEditLabel : .recipientNameThis).text)
+    }
 }
 
 /// The registry's descriptive role for a recipient — device, server or person.
@@ -300,11 +358,14 @@ struct RecipientKindBadge: View {
 }
 
 /// One row: label (or raw public key, if the registry has no record for it),
-/// the public key beneath a label when one exists, the registry's kind, a
-/// staged-change badge, and the add/remove toggle.
+/// the public key beneath a label when one exists, the registry's note and
+/// kind, a staged-change badge, the naming control and the add/remove toggle.
 private struct RecipientAccessRow: View {
     let entry: RecipientAccessModel.AccessEntry
     let onToggle: () -> Void
+    /// `nil` when there is no project to write a name into — a file opened
+    /// outside one. Offered-and-then-failing would be worse than absent.
+    let onEditLabel: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -321,6 +382,7 @@ private struct RecipientAccessRow: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
+                RecipientRowContent.note(entry.note)
             }
 
             RecipientKindBadge(kind: entry.kind)
@@ -331,6 +393,10 @@ private struct RecipientAccessRow: View {
                 Text(badge.0)
                     .font(.caption2)
                     .foregroundStyle(badge.1)
+            }
+
+            if let onEditLabel {
+                RecipientNamingButton(hasLabel: entry.label != nil, action: onEditLabel)
             }
 
             Button(action: onToggle) {
