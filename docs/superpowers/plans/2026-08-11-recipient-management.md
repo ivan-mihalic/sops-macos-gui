@@ -13,7 +13,12 @@
 - Jen native `age1...` X25519; žádný CLI, environment, key files ani pluginy.
 - Private identities ani plaintext hodnoty se nelogují, neukládají ani nevrací v errors.
 - `.sops.yaml` je access/config autorita; `.sops-gui/recipients.json` je verzovaný adresář labels.
-- Existing writes zůstávají atomické a odmítnou second writer.
+- Existing writes zůstávají atomické (staged file + `renameat`) a odmítnou zápis,
+  pokud se cílový soubor od načtení změnil. Ochrana je best-effort — stejný
+  kontrakt jako `AtomicFileWriter`: mezi fingerprint checkem a `renameat` je
+  mikro-window, ve kterém ne-kooperující externí writer (`git`, `sops` CLI,
+  druhá instance appky) může výsledek přepsat. macOS nenabízí CAS přes directory
+  entry; advisory lock by nechránil `git` ani CLI, takže se nepřidává.
 
 ---
 
