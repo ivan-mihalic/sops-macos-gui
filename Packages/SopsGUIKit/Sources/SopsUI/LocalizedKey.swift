@@ -360,6 +360,17 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case projectAccessUpdateConfigButton = "project-access.update-config-button"
     case projectAccessUpdateConfigConfirmTitle = "project-access.update-config-confirm.title"
     case projectAccessUpdateConfigConfirmMessage = "project-access.update-config-confirm.message"
+    // Who the rewritten creation rule gains, and who it loses. Formatted with
+    // the comma-joined labels (or public keys, for anyone the registry does not
+    // know), exactly like the other two confirmations in this feature — this
+    // was the one mutating action of the three whose dialog named nobody.
+    //
+    // `…loses` carries the whole point of the distinction: dropping a recipient
+    // from a creation rule takes nothing away from them. Every file already on
+    // disk still decrypts for them, because their key is still in that file's
+    // own SOPS metadata. Only "Apply to Files" changes that.
+    case projectAccessConfigGains = "project-access.update-config-confirm.gains"
+    case projectAccessConfigLoses = "project-access.update-config-confirm.loses"
     case projectAccessUpdateConfigConfirmButton = "project-access.update-config-confirm.button"
     case projectAccessApplyFilesButton = "project-access.apply-files-button"
     case projectAccessApplyFilesConfirmTitle = "project-access.apply-files-confirm.title"

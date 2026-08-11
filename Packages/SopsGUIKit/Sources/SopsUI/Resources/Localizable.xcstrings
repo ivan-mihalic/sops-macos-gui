@@ -2153,6 +2153,28 @@
         }
       }
     },
+    "project-access.update-config-confirm.gains": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ will be added to the creation rule: files encrypted or re-wrapped from now on will be readable by them."
+          }
+        }
+      }
+    },
+    "project-access.update-config-confirm.loses": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ will be dropped from the creation rule: new files will no longer be encrypted for them. This takes nothing away — every file already on disk still decrypts for them, because their key is still in that file's own metadata. Use Apply to Files to change that."
+          }
+        }
+      }
+    },
     "project-access.update-config-confirm.message": {
       "extractionState": "manual",
       "localizations": {

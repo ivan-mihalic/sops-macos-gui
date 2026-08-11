@@ -90,7 +90,7 @@ public struct ProjectAccessView: View {
             }
             Button(LocalizedKey.actionCancel.text, role: .cancel) {}
         } message: {
-            Text(.projectAccessUpdateConfigConfirmMessage)
+            Text(configUpdateConfirmationMessage)
         }
         .confirmationDialog(
             LocalizedKey.projectAccessApplyFilesConfirmTitle.text,
@@ -511,6 +511,44 @@ public struct ProjectAccessView: View {
         }
     }
 
+    /// What rewriting the creation rule changes, and for whom.
+    ///
+    /// This was the one mutating action of the three whose confirmation named
+    /// nobody. It described the reformatting a rewrite causes and said files on
+    /// disk are untouched, both true, but never who the rule would start or stop
+    /// encrypting *new* files for — while the other two dialogs both name the
+    /// people involved. Rewriting a rule really does not change access to
+    /// anything that exists, which is why it was left; the asymmetry inside one
+    /// feature is its own defect.
+    ///
+    /// The removal sentence carries the distinction rather than assuming the
+    /// reader supplies it: dropping a recipient here takes nothing away from
+    /// them. With nothing staged there is nobody to name, and the message is
+    /// exactly the mechanical disclosure it always was — an empty "and nobody
+    /// changes" sentence would be noise.
+    ///
+    /// Internal rather than private for the same reason
+    /// `fileApplyConfirmationMessage` is.
+    var configUpdateConfirmationMessage: String {
+        var parts: [String] = []
+        let gained = model.entries.filter { $0.status == .pendingAddition }
+        if !gained.isEmpty {
+            parts.append(
+                String(
+                    format: LocalizedKey.projectAccessConfigGains.text,
+                    gained.map { $0.label ?? $0.ageRecipient }.joined(separator: ", ")))
+        }
+        let lost = model.pendingRemovals
+        if !lost.isEmpty {
+            parts.append(
+                String(
+                    format: LocalizedKey.projectAccessConfigLoses.text,
+                    lost.map { $0.label ?? $0.ageRecipient }.joined(separator: ", ")))
+        }
+        parts.append(LocalizedKey.projectAccessUpdateConfigConfirmMessage.text)
+        return parts.joined(separator: "\n\n")
+    }
+
     /// Internal rather than private so a test can read the exact sentence the
     /// dialog will carry — a `.confirmationDialog`'s own body is not reachable
     /// from a unit test (the documented limitation `WorkspaceSwitchDecisionTests`
@@ -561,6 +599,23 @@ public struct ProjectAccessView: View {
 /// every file the creation rule governs, which may include the file open in
 /// the editor, and the reload that resyncs the editor's own save fingerprint
 /// afterwards discards every pending edit, addition and removal — silently.
+///
+/// ## Why this gate has one term fewer, deliberately
+/// `SecretEditorView.canOpenAccessPanel` also requires `loadState == .loaded`.
+/// This one **does not require a loaded document**, and the difference is a
+/// decision rather than an omission. The per-file panel's subject *is* the open
+/// document: without a successful load there is no file whose recipients it
+/// could be about, and the model it would build would have nothing to read. This
+/// panel's subject is the project. It scans the tree and reads `.sops.yaml`
+/// itself, from its own `.task`, and is perfectly meaningful with no document
+/// open at all — which is the ordinary case, since the file list is where the
+/// button lives. Requiring a loaded document here would disable the project
+/// panel for a user who has not opened anything yet, for no benefit.
+///
+/// The terms they *do* share are the unsaved-work ones, and those are identical
+/// on purpose: both panels can rewrite the file underneath an editor holding
+/// edits nobody saved. `AccessGateAsymmetryTests` pins both halves — that the
+/// load-state term is the only difference, and that this paragraph exists.
 enum ProjectAccessGate {
     static func canOpen(hasProject: Bool, documentIsDirty: Bool, documentIsSaving: Bool) -> Bool {
         hasProject && !documentIsDirty && !documentIsSaving
