@@ -358,6 +358,161 @@ struct ProjectAccessApplySeparationTests {
     }
 }
 
+// MARK: - F1: a run requested while one is still finishing is queued, not dropped
+
+/// Blocks the first call it receives until `open()` is called; every later
+/// call passes straight through. Backed by a lock and a `DispatchSemaphore`
+/// rather than an actor because it is called from `ProjectRecipientApplier`'s
+/// synchronous `rewrapRecipients` seam, which cannot `await` — the same
+/// reasoning `ProjectRecipientApplierCancellationTests`' semaphore gate uses.
+private final class FirstCallGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var callCount = 0
+    private var arrivedFlag = false
+    private let release = DispatchSemaphore(value: 0)
+
+    func waitIfFirst() {
+        lock.lock()
+        callCount += 1
+        let isFirst = callCount == 1
+        if isFirst { arrivedFlag = true }
+        lock.unlock()
+        if isFirst { release.wait() }
+    }
+
+    func hasArrived() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return arrivedFlag
+    }
+
+    func open() { release.signal() }
+}
+
+@Suite("ProjectAccessModel — a run requested while one is still finishing is queued, not dropped")
+@MainActor
+struct ProjectAccessQueuedRunTests {
+
+    private func waitUntil(_ condition: () -> Bool) async {
+        for _ in 0..<400 {
+            if condition() { return }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        Issue.record("condition was never met within 10s")
+    }
+
+    /// F1. The pre-fix `startApplyingToFiles` cancelled the previous `Task`
+    /// without awaiting it, so a second call landing while the first was
+    /// still finishing its in-flight file reached `applyToFiles()`'s
+    /// `isApplyingFiles` guard while it was still `true` and was refused on
+    /// the spot — silently, since that refusal was folded into the same
+    /// `nil` a real start returns, so `onRefusal` never fired for it either.
+    ///
+    /// This proves the fix rather than merely the symptom: the two calls are
+    /// staged for *different* recipient sets, so only if the second call
+    /// truly runs — after the first `Task` has actually finished — do the
+    /// files end up re-wrapped for the second set. A silently dropped second
+    /// call would leave the files at the first set instead, which is exactly
+    /// what this failed to catch before the fix.
+    @Test("a second call queued behind an in-flight run still re-wraps for what was staged by the time it starts")
+    func aQueuedRunStillHappens() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let addedFirst = try ProjectAgeKeyPair.generate()
+        let addedSecond = try ProjectAgeKeyPair.generate()
+        let (root, _) = try makeProject(owner: owner)
+
+        let keyStore = SessionKeyStore()
+        try keyStore.importKey(owner.private)
+
+        let gate = FirstCallGate()
+        let applier = ProjectRecipientApplier(rewrapRecipients: { contents, recipients, key in
+            gate.waitIfFirst()
+            return try SopsBridge.updateRecipients(contents, to: recipients, agePrivateKey: key)
+        })
+        let model = ProjectAccessModel(projectRoot: root, keyStore: keyStore, applier: applier)
+        await model.load()
+
+        model.stageAdd(addedFirst.public)
+        await model.refreshPlan()
+
+        var refusals: [ProjectAccessModel.FileApplyRefusal] = []
+        model.startApplyingToFiles { refusals.append($0) }
+
+        await waitUntil { gate.hasArrived() }
+        try #require(gate.hasArrived(), "the first run never reached the blocked file")
+        #expect(model.isApplyingFiles, "precondition: the first run is genuinely still going")
+
+        // Restage while the first run is stuck mid-file, and ask for another
+        // run — the exact shape the finding describes: a second request
+        // landing while the first is still finishing.
+        model.stageRemove(addedFirst.public)
+        model.stageAdd(addedSecond.public)
+        await model.refreshPlan()
+        model.startApplyingToFiles { refusals.append($0) }
+
+        // Let the first run's blocked file proceed; both its files finish
+        // with the first set.
+        gate.open()
+        await waitUntil { !model.isApplyingFiles }
+
+        // The queued second call must now run to completion on its own,
+        // re-wrapping both files for the second set — proof it was not
+        // dropped. Waited on both names, not just one: the first run's own
+        // cancellation (requested while it was stuck on the gate) can leave
+        // it having reached only the first file before the second run picks
+        // up the rest, so the two files do not necessarily converge at the
+        // same instant.
+        await waitUntil {
+            ["a.yaml", "b.yaml"].allSatisfy { name in
+                (try? String(contentsOf: root.appendingPathComponent(name), encoding: .utf8))
+                    .flatMap { try? SopsBridge.recipients(in: $0) }
+                    .map { Set($0) == Set([owner.public, addedSecond.public]) } ?? false
+            }
+        }
+
+        for name in ["a.yaml", "b.yaml"] {
+            let bytes = try String(contentsOf: root.appendingPathComponent(name), encoding: .utf8)
+            #expect(Set(try SopsBridge.recipients(in: bytes)) == Set([owner.public, addedSecond.public]),
+                    "\(name) must end up re-wrapped for the set staged by the time the queued run actually started")
+        }
+        #expect(refusals.isEmpty,
+                "neither call should have been refused — the second must run, not vanish as a dropped \"already running\"")
+    }
+
+    /// The half of F1 that is a pure function: `applyToFiles()` itself now
+    /// tells "already running" apart from "just started", for a caller that
+    /// bypasses `startApplyingToFiles` and calls it directly while a run it
+    /// started earlier is still going.
+    @Test("calling applyToFiles() directly while one is already running is refused, not silently nil")
+    func directReentrantCallIsRefused() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let added = try ProjectAgeKeyPair.generate()
+        let (root, _) = try makeProject(owner: owner)
+
+        let keyStore = SessionKeyStore()
+        try keyStore.importKey(owner.private)
+
+        let gate = FirstCallGate()
+        let applier = ProjectRecipientApplier(rewrapRecipients: { contents, recipients, key in
+            gate.waitIfFirst()
+            return try SopsBridge.updateRecipients(contents, to: recipients, agePrivateKey: key)
+        })
+        let model = ProjectAccessModel(projectRoot: root, keyStore: keyStore, applier: applier)
+        await model.load()
+        model.stageAdd(added.public)
+        await model.refreshPlan()
+
+        let firstRun = Task { await model.applyToFiles() }
+        await waitUntil { gate.hasArrived() }
+        try #require(model.isApplyingFiles)
+
+        #expect(await model.applyToFiles() == .alreadyRunning)
+
+        gate.open()
+        #expect(await firstRun.value == nil)
+    }
+}
+
 @Suite("Project access gates")
 struct ProjectAccessGateTests {
 
@@ -407,7 +562,9 @@ struct ProjectAccessGateTests {
 
     @Test("every file-apply refusal has an explanation to show")
     func everyRefusalIsExplained() {
-        for refusal: ProjectAccessModel.FileApplyRefusal in [.notLoaded, .emptyRecipients, .noFiles, .noKey] {
+        for refusal: ProjectAccessModel.FileApplyRefusal in [
+            .notLoaded, .emptyRecipients, .noFiles, .noKey, .alreadyRunning,
+        ] {
             #expect(!ProjectAccessView.explanation(for: refusal).isEmpty)
         }
     }
@@ -612,6 +769,76 @@ struct ProjectAccessScopeDisclosureTests {
         // compiles the catalog.
         let expected = String(format: LocalizedKey.projectAccessFilesSummary.text, 2, 2)
         #expect(labels(in: host.nodes()).contains(expected))
+    }
+}
+
+// MARK: - F3: a symlink and its target collapse to one file, and the panel says so
+
+@Suite("ProjectAccessView — a file reachable by more than one name says so")
+@MainActor
+struct ProjectAccessCollapsedDuplicateFilesTests {
+
+    private func labels(in nodes: [GatingAXProbe.Node]) -> [String] {
+        nodes.flatMap { [$0.label, $0.value] }
+    }
+
+    /// A project holding a symlink alongside its target shows one file, not
+    /// two — right, per `ProjectRecipientApplier.deduplicatedByResolvedPath` —
+    /// but until this the panel said nothing about the collapse at all: the
+    /// count a user sees was silently smaller than the number of paths the
+    /// scan actually found.
+    @Test("a project with a symlinked file discloses the collapse")
+    func collapseIsDisclosed() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let root = try projectScratchDirectory("project-access-alias")
+        try """
+            creation_rules:
+              - path_regex: .*\\.yaml$
+                age: \(owner.public)
+
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let target = root.appendingPathComponent("db.yaml")
+        try SopsBridge.encryptYAML(projectPlainYAML, recipients: [owner.public])
+            .write(to: target, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("alias.yaml"), withDestinationURL: target)
+
+        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
+        let host = GatingHost(size: CGSize(width: 560, height: 700)) {
+            AnyView(ProjectAccessView(model: model, onClose: {}, onFilesApplied: {}))
+        }
+        defer { host.finish() }
+        await host.settle(until: { model.loadState == .loaded })
+
+        try #require(model.loadState == .loaded)
+        #expect(model.plan?.duplicateFileNameCount == 1,
+                "precondition: the scan found two names for one file")
+
+        let expected = String(format: LocalizedKey.projectAccessCollapsedDuplicateFiles.text, 1)
+        #expect(labels(in: host.nodes()).contains(expected),
+                "the panel must say the count shown is already collapsed by resolved path")
+    }
+
+    /// The proportionate half of the disclosure: nothing is said when there is
+    /// nothing to say. A project with no aliasing must not carry a sentence
+    /// that reads as a warning over an ordinary project.
+    @Test("a project with no symlinked files says nothing about a collapse")
+    func noCollapseIsSilent() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let (root, _) = try makeProject(owner: owner)
+
+        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
+        let host = GatingHost(size: CGSize(width: 560, height: 700)) {
+            AnyView(ProjectAccessView(model: model, onClose: {}, onFilesApplied: {}))
+        }
+        defer { host.finish() }
+        await host.settle(until: { model.loadState == .loaded })
+
+        try #require(model.loadState == .loaded)
+        #expect(model.plan?.duplicateFileNameCount == 0)
+
+        let unexpected = String(format: LocalizedKey.projectAccessCollapsedDuplicateFiles.text, 1)
+        #expect(!labels(in: host.nodes()).contains(unexpected))
     }
 }
 

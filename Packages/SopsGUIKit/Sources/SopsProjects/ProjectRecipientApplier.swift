@@ -72,11 +72,21 @@ public struct ProjectRecipientApplier: Sendable {
         /// user needs to decide what to do next.
         public let notAttempted: [URL]
 
-        public var updatedCount: Int { results.filter { $0.outcome == .updated }.count }
+        /// Only `unchangedCount` and `wasCancelled` survive as convenience
+        /// tallies on this type. `updatedCount` and `failedCount` were
+        /// removed: neither ever had a production caller —
+        /// `ProjectAccessModel` unpacks `results`/`notAttempted` out of this
+        /// struct and discards it, because the panel's own tallies have to
+        /// update live as `fileResults` grows one file at a time while a run
+        /// is still going, which a `RunResult` — only produced once a run is
+        /// over — cannot answer mid-run. `ProjectAccessModel.updatedFileCount`
+        /// / `.failedFileCount` are the real, single home for that count now;
+        /// duplicating it here as well is exactly the "two expressions of one
+        /// fact" this module's other docs warn drifts apart. `unchangedCount`
+        /// is kept because it is still asserted directly against a completed
+        /// `RunResult` in this module's own tests, documenting the type's
+        /// contract independent of any UI.
         public var unchangedCount: Int { results.filter { $0.outcome == .unchanged }.count }
-        public var failedCount: Int {
-            results.filter { if case .failed = $0.outcome { true } else { false } }.count
-        }
         public var wasCancelled: Bool { !notAttempted.isEmpty }
     }
 
@@ -106,6 +116,14 @@ public struct ProjectRecipientApplier: Sendable {
         /// and its target holds one file, and it appears once, under the name
         /// that is the file. See `deduplicatedByResolvedPath`.
         public let encryptedFiles: [URL]
+        /// How many names the scan found for a file already counted in
+        /// `encryptedFiles` — the number `deduplicatedByResolvedPath` dropped.
+        /// Zero for a project with no such alias. Not itself a warning: a
+        /// symlink inside a project is unremarkable, but the count the user
+        /// sees in `encryptedFiles.count` is smaller than the number of paths
+        /// the scan actually found, and that gap deserves a word. See
+        /// `ProjectAccessView`'s disclosure.
+        public let duplicateFileNameCount: Int
         /// The subset of `encryptedFiles` governed by the same creation rule
         /// as `targetFile` — identified by the rule's *position* in
         /// `creation_rules`, not by two rules happening to name the same keys.
@@ -270,6 +288,11 @@ public struct ProjectRecipientApplier: Sendable {
             Self.deduplicatedByResolvedPath(
                 Self.sortedByProjectRelativePath(tree.encrypted.map(\.url), under: projectRoot)),
             under: projectRoot)
+        // How many names the dedup above dropped. Computed once and reused
+        // across every return below, including the ones that pass `[]` for
+        // `encryptedFiles` — those are only reached when the scan itself
+        // found nothing, so this is 0 there too.
+        let duplicateFileNameCount = tree.encrypted.count - encryptedFiles.count
         let configURL = projectRoot.appendingPathComponent(".sops.yaml")
         let configExists = FileManager.default.fileExists(atPath: configURL.path)
 
@@ -277,7 +300,8 @@ public struct ProjectRecipientApplier: Sendable {
             return Plan(
                 projectRoot: projectRoot, configURL: configURL, configExists: false,
                 requestedRecipients: recipients,
-                encryptedFiles: encryptedFiles, matchedFiles: [], unmatchedFiles: encryptedFiles,
+                encryptedFiles: encryptedFiles, duplicateFileNameCount: duplicateFileNameCount,
+                matchedFiles: [], unmatchedFiles: encryptedFiles,
                 filesGovernedByOtherRules: [],
                 targetFile: encryptedFiles.first, incompleteScanReason: tree.incompleteScanReason,
                 configRecipients: [], configRefusal: nil, configUpdateText: nil,
@@ -297,7 +321,8 @@ public struct ProjectRecipientApplier: Sendable {
             return Plan(
                 projectRoot: projectRoot, configURL: configURL, configExists: true,
                 requestedRecipients: recipients,
-                encryptedFiles: [], matchedFiles: [], unmatchedFiles: [],
+                encryptedFiles: [], duplicateFileNameCount: duplicateFileNameCount,
+                matchedFiles: [], unmatchedFiles: [],
                 filesGovernedByOtherRules: [],
                 targetFile: nil, incompleteScanReason: tree.incompleteScanReason,
                 configRecipients: [], configRefusal: nil, configUpdateText: nil,
@@ -314,7 +339,8 @@ public struct ProjectRecipientApplier: Sendable {
             return Plan(
                 projectRoot: projectRoot, configURL: configURL, configExists: true,
                 requestedRecipients: recipients,
-                encryptedFiles: encryptedFiles, matchedFiles: [], unmatchedFiles: encryptedFiles,
+                encryptedFiles: encryptedFiles, duplicateFileNameCount: duplicateFileNameCount,
+                matchedFiles: [], unmatchedFiles: encryptedFiles,
                 filesGovernedByOtherRules: [],
                 targetFile: targetFile, incompleteScanReason: tree.incompleteScanReason,
                 configRecipients: [], configRefusal: nil, configUpdateText: nil,
@@ -324,7 +350,8 @@ public struct ProjectRecipientApplier: Sendable {
             return Plan(
                 projectRoot: projectRoot, configURL: configURL, configExists: true,
                 requestedRecipients: recipients,
-                encryptedFiles: encryptedFiles, matchedFiles: [], unmatchedFiles: encryptedFiles,
+                encryptedFiles: encryptedFiles, duplicateFileNameCount: duplicateFileNameCount,
+                matchedFiles: [], unmatchedFiles: encryptedFiles,
                 filesGovernedByOtherRules: [],
                 targetFile: targetFile, incompleteScanReason: tree.incompleteScanReason,
                 configRecipients: [], configRefusal: nil, configUpdateText: nil,
@@ -344,7 +371,8 @@ public struct ProjectRecipientApplier: Sendable {
         return Plan(
             projectRoot: projectRoot, configURL: configURL, configExists: true,
             requestedRecipients: recipients,
-            encryptedFiles: encryptedFiles, matchedFiles: matched, unmatchedFiles: unmatched,
+            encryptedFiles: encryptedFiles, duplicateFileNameCount: duplicateFileNameCount,
+            matchedFiles: matched, unmatchedFiles: unmatched,
             filesGovernedByOtherRules: governedElsewhere,
             targetFile: targetFile, incompleteScanReason: tree.incompleteScanReason,
             configRecipients: update.currentRecipients,

@@ -58,6 +58,18 @@ public final class ProjectAccessModel {
         case noFiles
         /// Re-wrapping needs a session identity; reading never did.
         case noKey
+        /// A run was already in progress the moment this call was made.
+        ///
+        /// Distinct from `nil`, which means *this* call is the one that
+        /// started (or queued behind) a run. Before this case existed, an
+        /// already-running call also returned `nil`, so a caller could not
+        /// tell "under way" from "refused, nothing will happen" — and
+        /// `startApplyingToFiles`'s `onRefusal` never fired for it either.
+        /// `applyToFiles()` itself still only reaches this by racing another
+        /// direct caller; `startApplyingToFiles` no longer produces it at
+        /// all, because it now waits for whatever run was already in flight
+        /// before calling `applyToFiles()` again — see its doc comment.
+        case alreadyRunning
     }
 
     public private(set) var loadState: LoadState = .idle
@@ -138,6 +150,22 @@ public final class ProjectAccessModel {
     public var isDirty: Bool { Set(stagedRecipients) != Set(configRecipients) }
 
     public var keyConfigured: Bool { keyStore.state == .configured }
+
+    /// Live tallies over `fileResults`. The canonical place `ProjectAccessView`
+    /// reads these from, rather than re-filtering `fileResults` itself —
+    /// which is what it used to do, alongside `ProjectRecipientApplier
+    /// .RunResult`'s own (uncalled) `updatedCount`/`failedCount`: two
+    /// expressions of the same fact, computed two different ways, is how they
+    /// drift. Computed over `fileResults` rather than taken from a completed
+    /// `RunResult` because `fileResults` is what actually grows one file at a
+    /// time while a run is still going — `applyToFiles()` appends to it via
+    /// `onFileFinished` — so these update live instead of only once the run
+    /// is over.
+    public var updatedFileCount: Int { fileResults.filter { $0.outcome == .updated }.count }
+    public var unchangedFileCount: Int { fileResults.filter { $0.outcome == .unchanged }.count }
+    public var failedFileCount: Int {
+        fileResults.filter { if case .failed = $0.outcome { true } else { false } }.count
+    }
 
     /// The files an apply would touch. See
     /// `ProjectRecipientApplier.Plan.filesInScope` for why a project whose
@@ -351,7 +379,7 @@ public final class ProjectAccessModel {
         let files = filesToApply
         guard !files.isEmpty else { return .noFiles }
         guard keyConfigured else { return .noKey }
-        guard !isApplyingFiles else { return nil }
+        guard !isApplyingFiles else { return .alreadyRunning }
 
         isApplyingFiles = true
         fileResults = []
@@ -383,9 +411,30 @@ public final class ProjectAccessModel {
     /// Runs `applyToFiles()` in a task this model can cancel. Cancellation is
     /// honoured *between* files, never inside one — see
     /// `ProjectRecipientApplier.apply(files:recipients:agePrivateKey:onFileFinished:)`.
+    ///
+    /// Queues behind whatever run is already in flight rather than racing it.
+    /// The previous call is cancelled immediately, so it can stop as soon as
+    /// its current file finishes, but this one does not call `applyToFiles()`
+    /// until that previous `Task` has actually completed — awaiting its
+    /// `.value`, not merely requesting its cancellation. Without that wait, a
+    /// run requested while the old one was still finishing its last file
+    /// reached `applyToFiles()`'s `isApplyingFiles` guard while it was still
+    /// `true` and was refused on the spot: the button did nothing, silently,
+    /// because nothing was left to report the refusal to `onRefusal` for.
+    ///
+    /// Awaiting `.value` here cannot deadlock the two runs against each
+    /// other: it is a suspension point, not a lock, so the `@MainActor` this
+    /// model is isolated to stays free to keep running the previous task's
+    /// own remaining hops (including the one back to `applyToFiles()`'s
+    /// `defer` that flips `isApplyingFiles` false) while this one waits. A
+    /// user who cancels and immediately restarts still gets a real run,
+    /// because the cancelled task completes quickly — cancellation is
+    /// checked between every file — rather than hanging.
     public func startApplyingToFiles(onRefusal: @escaping @MainActor (FileApplyRefusal) -> Void) {
-        runTask?.cancel()
+        let previous = runTask
+        previous?.cancel()
         runTask = Task { [weak self] in
+            await previous?.value
             guard let self else { return }
             if let refusal = await self.applyToFiles() { onRefusal(refusal) }
         }

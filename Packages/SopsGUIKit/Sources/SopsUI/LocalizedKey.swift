@@ -400,9 +400,23 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // `.sops.yaml` text on hand belongs to an older set. Nothing is written —
     // writing it would drop the recipients staged since, silently.
     case projectAccessErrorStalePlan = "project-access.error.stale-plan"
+    // `ProjectAccessModel.FileApplyRefusal.alreadyRunning`: a run was already
+    // in progress the moment this one was requested. Reachable in practice
+    // only by a caller outside this view's own button, which queues behind an
+    // in-flight run rather than asking again — see
+    // `ProjectAccessModel.startApplyingToFiles`.
+    case projectAccessErrorAlreadyRunning = "project-access.error.already-running"
     // The creation-rule half of `access.duplicate-recipients`, formatted the
     // same way and for the same reason.
     case projectAccessDuplicateRecipients = "project-access.duplicate-recipients"
+    // Formatted with how many of `encryptedFiles`' names were dropped because
+    // they and a still-listed entry named the same file — a symlink and its
+    // target, most often. Information, not a warning: nothing is wrong with a
+    // project that has a symlink in it, and this only says the count shown is
+    // smaller than the number of paths the scan actually found. See
+    // `ProjectRecipientApplier.Plan.duplicateFileNameCount` and
+    // `.deduplicatedByResolvedPath`.
+    case projectAccessCollapsedDuplicateFiles = "project-access.collapsed-duplicate-files"
 
     // MARK: Recipient kinds — the registry's descriptive role for a key
 

@@ -328,6 +328,22 @@ public struct ProjectAccessView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 }
             }
+
+            // Information, not a warning: a symlink and its target collapse to
+            // the one file they name (`ProjectRecipientApplier
+            // .deduplicatedByResolvedPath`), so the counts above are already
+            // by-file. Said here because that collapse is otherwise invisible
+            // — the count a user sees is smaller than the number of paths the
+            // scan actually found, and nothing else on this panel says why.
+            if plan.duplicateFileNameCount > 0 {
+                Text(
+                    String(
+                        format: LocalizedKey.projectAccessCollapsedDuplicateFiles.text,
+                        plan.duplicateFileNameCount)
+                )
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -470,9 +486,8 @@ public struct ProjectAccessView: View {
                 Text(
                     String(
                         format: LocalizedKey.projectAccessResultsSummary.text,
-                        "\(model.fileResults.filter { $0.outcome == .updated }.count)",
-                        "\(model.fileResults.filter { $0.outcome == .unchanged }.count)",
-                        "\(model.fileResults.filter { if case .failed = $0.outcome { true } else { false } }.count)")
+                        "\(model.updatedFileCount)", "\(model.unchangedFileCount)",
+                        "\(model.failedFileCount)")
                 )
                 .font(.caption).foregroundStyle(.secondary)
 
@@ -605,6 +620,7 @@ public struct ProjectAccessView: View {
         case .noFiles: LocalizedKey.projectAccessErrorNoFiles.text
         case .noKey: LocalizedKey.accessNeedsKeyBody.text
         case .notLoaded: LocalizedKey.projectAccessScanning.text
+        case .alreadyRunning: LocalizedKey.projectAccessErrorAlreadyRunning.text
         }
     }
 }

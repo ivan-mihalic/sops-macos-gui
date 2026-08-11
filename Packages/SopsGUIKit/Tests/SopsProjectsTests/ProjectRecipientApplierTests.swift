@@ -750,6 +750,37 @@ struct ProjectRecipientApplierAliasTests {
         #expect(plan.matchedFiles.count == 1)
         #expect(plan.filesInScope.count == 1)
         #expect(plan.targetFile?.lastPathComponent == "db.yaml")
+        // F3. The scan found two names for one file; the count a caller sees
+        // in `encryptedFiles.count` is already collapsed, and this is the one
+        // field that says by how much — what lets a caller disclose the
+        // collapse instead of leaving it invisible.
+        #expect(plan.duplicateFileNameCount == 1)
+    }
+
+    /// The other half of F3's field: a project with no aliasing reports zero,
+    /// so a panel reading this field never discloses a collapse that never
+    /// happened.
+    @Test("a project with no aliased files reports zero collapsed names")
+    func noAliasingReportsZero() async throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try applierScratchDirectory("no-alias-plan")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try """
+            creation_rules:
+              - path_regex: .*\\.yaml$
+                age: \(owner.public)
+
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let encrypted = try SopsBridge.encryptYAML(applierPlainYAML, recipients: [owner.public])
+        for name in ["a.yaml", "b.yaml"] {
+            try encrypted.write(to: root.appendingPathComponent(name), atomically: true, encoding: .utf8)
+        }
+
+        let plan = await ProjectRecipientApplier().plan(projectRoot: root, recipients: [owner.public])
+
+        #expect(plan.encryptedFiles.count == 2)
+        #expect(plan.duplicateFileNameCount == 0)
     }
 
     /// And the consequence the plan's count exists to prevent: a run over the
@@ -786,7 +817,7 @@ struct ProjectRecipientApplierAliasTests {
         #expect(run.results.count == 1)
         #expect(run.results.first?.outcome == .updated)
         #expect(run.unchangedCount == 0)
-        #expect(run.failedCount == 0)
+        #expect(run.results.filter { if case .failed = $0.outcome { true } else { false } }.count == 0)
 
         // The alias is still an alias: nothing here replaced a symlink with a
         // copy of what it pointed at.

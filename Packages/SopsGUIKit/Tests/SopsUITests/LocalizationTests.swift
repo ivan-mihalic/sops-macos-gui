@@ -451,6 +451,7 @@ struct LocalizationTests {
         for key: LocalizedKey in [
             .projectAccessUnmatchedNote, .projectAccessCancelledNote,
             .projectAccessApplyFilesConfirmMessage, .projectAccessAllFilesInScope,
+            .projectAccessCollapsedDuplicateFiles,
         ] {
             let singular = String(format: key.text, 1)
             let plural = String(format: key.text, 5)
