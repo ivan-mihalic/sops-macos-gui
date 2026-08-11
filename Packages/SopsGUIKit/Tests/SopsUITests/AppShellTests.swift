@@ -99,11 +99,25 @@ struct AppShellProjectRootSourceTests {
 
     /// And the discarded source stays discarded: a second derivation reappearing
     /// is the whole defect, whatever it gets named next time.
-    @Test("no second project-root derivation survives in AppShell")
+    ///
+    /// Written as "exactly one, and it is *that* one" rather than "no more than
+    /// one". The earlier version accepted zero *or* one, which meant a single
+    /// re-introduction — the defect itself, before anyone compounds it — passed
+    /// here and was caught only by `bothPanelsShareOneRoot` next door. Counting
+    /// alone would not be enough either: two derivations is not the failure, a
+    /// derivation feeding something other than `fileListModel` is, and a diff
+    /// that adds one to a panel while deleting the legitimate one keeps the
+    /// count at one. So the line is checked, not just the tally.
+    @Test("the one project-root derivation in AppShell is the one that feeds the file list model")
     func noSecondDerivation() throws {
         try #require(!Self.source.isEmpty)
-        #expect(!Self.source.contains("URL(fileURLWithPath: project.rootPath)")
-                || Self.source.components(separatedBy: "URL(fileURLWithPath: project.rootPath)").count == 2,
-                "AppShell builds a project root URL from projects.groups in more than one place")
+        let marker = "URL(fileURLWithPath: project.rootPath)"
+        let derivations = Self.source.split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { $0.contains(marker) }
+
+        #expect(derivations.count == 1,
+                "AppShell builds a project root URL from projects.groups \(derivations.count) times; there is one legitimate derivation and every panel reads it through fileListModel")
+        #expect(derivations.first?.contains("fileListModel = FileListModel(projectRoot:") == true,
+                "the one project-root derivation no longer feeds fileListModel directly, so whatever reads it now may be a second source of truth: \(String(derivations.first ?? "")) — if this line was extracted deliberately and fileListModel still receives it, update this pin rather than working around it")
     }
 }
