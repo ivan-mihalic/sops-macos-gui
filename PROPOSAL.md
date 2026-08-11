@@ -325,7 +325,7 @@ Ranked by value/effort; ✦ = recommended for v1:
 >   from `sops_decrypt_yaml`, leave the comment `// TODO: wrap in gobridge.Guard( ... ) one
 >   day`, and the suite reports `ok`. The guards *are* all present and the recovery
 >   composition genuinely holds — that was re-verified end to end — but the sentence "all
->   nine entry points now recover" rests on a test that cannot tell. Three doc comments in
+>   twelve entry points now recover" rests on a test that cannot tell. Three doc comments in
 >   `cshim/main.go` also promise protection that does not exist: a double `sops_free` aborts
 >   in libc rather than panicking, and neither a failing `C.CString` nor a bad pointer handed
 >   to `C.GoString` is recoverable — all three confirmed by running probes.
@@ -352,9 +352,11 @@ Ranked by value/effort; ✦ = recommended for v1:
 >    tag is *not* covered by the GCM additional data, so flipping one `type:str` leaves the
 >    value authenticating perfectly and detonating on decryption — no key required. The
 >    nastier sibling is `type:bytes` on the **MAC** itself, where every value looks sound.
->    All nine cgo entry points now recover and return the ordinary error contract; the
+>    All twelve cgo entry points now recover and return the ordinary error contract; the
 >    message carries only compile-time facts, never the panic payload, so a canary planted
->    in the file cannot escape through it. ~35 targeted malformations and 2.7M fuzz
+>    in the file cannot escape through it. (Nine when this was written; recipient management
+>    added three more, and `exportedEntryPointCount` in `Engine/cshim/exports_test.go` is
+>    what keeps the number here honest.) ~35 targeted malformations and 2.7M fuzz
 >    executions found no other panic and **no wrong-output case**.
 > 2. **The §6 D exclusion is now stated in the finding** — closed (Task 14), along with two
 >    further instances of the same fault the sweep turned up: the plaintext finding ignored

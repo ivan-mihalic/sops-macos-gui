@@ -37,6 +37,47 @@ public struct ConfigBackends: Decodable, Equatable, Sendable {
     public let backends: [String]
 }
 
+/// What the `.sops.yaml` creation rule governing a file would look like with a
+/// different age recipient list — a *proposal*, never something that happened.
+/// See `SopsBridge.updateConfigRecipients(configPath:targetFilePath:to:candidateFilePaths:)`.
+public struct ConfigRecipientUpdate: Decodable, Equatable, Sendable {
+    /// Whether the governing rule is a flat, age-only rule this app fully
+    /// understands, so `config` may be written over the existing file. False
+    /// for every shape the bridge refuses to guess at, and then `reason`
+    /// names which one was found.
+    public let writable: Bool
+    /// A whole sentence for a user: what shape was found and what they can do
+    /// instead. Empty exactly when `writable` is true. Never carries a
+    /// private identity or any document content.
+    public let reason: String
+    /// Where the governing rule sits in `creation_rules`, or `-1` when no
+    /// rule governs the target file. This is what makes `matchedFiles`
+    /// meaningful — "the same rule" is a position, not a resemblance between
+    /// two key lists.
+    public let ruleIndex: Int
+    /// The age public keys that rule resolves to today, from sops's own
+    /// config parser.
+    public let currentRecipients: [String]
+    /// The candidate paths that the same rule governs, in the order given.
+    public let matchedFiles: [String]
+    /// The candidate paths some creation rule *other* than `ruleIndex`
+    /// governs, in the order given. Never overlaps `matchedFiles`, and never
+    /// names a file no rule governs at all.
+    ///
+    /// It answers the question `matchedFiles` structurally cannot: when no
+    /// rule governs the target file, `matchedFiles` is empty and a caller's
+    /// scope falls back to everything it found — including files whose keys
+    /// another rule decides. This is how many.
+    public let filesGovernedByOtherRules: [String]
+    /// Whether `config` differs from what is on disk. False when the rule
+    /// already declares exactly the requested set, in which case `config` is
+    /// the file's current text.
+    public let changed: Bool
+    /// The complete proposed `.sops.yaml` text. Empty when `writable` is
+    /// false: a refusal never hands back something a caller could write.
+    public let config: String
+}
+
 /// In-process SOPS engine. Every call crosses into the Go runtime linked from
 /// the static bridge; no `sops` binary is ever spawned.
 public enum SopsBridge {
@@ -62,6 +103,49 @@ public enum SopsBridge {
             encrypted.withGoString { encryptedPtr in
                 agePrivateKey.withGoString { keyPtr in
                     sops_decrypt_yaml(encryptedPtr, keyPtr, out)
+                }
+            }
+        }
+    }
+
+    /// Returns the native age recipients stored in this document's SOPS
+    /// metadata. Reading recipient metadata requires no private identity.
+    public static func recipients(in encrypted: String) throws -> [String] {
+        let json = try call { out in
+            encrypted.withGoString { encryptedPtr in
+                sops_recipients(encryptedPtr, out)
+            }
+        }
+        guard let data = json.data(using: .utf8) else {
+            throw SopsBridgeError(description: "bridge returned non-UTF8 JSON for recipients")
+        }
+        do {
+            return try JSONDecoder().decode([String].self, from: data)
+        } catch {
+            throw SopsBridgeError(description: "could not decode recipient JSON")
+        }
+    }
+
+    /// Explicitly replaces the document's native age recipient set, re-wrapping
+    /// the existing data key with the supplied private identity. It never reads
+    /// a project config or a key from the environment.
+    public static func updateRecipients(
+        _ encrypted: String,
+        to recipients: [String],
+        agePrivateKey: String
+    ) throws -> String {
+        let recipientsJSON: String
+        do {
+            recipientsJSON = String(decoding: try JSONEncoder().encode(recipients), as: UTF8.self)
+        } catch {
+            throw SopsBridgeError(description: "could not encode recipient list")
+        }
+        return try call { out in
+            encrypted.withGoString { encryptedPtr in
+                recipientsJSON.withGoString { recipientsPtr in
+                    agePrivateKey.withGoString { keyPtr in
+                        sops_update_recipients(encryptedPtr, recipientsPtr, keyPtr, out)
+                    }
                 }
             }
         }
@@ -128,6 +212,67 @@ public enum SopsBridge {
             return try JSONDecoder().decode(ConfigBackends.self, from: data)
         } catch {
             throw SopsBridgeError(description: "could not decode config backend JSON: \(error)")
+        }
+    }
+
+    /// Computes what the `.sops.yaml` at `configPath` would look like if the
+    /// creation rule governing `targetFilePath` declared exactly `recipients`
+    /// as its age recipient list, and reports which of
+    /// `candidateFilePaths` that same rule governs.
+    ///
+    /// **This writes nothing.** The bridge is structurally incapable of
+    /// changing a project's configuration: it only ever computes text, and
+    /// the caller writes it — atomically, and only after the user has
+    /// confirmed — or does not. Changing who can read a project's secrets is
+    /// never a side effect of anything.
+    ///
+    /// Only a flat, age-only creation rule is rewritable. A rule using
+    /// `key_groups`, a `shamir_threshold`, another key backend, or a YAML
+    /// anchor — and a config using merge keys, holding several documents, or
+    /// mixing line endings — comes back `writable == false` with a `reason`
+    /// naming what was found. That is not an error: it is the app declining
+    /// to guess at a configuration it does not fully understand.
+    ///
+    /// `targetFilePath` and `candidateFilePaths` must be absolute, for the
+    /// same reason `lookupCreationRule` requires it.
+    ///
+    /// Throws when the config cannot be read, is not valid YAML, or a
+    /// supplied recipient is not a native age public key — the bridge's own
+    /// fixed, value-free error text.
+    public static func updateConfigRecipients(
+        configPath: String,
+        targetFilePath: String,
+        to recipients: [String],
+        candidateFilePaths: [String] = []
+    ) throws -> ConfigRecipientUpdate {
+        let recipientsJSON: String
+        let candidatesJSON: String
+        do {
+            recipientsJSON = String(decoding: try JSONEncoder().encode(recipients), as: UTF8.self)
+            candidatesJSON = String(decoding: try JSONEncoder().encode(candidateFilePaths), as: UTF8.self)
+        } catch {
+            throw SopsBridgeError(description: "could not encode the recipient or candidate list")
+        }
+
+        let json = try call { out in
+            configPath.withGoString { confPtr in
+                targetFilePath.withGoString { targetPtr in
+                    recipientsJSON.withGoString { recipientsPtr in
+                        candidatesJSON.withGoString { candidatesPtr in
+                            sops_update_config_recipients(
+                                confPtr, targetPtr, recipientsPtr, candidatesPtr, out)
+                        }
+                    }
+                }
+            }
+        }
+        guard let data = json.data(using: .utf8) else {
+            throw SopsBridgeError(description: "bridge returned non-UTF8 JSON for the config update")
+        }
+        do {
+            return try JSONDecoder().decode(ConfigRecipientUpdate.self, from: data)
+        } catch {
+            throw SopsBridgeError(description: "could not decode config update JSON: \(error)")
         }
     }
 

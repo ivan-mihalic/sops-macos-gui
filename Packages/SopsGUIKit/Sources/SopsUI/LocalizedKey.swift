@@ -237,6 +237,152 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case editorSaveAndQuit = "editor.save-and-quit"
     case editorDiscardAndQuit = "editor.discard-and-quit"
 
+    // MARK: Task 3 (recipient management) — file access panel
+
+    case accessToolbarButton = "access.toolbar-button"
+    // Shown as the Access button's help text (and used to gate it disabled)
+    // while the open document has unsaved edits — see
+    // `SecretEditorView.canOpenAccessPanel`'s doc comment for the data-loss
+    // finding this closes: applying a recipient change reloads the open
+    // document, which discards anything mid-edit and never saved.
+    case accessDisabledUnsavedChanges = "access.disabled-unsaved-changes"
+    case accessTitle = "access.title"
+    case accessLoadFailedTitle = "access.load-failed.title"
+    case accessAddRecipientField = "access.add-recipient-field"
+    // Shown under the add field when the pasted text matches a recipient
+    // already staged — the bridge is the authority on whether the string is
+    // actually a valid recipient at all; this only catches the one thing
+    // knowable before `apply()` re-checks against the real document. See
+    // `RecipientAccessModel.StageAddRefusal`.
+    case accessAddDuplicate = "access.add.duplicate"
+    case accessApplyButton = "access.apply-button"
+    // The accessibility label on the progress indicator shown while
+    // `RecipientAccessModel.apply()` is in flight — otherwise a bare spinner
+    // announces nothing to VoiceOver.
+    case accessApplyingLabel = "access.applying-label"
+    // Reading who has access never needs a key; only applying a change does.
+    // Shown instead of failing obscurely when no session key is configured —
+    // see `RecipientAccessModel.keyConfigured`.
+    case accessNeedsKeyBody = "access.needs-key.body"
+    case accessApplyErrorTitle = "access.apply-error.title"
+    // `RecipientAccessModel.ApplyOutcome.refusedEmptyRecipients` — a fixed
+    // enum case, not bridge text, so it is localized here rather than
+    // carried as a string on the model. Mirrors how `AddRowRefusal` is
+    // translated in `EditorAddRowSheet.explanation(for:)`.
+    case accessErrorEmptyRecipients = "access.error.empty-recipients"
+    // Removing a recipient is destructive — PROPOSAL.md and CLAUDE.md both
+    // require naming what will be lost before it happens.
+    case accessRemoveConfirmTitle = "access.remove-confirm.title"
+    // Formatted with the comma-joined labels (or public keys, for anyone the
+    // registry doesn't know) about to lose access — see
+    // `RecipientAccessView.removalConfirmationMessage`.
+    case accessRemoveConfirmMessage = "access.remove-confirm.message"
+    case accessRemoveConfirmButton = "access.remove-confirm.button"
+    case accessPendingRemovalBadge = "access.pending-removal-badge"
+    case accessPendingAdditionBadge = "access.pending-addition-badge"
+    case accessRemoveRecipient = "access.remove-recipient"
+    // The undo for a recipient already staged for removal — tapping the same
+    // control again re-adds it to the staged set. See
+    // `RecipientAccessModel.stageAdd`/`stageRemove`'s symmetry.
+    case accessUndoRemoval = "access.undo-removal"
+
+    // MARK: Task 4 (recipient management) — project access panel
+
+    case projectAccessButton = "project-access.button"
+    // The project panel re-wraps every file the creation rule governs, which
+    // may include the document open in the editor. Applying while that
+    // document has unsaved edits would rewrite the file underneath them —
+    // the same data-loss shape `SecretEditorView.canOpenAccessPanel` closes
+    // for the single-file panel, and gated the same way.
+    case projectAccessDisabledUnsavedChanges = "project-access.disabled-unsaved-changes"
+    case projectAccessTitle = "project-access.title"
+    case projectAccessScanning = "project-access.scanning"
+    // Formatted with the count of files the governing rule covers, and the
+    // count of encrypted files found in total.
+    case projectAccessFilesSummary = "project-access.files-summary"
+    // Files that are encrypted but that some *other* creation rule governs.
+    // Stated rather than silently skipped: a project apply that quietly left
+    // files out would be the confident-about-what-it-did-not-touch claim
+    // PROPOSAL §6 D forbids.
+    case projectAccessUnmatchedNote = "project-access.unmatched-note"
+    // What an apply would touch when no governing creation rule could be
+    // identified — no config, an unreadable one, or one whose rules match
+    // nothing here. `Plan.filesInScope` deliberately widens to every encrypted
+    // file in that case (applying to *nothing* and reporting success is the
+    // worse reading), so the panel has to say so before the button is pressed
+    // rather than only in the confirmation dialog.
+    case projectAccessAllFilesInScope = "project-access.all-files-in-scope"
+    // The other half of that widening, and the half the count alone hides:
+    // the fallback scope reaches across creation-rule boundaries, so files
+    // whose keys a *different* rule decides are re-wrapped alongside the ones
+    // no rule governs. Formatted with how many. Shown on the panel and again
+    // in the file-apply confirmation, because
+    // `project-access.unmatched-note` — the sentence that names other rules —
+    // renders only in the branch where a rule *was* identified, which is the
+    // one branch that does not need it.
+    case projectAccessOtherRulesInScope = "project-access.other-rules-in-scope"
+    case projectAccessScanIncompleteTitle = "project-access.scan-incomplete.title"
+    // The two ways a project can produce an *empty* scan that is not an
+    // answer about anything. Reported rather than folded into "no encrypted
+    // files found here", which would be a confident statement about a
+    // directory the walk never got into — the one thing PROPOSAL §6 D says
+    // this app must never do. See `ScannedTree.rootMissing`/`rootUnreadable`.
+    case projectAccessRootMissing = "project-access.root-missing"
+    case projectAccessRootUnreadable = "project-access.root-unreadable"
+    case projectAccessNoConfig = "project-access.no-config"
+    case projectAccessNoFiles = "project-access.no-files"
+    case projectAccessConfigSectionTitle = "project-access.config-section.title"
+    // The heading over the sentence the *bridge* produced explaining which
+    // `.sops.yaml` shape it will not rewrite — see
+    // `ProjectRecipientApplier.Plan.configRefusal`. The sentence itself is
+    // engine text shown verbatim, like a health finding's, because it names
+    // the specific shape found.
+    case projectAccessConfigReadOnlyTitle = "project-access.config-read-only.title"
+    case projectAccessConfigErrorTitle = "project-access.config-error.title"
+    case projectAccessConfigUpToDate = "project-access.config-up-to-date"
+    case projectAccessConfigWritten = "project-access.config-written"
+    case projectAccessUpdateConfigButton = "project-access.update-config-button"
+    case projectAccessUpdateConfigConfirmTitle = "project-access.update-config-confirm.title"
+    case projectAccessUpdateConfigConfirmMessage = "project-access.update-config-confirm.message"
+    case projectAccessUpdateConfigConfirmButton = "project-access.update-config-confirm.button"
+    case projectAccessApplyFilesButton = "project-access.apply-files-button"
+    case projectAccessApplyFilesConfirmTitle = "project-access.apply-files-confirm.title"
+    // Formatted with the number of files that would be re-wrapped.
+    case projectAccessApplyFilesConfirmMessage = "project-access.apply-files-confirm.message"
+    // The destructive variant, formatted with the comma-joined labels (or
+    // public keys) about to lose access *and* the file count. Removing a
+    // recipient across a whole project is the most destructive thing this
+    // panel can do, so it names who loses access before it happens.
+    case projectAccessApplyFilesRemovalMessage = "project-access.apply-files-removal.message"
+    case projectAccessApplyFilesConfirmButton = "project-access.apply-files-confirm.button"
+    case projectAccessCancelRun = "project-access.cancel-run"
+    case projectAccessResultsTitle = "project-access.results.title"
+    case projectAccessResultUpdated = "project-access.result.updated"
+    case projectAccessResultUnchanged = "project-access.result.unchanged"
+    case projectAccessResultFailed = "project-access.result.failed"
+    // Formatted with updated / unchanged / failed counts.
+    case projectAccessResultsSummary = "project-access.results.summary"
+    // Formatted with the count of files a cancelled run never reached.
+    case projectAccessCancelledNote = "project-access.cancelled-note"
+    case projectAccessApplyingLabel = "project-access.applying-label"
+    case projectAccessErrorTitle = "project-access.error.title"
+    case projectAccessErrorEmptyRecipients = "project-access.error.empty-recipients"
+    case projectAccessErrorNoFiles = "project-access.error.no-files"
+    // `ProjectAccessModel.ConfigApplyOutcome.refusedStalePlan`: the staged set
+    // moved again while the panel was working out what to write, so the only
+    // `.sops.yaml` text on hand belongs to an older set. Nothing is written —
+    // writing it would drop the recipients staged since, silently.
+    case projectAccessErrorStalePlan = "project-access.error.stale-plan"
+
+    // MARK: Recipient kinds — the registry's descriptive role for a key
+
+    // Descriptive only: `.sops.yaml` and SOPS metadata remain the access
+    // authority (see `RecipientKind`). Shown in both Access panels, which the
+    // design spec asks for — "the human name, the *type* and the public key".
+    case recipientKindDevice = "recipient.kind.device"
+    case recipientKindServer = "recipient.kind.server"
+    case recipientKindPerson = "recipient.kind.person"
+
     /// The resolved English text. Used in views and asserted in tests.
     public var text: String {
         String(localized: String.LocalizationValue(rawValue), bundle: .module)

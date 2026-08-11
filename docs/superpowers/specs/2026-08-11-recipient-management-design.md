@@ -17,6 +17,14 @@ Duplicita public key je odmítnuta. Registry je pouze adresář kontaktů;
 `.sops.yaml` je jediná autorita pro creation rules a skutečný access souboru je
 SOPS metadata v tom souboru.
 
+**Odloženo do dalšího milníku: editor registry uvnitř aplikace.** V této verzi
+je registry *jen čtený* — oba Access panely z něj berou `label` a `kind`, ale
+záznam vytvoří jen ruční editace `.sops-gui/recipients.json`. `RecipientRegistry
+.save/upsert/remove` proto zatím nemá produkčního volajícího (jen testy); není
+to opomenutí a API se nemá mazat. Žádný plan task editor nespecifikoval a
+přidávat ho mimo plán by znamenalo navrhovat UI bez zadání. Recipient, o kterém
+registry neví, se nikdy neskrývá — zobrazí se svým `age1…` klíčem.
+
 ## Operace
 
 U otevřeného YAML panel Access zobrazí aktuální age recipients z metadata a

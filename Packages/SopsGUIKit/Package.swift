@@ -36,7 +36,12 @@ let package = Package(
         .target(name: "SopsHealth", dependencies: ["SopsEngine"]),
         .testTarget(name: "SopsHealthTests", dependencies: ["SopsHealth", "SopsEngine", "ScratchCleanup"]),
         .target(name: "SopsProjects", dependencies: ["SopsHealth"]),
-        .testTarget(name: "SopsProjectsTests", dependencies: ["SopsProjects", "ScratchCleanup"]),
+        // `SopsEngine` is an explicit dependency, not a transitive one, because
+        // `ProjectRecipientApplierTests` builds its fixtures with the real
+        // in-process bridge (`SopsBridge.encryptYAML`/`decryptYAML`) rather
+        // than hand-written ciphertext — the discipline Task 1 established for
+        // every recipient-management test.
+        .testTarget(name: "SopsProjectsTests", dependencies: ["SopsProjects", "SopsEngine", "ScratchCleanup"]),
 
         // MARK: SnapshotTool — headless visual snapshots (`swift run snapshots`).
         // Dev tool only: nothing in `App/` or `SopsGUI.xcodeproj` depends on

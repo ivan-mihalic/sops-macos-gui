@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import SopsEngine
+import SopsProjects
 import SwiftUI
 
 /// One open document: key/value/type rows, masked by default with a
@@ -96,10 +97,19 @@ public struct SecretEditorView: View {
 
     private let fileName: String
 
+    /// What `RecipientAccessView` needs to act on the same file this editor
+    /// has open. `nil` disables the toolbar's Access button rather than
+    /// failing — a fixture or test host that never supplies these (most of
+    /// the snapshot catalog, the older editor tests) still renders exactly
+    /// as it did before this feature existed, instead of every existing call
+    /// site needing an update for a feature it does not exercise.
+    private let recipientAccess: RecipientAccessContext?
+
     @State private var revealed = RevealedRows()
     @State private var selection = RowSelection()
     @State private var saveErrorMessage: String?
     @State private var addRequest: AddRowRequest?
+    @State private var accessRequest: AccessRequest?
     /// The pending auto-hide. Held so each reveal or edit can restart it
     /// rather than stacking a second timer on top of the first.
     @State private var autoHide: Task<Void, Never>?
@@ -109,6 +119,52 @@ public struct SecretEditorView: View {
     private struct AddRowRequest: Identifiable {
         let id = UUID()
         let destination: SecretDocumentViewModel.AddDestination
+    }
+
+    /// What `SecretEditorView` needs from its caller to offer the Access
+    /// button — the file `RecipientAccessModel` reads/writes and the session
+    /// key it re-wraps with, alongside an optional project for registry
+    /// labels. Passed explicitly rather than read off `viewModel`, matching
+    /// how `fileName` already arrives as its own parameter instead of this
+    /// view reaching into the document model's internals.
+    public struct RecipientAccessContext {
+        let fileURL: URL
+        let keyStore: SessionKeyStore
+        let projectURL: URL?
+
+        public init(fileURL: URL, keyStore: SessionKeyStore, projectURL: URL? = nil) {
+            self.fileURL = fileURL
+            self.keyStore = keyStore
+            self.projectURL = projectURL
+        }
+    }
+
+    /// The Access sheet's subject: a fresh model built from `recipientAccess`
+    /// at the moment the button is pressed, so it always starts from
+    /// whatever the file's metadata says right now rather than a copy that
+    /// could have drifted since the editor opened.
+    private struct AccessRequest: Identifiable {
+        let id = UUID()
+        let model: RecipientAccessModel
+    }
+
+    /// Whether the toolbar's Access button may be pressed right now.
+    ///
+    /// Requires a **clean** document (`!isDirty`), not just a loaded one.
+    /// `RecipientAccessModel` reads and writes this file independently of
+    /// `SecretDocumentViewModel`'s own save path, and a successful apply
+    /// reloads the open document (`.sheet(item: $accessRequest)`'s
+    /// `onApplied` above) so its save-time fingerprint resyncs with the
+    /// rewrapped bytes. That reload calls `SecretDocumentViewModel.load()`,
+    /// which discards every pending edit, addition and removal — so without
+    /// this gate, typing an unsaved change into a row, then adding a
+    /// recipient and pressing Apply, silently threw the typed value away
+    /// with no prompt, no error and no dirty indicator surviving to warn
+    /// the user. Pulled out as a pure function — mirroring
+    /// `WorkspaceSwitchDecision`/`QuitRequest` elsewhere in this module — so
+    /// the gate is directly testable without a rendered view.
+    static func canOpenAccessPanel(loadState: LoadState, isDirty: Bool, isSaving: Bool) -> Bool {
+        loadState == .loaded && !isDirty && !isSaving
     }
 
     /// - Parameters:
@@ -126,18 +182,25 @@ public struct SecretEditorView: View {
     ///   - revealTimeout: how long a reveal lasts untouched. Injectable only
     ///     so a test does not have to wait 30 real seconds to prove the timer
     ///     exists; nothing in the app passes it.
+    ///   - recipientAccess: the file/key/project the toolbar's Access button
+    ///     needs. `nil` — the default — hides that button; see
+    ///     `RecipientAccessContext`'s doc comment for why this is optional
+    ///     rather than a required parameter every existing call site would
+    ///     need to grow.
     public init(
         viewModel: SecretDocumentViewModel,
         fileName: String,
         unsavedChanges: UnsavedChangesTracker,
         initiallySelectedRowID: String? = nil,
         initiallyRevealedRowIDs: Set<String> = [],
-        revealTimeout: Duration = SecretEditorView.revealTimeout
+        revealTimeout: Duration = SecretEditorView.revealTimeout,
+        recipientAccess: RecipientAccessContext? = nil
     ) {
         self.viewModel = viewModel
         self.fileName = fileName
         self.unsavedChanges = unsavedChanges
         self.revealTimeout = revealTimeout
+        self.recipientAccess = recipientAccess
         // Both recorded against the generation the document is in *now*, so
         // they are subject to exactly the same invalidation as a selection the
         // user made or a row they revealed by clicking. A seam that started
@@ -194,6 +257,25 @@ public struct SecretEditorView: View {
                         revealed.reveal(id, in: generation)
                     }
                     addRequest = nil
+                })
+        }
+        .sheet(item: $accessRequest) { request in
+            RecipientAccessView(
+                model: request.model,
+                onClose: { accessRequest = nil },
+                onApplied: {
+                    // The file's bytes changed under the document view
+                    // model's own fingerprint — a rewrap that never touches
+                    // row values still moves the file's identity, and the
+                    // next `Save` would otherwise refuse it as changed on
+                    // disk. Reloading resyncs it, exactly as
+                    // `SecretDocumentViewModel.save()` reloads itself after
+                    // its own write. See `RecipientAccessModel`'s doc
+                    // comment ("Reading needs no key; applying does") for why
+                    // this is a separate reader/writer of the same file
+                    // rather than reaching into the document model's own
+                    // private state.
+                    Task { await viewModel.load() }
                 })
         }
         // Reveal state is per open file, not persisted across a switch —
@@ -296,6 +378,24 @@ public struct SecretEditorView: View {
             }
 
             Spacer()
+
+            if let recipientAccess {
+                let canOpenAccess = Self.canOpenAccessPanel(
+                    loadState: viewModel.loadState, isDirty: viewModel.isDirty, isSaving: isSaving)
+                Button {
+                    let model = RecipientAccessModel(
+                        fileURL: recipientAccess.fileURL,
+                        projectURL: recipientAccess.projectURL,
+                        keyStore: recipientAccess.keyStore)
+                    accessRequest = AccessRequest(model: model)
+                } label: {
+                    Label(.accessToolbarButton, systemImage: "person.2.badge.key")
+                }
+                .disabled(!canOpenAccess)
+                .help(canOpenAccess
+                    ? LocalizedKey.accessToolbarButton.text
+                    : LocalizedKey.accessDisabledUnsavedChanges.text)
+            }
 
             Button {
                 if let selectedRowID { viewModel.removeRow(id: selectedRowID) }

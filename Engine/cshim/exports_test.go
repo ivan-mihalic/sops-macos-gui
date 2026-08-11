@@ -9,7 +9,7 @@ package main
 //
 // What is left for this file is the thing neither of those can see: whether
 // every //export is *wired* to the guard. That is the failure mode with a
-// future — a tenth entry point added without one, six months from now, by
+// future — a thirteenth entry point added without one, six months from now, by
 // someone who never read this. So it is checked structurally, against the
 // source, rather than trusted to review.
 //
@@ -20,7 +20,7 @@ package main
 // leave the comment `// TODO: wrap in gobridge.Guard( ... ) one day` behind,
 // and `go test ./cshim/` reported ok. Hoisting the real work above an
 // otherwise-intact guard passed too. Since this test is the sole evidence for
-// PROPOSAL §9's claim that all nine entry points recover, a check that a
+// PROPOSAL §9's claim that all twelve entry points recover, a check that a
 // comment can satisfy is worse than no check — it is a claim nobody will
 // re-examine.
 //
@@ -42,7 +42,7 @@ import (
 // exportedEntryPointCount is asserted rather than derived so that adding an
 // entry point is a deliberate act that updates this number, and cannot happen
 // by accident.
-const exportedEntryPointCount = 9
+const exportedEntryPointCount = 12
 
 // TestEveryExportedEntryPointRecoversFromPanics checks the real main.go.
 func TestEveryExportedEntryPointRecoversFromPanics(t *testing.T) {
@@ -391,7 +391,7 @@ func isRecoverCall(n ast.Node) bool {
 // callable, completely unprotected entry point. `exportedEntryPointCount` did
 // not help either — it counted the exports found in main.go, so a *moved*
 // export reddened the count and a *new* one in another file did not. That is
-// precisely the "tenth entry point six months from now" this test says, in its
+// precisely the "thirteenth entry point six months from now" this test says, in its
 // own comment, that it exists to catch.
 func inspectGuardWiring(src any) (exports []string, complaints []string, err error) {
 	fset := token.NewFileSet()
