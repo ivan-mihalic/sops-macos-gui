@@ -1,7 +1,7 @@
 # Task 2 report — Project recipient registry
 
-- Status: complete (round-3 commit pending)
-- Commits: `70cbcb1 feat(projects): add shared recipient registry`; `c8b0be4 fix(projects): validate recipient registry writes`; `4b2461d fix(projects): harden recipient registry saves`; pending `fix(projects): close registry symlink race`.
+- Status: complete
+- Commits: `70cbcb1 feat(projects): add shared recipient registry`; `c8b0be4 fix(projects): validate recipient registry writes`; `4b2461d fix(projects): harden recipient registry saves`; `e7167c6 fix(projects): close registry symlink race`.
 - Tests: `swift test --filter RecipientRegistryTests` — 15 passed; `git diff --check` passed.
 - Round-2 changes: replaced optional fingerprints with `ExpectedState.absent` / `.existing(FileFingerprint)`. Existing saves pass the precise observed fingerprint; absent saves stage through `AtomicFileWriter` then atomically publish with `link(2)`, so a concurrent first creator receives `.changedOnDisk` and cannot clobber it. Project roots resolve symlinks to their real root; `.sops-gui` and `recipients.json` links resolving outside that root are refused before any writer call (including dangling final links). Private-identity shape is refused in recipient, label, and note with fixed errors; duplicate UUIDs are refused. The old atomic-save test now honestly tests complete replacement and temp cleanup, not visibility.
 - TDD RED (round 2): `swift test --filter RecipientRegistryTests` after adding the round-2 tests failed to compile with exact missing production surface: `RecipientRegistry has no member 'expectedState'`, `RecipientRegistry.Error has no member 'changedOnDisk'`, `pathEscapesProject`, `duplicateID`, and `privateIdentityNotAllowed`. This was the expected RED state before implementation.
