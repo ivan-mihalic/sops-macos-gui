@@ -327,6 +327,16 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // renders only in the branch where a rule *was* identified, which is the
     // one branch that does not need it.
     case projectAccessOtherRulesInScope = "project-access.other-rules-in-scope"
+    // The heading over the list of files an apply would re-wrap, shown before
+    // the run rather than only as results after it. The counts above it say
+    // how many; this says which — the question a user actually has to answer
+    // before pressing a button that rewrites files.
+    case projectAccessFilesPreviewTitle = "project-access.files-preview.title"
+    // Formatted with how many files in scope the preview did not draw. The
+    // preview is bounded (`ProjectAccessView.filesPreviewLimit`) so a project
+    // with thousands of encrypted files costs what a small one costs; the
+    // remainder is stated rather than left to be inferred from the count above.
+    case projectAccessFilesPreviewMore = "project-access.files-preview.more"
     case projectAccessScanIncompleteTitle = "project-access.scan-incomplete.title"
     // The two ways a project can produce an *empty* scan that is not an
     // answer about anything. Reported rather than folded into "no encrypted

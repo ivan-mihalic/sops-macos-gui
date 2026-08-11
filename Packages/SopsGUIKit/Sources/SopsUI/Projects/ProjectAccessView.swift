@@ -198,6 +198,7 @@ public struct ProjectAccessView: View {
     private var loadedContent: some View {
         VStack(alignment: .leading, spacing: 10) {
             scope
+            filesPreview
             configSection
 
             List(model.entries) { entry in
@@ -343,6 +344,95 @@ public struct ProjectAccessView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// The files an apply would re-wrap, named — before it re-wraps them.
+    ///
+    /// The counts above say how many; this says which, which is the question a
+    /// user has to answer before pressing a button that rewrites files. It
+    /// scrolls inside a fixed height and builds its rows lazily, so a project
+    /// with hundreds of encrypted files costs the same as one with two and does
+    /// not push the buttons off the sheet.
+    ///
+    /// Rows are identified positionally rather than by URL: `encryptedFiles`
+    /// does not deduplicate by resolved path, so a symlink and its target can
+    /// both appear, and identity-by-value would be the same `List`-with-two-
+    /// identical-ids defect the recipient rows just had.
+    ///
+    /// Not a `LazyVStack`: laziness is what would keep the cost flat, but a
+    /// lazy stack inside a `ScrollView` realises nothing at all under the
+    /// headless host these panels are checked through — measured, not assumed —
+    /// so the list would be untestable and, worse, would be untestable in the
+    /// direction that looks like it passes. `previewedFiles` bounds the cost
+    /// instead, by building a fixed number of rows and counting the rest.
+    @ViewBuilder
+    private var filesPreview: some View {
+        if let plan = model.plan, !model.filesToApply.isEmpty {
+            let preview = Self.previewedFiles(model.filesToApply)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(.projectAccessFilesPreviewTitle).font(.caption.weight(.semibold))
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 1) {
+                        ForEach(Array(preview.shown.enumerated()), id: \.offset) { _, file in
+                            // A path is not translatable, and resolved through
+                            // the catalog it would vanish under whichever build
+                            // system copies `.xcstrings` uncompiled — the same
+                            // reason `KeyImportView` renders paths this way.
+                            Text(verbatim: Self.previewPath(of: file, in: plan.projectRoot))
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        if preview.overflow > 0 {
+                            Text(
+                                String(
+                                    format: LocalizedKey.projectAccessFilesPreviewMore.text,
+                                    preview.overflow)
+                            )
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+                .frame(maxHeight: 96)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// How many previewed rows are ever built. A preview exists to answer "is
+    /// this the set I meant?", which the first screenful and an honest
+    /// remainder answer as well as an unbounded list would — and unlike an
+    /// unbounded list, at a cost that does not grow with the project.
+    static let filesPreviewLimit = 100
+
+    /// The files the preview draws, and how many it did not.
+    static func previewedFiles(_ files: [URL]) -> (shown: [URL], overflow: Int) {
+        guard files.count > filesPreviewLimit else { return (files, 0) }
+        return (Array(files.prefix(filesPreviewLimit)), files.count - filesPreviewLimit)
+    }
+
+    /// How a previewed file is named: its path relative to the project root, or
+    /// its own last component when it is not under the root at all.
+    ///
+    /// Both sides are resolved before the strip. `ProjectScanner` returns
+    /// entries with the directory prefix's symlinks already resolved
+    /// (`/var/…` → `/private/var/…`) while the project root keeps whatever
+    /// spelling it was added under, so a literal prefix strip is a no-op and
+    /// every file would be previewed by its absolute path. That exact mismatch
+    /// is what made every anchored `path_regex` fail to match for the whole of
+    /// this feature's development — see `ProjectRecipientApplier.ruleMatchingPath`.
+    /// This form is used only to *name* a file on screen; nothing is ever
+    /// written through it.
+    static func previewPath(of file: URL, in root: URL) -> String {
+        let rootPath = root.resolvingSymlinksInPath().standardizedFileURL.path
+        let filePath = file.resolvingSymlinksInPath().standardizedFileURL.path
+        let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        guard filePath.hasPrefix(prefix) else { return file.lastPathComponent }
+        return String(filePath.dropFirst(prefix.count))
     }
 
     /// `detail` is engine-produced or fixed diagnostic text shown verbatim —

@@ -1866,6 +1866,40 @@
         }
       }
     },
+    "project-access.files-preview.more": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "…and %d more file, not listed here."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "…and %d more files, not listed here."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "project-access.files-preview.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Files this apply would re-wrap"
+          }
+        }
+      }
+    },
     "project-access.files-summary": {
       "extractionState": "manual",
       "localizations": {
