@@ -305,6 +305,13 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // files out would be the confident-about-what-it-did-not-touch claim
     // PROPOSAL §6 D forbids.
     case projectAccessUnmatchedNote = "project-access.unmatched-note"
+    // What an apply would touch when no governing creation rule could be
+    // identified — no config, an unreadable one, or one whose rules match
+    // nothing here. `Plan.filesInScope` deliberately widens to every encrypted
+    // file in that case (applying to *nothing* and reporting success is the
+    // worse reading), so the panel has to say so before the button is pressed
+    // rather than only in the confirmation dialog.
+    case projectAccessAllFilesInScope = "project-access.all-files-in-scope"
     case projectAccessScanIncompleteTitle = "project-access.scan-incomplete.title"
     // The two ways a project can produce an *empty* scan that is not an
     // answer about anything. Reported rather than folded into "no encrypted

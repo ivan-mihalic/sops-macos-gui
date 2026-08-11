@@ -105,11 +105,17 @@ struct CanApplyTests {
 /// duplicate: both are file-private by design, and a shared probe is how one
 /// suite's change silently alters another's meaning.
 @MainActor
-private enum GatingAXProbe {
+enum GatingAXProbe {
     struct Node {
         let role: String
         let label: String
         let help: String
+        /// Where a SwiftUI `Text`'s own content lands — `accessibilityLabel`
+        /// is empty for one. `AccessibilityTreeTests` and `RevealedRowTests`
+        /// both read this for the same reason; captured here too since Task 4,
+        /// whose disclosure checks are about rendered sentences rather than
+        /// control labels.
+        let value: String
     }
 
     static func tree(size: CGSize, _ build: @MainActor () -> some View) -> [Node] {
@@ -150,8 +156,10 @@ private enum GatingAXProbe {
             return "\(raw)"
         }
 
-        let node = Node(role: string("accessibilityRole"), label: string("accessibilityLabel"), help: string("accessibilityHelp"))
-        if !(node.role.isEmpty && node.label.isEmpty && node.help.isEmpty) {
+        let node = Node(
+            role: string("accessibilityRole"), label: string("accessibilityLabel"),
+            help: string("accessibilityHelp"), value: string("accessibilityValue"))
+        if !(node.role.isEmpty && node.label.isEmpty && node.help.isEmpty && node.value.isEmpty) {
             nodes.append(node)
         }
 
@@ -182,8 +190,14 @@ private enum GatingAXProbe {
 /// state. `settleAfterLoad()` gives it the same real time budget
 /// `EditorHost.settleAfterAModelChange()` gives a model change: 120ms, then
 /// a relayout.
+///
+/// Internal rather than `private` since Task 4: `ProjectAccessView` needs the
+/// identical treatment (it carries its own `.task { await model.load() }` over
+/// a real project scan), and a *third* hand-copied probe in this one test
+/// target would be worse than the two that already exist. Nothing outside
+/// `SopsUITests` can see it either way.
 @MainActor
-private final class GatingHost {
+final class GatingHost {
     private let hosting: NSHostingView<AnyView>
     private let window: NSWindow
     private static let enhanced = NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface")
@@ -219,6 +233,34 @@ private final class GatingHost {
     /// turn of the run loop to re-render before a new walk reflects it.
     func settleAfterAModelChange() async {
         try? await Task.sleep(for: .milliseconds(120))
+        settle()
+    }
+
+    /// Relayouts until `condition` holds, or until `timeout` elapses.
+    ///
+    /// Preferred over `settleAfterLoad()` whenever the thing being waited for
+    /// is observable — a fixed 120 ms is a guess, and it is a guess that was
+    /// measured wrong: `ProjectAccessView`'s own `.task` runs a real
+    /// `ProjectScanner` walk plus a bridge call, and under the swiftly
+    /// toolchain's more contended parallel test run it was still `.loading`
+    /// when the walk resumed, so three disclosure checks failed against a
+    /// half-built view rather than against anything the view got wrong.
+    /// Polling costs nothing when the condition is already true and does not
+    /// pretend to know how long a scan takes on a loaded machine.
+    func settle(until condition: @MainActor () -> Bool, timeout: Duration = .seconds(10)) async {
+        // The condition is about the *model*, which advances on its own — so
+        // the wait must not relayout on every tick. An earlier version did,
+        // and a synchronous `NSHostingView` layout+display every 20 ms is real
+        // main-actor work: it pushed `CopyFeedbackTests`' expiry check (whose
+        // own comment documents it as contention-sensitive, with a deliberately
+        // generous deadline) over its limit in a full-suite run. Polling a
+        // boolean costs nothing; the relayouts happen once, at the end.
+        let started = ContinuousClock.now
+        while !condition(), ContinuousClock.now - started < timeout {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        settle()
+        try? await Task.sleep(for: .milliseconds(50))
         settle()
     }
 

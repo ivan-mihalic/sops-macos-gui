@@ -255,6 +255,43 @@ struct LocalizationTests {
         #expect(key.text != key.rawValue, "missing catalog entry for \(key.rawValue)")
     }
 
+    /// I3. Rewriting `.sops.yaml` re-encodes the whole document, so blank
+    /// lines, a leading `---` marker and a trailing comment's alignment do not
+    /// survive — inherent to the yaml.v3 node-tree edit `UpdateConfigRecipients`
+    /// performs, and established empirically against that library rather than
+    /// assumed. `.sops.yaml` is almost always in version control, so a user who
+    /// is not told meets it as a surprise diff. The engine itself refuses an
+    /// entire config over merge keys for exactly this reason ("changing a part
+    /// of it nobody asked to change"), so applying the same class of change
+    /// silently was the inconsistency this closes.
+    ///
+    /// Asserted against the catalog JSON rather than through
+    /// `LocalizedKey.text`, for the reason this file's header states: under
+    /// plain `swift test` the catalog is copied uncompiled and every key
+    /// resolves to its own raw value, so an English-content assertion there
+    /// fails for a reason that has nothing to do with the string. The
+    /// `.confirmationDialog` that renders this message is not reachable from a
+    /// unit test at all — the documented limitation `WorkspaceSwitchDecisionTests`
+    /// and `QuitRequestTests` both state — so what is pinned is that the
+    /// sentence exists and cannot be dropped without this failing.
+    @Test("the config-update confirmation warns that the whole .sops.yaml is rewritten")
+    func configUpdateConfirmationDisclosesReformatting() throws {
+        let message = try #require(
+            Self.englishForms(for: .projectAccessUpdateConfigConfirmMessage).first,
+            "missing catalog entry for the config-update confirmation")
+
+        #expect(message.lowercased().contains("blank lines"),
+                "the confirmation must say blank lines are lost: \(message)")
+        #expect(message.contains("---"),
+                "the confirmation must name the document marker: \(message)")
+        #expect(message.lowercased().contains("diff"),
+                "the confirmation must set the expectation of a larger diff: \(message)")
+        // ...without overclaiming: the rules, keys and comments themselves do
+        // survive, and the sentence has to say so or it reads as data loss.
+        #expect(message.lowercased().contains("every rule"),
+                "the confirmation must also say what does survive: \(message)")
+    }
+
     /// That the plural variations actually *resolve* — the half the catalog-JSON
     /// checks above cannot see.
     ///
@@ -279,5 +316,29 @@ struct LocalizationTests {
         #expect(oneMore.contains("1 more item in that drop"), "one-extra drop error reads: \(oneMore)")
         #expect(manyMore.contains("4 more items in that drop"), "many-extra drop error reads: \(manyMore)")
         #expect(!oneMore.contains("%"), "unexpanded format specifier in: \(oneMore)")
+
+        // Task 4's four counted strings. Added because this check had been
+        // left covering only the two keys that existed when it was written,
+        // which is exactly how a plural entry that is "shaped right and
+        // resolves wrong" reaches a user: the JSON guard above sees two forms
+        // and is satisfied, and nothing expands them.
+        for key: LocalizedKey in [
+            .projectAccessUnmatchedNote, .projectAccessCancelledNote,
+            .projectAccessApplyFilesConfirmMessage, .projectAccessAllFilesInScope,
+        ] {
+            let singular = String(format: key.text, 1)
+            let plural = String(format: key.text, 5)
+            #expect(singular.contains("1"), "\(key.rawValue) at one reads: \(singular)")
+            #expect(plural.contains("5"), "\(key.rawValue) at many reads: \(plural)")
+            #expect(!singular.contains("%"), "unexpanded format specifier in: \(singular)")
+            #expect(!plural.contains("%"), "unexpanded format specifier in: \(plural)")
+            // The two forms must actually differ — a catalog entry whose
+            // `one` and `other` were pasted identical resolves fine and still
+            // reads "1 files".
+            #expect(
+                singular.replacingOccurrences(of: "1", with: "#")
+                    != plural.replacingOccurrences(of: "5", with: "#"),
+                "\(key.rawValue) reads the same at one and at many: \(singular)")
+        }
     }
 }

@@ -1542,6 +1542,29 @@
         }
       }
     },
+    "project-access.all-files-in-scope": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Apply to Files will re-wrap the %d encrypted file found in this project."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Apply to Files will re-wrap all %d encrypted files found in this project."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "project-access.apply-files-button": {
       "extractionState": "manual",
       "localizations": {
@@ -1958,7 +1981,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This rewrites the creation rule that governs these files. It changes who new and re-wrapped files will be encrypted for. Files already on disk are not touched by this."
+            "value": "This rewrites the creation rule that governs these files. It changes who new and re-wrapped files will be encrypted for. Files already on disk are not touched by this.\n\nThe whole file is written out again, so blank lines, a leading \"---\" marker and the exact alignment of trailing comments will not survive. Every rule, key and comment does. Expect a slightly larger diff than the keys you changed."
           }
         }
       }

@@ -56,10 +56,10 @@ const EngineFaultMarker = "the sops engine faulted"
 // one it happened in: it is the only classification a user can act on, and a
 // fixed string cannot carry document content.
 const (
-	OpReading           = "reading this file"
-	OpSaving            = "saving this file"
-	OpEncrypting        = "encrypting this file"
-	OpReadingConfig     = "reading the project configuration"
+	OpReading       = "reading this file"
+	OpSaving        = "saving this file"
+	OpEncrypting    = "encrypting this file"
+	OpReadingConfig = "reading the project configuration"
 	// Named for what a user asked for, not for what the bridge does: this
 	// operation only ever *computes* the new project configuration text (see
 	// UpdateConfigRecipients — it writes nothing), but a fault during it is

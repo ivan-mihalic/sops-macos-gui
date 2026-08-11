@@ -259,6 +259,19 @@ public struct ProjectAccessView: View {
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 }
+            } else {
+                // No governing rule could be identified, so `filesInScope`
+                // widens to every encrypted file found. That is the *widest*
+                // an apply ever gets, and it used to be the one case the panel
+                // said nothing about — the count appeared for the first time
+                // in the confirmation dialog. See `Plan.filesInScope`.
+                Text(
+                    String(
+                        format: LocalizedKey.projectAccessAllFilesInScope.text,
+                        plan.filesInScope.count)
+                )
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

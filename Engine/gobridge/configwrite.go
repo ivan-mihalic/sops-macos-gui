@@ -130,23 +130,49 @@ type ConfigRecipientUpdate struct {
 //     and a re-encode would delete the rest);
 //   - the file mixes CRLF and LF line endings, so there is no answer to
 //     "which one should the new lines use";
-//   - creation_rules is missing, is not a list, or no rule governs the target
-//     file;
-//   - the two readings above disagree.
+//   - creation_rules is missing, is not a sequence of mappings, or no rule
+//     governs the target file. The shape check runs on the node tree *before*
+//     the narrow struct decode, so a `creation_rules:` holding a mapping or a
+//     list of scalars produces that sentence rather than a decode error naming
+//     one of this package's own Go types;
+//   - the two readings above disagree (see readingsDisagree — a net nothing
+//     that can be written as a .sops.yaml reaches).
 //
 // # What a rewrite preserves, and what it cannot
 //
-// Preserved: every other creation rule and every other top-level key,
-// verbatim; comments (including the trailing comment on a recipient that
-// survives the change); key order; quoting style; flow-vs-block style of the
-// age list itself; the file's indentation width, inferred from the node
-// tree's own column information; CRLF line endings.
+// Preserved — and pinned by an exact, byte-for-byte expected document in
+// TestUpdateConfigRecipients_RewriteIsByteForByteExceptTheAgeList, not by
+// substring checks that a reordering or a re-indentation would slip through:
+// every other creation rule and every other top-level key, verbatim; comments,
+// including the trailing comment on a recipient that survives the change and
+// the trailing comment of a scalar `age:` whose recipient survives into the new
+// list; key order; quoting style; flow-vs-block style of the age list itself;
+// the file's indentation width, inferred from the node tree's own column
+// information; CRLF line endings.
 //
-// Not preserved, because a yaml.Node re-encode cannot: blank lines between
-// entries, the leading `---` document marker, and the exact column a trailing
-// comment was aligned to. These are visible, harmless formatting changes —
-// the alternative, splicing text by line number, is the class of edit ADR
-// 0002 exists to keep out of this codebase.
+// Not preserved, because a yaml.Node re-encode cannot — the node tree carries
+// no blank-line information at all, in any position:
+//
+//   - blank lines between entries, including one immediately before a comment;
+//   - the leading `---` document marker;
+//   - the exact column a trailing comment was aligned to;
+//   - a sequence written flush with its key (`creation_rules:` then `- …` at
+//     column 1), which comes back indented because the encoder cannot emit the
+//     flush form;
+//   - the trailing comment of a recipient that is *removed* by the change,
+//     which goes with the key it labelled — that one is the right answer
+//     rather than a loss.
+//
+// These are visible, harmless formatting changes, and the caller is obliged to
+// say so before the user commits: `.sops.yaml` is almost always in version
+// control, and a surprise diff is exactly the "changed a part of it nobody
+// asked to change" this file refuses a whole config over elsewhere (see
+// reasonMergeKeys). The Swift confirmation dialog
+// (`project-access.update-config-confirm.message`) states it. The alternative
+// — splicing text by line number so the untouched lines are literally
+// untouched — is the class of edit ADR 0002 exists to keep out of this
+// codebase: computing a node's *end* means guessing where the next node's head
+// comment begins.
 //
 // candidates, if given, are absolute paths to classify: MatchedFiles comes
 // back holding the ones the same rule governs. They are only ever read as
@@ -198,6 +224,32 @@ func UpdateConfigRecipients(
 	if err := yaml.Unmarshal(raw, &root); err != nil {
 		return nil, fmt.Errorf("could not read %s: %w", filepath.Base(confPath), err)
 	}
+
+	// The node tree is checked for the *shape* of creation_rules before the
+	// narrow struct decode below, and the order is the whole point. Decoding
+	// first meant a `creation_rules:` holding a mapping, a scalar, or a list of
+	// scalars never reached reasonCreationRulesNotAList at all: the decode
+	// failed and the user was shown `cannot unmarshal !!map into
+	// []gobridge.writeCreationRule` — this package's own Go type name — as a
+	// hard read error, instead of the sentence that says what was found and
+	// what to do about it.
+	document := documentMapping(&root)
+	if document == nil {
+		// No mapping at the top: an empty file, a comment-only file, or a
+		// document that is not a mapping at all. None of them declares a
+		// creation rule, which is exactly what sops concludes too
+		// (parseCreationRuleForFile: `if conf.CreationRules == nil { return
+		// nil, nil }`).
+		return refuse(reasonNoCreationRules), nil
+	}
+	rulesNode := mappingValue(document, "creation_rules")
+	if rulesNode == nil || rulesNode.Tag == "!!null" {
+		return refuse(reasonNoCreationRules), nil
+	}
+	if !isRuleList(rulesNode) {
+		return refuse(reasonCreationRulesNotAList), nil
+	}
+
 	var decoded writeConfigFile
 	if err := yaml.Unmarshal(raw, &decoded); err != nil {
 		return nil, fmt.Errorf("could not read %s: %w", filepath.Base(confPath), err)
@@ -240,10 +292,7 @@ func UpdateConfigRecipients(
 		result.CurrentRecipients = []string{}
 	}
 
-	if !lookup.Matched {
-		return result.refusing(reasonRuleDisagreement), nil
-	}
-	if len(lookup.NonAgeBackends) > 0 {
+	if lookup.Matched && len(lookup.NonAgeBackends) > 0 {
 		return result.refusing(reasonOtherBackends(lookup.NonAgeBackends)), nil
 	}
 
@@ -255,41 +304,27 @@ func UpdateConfigRecipients(
 		return result.refusing(reasonShamir), nil
 	}
 
-	document := documentMapping(&root)
-	if document == nil {
-		return result.refusing(reasonRuleDisagreement), nil
-	}
+	// Before the node/struct cross-check, because a merged rule legitimately
+	// reads differently in the two views — the decode resolves `<<` and the
+	// node does not — and "this file uses merge keys" is the useful thing to
+	// say about it, not "the two readings disagreed".
 	if containsMergeKey(document) {
 		return result.refusing(reasonMergeKeys), nil
 	}
 
-	rulesNode := mappingValue(document, "creation_rules")
-	if rulesNode == nil || rulesNode.Kind != yaml.SequenceNode {
-		return result.refusing(reasonCreationRulesNotAList), nil
-	}
-	// The node list and sops's decoded list must be the same list.
-	if len(rulesNode.Content) != len(decoded.CreationRules) || index >= len(rulesNode.Content) {
+	if readingsDisagree(rulesNode, decoded.CreationRules, index, lookup) {
 		return result.refusing(reasonRuleDisagreement), nil
 	}
+	// Safe to index: readingsDisagree has already established that the node
+	// list and the decoded list are the same length and that `index` is inside
+	// both of them.
 	ruleNode := rulesNode.Content[index]
-	if ruleNode.Kind != yaml.MappingNode {
-		return result.refusing(reasonRuleDisagreement), nil
-	}
 	if containsAnchorOrAlias(ruleNode) {
 		return result.refusing(reasonAnchors), nil
 	}
-	// ...and the rule this is about to edit must be the one sops selected.
-	if pathRegexNode := mappingValue(ruleNode, "path_regex"); nodeScalar(pathRegexNode) != rule.PathRegex {
-		return result.refusing(reasonRuleDisagreement), nil
-	}
-
-	declared, ok := parseAgeField(rule.Age)
-	if !ok {
-		return result.refusing(reasonRuleDisagreement), nil
-	}
-	if !equalSets(declared, lookup.AgeRecipients) {
-		return result.refusing(reasonRuleDisagreement), nil
-	}
+	// Also established by readingsDisagree, which refuses an age field neither
+	// reading can make sense of.
+	declared, _ := parseAgeField(rule.Age)
 
 	result.Writable = true
 	if inspectOnly {
@@ -318,7 +353,7 @@ func UpdateConfigRecipients(
 
 	// Last line of defence: read the proposal back with the same decoder and
 	// prove that exactly one thing about it differs from the original.
-	if !onlyTheAgeListChanged(emitted, decoded, index, wanted) {
+	if !onlyTheAgeListChanged(raw, emitted, decoded, index, wanted) {
 		return result.refusing(reasonRewriteChangedSomethingElse), nil
 	}
 
@@ -554,11 +589,63 @@ func filesGovernedBy(index int, rules []writeCreationRule, configDir string, can
 	return matched
 }
 
-// onlyTheAgeListChanged re-reads the proposed text with the same decoder and
-// proves that the only difference from the original is the selected rule's
-// age list, now holding exactly `wanted`. Every other rule must be identical
-// field for field.
-func onlyTheAgeListChanged(emitted string, before writeConfigFile, index int, wanted []string) bool {
+// readingsDisagree reports whether the two readings of this config — the node
+// tree this type edits, and the narrow struct decode the rule selection ran
+// over — fail to agree about the rule at `index`, or fail to agree with what
+// sops's own loader resolved for the same file.
+//
+// It is the guard that makes editing the *wrong* rule impossible rather than
+// merely unlikely: see UpdateConfigRecipients's doc comment for why the rule
+// index has to be established here at all. Every caller of it treats `true` as
+// a refusal, never as something to work around.
+//
+// Its own function, and not inlined, because nothing that can be built as a
+// `.sops.yaml` reaches it: every shape that could make the two readings differ
+// is caught by an earlier check, or by sops's own loader, first. That is what a
+// defensive net is for, and it is also why this is tested directly rather than
+// through a fixture that cannot exist — see
+// TestReadingsDisagree_DetectsEachWayTheTwoReadingsCanDiffer.
+func readingsDisagree(
+	rulesNode *yaml.Node, rules []writeCreationRule, index int, lookup *CreationRuleLookup,
+) bool {
+	if lookup == nil || !lookup.Matched {
+		return true
+	}
+	if rulesNode == nil || index < 0 || index >= len(rules) {
+		return true
+	}
+	// The node list and the decoded list must be the same list.
+	if len(rulesNode.Content) != len(rules) || index >= len(rulesNode.Content) {
+		return true
+	}
+	ruleNode := rulesNode.Content[index]
+	if ruleNode.Kind != yaml.MappingNode {
+		return true
+	}
+	rule := rules[index]
+	// The rule about to be edited must be the one sops selected.
+	if nodeScalar(mappingValue(ruleNode, "path_regex")) != rule.PathRegex {
+		return true
+	}
+	declared, ok := parseAgeField(rule.Age)
+	if !ok {
+		return true
+	}
+	return !equalSets(declared, lookup.AgeRecipients)
+}
+
+// onlyTheAgeListChanged re-reads the proposed text and proves that the only
+// difference from the original is the selected rule's age list, now holding
+// exactly `wanted`.
+//
+// Two comparisons, because one is not enough. Every *creation rule* is checked
+// field by field against the narrow struct decode; and every *other top-level
+// key* — `stores:`, `destination_rules:`, and anything this app has never heard
+// of — is checked through a generic `map[string]any` decode, so the guard's
+// coverage is the whole document rather than only the part this type models.
+func onlyTheAgeListChanged(
+	raw []byte, emitted string, before writeConfigFile, index int, wanted []string,
+) bool {
 	var after writeConfigFile
 	if err := yaml.Unmarshal([]byte(emitted), &after); err != nil {
 		return false
@@ -576,6 +663,45 @@ func onlyTheAgeListChanged(emitted string, before writeConfigFile, index int, wa
 			was.Age, now.Age = nil, nil
 		}
 		if !reflect.DeepEqual(was, now) {
+			return false
+		}
+	}
+	return everythingButCreationRulesIsIdentical(raw, []byte(emitted))
+}
+
+// everythingButCreationRulesIsIdentical decodes both documents generically —
+// no narrow struct, so no top-level key can fall outside the comparison the way
+// it did when this guard modelled `creation_rules` alone — and compares
+// everything except `creation_rules`, which its caller checks rule by rule.
+func everythingButCreationRulesIsIdentical(before []byte, after []byte) bool {
+	strip := func(raw []byte) (map[string]any, bool) {
+		var document map[string]any
+		if err := yaml.Unmarshal(raw, &document); err != nil {
+			return nil, false
+		}
+		delete(document, "creation_rules")
+		return document, true
+	}
+	was, ok := strip(before)
+	if !ok {
+		return false
+	}
+	now, ok := strip(after)
+	if !ok {
+		return false
+	}
+	return reflect.DeepEqual(was, now)
+}
+
+// isRuleList reports whether a `creation_rules:` node is what sops needs it to
+// be — a sequence whose every entry is a mapping. Anything else is a config
+// shape this app refuses rather than one it fails to decode; see the call site.
+func isRuleList(node *yaml.Node) bool {
+	if node.Kind != yaml.SequenceNode {
+		return false
+	}
+	for _, item := range node.Content {
+		if item.Kind != yaml.MappingNode {
 			return false
 		}
 	}
@@ -674,11 +800,25 @@ func containsMergeKey(node *yaml.Node) bool {
 //   - a scalar stays a scalar when one recipient is left, and becomes a block
 //     list when there is more than one, rather than a comma-joined line no
 //     one can read (sops accepts both — config.parseKeyField splits a scalar
-//     on commas);
+//     on commas). A scalar's *trailing* comment labels the recipient written
+//     on that line, so when that recipient survives into the new list the
+//     comment travels onto its entry; when it does not, the comment goes with
+//     the key it labelled, which is the right answer rather than a loss. (An
+//     earlier version copied `LineComment` only from an existing *sequence*,
+//     so `age: age1… # alice` growing to two recipients dropped `# alice`
+//     silently.)
 //   - a rule that had no `age:` at all gets a block list.
 func newAgeNode(existing *yaml.Node, recipients []string) *yaml.Node {
 	if existing != nil && existing.Kind == yaml.ScalarNode && len(recipients) == 1 {
 		replacement := *existing
+		// A trailing comment labels the recipient that *was* on this line. If
+		// the line is now a different recipient, the comment does not belong
+		// to it: keeping it would leave "# alice" pointing at bob's key, which
+		// is worse than losing it. Caught by
+		// TestUpdateConfigRecipients_ACommentGoesWithTheRecipientItLabels.
+		if replacement.Value != recipients[0] {
+			replacement.LineComment = ""
+		}
 		replacement.Value = recipients[0]
 		replacement.Tag = "!!str"
 		return &replacement
@@ -686,12 +826,23 @@ func newAgeNode(existing *yaml.Node, recipients []string) *yaml.Node {
 
 	style := yaml.Style(0)
 	reusable := map[string]*yaml.Node{}
-	if existing != nil && existing.Kind == yaml.SequenceNode {
-		style = existing.Style
-		for _, item := range existing.Content {
-			if item.Kind == yaml.ScalarNode {
-				reusable[item.Value] = item
+	// The trailing comment of a scalar `age:` and the recipients that scalar
+	// named, so the comment can be re-attached below to whichever of them
+	// survives. Empty unless `existing` is a scalar.
+	scalarComment := ""
+	var scalarValues []string
+	if existing != nil {
+		switch existing.Kind {
+		case yaml.SequenceNode:
+			style = existing.Style
+			for _, item := range existing.Content {
+				if item.Kind == yaml.ScalarNode {
+					reusable[item.Value] = item
+				}
 			}
+		case yaml.ScalarNode:
+			scalarComment = existing.LineComment
+			scalarValues, _ = parseAgeField(existing.Value)
 		}
 	}
 
@@ -708,9 +859,15 @@ func newAgeNode(existing *yaml.Node, recipients []string) *yaml.Node {
 			sequence.Content = append(sequence.Content, kept)
 			continue
 		}
-		sequence.Content = append(
-			sequence.Content,
-			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: recipient})
+		item := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: recipient}
+		// A comma-joined scalar can name several recipients under one comment;
+		// the comment follows the first of them that survives, and is used at
+		// most once.
+		if scalarComment != "" && len(scalarValues) > 0 && scalarValues[0] == recipient {
+			item.LineComment = scalarComment
+			scalarComment = ""
+		}
+		sequence.Content = append(sequence.Content, item)
 	}
 	return sequence
 }

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 )
 
 // update runs UpdateConfigRecipients against a .sops.yaml written into a fresh
@@ -508,5 +510,270 @@ func TestUpdateConfigRecipients_InspectionStillRefusesAnUnsupportedShape(t *test
 	}
 	if !strings.Contains(got.Reason, "key_groups") {
 		t.Errorf("Reason = %q", got.Reason)
+	}
+}
+
+// MARK: - Fix round 1: shapes and guarantees that had no test
+
+// I2. `creation_rules` present but not a list of rules. Before the fix this
+// never reached reasonCreationRulesNotAList at all: the narrow struct decode
+// ran first and failed, so the user got `cannot unmarshal !!map into
+// []gobridge.writeCreationRule` — this package's own Go type name — as a red
+// "could not be read" error rather than the orange "will not be rewritten"
+// sentence the shape table promises.
+func TestUpdateConfigRecipients_RefusesCreationRulesThatAreNotAList(t *testing.T) {
+	a := newAgeKeyPair(t)
+	for name, config := range map[string]string{
+		"a mapping":         "creation_rules:\n  foo: bar\n",
+		"a scalar":          "creation_rules: nonsense\n",
+		"a list of scalars": "creation_rules:\n  - nonsense\n",
+	} {
+		got, _, err := update(t, config, "db.yaml", []string{a.Public})
+		if err != nil {
+			t.Errorf("%s: expected a refusal, got the error %v", name, err)
+			continue
+		}
+		if got.Writable {
+			t.Errorf("%s: Writable = true", name)
+			continue
+		}
+		if got.Reason != reasonCreationRulesNotAList {
+			t.Errorf("%s: Reason = %q, want the not-a-list sentence", name, got.Reason)
+		}
+	}
+}
+
+// No error this entry point can produce may name one of this package's own Go
+// types: it is read out loud to a user who has never heard of gobridge.
+func TestUpdateConfigRecipients_ErrorsNeverNameThisPackagesTypes(t *testing.T) {
+	a := newAgeKeyPair(t)
+	for name, config := range map[string]string{
+		"not a list":          "creation_rules:\n  foo: bar\n",
+		"rule is not a map":   "creation_rules:\n  - nonsense\n",
+		"path_regex is a map": "creation_rules:\n  - path_regex:\n      a: b\n",
+	} {
+		got, _, err := update(t, config, "db.yaml", []string{a.Public})
+		text := ""
+		if err != nil {
+			text = err.Error()
+		} else {
+			text = got.Reason
+		}
+		if strings.Contains(text, "gobridge") || strings.Contains(text, "writeCreationRule") {
+			t.Errorf("%s: user-facing text names this package's own types: %q", name, text)
+		}
+	}
+}
+
+// M2. shamir_threshold on a rule that has *no* key_groups. The existing shamir
+// test supplied key_groups as well, and the key_groups check runs first, so
+// reasonShamir was documented but never exercised.
+func TestUpdateConfigRecipients_RefusesShamirThresholdWithoutKeyGroups(t *testing.T) {
+	a := newAgeKeyPair(t)
+	r := refusal(t, `creation_rules:
+  - path_regex: .*\.yaml$
+    shamir_threshold: 2
+    age: `+a.Public+`
+`, "db.yaml")
+	if r != reasonShamir {
+		t.Errorf("Reason = %q, want the shamir sentence", r)
+	}
+}
+
+// M2. A config with other top-level keys but no creation_rules at all.
+func TestUpdateConfigRecipients_RefusesAConfigWithNoCreationRules(t *testing.T) {
+	r := refusal(t, `stores:
+  yaml:
+    indent: 2
+`, "db.yaml")
+	if r != reasonNoCreationRules {
+		t.Errorf("Reason = %q, want the no-creation_rules sentence", r)
+	}
+}
+
+// I4 + M2. A rewrite must leave the whole rest of the file byte for byte as it
+// was — not "contains the same substrings". Written as an exact expected
+// document so a reordering, a re-indentation or a moved comment fails it.
+func TestUpdateConfigRecipients_RewriteIsByteForByteExceptTheAgeList(t *testing.T) {
+	a, b, c := newAgeKeyPair(t), newAgeKeyPair(t), newAgeKeyPair(t)
+	config := `# Team configuration — do not commit plaintext
+stores:
+  yaml:
+    indent: 2
+creation_rules:
+  # staging only
+  - path_regex: staging/.*\.yaml$
+    encrypted_regex: ^(data|stringData)$
+    age:
+      - ` + c.Public + ` # carol
+  # production
+  - path_regex: prod/.*\.yaml$
+    age:
+      - ` + a.Public + ` # alice
+destination_rules:
+  - path_regex: published/.*
+    s3_bucket: releases
+`
+	want := `# Team configuration — do not commit plaintext
+stores:
+  yaml:
+    indent: 2
+creation_rules:
+  # staging only
+  - path_regex: staging/.*\.yaml$
+    encrypted_regex: ^(data|stringData)$
+    age:
+      - ` + c.Public + ` # carol
+  # production
+  - path_regex: prod/.*\.yaml$
+    age:
+      - ` + a.Public + ` # alice
+      - ` + b.Public + `
+destination_rules:
+  - path_regex: published/.*
+    s3_bucket: releases
+`
+	got, _ := mustUpdate(t, config, "prod/db.yaml", []string{a.Public, b.Public})
+	if !got.Writable || !got.Changed {
+		t.Fatalf("Writable=%v Changed=%v Reason=%q", got.Writable, got.Changed, got.Reason)
+	}
+	if got.Config != want {
+		t.Errorf("emitted config is not byte-for-byte what was expected.\n--- got ---\n%s\n--- want ---\n%s", got.Config, want)
+	}
+}
+
+// I3/M1. A scalar `age: age1… # alice` grown to two recipients used to drop
+// `# alice` silently: newAgeNode copied LineComment only when the existing node
+// was already a sequence.
+func TestUpdateConfigRecipients_AScalarsTrailingCommentSurvivesGrowingTheList(t *testing.T) {
+	a, b := newAgeKeyPair(t), newAgeKeyPair(t)
+	got, _ := mustUpdate(t, `creation_rules:
+  - path_regex: .*\.yaml$
+    age: `+a.Public+` # alice
+`, "db.yaml", []string{a.Public, b.Public})
+
+	want := `creation_rules:
+  - path_regex: .*\.yaml$
+    age:
+      - ` + a.Public + ` # alice
+      - ` + b.Public + `
+`
+	if got.Config != want {
+		t.Errorf("the scalar's own trailing comment did not travel with its recipient.\n--- got ---\n%s\n--- want ---\n%s", got.Config, want)
+	}
+}
+
+// ...and when the recipient it belonged to is the one being removed, the
+// comment goes with it. That is the right answer, not a loss.
+func TestUpdateConfigRecipients_ACommentGoesWithTheRecipientItLabels(t *testing.T) {
+	a, b := newAgeKeyPair(t), newAgeKeyPair(t)
+	got, _ := mustUpdate(t, `creation_rules:
+  - path_regex: .*\.yaml$
+    age: `+a.Public+` # alice
+`, "db.yaml", []string{b.Public})
+	if strings.Contains(got.Config, "alice") {
+		t.Errorf("alice's comment outlived alice's key:\n%s", got.Config)
+	}
+}
+
+// MARK: - The two defensive nets
+//
+// Neither reasonRuleDisagreement nor reasonRewriteChangedSomethingElse can be
+// reached by any .sops.yaml: every shape that could make the two readings
+// differ is caught by an earlier check or by sops's own loader first (probed
+// directly — a duplicated age key, a non-list creation_rules, a mapping-valued
+// path_regex and an int-valued age all fail earlier). That is the point of a
+// net, and it is also why the predicates behind them are tested here directly
+// rather than through a fixture that cannot exist.
+
+func TestReadingsDisagree_DetectsEachWayTheTwoReadingsCanDiffer(t *testing.T) {
+	a, b := newAgeKeyPair(t), newAgeKeyPair(t)
+	source := `creation_rules:
+  - path_regex: .*\.yaml$
+    age: ` + a.Public + `
+`
+	var root yaml.Node
+	if err := yaml.Unmarshal([]byte(source), &root); err != nil {
+		t.Fatal(err)
+	}
+	var decoded writeConfigFile
+	if err := yaml.Unmarshal([]byte(source), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	document := documentMapping(&root)
+	rulesNode := mappingValue(document, "creation_rules")
+	agreeing := &CreationRuleLookup{Matched: true, AgeRecipients: []string{a.Public}}
+
+	if readingsDisagree(rulesNode, decoded.CreationRules, 0, agreeing) {
+		t.Fatal("the two readings of an ordinary config must agree")
+	}
+
+	// sops did not match a rule this reading did.
+	if !readingsDisagree(rulesNode, decoded.CreationRules, 0, &CreationRuleLookup{Matched: false}) {
+		t.Error("an unmatched sops lookup must count as a disagreement")
+	}
+	// sops resolved a different key list than the rule declares.
+	if !readingsDisagree(rulesNode, decoded.CreationRules, 0,
+		&CreationRuleLookup{Matched: true, AgeRecipients: []string{b.Public}}) {
+		t.Error("a different resolved key list must count as a disagreement")
+	}
+	// The node list and the decoded list are not the same list.
+	if !readingsDisagree(rulesNode, append(decoded.CreationRules, writeCreationRule{}), 0, agreeing) {
+		t.Error("a length mismatch between the two readings must count as a disagreement")
+	}
+	// The rule about to be edited is not the rule sops selected.
+	shifted := append([]writeCreationRule(nil), decoded.CreationRules...)
+	shifted[0].PathRegex = "something-else"
+	if !readingsDisagree(rulesNode, shifted, 0, agreeing) {
+		t.Error("a path_regex that reads differently in the two readings must count as a disagreement")
+	}
+	// The rule's own age field is a shape neither reading can make sense of.
+	unreadable := append([]writeCreationRule(nil), decoded.CreationRules...)
+	unreadable[0].Age = 42
+	if !readingsDisagree(rulesNode, unreadable, 0, &CreationRuleLookup{Matched: true}) {
+		t.Error("an unreadable age field must count as a disagreement")
+	}
+	// An index outside the list.
+	if !readingsDisagree(rulesNode, decoded.CreationRules, 7, agreeing) {
+		t.Error("an out-of-range rule index must count as a disagreement")
+	}
+}
+
+func TestOnlyTheAgeListChanged_RejectsAnyChangeOutsideTheRulesAgeList(t *testing.T) {
+	a, b := newAgeKeyPair(t), newAgeKeyPair(t)
+	before := `stores:
+  yaml:
+    indent: 2
+creation_rules:
+  - path_regex: staging/.*\.yaml$
+    age: ` + a.Public + `
+  - path_regex: .*\.yaml$
+    age: ` + a.Public + `
+`
+	var decoded writeConfigFile
+	if err := yaml.Unmarshal([]byte(before), &decoded); err != nil {
+		t.Fatal(err)
+	}
+
+	good := strings.Replace(before,
+		"  - path_regex: .*\\.yaml$\n    age: "+a.Public,
+		"  - path_regex: .*\\.yaml$\n    age: "+b.Public, 1)
+	if !onlyTheAgeListChanged([]byte(before), good, decoded, 1, []string{b.Public}) {
+		t.Error("a rewrite that touched only the selected rule's age list must pass")
+	}
+
+	for name, mangled := range map[string]string{
+		"an unrelated rule's keys changed":    strings.Replace(before, "staging/.*\\.yaml$\n    age: "+a.Public, "staging/.*\\.yaml$\n    age: "+b.Public, 1),
+		"an unrelated rule's regex changed":   strings.Replace(before, "staging/", "stagingX/", 1),
+		"a rule disappeared":                  strings.Replace(before, "  - path_regex: staging/.*\\.yaml$\n    age: "+a.Public+"\n", "", 1),
+		"an unrelated top-level key changed":  strings.Replace(before, "indent: 2", "indent: 4", 1),
+		"an unrelated top-level key vanished": strings.Replace(before, "stores:\n  yaml:\n    indent: 2\n", "", 1),
+		"a top-level key appeared":            "destination_rules: []\n" + before,
+		"the selected rule kept its old keys": before,
+		"the emitted text is not valid YAML":  "creation_rules: [\n",
+	} {
+		if onlyTheAgeListChanged([]byte(before), mangled, decoded, 1, []string{b.Public}) {
+			t.Errorf("%s: the verification passed a rewrite it must refuse", name)
+		}
 	}
 }

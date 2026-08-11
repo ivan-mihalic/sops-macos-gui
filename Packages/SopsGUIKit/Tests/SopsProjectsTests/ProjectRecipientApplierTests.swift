@@ -555,3 +555,94 @@ struct ProjectRecipientApplierConfigWriteTests {
         #expect(try String(contentsOf: configURL, encoding: .utf8) == theirVersion)
     }
 }
+
+@Suite("ProjectRecipientApplier — which rule gets targeted is not up to the filesystem")
+struct ProjectRecipientApplierOrderingTests {
+
+    /// I1. `ProjectScanner` yields files in `FileManager.enumerator` order,
+    /// which on APFS is directory-hash order — not alphabetical, and not
+    /// stable across adding or deleting an unrelated file. The plan picks the
+    /// *first* encrypted file to resolve which creation rule it is about, so
+    /// an unsorted list meant a multi-rule project targeted whichever file the
+    /// filesystem happened to hand back first. For an action that rewrites who
+    /// a project encrypts for, that has to be predictable, and it has to be
+    /// the same order the user already sees in the file list
+    /// (`FileListModel.refresh` sorts by project-relative path).
+    @Test("the plan targets the rule of the first file in the order the user sees, whatever the filesystem says")
+    func targetFileFollowsTheDisplayedOrder() async throws {
+        let alpha = try AgeKeyPair.generate()
+        let zulu = try AgeKeyPair.generate()
+        let root = try applierScratchDirectory()
+
+        // Two rules. Whichever file is picked as the target decides which of
+        // them the panel is about, and the two declare different keys, so the
+        // choice is directly observable.
+        try """
+            creation_rules:
+              - path_regex: zulu/.*\\.yaml$
+                age: \(zulu.public)
+              - path_regex: alpha/.*\\.yaml$
+                age: \(alpha.public)
+
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+
+        // Created zulu-first, so a scan that simply reports creation or
+        // enumeration order has every chance of yielding zulu first.
+        for (directory, key) in [("zulu", zulu), ("alpha", alpha)] {
+            let dir = root.appendingPathComponent(directory, isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let encrypted = try SopsBridge.encryptYAML(applierPlainYAML, recipients: [key.public])
+            try encrypted.write(
+                to: dir.appendingPathComponent("secret.yaml"), atomically: true, encoding: .utf8)
+        }
+
+        let plan = await ProjectRecipientApplier().plan(projectRoot: root, recipients: [])
+
+        // "alpha/secret.yaml" sorts before "zulu/secret.yaml", so that is the
+        // file the user sees first and the rule the panel must be about.
+        #expect(plan.encryptedFiles.map { $0.lastPathComponent } == ["secret.yaml", "secret.yaml"])
+        #expect(plan.encryptedFiles.first?.path.contains("/alpha/") == true)
+        #expect(plan.targetFile?.path.contains("/alpha/") == true)
+        #expect(plan.configRecipients == [alpha.public])
+        #expect(plan.matchedFiles.count == 1)
+        #expect(plan.matchedFiles.first?.path.contains("/alpha/") == true)
+        #expect(plan.unmatchedFiles.first?.path.contains("/zulu/") == true)
+    }
+
+    @Test("every file list a plan reports is in project-relative path order")
+    func everyReportedListIsSorted() async throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try applierScratchDirectory()
+        try """
+            creation_rules:
+              - path_regex: .*\\.yaml$
+                age: \(owner.public)
+
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+
+        let encrypted = try SopsBridge.encryptYAML(applierPlainYAML, recipients: [owner.public])
+        for name in ["zzz.yaml", "mmm.yaml", "aaa.yaml"] {
+            try encrypted.write(to: root.appendingPathComponent(name), atomically: true, encoding: .utf8)
+        }
+        // ...and one in a subdirectory, so the comparison is on the whole
+        // relative path rather than the file name.
+        let nested = root.appendingPathComponent("bbb", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try encrypted.write(
+            to: nested.appendingPathComponent("aaa.yaml"), atomically: true, encoding: .utf8)
+
+        let plan = await ProjectRecipientApplier().plan(projectRoot: root, recipients: [owner.public])
+
+        // `$TMPDIR` is reached through the `/var` → `/private/var` symlink, so
+        // the scan's URLs are standardized and the fixture root's is not —
+        // strip against the standardized form, or every path keeps a
+        // `/private` stub and the comparison is about the wrong thing.
+        let base = root.standardizedFileURL.path + "/"
+        let relative = plan.encryptedFiles.map {
+            $0.standardizedFileURL.path.replacingOccurrences(of: base, with: "")
+        }
+        #expect(relative == ["aaa.yaml", "bbb/aaa.yaml", "mmm.yaml", "zzz.yaml"])
+        #expect(plan.matchedFiles == plan.encryptedFiles)
+        #expect(plan.filesInScope == plan.encryptedFiles)
+    }
+}

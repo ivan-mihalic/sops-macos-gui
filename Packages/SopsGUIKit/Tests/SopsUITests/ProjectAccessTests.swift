@@ -2,6 +2,7 @@ import Foundation
 import ScratchCleanup
 import SopsEngine
 import SopsProjects
+import SwiftUI
 import Testing
 
 @testable import SopsUI
@@ -409,6 +410,7 @@ struct ProjectAccessGateTests {
             #expect(!ProjectAccessView.explanation(for: refusal).isEmpty)
         }
     }
+
 }
 
 @Suite("ProjectAccessModel — a project it could not look inside is never reported as empty")
@@ -502,5 +504,108 @@ struct ProjectAccessScopeFallbackTests {
 
         #expect(model.plan?.configExists == false)
         #expect(model.filesToApply.count == 2)
+    }
+}
+
+@Suite("ProjectAccessView — what an apply will touch is always stated on the panel")
+@MainActor
+struct ProjectAccessScopeDisclosureTests {
+
+    /// I5. `Plan.filesInScope` deliberately falls back to *every* encrypted
+    /// file when no governing creation rule could be identified — otherwise a
+    /// project with no `.sops.yaml`, an unreadable one, or one whose rules
+    /// match nothing would apply to nothing and report success. But the panel
+    /// rendered its scope sentence only in the rule-identified branch, so in
+    /// exactly the case where the scope was *widest* the user was told
+    /// nothing about it until the confirmation dialog. The count belongs on
+    /// the panel, before the button is pressed.
+    /// Every label the rendered panel exposes.
+    ///
+    /// Deliberately unfiltered, and both sides of every assertion below go
+    /// through `LocalizedKey.text`. Under plain `swift test` the string catalog
+    /// is copied uncompiled (CLAUDE.md), so `LocalizedKey.text` resolves to the
+    /// raw key and `String(format:)` substitutes nothing — an assertion written
+    /// against literal English ("…will re-wrap all 2 encrypted files…") passes
+    /// only under a catalog-compiling build and fails here for a reason that
+    /// has nothing to do with the view. Comparing key-derived text to
+    /// key-derived text is stable under both build systems and still proves the
+    /// thing this test is about: *which* sentence the panel renders in *which*
+    /// branch. That the counts inside it are right is pinned by the model-level
+    /// tests above, and that the plural forms resolve by `LocalizationTests`.
+    private func labels(in nodes: [GatingAXProbe.Node]) -> [String] {
+        nodes.flatMap { [$0.label, $0.value] }
+    }
+
+    @Test("a project with no .sops.yaml still says how many files an apply would touch")
+    func scopeIsStatedWithoutAConfig() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let root = try projectScratchDirectory()
+        let encrypted = try SopsBridge.encryptYAML(projectPlainYAML, recipients: [owner.public])
+        for name in ["a.yaml", "b.yaml"] {
+            try encrypted.write(to: root.appendingPathComponent(name), atomically: true, encoding: .utf8)
+        }
+
+        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
+        let host = GatingHost(size: CGSize(width: 560, height: 620)) {
+            AnyView(ProjectAccessView(model: model, onClose: {}, onFilesApplied: {}))
+        }
+        defer { host.finish() }
+        await host.settle(until: { model.loadState == .loaded })
+
+        try #require(model.loadState == .loaded, "precondition: the view's own task loaded the model")
+        try #require(model.plan?.governingRuleIdentified == false, "precondition: the fallback branch")
+        #expect(model.filesToApply.count == 2)
+
+        let expected = String(format: LocalizedKey.projectAccessAllFilesInScope.text, 2)
+        #expect(
+            labels(in: host.nodes()).contains(expected),
+            "the panel must state what an apply would touch even when no rule was identified")
+    }
+
+    @Test("a project whose creation rule matches nothing still says how many files an apply would touch")
+    func scopeIsStatedWhenNoRuleMatches() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let root = try projectScratchDirectory()
+        try """
+            creation_rules:
+              - path_regex: nothing-here/.*\\.yaml$
+                age: \(owner.public)
+
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let encrypted = try SopsBridge.encryptYAML(projectPlainYAML, recipients: [owner.public])
+        try encrypted.write(
+            to: root.appendingPathComponent("secret.yaml"), atomically: true, encoding: .utf8)
+
+        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
+        let host = GatingHost(size: CGSize(width: 560, height: 620)) {
+            AnyView(ProjectAccessView(model: model, onClose: {}, onFilesApplied: {}))
+        }
+        defer { host.finish() }
+        await host.settle(until: { model.loadState == .loaded })
+
+        try #require(model.loadState == .loaded)
+        try #require(model.plan?.governingRuleIdentified == false)
+
+        let expected = String(format: LocalizedKey.projectAccessAllFilesInScope.text, 1)
+        #expect(labels(in: host.nodes()).contains(expected))
+    }
+
+    /// The branch that already worked, kept alongside so a future change
+    /// cannot fix the fallback by deleting the case it was modelled on.
+    @Test("a project whose rule was identified states the matched-of-found count")
+    func scopeIsStatedWhenARuleIsIdentified() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let (root, _) = try makeProject(owner: owner)
+
+        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
+        let host = GatingHost(size: CGSize(width: 560, height: 620)) {
+            AnyView(ProjectAccessView(model: model, onClose: {}, onFilesApplied: {}))
+        }
+        defer { host.finish() }
+        await host.settle(until: { model.plan?.governingRuleIdentified == true })
+
+        try #require(model.plan?.governingRuleIdentified == true)
+        let expected = String(format: LocalizedKey.projectAccessFilesSummary.text, "2", "2")
+        #expect(labels(in: host.nodes()).contains(expected))
     }
 }

@@ -233,7 +233,7 @@ public struct ProjectRecipientApplier: Sendable {
     /// produces the text.
     public func plan(projectRoot: URL, recipients: [String]) async -> Plan {
         let tree = await scanProject(projectRoot)
-        let encryptedFiles = tree.encrypted.map(\.url)
+        let encryptedFiles = Self.sortedByProjectRelativePath(tree.encrypted.map(\.url), under: projectRoot)
         let configURL = projectRoot.appendingPathComponent(".sops.yaml")
         let configExists = FileManager.default.fileExists(atPath: configURL.path)
 
@@ -301,6 +301,37 @@ public struct ProjectRecipientApplier: Sendable {
             configUpdateText: update.writable && update.changed ? update.config : nil,
             configFingerprint: configFingerprint, configError: nil,
             rootMissing: tree.rootMissing, rootUnreadable: tree.rootUnreadable)
+    }
+
+    /// `urls` in the order the user already sees them, which is the order
+    /// `FileListModel.refresh()` puts the project's file list in: ascending by
+    /// path relative to the project root.
+    ///
+    /// This is not cosmetic. `plan` resolves which creation rule the panel is
+    /// about from the *first* encrypted file, and `ProjectScanner` yields files
+    /// in `FileManager.enumerator` order — directory-hash order on APFS, which
+    /// is neither alphabetical nor stable across adding or deleting an
+    /// unrelated file. Unsorted, a multi-rule project therefore targeted
+    /// whichever file the filesystem happened to hand back first: not the file
+    /// the user sees at the top of the list, and not the same rule twice in a
+    /// row. For an action that rewrites who a project encrypts for, the choice
+    /// has to be predictable and has to match what is on screen.
+    ///
+    /// The relative-path computation is duplicated from
+    /// `FileListModel.relativePath(for:)` rather than shared, because that type
+    /// lives in `SopsUI`, which depends on this module and not the other way
+    /// round — the same reason `runOffCooperativePool` is duplicated here.
+    /// `ProjectRecipientApplierOrderingTests` pins the resulting order.
+    static func sortedByProjectRelativePath(_ urls: [URL], under root: URL) -> [URL] {
+        func relativePath(_ url: URL) -> String {
+            let base = root.standardizedFileURL.path
+            var path = url.standardizedFileURL.path
+            guard path.hasPrefix(base) else { return path }
+            path.removeFirst(base.count)
+            if path.hasPrefix("/") { path.removeFirst() }
+            return path
+        }
+        return urls.sorted { relativePath($0) < relativePath($1) }
     }
 
     // MARK: - Writing the config
