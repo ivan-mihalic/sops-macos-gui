@@ -689,8 +689,36 @@ public struct ProjectScanner {
         // matter is a build product, and build products are already excluded
         // by name.
         let errors = EnumerationErrorLog()
+        // The **root's own** symlinks resolved, and only the root's.
+        //
+        // `FileManager.enumerator(at:)` does not follow a symbolic link handed
+        // to it as the root: it returns a valid enumerator that yields zero
+        // entries and reports the root through `errorHandler` — which lands in
+        // the `rootUnreadable` branch below, so a project whose root is a
+        // symlink (a checkout behind a linked home or volume, a `$TMPDIR` path,
+        // anything the user reached through `ln -s`) was reported as a
+        // directory this app "could not list what is in", with every finding
+        // for it suppressed. The `stat` above deliberately follows the link and
+        // says the root is a perfectly good directory, so the two disagreed
+        // about the same path.
+        //
+        // This is not the directory-symlink policy a hundred lines below being
+        // relaxed. That policy is about links found *inside* the tree, where
+        // following one is how a walk loops forever or escapes onto the rest of
+        // the disk; it is unchanged, and it is evaluated per entry against the
+        // enumerator's own output. The root is the one directory the user named
+        // explicitly, and refusing to enter it does not bound anything.
+        //
+        // Nothing downstream needs the unresolved spelling: the enumerator
+        // already hands back every child with the symlinks in its directory
+        // prefix resolved, and everything that has to recognise a path as being
+        // under the root — `relativeName`, the scope disclosure, the root
+        // comparison below — goes through `CanonicalPath`, which resolves the
+        // root the same way. The spelling the user typed survives where it
+        // matters, in `InspectedProject.rootPath`, which this never touches.
+        let enumerationRoot = root.resolvingSymlinksInPath()
         let enumerator = FileManager.default.enumerator(
-            at: root,
+            at: enumerationRoot,
             includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey],
             options: [],
             errorHandler: { url, _ in errors.record(url.path); return true })

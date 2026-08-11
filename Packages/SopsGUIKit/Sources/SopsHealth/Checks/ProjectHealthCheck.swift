@@ -201,6 +201,18 @@ public struct ProjectHealthCheck: HealthCheck {
         // for anything but path_regex matching (sops does no I/O on it), so
         // a synthetic, non-existent name is fine here — only the "did the
         // config load" outcome from this call is used.
+        //
+        // Deliberately *not* routed through `recipientFinding`'s
+        // `ruleMatchingPath`, and it needs no equivalent: both paths in this
+        // pair are built from the same `root` string, so the directory sops
+        // strips is spelled identically to the target's prefix and the strip
+        // is already exact. The mismatch that helper exists for arrives only
+        // with a path from `FileManager.enumerator`, and no enumerated path
+        // reaches here. What the strip yields would not change this outcome
+        // anyway: whether a rule matched is discarded here, and the two things
+        // this branch reports — YAML that will not parse, and a `path_regex`
+        // that will not compile — are both decided before any regex is matched
+        // against the stripped string.
         let probeTarget = root.appendingPathComponent(".sops-health-check-probe").path
         do {
             _ = try SopsBridge.lookupCreationRule(configPath: configURL.path, targetFilePath: probeTarget)
@@ -369,6 +381,63 @@ public struct ProjectHealthCheck: HealthCheck {
             return path.hasPrefix(rootPrefix) ? String(path.dropFirst(rootPrefix.count)) : path
         }
 
+        /// The form of a file's path `SopsBridge.lookupCreationRule` has to be
+        /// given, which is *not* the form the walk hands back.
+        ///
+        /// sops picks the rule governing a file by stripping the config's own
+        /// directory off the file's path **as a literal prefix** and matching
+        /// `path_regex` against what is left (`config/config.go`'s
+        /// `parseCreationRuleForFile`: `strings.TrimPrefix(filePath, configDir
+        /// + "/")`, over a `configDir` that is `filepath.Abs`'d and so never
+        /// symlink-resolved). That only works when both paths are spelled the
+        /// same way — and they are not. `FileManager.enumerator` yields entries
+        /// with the symlinks in their directory prefix already resolved (a root
+        /// under `/var` enumerates as `/private/var/…`), while `configPath` is
+        /// built from `project.rootPath`, which keeps whatever spelling the
+        /// project was added under because `ProjectStore` deliberately stores
+        /// the display path. With the two disagreeing the strip is a no-op and
+        /// every `path_regex` is matched against an *absolute* path: an
+        /// anchored rule like `^secrets/` then matches nothing at all, and an
+        /// unanchored one like `.*\.yaml$` matches everything — which is why
+        /// this survived, the fixtures all being the second kind.
+        ///
+        /// The fix re-spells the file onto the root the caller gave us rather
+        /// than resolving both sides, as `ProjectRecipientApplier`'s
+        /// `ruleMatchingPath` does. Three reasons, all of which apply here and
+        /// not there:
+        ///
+        /// * It introduces no second normalisation rule. The relative name is
+        ///   the one `relativeName` already computed through `CanonicalPath`,
+        ///   this module's single canonicaliser, so the string sops matches
+        ///   against and the string the finding prints cannot drift apart.
+        /// * `configPath` reaches the bridge exactly as the user spelled it,
+        ///   and the bridge *opens* that file. `CanonicalPath.of` drops a
+        ///   leading `/private`, which is right for comparing paths (it is what
+        ///   reconciles `/var` with `/private/var`) and wrong for one that has
+        ///   to open: it only names an existing file while `/private/<x>`
+        ///   happens to be symlinked from `/<x>`, as `var`, `tmp` and `etc`
+        ///   are and an arbitrary directory is not.
+        /// * A symlink to a regular file inside the project is a file this walk
+        ///   reports (see `ProjectScanner`), and the rule governing it is the
+        ///   one matching the link's own path inside the project — what sops
+        ///   would match if the user ran it on that path. Resolving the leaf
+        ///   would ask about the target instead, which for a link pointing out
+        ///   of the project matches no rule at all. `CanonicalPath.ofLeaf`
+        ///   resolves the directory and keeps the leaf, which is exactly the
+        ///   distinction this needs and the one `relativeName` is already made
+        ///   of.
+        ///
+        /// Used only to *ask about* a file. Nothing user-facing is spelled from
+        /// it, and nothing is ever written to it.
+        func ruleMatchingPath(_ url: URL) -> String {
+            let relative = relativeName(url)
+            // `relativeName` falls back to an absolute path for anything not
+            // under the root — which the walk should never produce, but
+            // re-rooting one would build nonsense rather than fail.
+            guard !relative.hasPrefix("/") else { return relative }
+            return root.appendingPathComponent(relative).path
+        }
+
         // Encrypted files this build cannot read at all. The bridge is
         // YAML-only in M1 (`gobridge.Format`), so a sops-encrypted .env, .json
         // or .ini carries metadata in a shape `EncryptedFileMetadata` does not
@@ -384,7 +453,11 @@ public struct ProjectHealthCheck: HealthCheck {
 
             let lookup: CreationRuleLookup
             do {
-                lookup = try SopsBridge.lookupCreationRule(configPath: configPath, targetFilePath: sniffed.url.path)
+                // `ruleMatchingPath`, never `sniffed.url.path` — see that
+                // helper for what the raw walk spelling does to an anchored
+                // `path_regex`.
+                lookup = try SopsBridge.lookupCreationRule(
+                    configPath: configPath, targetFilePath: ruleMatchingPath(sniffed.url))
             } catch {
                 unverifiable.append("\(relative): could not determine which rule governs it (\(error)).")
                 continue
