@@ -5,8 +5,8 @@ import Testing
 
 @Suite("RecipientRegistry")
 struct RecipientRegistryTests {
-    private static let firstPublicKey = "age1ykd0u99qxpdl4yr57lwqv5rt9e473p6hhdps2a5q5ddmt0x6ryaqkjpx4f"
-    private static let secondPublicKey = "age1f7ekyrshavjztvv5zfuvstkjqjhcry9cwk8lprwaxp49cz0cvsdssdfax0"
+    private static let firstPublicKey = "age1l3re6nlra8gmrpxr7j35hnhkyw48sdwawp9gsrsfxkw9jdm3ydxs2fnlh6"
+    private static let secondPublicKey = "age1kecsr00wpjmwykpp9xytszmzwum228uxrassad5dse9c06wdsqfqmjafpp"
 
     private func makeProject() throws -> URL {
         let project = FileManager.default.temporaryDirectory
@@ -56,6 +56,20 @@ struct RecipientRegistryTests {
         #expect(!FileManager.default.fileExists(atPath: project.appendingPathComponent(".sops-gui/recipients.json").path))
     }
 
+    @Test("a checksum-invalid age-shaped recipient is refused before it reaches disk")
+    func rejectsChecksumInvalidAgeRecipient() throws {
+        let project = try makeProject()
+        // Same length and alphabet as `firstPublicKey`; only its Bech32
+        // checksum is corrupted, so a prefix/shape-only validation accepts it.
+        let badChecksum = "age1l3re6nlra8gmrpxr7j35hnhkyw48sdwawp9gsrsfxkw9jdm3ydxs2fnlhq"
+        let invalid = RecipientRecord(label: "Bad checksum", kind: .person, ageRecipient: badChecksum)
+
+        #expect(throws: RecipientRegistry.Error.invalidAgeRecipient) {
+            try RecipientRegistry.upsert(invalid, in: project)
+        }
+        #expect(!FileManager.default.fileExists(atPath: RecipientRegistry.fileURL(in: project).path))
+    }
+
     @Test("save atomically replaces an existing complete registry without staging files left behind")
     func savesAtomically() throws {
         let project = try makeProject()
@@ -70,6 +84,26 @@ struct RecipientRegistryTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path)
             .filter { $0.hasSuffix(".tmp") }
             .isEmpty)
+    }
+
+    @Test("a save refuses to overwrite a registry changed after it was observed")
+    func refusesSecondWriter() throws {
+        let project = try makeProject()
+        let original = RecipientRecord(label: "Laptop", kind: .device, ageRecipient: Self.firstPublicKey)
+        let ours = RecipientRecord(label: "Deploy", kind: .server, ageRecipient: Self.secondPublicKey)
+        let external = RecipientRecord(
+            label: "External", kind: .person,
+            ageRecipient: "age1hwzmx5590r4h6j0as6alh684v6agr6navclqnpz8lne0pndt4ehqeu86pn")
+        try RecipientRegistry.save([original], in: project)
+        let file = RecipientRegistry.fileURL(in: project)
+        let observed = FileFingerprint.of(file)
+
+        try AtomicFileWriter.write(try JSONEncoder().encode([external]), to: file)
+
+        #expect(throws: AtomicFileWriter.Error.destinationChangedOnDisk(path: file.path)) {
+            try RecipientRegistry.upsert(ours, in: project, expecting: observed)
+        }
+        #expect(try RecipientRegistry.load(in: project) == [external])
     }
 
     @Test("a blank label and a private identity never enter the registry JSON")
