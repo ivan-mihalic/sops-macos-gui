@@ -259,41 +259,16 @@ struct RecipientLabelEditorModelTests {
 // MARK: - The wording, which is the security question
 
 /// Forgetting a label removes a nickname. It removes nobody's access — the
-/// recipient goes on decrypting exactly what they could decrypt before. A user
-/// who reads "Remove" as "revoke" and moves on has been actively misled by a
-/// tool whose whole job is to say who can read their secrets.
+/// recipient goes on decrypting exactly what they could decrypt before.
+///
+/// The *wording* of those strings is asserted in `LocalizationTests`, against
+/// the catalog JSON rather than resolved text: under plain `swift test` the
+/// catalog is copied uncompiled and every `LocalizedKey.text` resolves to its
+/// own raw key, so an English-content assertion here would pass or fail for
+/// reasons that have nothing to do with the string. What is left here is the one
+/// claim that is about code rather than English.
 @Suite("Forgetting a label is unmistakably not a revocation")
 struct ForgetLabelWordingTests {
-
-    @Test("the control does not use the vocabulary of removal or revocation")
-    func theControlSaysForget() {
-        for key in [LocalizedKey.recipientForgetLabel, .recipientForgetLabelAccessibility] {
-            let text = key.text.lowercased()
-            #expect(!text.contains("revoke"), "\(key.rawValue) must not read as a revocation: \(key.text)")
-            #expect(
-                !text.contains("remove this recipient"),
-                "\(key.rawValue) must not read as removing the recipient: \(key.text)")
-        }
-    }
-
-    @Test("the accessibility label says what it does not do, not only what it does")
-    func theAccessibilityLabelDisclaims() {
-        let text = LocalizedKey.recipientForgetLabelAccessibility.text.lowercased()
-        #expect(text.contains("access"), "the a11y label must speak to access: \(text)")
-        #expect(
-            text.contains("not") || text.contains("still"),
-            "the a11y label must say access is unchanged: \(text)")
-    }
-
-    @Test("the confirmation says the recipient keeps decrypting, and how to actually revoke")
-    func theConfirmationDisclaims() {
-        let message = LocalizedKey.recipientForgetConfirmMessage.text.lowercased()
-        #expect(message.contains("decrypt"),
-                "the confirmation must say they can still decrypt: \(message)")
-        #expect(message.contains("access"))
-        #expect(message.contains("apply"),
-                "the confirmation must point at the control that does change access: \(message)")
-    }
 
     /// Not dressed up as dangerous either. Nothing about forgetting a nickname
     /// warrants a destructive role, and a red button that changes nothing is its

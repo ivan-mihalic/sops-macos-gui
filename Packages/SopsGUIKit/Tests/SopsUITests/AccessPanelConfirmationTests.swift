@@ -132,16 +132,12 @@ struct ProjectAccessConfigConfirmationTests {
         #expect(message.contains(String(format: LocalizedKey.projectAccessConfigLoses.text, leaving.public)))
     }
 
-    /// The one thing this dialog must never be read as. Removing a recipient
-    /// from a creation rule does not take away anything they can decrypt today.
-    @Test("the removal sentence is written so it cannot be read as a revocation")
-    func theRemovalSentenceDisclaimsRevocation() throws {
-        let sentence = LocalizedKey.projectAccessConfigLoses.text
-        #expect(sentence.lowercased().contains("new files"),
-                "the sentence must scope itself to new files: \(sentence)")
-        #expect(sentence.lowercased().contains("already"),
-                "the sentence must say existing files keep their access: \(sentence)")
-    }
+    // The *wording* of the removal sentence — that it scopes itself to new
+    // files and says existing ones keep their access — is asserted in
+    // `LocalizationTests` against the catalog JSON, for the reason that file's
+    // header gives: plain `swift test` copies the catalog uncompiled, so
+    // `LocalizedKey.text` here is the raw key and an English assertion would
+    // pass or fail for reasons unrelated to the string.
 
     @Test("a config update that adds and removes nobody names nobody")
     func noChangeNamesNobody() async throws {
