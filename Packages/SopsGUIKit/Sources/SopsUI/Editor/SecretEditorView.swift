@@ -148,6 +148,25 @@ public struct SecretEditorView: View {
         let model: RecipientAccessModel
     }
 
+    /// Whether the toolbar's Access button may be pressed right now.
+    ///
+    /// Requires a **clean** document (`!isDirty`), not just a loaded one.
+    /// `RecipientAccessModel` reads and writes this file independently of
+    /// `SecretDocumentViewModel`'s own save path, and a successful apply
+    /// reloads the open document (`.sheet(item: $accessRequest)`'s
+    /// `onApplied` above) so its save-time fingerprint resyncs with the
+    /// rewrapped bytes. That reload calls `SecretDocumentViewModel.load()`,
+    /// which discards every pending edit, addition and removal — so without
+    /// this gate, typing an unsaved change into a row, then adding a
+    /// recipient and pressing Apply, silently threw the typed value away
+    /// with no prompt, no error and no dirty indicator surviving to warn
+    /// the user. Pulled out as a pure function — mirroring
+    /// `WorkspaceSwitchDecision`/`QuitRequest` elsewhere in this module — so
+    /// the gate is directly testable without a rendered view.
+    static func canOpenAccessPanel(loadState: LoadState, isDirty: Bool, isSaving: Bool) -> Bool {
+        loadState == .loaded && !isDirty && !isSaving
+    }
+
     /// - Parameters:
     ///   - initiallySelectedRowID: which row starts selected. The app leaves
     ///     this `nil`; it exists because the toolbar's `-` is enabled only
@@ -361,6 +380,8 @@ public struct SecretEditorView: View {
             Spacer()
 
             if let recipientAccess {
+                let canOpenAccess = Self.canOpenAccessPanel(
+                    loadState: viewModel.loadState, isDirty: viewModel.isDirty, isSaving: isSaving)
                 Button {
                     let model = RecipientAccessModel(
                         fileURL: recipientAccess.fileURL,
@@ -370,8 +391,10 @@ public struct SecretEditorView: View {
                 } label: {
                     Label(.accessToolbarButton, systemImage: "person.2.badge.key")
                 }
-                .disabled(viewModel.loadState != .loaded || isSaving)
-                .help(LocalizedKey.accessToolbarButton.text)
+                .disabled(!canOpenAccess)
+                .help(canOpenAccess
+                    ? LocalizedKey.accessToolbarButton.text
+                    : LocalizedKey.accessDisabledUnsavedChanges.text)
             }
 
             Button {

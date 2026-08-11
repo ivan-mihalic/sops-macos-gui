@@ -93,7 +93,19 @@ public struct RecipientAccessView: View {
     }
 
     private var canApply: Bool {
-        model.loadState == .loaded && model.isDirty && model.keyConfigured && !model.isApplying
+        Self.canApply(
+            loadState: model.loadState, isDirty: model.isDirty,
+            keyConfigured: model.keyConfigured, isApplying: model.isApplying)
+    }
+
+    /// Whether the Apply button may be pressed right now. Pulled out as a
+    /// pure function — mirroring `SecretEditorView.canOpenAccessPanel` and
+    /// this module's `WorkspaceSwitchDecision`/`QuitRequest` — so it is
+    /// directly testable without rendering this view.
+    static func canApply(
+        loadState: RecipientAccessModel.LoadState, isDirty: Bool, keyConfigured: Bool, isApplying: Bool
+    ) -> Bool {
+        loadState == .loaded && isDirty && keyConfigured && !isApplying
     }
 
     // MARK: - Content per load state

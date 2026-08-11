@@ -118,6 +118,15 @@ public final class RecipientAccessModel {
     private let fingerprintFile: (URL) -> FileFingerprint?
     private let writeFile: (String, URL, FileFingerprint?) throws -> FileFingerprint?
     private let loadRegistry: (URL) -> [RecipientRecord]
+    /// The one bridge call `apply()` may make. A seam — not just
+    /// `SopsBridge.updateRecipients` called inline — so a test can prove
+    /// "apply calls only this" directly (spy on the closure) instead of only
+    /// inferring it from decrypt behavior after the fact. `async` so the
+    /// default implementation can hop off the main actor for the real
+    /// crypto (`runOffCooperativePool`) while a test's substitute can just
+    /// call straight through — see `RecipientAccessTests`'s seam-injection
+    /// suite.
+    private let rewrapRecipients: (String, [String], String) async throws -> String
 
     /// This file's own encrypted bytes, as last read by `load()` or produced
     /// by the most recent successful `apply()`. `nil` until a load has
@@ -158,7 +167,9 @@ public final class RecipientAccessModel {
         },
         loadRegistry: @escaping (URL) -> [RecipientRecord] = { project in
             (try? RecipientRegistry.load(in: project)) ?? []
-        }
+        },
+        rewrapRecipients: @escaping (String, [String], String) async throws -> String = RecipientAccessModel
+            .defaultRewrap
     ) {
         self.fileURL = fileURL
         self.projectURL = projectURL
@@ -167,15 +178,25 @@ public final class RecipientAccessModel {
         self.fingerprintFile = fingerprintFile
         self.writeFile = writeFile
         self.loadRegistry = loadRegistry
+        self.rewrapRecipients = rewrapRecipients
     }
 
     /// Whether the staged set differs from the file's current metadata.
-    /// Order-sensitive on purpose: this type's own add/remove API is the
-    /// only thing that ever changes either array, and neither reorders what
-    /// it did not touch, so two arrays that differ only in order would mean
-    /// this type reordered something on its own — a bug this equality would
-    /// otherwise hide.
-    public var isDirty: Bool { stagedRecipients != currentRecipients }
+    ///
+    /// Compared as sets, not arrays: `stageRemove` deletes in place and
+    /// `stageAdd` appends, so undoing a removal by re-adding the same
+    /// recipient (exactly what `RecipientAccessView`'s row toggle does)
+    /// reorders it to the end without changing *what* is staged. An earlier
+    /// version of this compared arrays and asserted the opposite as a
+    /// rationale — that no legitimate sequence of this type's own
+    /// add/remove calls could produce a same-membership, different-order
+    /// result. That claim was false for exactly that undo sequence: with
+    /// `currentRecipients == [A, B]`, remove(A) → `[B]`, then add(A) (the
+    /// undo) → `[B, A]` — same members, reordered by the very API this type
+    /// exposes. An array comparison read that as dirty, which enabled Apply
+    /// for a no-op change: a real `updateRecipients` rewrap and disk write
+    /// (new MAC, new `lastmodified`) for a set that never actually changed.
+    public var isDirty: Bool { Set(stagedRecipients) != Set(currentRecipients) }
 
     /// Whether `apply()` can actually re-wrap right now. Reading recipients
     /// never needs this; only applying does.
@@ -310,9 +331,13 @@ public final class RecipientAccessModel {
     /// `currentRecipients` and clears the staged/baseline difference.
     ///
     /// This is the only place this type calls into the bridge, and the only
-    /// bridge call it makes is `SopsBridge.updateRecipients` — staging never
-    /// does, and neither does reading (`SopsBridge.recipients` needs no
-    /// identity and never re-wraps anything).
+    /// call it makes is through the `rewrapRecipients` seam — which, by
+    /// default, is exactly `SopsBridge.updateRecipients` and nothing else —
+    /// staging never calls it, and neither does reading
+    /// (`SopsBridge.recipients` needs no identity and never re-wraps
+    /// anything). `RecipientAccessSeamTests` proves this directly by
+    /// injecting a counting substitute for the seam, rather than only
+    /// inferring it from decrypt behavior after the fact.
     ///
     /// Refuses, without calling the bridge or touching the file, when the
     /// staged set is empty (`.refusedEmptyRecipients`) or no session key is
@@ -341,69 +366,79 @@ public final class RecipientAccessModel {
         defer { isApplying = false }
 
         let recipientsToApply = stagedRecipients
-        let applied: Outcome<String>? = await keyStore.withKey { key in
-            await Self.rewrap(contents, to: recipientsToApply, agePrivateKey: key)
-        }
-
-        guard let applied else { return .refusedNoKey }
-
-        switch applied {
-        case .failure(let message):
-            return .failed(message)
-        case .success(let newEncrypted):
-            let written: FileFingerprint?
-            do {
-                written = try writeFile(newEncrypted, fileURL, loadedFingerprint)
-            } catch let error as AtomicFileWriter.Error {
-                return .failed("this file's recipients could not be written to disk: \(error.description)")
-            } catch {
-                return .failed(
-                    "this file's recipients could not be written to disk: \(fileURL.lastPathComponent)")
+        let applied: String?
+        do {
+            // `withKey` is `rethrows`: it returns `nil` without ever calling
+            // this closure when no key is configured (`.refusedNoKey`
+            // below), and otherwise rethrows whatever the closure throws —
+            // so a bridge failure is caught in exactly one place, here,
+            // rather than needing a second manual result-wrapping layer the
+            // way `SecretDocumentViewModel` uses `Outcome` for its
+            // non-`rethrows` call sites.
+            applied = try await keyStore.withKey { key in
+                try await rewrapRecipients(contents, recipientsToApply, key)
             }
-            encryptedContents = newEncrypted
-            loadedFingerprint = written
-            currentRecipients = recipientsToApply
-            stagedRecipients = recipientsToApply
-            return .applied
+        } catch let error as SopsBridgeError {
+            return .failed(error.description)
+        } catch {
+            return .failed("this file's recipients could not be updated")
         }
-    }
 
-    /// Mirrors `SecretDocumentViewModel`'s private `Outcome`: a plain-message
-    /// failure instead of `Swift.Result`'s `Failure: Error`, because
-    /// `SopsBridgeError`'s only surface this needs is `description`, and
-    /// `Sendable` so it can cross the dedicated thread `runOffCooperativePool`
-    /// hops to and back.
-    private enum Outcome<Success: Sendable>: Sendable {
-        case success(Success)
-        case failure(String)
-    }
+        guard let newEncrypted = applied else { return .refusedNoKey }
 
-    private static func rewrap(
-        _ contents: String, to recipients: [String], agePrivateKey key: String
-    ) async -> Outcome<String> {
-        await runOffCooperativePool {
-            do {
-                return .success(try SopsBridge.updateRecipients(contents, to: recipients, agePrivateKey: key))
-            } catch let error as SopsBridgeError {
-                return .failure(error.description)
-            } catch {
-                return .failure("this file's recipients could not be updated")
-            }
+        let written: FileFingerprint?
+        do {
+            written = try writeFile(newEncrypted, fileURL, loadedFingerprint)
+        } catch let error as AtomicFileWriter.Error {
+            return .failed("this file's recipients could not be written to disk: \(error.description)")
+        } catch {
+            return .failed(
+                "this file's recipients could not be written to disk: \(fileURL.lastPathComponent)")
         }
+        encryptedContents = newEncrypted
+        loadedFingerprint = written
+        currentRecipients = recipientsToApply
+        stagedRecipients = recipientsToApply
+        return .applied
     }
 
-    /// Same reasoning, and the same measured `Task.detached` failure mode, as
+    /// Runs a synchronous, blocking `body` on a dedicated OS thread instead
+    /// of Swift's cooperative thread pool, and bridges the result (or
+    /// thrown error) back into `async`. Same reasoning, and the same
+    /// measured `Task.detached` failure mode, as
     /// `SecretDocumentViewModel.runOffCooperativePool` — duplicated rather
     /// than shared because that one is private to its own file. See that
     /// type's doc comment for the measurements behind not using
     /// `Task.detached` or `DispatchQueue.global()` here.
-    private static func runOffCooperativePool<T: Sendable>(_ body: @escaping @Sendable () -> T) async -> T {
-        await withCheckedContinuation { continuation in
+    ///
+    /// Used only by the default `rewrapRecipients` seam — a test's
+    /// substitute has no reason to background itself, which is exactly what
+    /// makes the seam cheap to inject from a test (see
+    /// `RecipientAccessTests`).
+    private static func runOffCooperativePool<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
             let thread = Thread {
-                continuation.resume(returning: body())
+                do {
+                    continuation.resume(returning: try body())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
             }
             thread.qualityOfService = .userInitiated
             thread.start()
+        }
+    }
+
+    /// The default `rewrapRecipients` seam: the real bridge call, off the
+    /// main actor. `public` only because Swift requires a `public`
+    /// initializer's default argument *values* to reference symbols at
+    /// least as visible as the initializer itself — this is not meant to be
+    /// called directly. Construct a model without passing
+    /// `rewrapRecipients` to get this behavior.
+    public static func defaultRewrap(_ contents: String, _ recipients: [String], _ key: String) async throws -> String
+    {
+        try await runOffCooperativePool {
+            try SopsBridge.updateRecipients(contents, to: recipients, agePrivateKey: key)
         }
     }
 }

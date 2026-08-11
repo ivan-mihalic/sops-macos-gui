@@ -111,6 +111,17 @@
         }
       }
     },
+    "access.disabled-unsaved-changes": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save your changes before managing access."
+          }
+        }
+      }
+    },
     "access.error.empty-recipients": {
       "extractionState": "manual",
       "localizations": {

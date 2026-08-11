@@ -240,6 +240,12 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // MARK: Task 3 (recipient management) — file access panel
 
     case accessToolbarButton = "access.toolbar-button"
+    // Shown as the Access button's help text (and used to gate it disabled)
+    // while the open document has unsaved edits — see
+    // `SecretEditorView.canOpenAccessPanel`'s doc comment for the data-loss
+    // finding this closes: applying a recipient change reloads the open
+    // document, which discards anything mid-edit and never saved.
+    case accessDisabledUnsavedChanges = "access.disabled-unsaved-changes"
     case accessTitle = "access.title"
     case accessLoadFailedTitle = "access.load-failed.title"
     case accessAddRecipientField = "access.add-recipient-field"
