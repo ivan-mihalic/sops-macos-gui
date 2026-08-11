@@ -63,6 +63,12 @@ public final class ProjectAccessModel {
     public private(set) var loadState: LoadState = .idle
     public private(set) var plan: ProjectRecipientApplier.Plan?
     public private(set) var registryRecords: [RecipientRecord] = []
+    /// The age recipients the creation rule names **more than once**, each
+    /// listed here exactly once. Same collapse, and the same reason for
+    /// disclosing it rather than tidying it away, as
+    /// `RecipientAccessModel.duplicatedRecipients` — sops does not deduplicate
+    /// a flat rule's age list either.
+    public private(set) var duplicatedRecipients: [String] = []
 
     /// The recipients the project's creation rule declares today. The
     /// baseline `stagedRecipients` starts from and `entries` compares to.
@@ -79,7 +85,9 @@ public final class ProjectAccessModel {
     /// say so rather than leaving the button looking untouched.
     public private(set) var configWritten = false
 
-    private let projectRoot: URL
+    /// The project this panel is about. Readable so the label editor knows
+    /// which project's `.sops-gui/recipients.json` a name would be written to.
+    public let projectRoot: URL
     private let keyStore: SessionKeyStore
     private let applier: ProjectRecipientApplier
     private let loadRegistry: (URL) -> [RecipientRecord]
@@ -145,10 +153,13 @@ public final class ProjectAccessModel {
         var seen = Set<String>()
         var result: [RecipientAccessModel.AccessEntry] = []
         for recipient in configRecipients {
+            // One `List` row per identity — see `RecipientAccessModel.entries`
+            // for why this guard is restated where the id is minted rather than
+            // trusted to `load()` alone.
+            guard seen.insert(recipient).inserted else { continue }
             let status: RecipientAccessModel.AccessEntry.Status =
                 stagedRecipients.contains(recipient) ? .unchanged : .pendingRemoval
             result.append(makeEntry(recipient, status: status))
-            seen.insert(recipient)
         }
         for recipient in stagedRecipients where !seen.contains(recipient) {
             result.append(makeEntry(recipient, status: .pendingAddition))
@@ -208,9 +219,16 @@ public final class ProjectAccessModel {
         }
 
         plan = inspected
-        configRecipients = inspected.configRecipients
+        // Collapsed for the same reason, and by the same rule, the per-file
+        // panel collapses a file's metadata: sops does not deduplicate a flat
+        // rule's age list either, and two rows carrying one `AccessEntry.id`
+        // is undefined row identity. See
+        // `RecipientAccessModel.collapsingDuplicates`.
+        let collapsed = RecipientAccessModel.collapsingDuplicates(inspected.configRecipients)
+        configRecipients = collapsed.distinct
+        duplicatedRecipients = collapsed.duplicated
         if stagedRecipients.isEmpty {
-            stagedRecipients = inspected.configRecipients
+            stagedRecipients = collapsed.distinct
         }
         registryRecords = loadRegistry(projectRoot)
         loadState = .loaded

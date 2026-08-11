@@ -285,6 +285,12 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // control again re-adds it to the staged set. See
     // `RecipientAccessModel.stageAdd`/`stageRemove`'s symmetry.
     case accessUndoRemoval = "access.undo-removal"
+    // Formatted with how many age recipients this file's SOPS metadata names
+    // more than once. sops does not deduplicate a flat age list, so this is a
+    // shape a real file can have; the panel collapses each key to one row
+    // (multiplicity is not access) and says so here rather than tidying it
+    // away without a word. See `RecipientAccessModel.duplicatedRecipients`.
+    case accessDuplicateRecipients = "access.duplicate-recipients"
 
     // MARK: Task 4 (recipient management) — project access panel
 
@@ -373,6 +379,9 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // `.sops.yaml` text on hand belongs to an older set. Nothing is written —
     // writing it would drop the recipients staged since, silently.
     case projectAccessErrorStalePlan = "project-access.error.stale-plan"
+    // The creation-rule half of `access.duplicate-recipients`, formatted the
+    // same way and for the same reason.
+    case projectAccessDuplicateRecipients = "project-access.duplicate-recipients"
 
     // MARK: Recipient kinds — the registry's descriptive role for a key
 

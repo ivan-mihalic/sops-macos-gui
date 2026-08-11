@@ -171,6 +171,20 @@ public struct RecipientAccessView: View {
                     .font(.caption)
                     .foregroundStyle(.red)
             }
+
+            // A key this file's metadata names twice is collapsed into one row
+            // — multiplicity is not access — but never without saying so. See
+            // `RecipientAccessModel.duplicatedRecipients`.
+            if !model.duplicatedRecipients.isEmpty {
+                Text(
+                    String(
+                        format: LocalizedKey.accessDuplicateRecipients.text,
+                        model.duplicatedRecipients.count)
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

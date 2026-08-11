@@ -110,9 +110,28 @@ public final class RecipientAccessModel {
     /// `currentRecipients` every time `load()`/`apply()` succeeds.
     public private(set) var stagedRecipients: [String] = []
     public private(set) var registryRecords: [RecipientRecord] = []
+    /// The age recipients this file's SOPS metadata named **more than once**,
+    /// each listed here exactly once.
+    ///
+    /// sops does not deduplicate a flat age list, so a real file can carry the
+    /// same public key twice — verified directly against the bridge, not
+    /// assumed. `currentRecipients` collapses those to one entry apiece,
+    /// because access is a set property: a data key wrapped twice for one
+    /// public key grants precisely what wrapping it once grants, and a panel
+    /// about who can read a file must not model multiplicity as if it were
+    /// access. What it must also not do is collapse *silently* — a file whose
+    /// metadata is shaped oddly is a thing the user may want told about — so
+    /// this is what the panel's disclosure sentence counts. See
+    /// `collapsingDuplicates(_:)`.
+    public private(set) var duplicatedRecipients: [String] = []
 
     private let fileURL: URL
-    private let projectURL: URL?
+    /// The project this file belongs to, for registry labels. `nil` for a file
+    /// opened without one. Readable so the label editor knows which project's
+    /// `.sops-gui/recipients.json` a name would be written to — naming a
+    /// recipient is a registry-only act and never consults this model's
+    /// document state.
+    public let projectURL: URL?
     private let keyStore: SessionKeyStore
     private let readFile: (URL) throws -> String
     private let fingerprintFile: (URL) -> FileFingerprint?
@@ -211,9 +230,15 @@ public final class RecipientAccessModel {
         var seen = Set<String>()
         var result: [AccessEntry] = []
         for recipient in currentRecipients {
+            // `AccessEntry.id` is the public key, so a repeated recipient here
+            // would be two `List` rows carrying one identity. `load()` already
+            // collapses what it reads (see `collapsingDuplicates`); this is the
+            // same guarantee restated where the identity is actually minted, so
+            // a future path that sets `currentRecipients` some other way cannot
+            // reintroduce it.
+            guard seen.insert(recipient).inserted else { continue }
             let status: AccessEntry.Status = stagedRecipients.contains(recipient) ? .unchanged : .pendingRemoval
             result.append(makeEntry(recipient, status: status))
-            seen.insert(recipient)
         }
         for recipient in stagedRecipients where !seen.contains(recipient) {
             result.append(makeEntry(recipient, status: .pendingAddition))
@@ -272,10 +297,12 @@ public final class RecipientAccessModel {
 
         do {
             let recipients = try SopsBridge.recipients(in: contents)
+            let collapsed = Self.collapsingDuplicates(recipients)
             encryptedContents = contents
             loadedFingerprint = fingerprint
-            currentRecipients = recipients
-            stagedRecipients = recipients
+            currentRecipients = collapsed.distinct
+            stagedRecipients = collapsed.distinct
+            duplicatedRecipients = collapsed.duplicated
             registryRecords = projectURL.map(loadRegistry) ?? []
             loadState = .loaded
         } catch let error as SopsBridgeError {
@@ -290,9 +317,42 @@ public final class RecipientAccessModel {
     private func reset() {
         currentRecipients = []
         stagedRecipients = []
+        duplicatedRecipients = []
         registryRecords = []
         encryptedContents = nil
         loadedFingerprint = nil
+    }
+
+    /// Splits a recipient list read off a document or a creation rule into the
+    /// distinct recipients, in first-seen order, and the ones that appeared
+    /// more than once.
+    ///
+    /// The collapse is deliberate, and the alternative was considered and
+    /// rejected. Giving each occurrence a *positional* identity would make
+    /// `List` legal, but it would leave two rows that must behave identically —
+    /// `stageRemove` deletes every occurrence, so one tap strikes both — which
+    /// is a lie about their independence. Making them genuinely independent
+    /// would need multiset staging: the ability to remove one of two copies of
+    /// a key, an operation the rewrap underneath has no meaning for, since it
+    /// wraps the data key once per *distinct* recipient. The set is what access
+    /// is; multiplicity is a spelling of the metadata.
+    ///
+    /// The duplicates are returned rather than dropped so that the panel can
+    /// say a file is shaped this way, which is the part a user might want to
+    /// know.
+    static func collapsingDuplicates(_ recipients: [String]) -> (distinct: [String], duplicated: [String]) {
+        var seen = Set<String>()
+        var reported = Set<String>()
+        var distinct: [String] = []
+        var duplicated: [String] = []
+        for recipient in recipients {
+            if seen.insert(recipient).inserted {
+                distinct.append(recipient)
+            } else if reported.insert(recipient).inserted {
+                duplicated.append(recipient)
+            }
+        }
+        return (distinct, duplicated)
     }
 
     /// Stages `ageRecipient` for addition, in memory only. A no-op refusal

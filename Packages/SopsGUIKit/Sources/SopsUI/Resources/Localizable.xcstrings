@@ -122,6 +122,29 @@
         }
       }
     },
+    "access.duplicate-recipients": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "This file's SOPS metadata lists %d recipient more than once. Listing a key twice grants no extra access, so it appears once above. Applying any change here writes each key exactly once."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "This file's SOPS metadata lists %d recipients more than once. Listing a key twice grants no extra access, so each appears once above. Applying any change here writes each key exactly once."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "access.error.empty-recipients": {
       "extractionState": "manual",
       "localizations": {
@@ -1772,6 +1795,29 @@
           "stringUnit": {
             "state": "translated",
             "value": "Save your changes before managing project access."
+          }
+        }
+      }
+    },
+    "project-access.duplicate-recipients": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "This project's creation rule lists %d recipient more than once. Listing a key twice grants no extra access, so it appears once above, and updating .sops.yaml writes each key exactly once."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "This project's creation rule lists %d recipients more than once. Listing a key twice grants no extra access, so each appears once above, and updating .sops.yaml writes each key exactly once."
+                }
+              }
+            }
           }
         }
       }

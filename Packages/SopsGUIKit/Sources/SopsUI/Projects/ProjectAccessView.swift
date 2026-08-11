@@ -219,6 +219,19 @@ public struct ProjectAccessView: View {
             if let addRefusal, addRefusal == .duplicate {
                 Text(.accessAddDuplicate).font(.caption).foregroundStyle(.red)
             }
+            // A key the creation rule names twice is collapsed into one row —
+            // multiplicity is not access — but never without saying so. See
+            // `ProjectAccessModel.duplicatedRecipients`.
+            if !model.duplicatedRecipients.isEmpty {
+                Text(
+                    String(
+                        format: LocalizedKey.projectAccessDuplicateRecipients.text,
+                        model.duplicatedRecipients.count)
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
             if !model.keyConfigured {
                 Label(.accessNeedsKeyBody, systemImage: "key.slash")
                     .font(.caption)
