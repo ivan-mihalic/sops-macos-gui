@@ -501,10 +501,23 @@ private struct ProjectWorkspaceView: View {
             SecretEditorView(
                 viewModel: documentViewModel,
                 fileName: selectedFileURL.lastPathComponent,
-                unsavedChanges: unsavedChanges)
+                unsavedChanges: unsavedChanges,
+                recipientAccess: SecretEditorView.RecipientAccessContext(
+                    fileURL: selectedFileURL, keyStore: keyStore, projectURL: activeProjectRootURL))
         } else {
             centeredPlaceholder(.editorNoFileSelected)
         }
+    }
+
+    /// The active project's root, for `RecipientAccessModel`'s registry
+    /// labels — `nil` for the moment between a project switch request and
+    /// `activateProject` landing, in which case Access simply shows every
+    /// recipient unlabeled rather than the wrong project's labels.
+    private var activeProjectRootURL: URL? {
+        guard let activeProjectID,
+              let project = projects.groups.flatMap(\.members).first(where: { $0.id == activeProjectID })
+        else { return nil }
+        return URL(fileURLWithPath: project.rootPath)
     }
 
     private func centeredPlaceholder(_ key: LocalizedKey) -> some View {

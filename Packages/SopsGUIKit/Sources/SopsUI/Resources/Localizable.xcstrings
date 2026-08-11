@@ -56,6 +56,193 @@
         }
       }
     },
+    "access.add-recipient-field": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paste an age public key (age1…)"
+          }
+        }
+      }
+    },
+    "access.add.duplicate": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That recipient is already listed."
+          }
+        }
+      }
+    },
+    "access.apply-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apply"
+          }
+        }
+      }
+    },
+    "access.apply-error.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't apply access changes"
+          }
+        }
+      }
+    },
+    "access.applying-label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Applying access changes"
+          }
+        }
+      }
+    },
+    "access.error.empty-recipients": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Removing every recipient would leave this file unreadable. Keep at least one."
+          }
+        }
+      }
+    },
+    "access.load-failed.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't read who has access"
+          }
+        }
+      }
+    },
+    "access.needs-key.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add your age private key in Settings › Key to apply access changes. Reading who has access doesn't need one."
+          }
+        }
+      }
+    },
+    "access.pending-addition-badge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New"
+          }
+        }
+      }
+    },
+    "access.pending-removal-badge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Losing access"
+          }
+        }
+      }
+    },
+    "access.remove-confirm.button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove Access"
+          }
+        }
+      }
+    },
+    "access.remove-confirm.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ will no longer be able to decrypt this file."
+          }
+        }
+      }
+    },
+    "access.remove-confirm.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove access?"
+          }
+        }
+      }
+    },
+    "access.remove-recipient": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove this recipient"
+          }
+        }
+      }
+    },
+    "access.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "File Access"
+          }
+        }
+      }
+    },
+    "access.toolbar-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Access"
+          }
+        }
+      }
+    },
+    "access.undo-removal": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep this recipient"
+          }
+        }
+      }
+    },
     "action.add": {
       "extractionState": "manual",
       "localizations": {

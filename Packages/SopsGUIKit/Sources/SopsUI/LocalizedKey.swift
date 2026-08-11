@@ -237,6 +237,49 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case editorSaveAndQuit = "editor.save-and-quit"
     case editorDiscardAndQuit = "editor.discard-and-quit"
 
+    // MARK: Task 3 (recipient management) — file access panel
+
+    case accessToolbarButton = "access.toolbar-button"
+    case accessTitle = "access.title"
+    case accessLoadFailedTitle = "access.load-failed.title"
+    case accessAddRecipientField = "access.add-recipient-field"
+    // Shown under the add field when the pasted text matches a recipient
+    // already staged — the bridge is the authority on whether the string is
+    // actually a valid recipient at all; this only catches the one thing
+    // knowable before `apply()` re-checks against the real document. See
+    // `RecipientAccessModel.StageAddRefusal`.
+    case accessAddDuplicate = "access.add.duplicate"
+    case accessApplyButton = "access.apply-button"
+    // The accessibility label on the progress indicator shown while
+    // `RecipientAccessModel.apply()` is in flight — otherwise a bare spinner
+    // announces nothing to VoiceOver.
+    case accessApplyingLabel = "access.applying-label"
+    // Reading who has access never needs a key; only applying a change does.
+    // Shown instead of failing obscurely when no session key is configured —
+    // see `RecipientAccessModel.keyConfigured`.
+    case accessNeedsKeyBody = "access.needs-key.body"
+    case accessApplyErrorTitle = "access.apply-error.title"
+    // `RecipientAccessModel.ApplyOutcome.refusedEmptyRecipients` — a fixed
+    // enum case, not bridge text, so it is localized here rather than
+    // carried as a string on the model. Mirrors how `AddRowRefusal` is
+    // translated in `EditorAddRowSheet.explanation(for:)`.
+    case accessErrorEmptyRecipients = "access.error.empty-recipients"
+    // Removing a recipient is destructive — PROPOSAL.md and CLAUDE.md both
+    // require naming what will be lost before it happens.
+    case accessRemoveConfirmTitle = "access.remove-confirm.title"
+    // Formatted with the comma-joined labels (or public keys, for anyone the
+    // registry doesn't know) about to lose access — see
+    // `RecipientAccessView.removalConfirmationMessage`.
+    case accessRemoveConfirmMessage = "access.remove-confirm.message"
+    case accessRemoveConfirmButton = "access.remove-confirm.button"
+    case accessPendingRemovalBadge = "access.pending-removal-badge"
+    case accessPendingAdditionBadge = "access.pending-addition-badge"
+    case accessRemoveRecipient = "access.remove-recipient"
+    // The undo for a recipient already staged for removal — tapping the same
+    // control again re-adds it to the staged set. See
+    // `RecipientAccessModel.stageAdd`/`stageRemove`'s symmetry.
+    case accessUndoRemoval = "access.undo-removal"
+
     /// The resolved English text. Used in views and asserted in tests.
     public var text: String {
         String(localized: String.LocalizationValue(rawValue), bundle: .module)
