@@ -68,11 +68,9 @@ public enum RecipientRegistry {
     /// It distinguishes a registry that was absent from an API caller that
     /// simply chose not to check for concurrent writes.
     public static func expectedState(in project: URL) throws -> ExpectedState {
-        let locations = try resolveLocations(in: project, createDirectory: false)
-        guard FileManager.default.fileExists(atPath: locations.destination.path) else { return .absent }
-        guard let fingerprint = FileFingerprint.of(locations.destination) else {
-            throw Error.changedOnDisk
-        }
+        guard let directory = try registryDirectoryDescriptor(in: project, create: false) else { return .absent }
+        defer { close(directory) }
+        guard let fingerprint = try fingerprint(of: recipientFileName, in: directory) else { return .absent }
         return .existing(fingerprint)
     }
 
@@ -85,11 +83,11 @@ public enum RecipientRegistry {
     private static func loadSnapshot(in project: URL) throws -> (
         records: [RecipientRecord], state: ExpectedState
     ) {
-        let locations = try resolveLocations(in: project, createDirectory: false)
-        guard FileManager.default.fileExists(atPath: locations.destination.path) else { return ([], .absent) }
-        guard let before = FileFingerprint.of(locations.destination) else { throw Error.changedOnDisk }
-        let records = try JSONDecoder().decode([RecipientRecord].self, from: Data(contentsOf: locations.destination))
-        guard FileFingerprint.of(locations.destination) == before else {
+        guard let directory = try registryDirectoryDescriptor(in: project, create: false) else { return ([], .absent) }
+        defer { close(directory) }
+        guard let before = try fingerprint(of: recipientFileName, in: directory) else { return ([], .absent) }
+        let records = try JSONDecoder().decode([RecipientRecord].self, from: read(recipientFileName, in: directory))
+        guard try fingerprint(of: recipientFileName, in: directory) == before else {
             throw Error.changedOnDisk
         }
         try validate(records)
@@ -105,21 +103,15 @@ public enum RecipientRegistry {
     /// the caller. `.absent` is an atomic create-if-absent, never `nil`.
     public static func save(_ records: [RecipientRecord], in project: URL, expecting: ExpectedState) throws {
         try validate(records)
-        let locations = try resolveLocations(in: project, createDirectory: true)
+        guard let directory = try registryDirectoryDescriptor(in: project, create: true) else {
+            throw Error.couldNotSave
+        }
+        defer { close(directory) }
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(records)
-        switch expecting {
-        case .existing(let fingerprint):
-            do {
-                _ = try AtomicFileWriter.write(data, to: locations.destination, expecting: fingerprint)
-            } catch is AtomicFileWriter.Error {
-                throw Error.changedOnDisk
-            }
-        case .absent:
-            try create(data, at: locations.destination, in: locations.directory)
-        }
+        try publish(data, in: directory, expecting: expecting)
     }
 
     /// Inserts a new record or replaces the record bearing the same UUID.
@@ -210,63 +202,135 @@ public enum RecipientRegistry {
         value.localizedCaseInsensitiveContains("AGE-SECRET-KEY-1")
     }
 
-    private static func resolveLocations(in project: URL, createDirectory: Bool) throws -> (
-        root: URL, directory: URL, destination: URL
-    ) {
+    private static let recipientFileName = "recipients.json"
+
+    /// Opens each trust boundary by descriptor. Once `directory` is open with
+    /// `O_NOFOLLOW`, every registry operation below is relative to that
+    /// descriptor; a later symlink swap cannot redirect staging or publish.
+    private static func registryDirectoryDescriptor(in project: URL, create: Bool) throws -> Int32? {
         let root = project.standardizedFileURL.resolvingSymlinksInPath()
-        var rootIsDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: root.path, isDirectory: &rootIsDirectory), rootIsDirectory.boolValue else {
+        let rootDescriptor = open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard rootDescriptor >= 0 else {
             throw Error.pathEscapesProject
         }
-        let directory = root.appendingPathComponent(".sops-gui", isDirectory: true)
-        if FileManager.default.fileExists(atPath: directory.path) {
-            guard isInside(resolvedForContainment(directory), root: root) else {
-                throw Error.pathEscapesProject
+        defer { close(rootDescriptor) }
+
+        var directory = openat(rootDescriptor, ".sops-gui", O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        if directory < 0, errno == ENOENT, create {
+            guard mkdirat(rootDescriptor, ".sops-gui", mode_t(0o700)) == 0 || errno == EEXIST else {
+                throw Error.couldNotSave
             }
-        } else if createDirectory {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+            directory = openat(rootDescriptor, ".sops-gui", O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
         }
-        let destination = directory.appendingPathComponent("recipients.json")
-        guard isInside(resolvedForContainment(destination), root: root) else { throw Error.pathEscapesProject }
-        return (root, directory, destination)
+        if directory < 0 {
+            if errno == ENOENT { return nil }
+            throw Error.pathEscapesProject
+        }
+        return directory
     }
 
-    private static func isInside(_ url: URL, root: URL) -> Bool {
-        let path = url.standardizedFileURL.path
-        let rootPath = root.standardizedFileURL.path
-        return path == rootPath || path.hasPrefix(rootPath + "/")
-    }
-
-    /// `resolvingSymlinksInPath` leaves a dangling final symlink unchanged.
-    /// That is normally convenient, but here it would make a link to a
-    /// not-yet-created file outside the project look contained, so inspect the
-    /// final link target ourselves before resolving the rest of its path.
-    private static func resolvedForContainment(_ url: URL) -> URL {
+    private static func fingerprint(of name: String, in directory: Int32) throws -> FileFingerprint? {
         var info = stat()
-        guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFLNK,
-              let target = try? FileManager.default.destinationOfSymbolicLink(atPath: url.path) else {
-            return url.resolvingSymlinksInPath()
+        guard fstatat(directory, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else {
+            if errno == ENOENT { return nil }
+            throw Error.couldNotSave
         }
-        return URL(fileURLWithPath: target, relativeTo: url.deletingLastPathComponent())
-            .standardizedFileURL
-            .resolvingSymlinksInPath()
+        guard (info.st_mode & S_IFMT) == S_IFREG else { throw Error.pathEscapesProject }
+        return FileFingerprint(
+            deviceID: UInt64(bitPattern: Int64(info.st_dev)), inode: UInt64(info.st_ino), size: Int64(info.st_size),
+            modifiedSeconds: Int64(info.st_mtimespec.tv_sec), modifiedNanoseconds: Int64(info.st_mtimespec.tv_nsec))
     }
 
-    /// `link` publishes the completed staged file only when no destination
-    /// exists. Unlike pre-creating an empty destination, this is atomic for
-    /// readers and rejects a concurrent first creator with `EEXIST`.
-    private static func create(_ data: Data, at destination: URL, in directory: URL) throws {
-        let staged = directory.appendingPathComponent(".recipients.\(UUID().uuidString).create")
-        defer { try? FileManager.default.removeItem(at: staged) }
+    private static func read(_ name: String, in directory: Int32) throws -> Data {
+        let descriptor = openat(directory, name, O_RDONLY | O_NOFOLLOW)
+        guard descriptor >= 0 else { throw Error.changedOnDisk }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         do {
-            _ = try AtomicFileWriter.write(data, to: staged)
+            return try handle.readToEnd() ?? Data()
         } catch {
             throw Error.couldNotSave
         }
-        guard link(staged.path, destination.path) == 0 else {
-            if errno == EEXIST { throw Error.changedOnDisk }
+    }
+
+    private static func publish(_ data: Data, in directory: Int32, expecting: ExpectedState) throws {
+        let finalMode: mode_t
+        switch expecting {
+        case .absent:
+            finalMode = 0o600
+        case .existing(let expected):
+            guard try fingerprint(of: recipientFileName, in: directory) == expected,
+                  let mode = try permissions(of: recipientFileName, in: directory) else {
+                throw Error.changedOnDisk
+            }
+            finalMode = mode
+        }
+        let staged = ".recipients.\(UUID().uuidString).tmp"
+        var descriptor = openat(directory, staged, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode_t(0o600))
+        guard descriptor >= 0 else { throw Error.couldNotSave }
+        defer {
+            if descriptor >= 0 { close(descriptor) }
+            _ = unlinkat(directory, staged, 0)
+        }
+
+        do {
+            try writeAll(data, to: descriptor)
+            guard fchmod(descriptor, finalMode) == 0 else { throw Error.couldNotSave }
+            try flush(descriptor)
+        } catch {
+            throw error
+        }
+        guard close(descriptor) == 0 else { throw Error.couldNotSave }
+        descriptor = -1
+
+        switch expecting {
+        case .existing(let expected):
+            guard try fingerprint(of: recipientFileName, in: directory) == expected else {
+                throw Error.changedOnDisk
+            }
+            guard renameat(directory, staged, directory, recipientFileName) == 0 else {
+                throw Error.couldNotSave
+            }
+        case .absent:
+            guard try fingerprint(of: recipientFileName, in: directory) == nil else {
+                throw Error.changedOnDisk
+            }
+            guard linkat(directory, staged, directory, recipientFileName, 0) == 0 else {
+                if errno == EEXIST { throw Error.changedOnDisk }
+                throw Error.couldNotSave
+            }
+        }
+        _ = fsync(directory)
+    }
+
+    private static func permissions(of name: String, in directory: Int32) throws -> mode_t? {
+        var info = stat()
+        guard fstatat(directory, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else {
+            if errno == ENOENT { return nil }
             throw Error.couldNotSave
         }
+        guard (info.st_mode & S_IFMT) == S_IFREG else { throw Error.pathEscapesProject }
+        return info.st_mode & 0o7777
+    }
+
+    private static func writeAll(_ data: Data, to descriptor: Int32) throws {
+        try data.withUnsafeBytes { bytes in
+            var offset = 0
+            while offset < bytes.count {
+                let written = Darwin.write(descriptor, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                if written > 0 {
+                    offset += written
+                } else if written < 0, errno == EINTR {
+                    continue
+                } else {
+                    throw Error.couldNotSave
+                }
+            }
+        }
+    }
+
+    private static func flush(_ descriptor: Int32) throws {
+        if fcntl(descriptor, F_FULLFSYNC) == 0 { return }
+        guard fsync(descriptor) == 0 else { throw Error.couldNotSave }
     }
 
     /// Native X25519 age recipients are Bech32 with the fixed `age` HRP, a

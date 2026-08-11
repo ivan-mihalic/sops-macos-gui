@@ -86,6 +86,21 @@ struct RecipientRegistryTests {
             .isEmpty)
     }
 
+    @Test("replacing a registry preserves its existing file permissions")
+    func preservesExistingPermissions() throws {
+        let project = try makeProject()
+        let first = RecipientRecord(label: "Laptop", kind: .device, ageRecipient: Self.firstPublicKey)
+        let second = RecipientRecord(label: "Deploy", kind: .server, ageRecipient: Self.secondPublicKey)
+        try RecipientRegistry.save([first], in: project)
+        let file = RecipientRegistry.fileURL(in: project)
+        try FileManager.default.setAttributes([.posixPermissions: 0o640], ofItemAtPath: file.path)
+
+        try RecipientRegistry.save([second], in: project)
+
+        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+        #expect(attributes[.posixPermissions] as? Int == 0o640)
+    }
+
     @Test("an absent-state save refuses a registry created by another writer")
     func refusesConcurrentInitialCreation() throws {
         let project = try makeProject()
@@ -127,6 +142,21 @@ struct RecipientRegistryTests {
             try RecipientRegistry.save([record], in: project)
         }
         #expect(!FileManager.default.fileExists(atPath: outside.appendingPathComponent("recipients.json").path))
+    }
+
+    @Test("an in-project .sops-gui symlink is refused rather than followed")
+    func refusesInProjectRegistryDirectorySymlink() throws {
+        let project = try makeProject()
+        let target = project.appendingPathComponent("internal-registry")
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        let registryDirectory = project.appendingPathComponent(".sops-gui")
+        try FileManager.default.createSymbolicLink(at: registryDirectory, withDestinationURL: target)
+        let record = RecipientRecord(label: "Laptop", kind: .device, ageRecipient: Self.firstPublicKey)
+
+        #expect(throws: RecipientRegistry.Error.pathEscapesProject) {
+            try RecipientRegistry.save([record], in: project)
+        }
+        #expect(!FileManager.default.fileExists(atPath: target.appendingPathComponent("recipients.json").path))
     }
 
     @Test("a recipients.json symlink escape is refused without writing through it")
