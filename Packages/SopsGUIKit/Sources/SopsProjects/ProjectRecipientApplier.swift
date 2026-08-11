@@ -87,7 +87,20 @@ public struct ProjectRecipientApplier: Sendable {
         public let configURL: URL
         /// Whether there is a `.sops.yaml` at the project root at all.
         public let configExists: Bool
-        /// Every sops-encrypted YAML file the scan found, in scan order.
+        /// The recipient set this plan was computed for.
+        ///
+        /// Carried on the plan rather than only known by the caller because a
+        /// plan is produced asynchronously and a caller may stage another
+        /// change while one is in flight: two overlapping `plan(...)` calls can
+        /// complete in either order, so "the plan I am holding" and "the set I
+        /// am about to write" are two different questions. `configUpdateText`
+        /// is the text for *this* list and no other — anything writing it must
+        /// check this field first. See `ProjectAccessModel.applyConfig()`.
+        public let requestedRecipients: [String]
+        /// Every sops-encrypted YAML file the scan found, sorted ascending by
+        /// path relative to `projectRoot` — the order the user already sees in
+        /// the file list, and the order `targetFile` is taken from. See
+        /// `sortedByProjectRelativePath`.
         public let encryptedFiles: [URL]
         /// The subset of `encryptedFiles` governed by the same creation rule
         /// as `targetFile` — identified by the rule's *position* in
@@ -98,8 +111,19 @@ public struct ProjectRecipientApplier: Sendable {
         /// confident-about-what-it-did-not-look-at failure PROPOSAL §6 D
         /// forbids.
         public let unmatchedFiles: [URL]
+        /// Encrypted files that some creation rule *other* than the one this
+        /// plan is about governs.
+        ///
+        /// Not the same list as `unmatchedFiles`, and it matters most where
+        /// that one is empty: when no governing rule could be identified,
+        /// `filesInScope` widens to every encrypted file found, and some of
+        /// those may belong to rules with entirely different key sets. This is
+        /// what lets the panel say so before an apply rather than after. See
+        /// `filesInScope`.
+        public let filesGovernedByOtherRules: [URL]
         /// The file whose governing rule this plan is about — the first
-        /// encrypted file in scan order. `nil` when the scan found none.
+        /// encrypted file in project-relative path order, which is the first
+        /// one the user sees in the file list. `nil` when the scan found none.
         public let targetFile: URL?
         /// Why nothing derived from this scan may claim to cover the whole
         /// project. `nil` when the walk did cover it.
@@ -163,6 +187,11 @@ public struct ProjectRecipientApplier: Sendable {
         /// *other* reading — treating an empty `matchedFiles` as "the rule
         /// covers nothing", which would silently apply to no files at all and
         /// report success.
+        ///
+        /// What the fallback must not be is *silent*: it can reach across
+        /// creation-rule boundaries, pulling in files whose keys another rule
+        /// decides. `filesGovernedByOtherRules` names how many, and the panel
+        /// and its confirmation both say so before anything is re-wrapped.
         public var filesInScope: [URL] {
             governingRuleIdentified ? matchedFiles : encryptedFiles
         }
@@ -240,7 +269,9 @@ public struct ProjectRecipientApplier: Sendable {
         guard configExists else {
             return Plan(
                 projectRoot: projectRoot, configURL: configURL, configExists: false,
+                requestedRecipients: recipients,
                 encryptedFiles: encryptedFiles, matchedFiles: [], unmatchedFiles: encryptedFiles,
+                filesGovernedByOtherRules: [],
                 targetFile: encryptedFiles.first, incompleteScanReason: tree.incompleteScanReason,
                 configRecipients: [], configRefusal: nil, configUpdateText: nil,
                 configFingerprint: nil, configError: nil,
@@ -258,7 +289,9 @@ public struct ProjectRecipientApplier: Sendable {
             // not a refusal — there is simply nothing to ask about it.
             return Plan(
                 projectRoot: projectRoot, configURL: configURL, configExists: true,
+                requestedRecipients: recipients,
                 encryptedFiles: [], matchedFiles: [], unmatchedFiles: [],
+                filesGovernedByOtherRules: [],
                 targetFile: nil, incompleteScanReason: tree.incompleteScanReason,
                 configRecipients: [], configRefusal: nil, configUpdateText: nil,
                 configFingerprint: configFingerprint, configError: nil,
@@ -268,11 +301,14 @@ public struct ProjectRecipientApplier: Sendable {
         let update: ConfigRecipientUpdate
         do {
             update = try proposeConfig(
-                configURL.path, targetFile.path, recipients, encryptedFiles.map(\.path))
+                Self.ruleMatchingPath(configURL), Self.ruleMatchingPath(targetFile),
+                recipients, encryptedFiles.map(Self.ruleMatchingPath))
         } catch let error as SopsBridgeError {
             return Plan(
                 projectRoot: projectRoot, configURL: configURL, configExists: true,
+                requestedRecipients: recipients,
                 encryptedFiles: encryptedFiles, matchedFiles: [], unmatchedFiles: encryptedFiles,
+                filesGovernedByOtherRules: [],
                 targetFile: targetFile, incompleteScanReason: tree.incompleteScanReason,
                 configRecipients: [], configRefusal: nil, configUpdateText: nil,
                 configFingerprint: configFingerprint, configError: error.description,
@@ -280,7 +316,9 @@ public struct ProjectRecipientApplier: Sendable {
         } catch {
             return Plan(
                 projectRoot: projectRoot, configURL: configURL, configExists: true,
+                requestedRecipients: recipients,
                 encryptedFiles: encryptedFiles, matchedFiles: [], unmatchedFiles: encryptedFiles,
+                filesGovernedByOtherRules: [],
                 targetFile: targetFile, incompleteScanReason: tree.incompleteScanReason,
                 configRecipients: [], configRefusal: nil, configUpdateText: nil,
                 configFingerprint: configFingerprint,
@@ -289,12 +327,18 @@ public struct ProjectRecipientApplier: Sendable {
         }
 
         let matchedPaths = Set(update.matchedFiles)
-        let matched = encryptedFiles.filter { matchedPaths.contains($0.path) }
-        let unmatched = encryptedFiles.filter { !matchedPaths.contains($0.path) }
+        let matched = encryptedFiles.filter { matchedPaths.contains(Self.ruleMatchingPath($0)) }
+        let unmatched = encryptedFiles.filter { !matchedPaths.contains(Self.ruleMatchingPath($0)) }
+        let otherRulePaths = Set(update.filesGovernedByOtherRules)
+        let governedElsewhere = encryptedFiles.filter {
+            otherRulePaths.contains(Self.ruleMatchingPath($0))
+        }
 
         return Plan(
             projectRoot: projectRoot, configURL: configURL, configExists: true,
+            requestedRecipients: recipients,
             encryptedFiles: encryptedFiles, matchedFiles: matched, unmatchedFiles: unmatched,
+            filesGovernedByOtherRules: governedElsewhere,
             targetFile: targetFile, incompleteScanReason: tree.incompleteScanReason,
             configRecipients: update.currentRecipients,
             configRefusal: update.writable ? nil : update.reason,
@@ -324,8 +368,15 @@ public struct ProjectRecipientApplier: Sendable {
     /// `ProjectRecipientApplierOrderingTests` pins the resulting order.
     static func sortedByProjectRelativePath(_ urls: [URL], under root: URL) -> [URL] {
         func relativePath(_ url: URL) -> String {
-            let base = root.standardizedFileURL.path
-            var path = url.standardizedFileURL.path
+            // Both sides through `ruleMatchingPath`, for the reason its own doc
+            // comment gives: the scan's URLs come back with the directory
+            // prefix's symlinks resolved and the project root's do not, so
+            // stripping one from the other as a literal prefix is otherwise a
+            // no-op and this sorts absolute paths. It happens to produce the
+            // same order while every path shares a prefix, which is what kept
+            // it invisible.
+            let base = ruleMatchingPath(root)
+            var path = ruleMatchingPath(url)
             guard path.hasPrefix(base) else { return path }
             path.removeFirst(base.count)
             if path.hasPrefix("/") { path.removeFirst() }
@@ -333,6 +384,31 @@ public struct ProjectRecipientApplier: Sendable {
         }
         return urls.sorted { relativePath($0) < relativePath($1) }
     }
+
+    /// The form of a path the bridge's rule selection is given.
+    ///
+    /// sops decides which creation rule governs a file by stripping the
+    /// config's own directory off the file's path *as a literal prefix* and
+    /// matching `path_regex` against what is left (config/config.go's
+    /// `parseCreationRuleForFile`, transcribed in `matchingRuleIndex`). That
+    /// only works if the two paths are spelled the same way — and they were
+    /// not: `FileManager.enumerator` hands back entries with symlinks in the
+    /// directory prefix already resolved (`/var/…` comes back as
+    /// `/private/var/…`), while the project root keeps whatever form it was
+    /// added in, because `ProjectStore` deliberately stores the display path a
+    /// symlink was added under. With the two disagreeing, the prefix strip is a
+    /// no-op and every rule is matched against an *absolute* path: an anchored
+    /// `path_regex` like `^prod/` then matches nothing at all, and an
+    /// unanchored one like `.*\.yaml$` matches everything, which is why this
+    /// went unnoticed — the fixtures used the second kind.
+    ///
+    /// Resolving both sides here rather than at the seams keeps `Plan.configURL`
+    /// and the file URLs themselves exactly as the caller supplied them: this
+    /// form is used to *ask about* files, never to write one.
+    static func ruleMatchingPath(_ url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
 
     // MARK: - Writing the config
 
@@ -451,6 +527,21 @@ public struct ProjectRecipientApplier: Sendable {
             contents = try readFile(url)
         } catch {
             return .failed("this file could not be read: \(url.lastPathComponent)")
+        }
+
+        // A `nil` fingerprint alongside a file that reads fine is not a
+        // harmless unknown: `AtomicFileWriter.write(expecting: nil)` *disables*
+        // the changed-since-read check entirely, so a rewrap of this file would
+        // be the one write in this app that clobbers a second writer
+        // unconditionally. The window is narrow — the file has to appear
+        // between the fingerprint above and the read — but the accepted
+        // best-effort contract is a micro-window between check and rename, not
+        // a check that never runs. `RecipientAccessModel.load()` refuses the
+        // analogous state for the same reason; this refuses it too.
+        if fingerprint == nil, FileManager.default.fileExists(atPath: url.path) {
+            return .failed(
+                "this file changed while it was being read, so this app cannot tell what it read: "
+                    + url.lastPathComponent)
         }
 
         guard contents.crossesCBoundaryIntact else {

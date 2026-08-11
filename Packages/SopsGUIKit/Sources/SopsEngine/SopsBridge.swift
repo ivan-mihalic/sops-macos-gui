@@ -60,6 +60,15 @@ public struct ConfigRecipientUpdate: Decodable, Equatable, Sendable {
     public let currentRecipients: [String]
     /// The candidate paths that the same rule governs, in the order given.
     public let matchedFiles: [String]
+    /// The candidate paths some creation rule *other* than `ruleIndex`
+    /// governs, in the order given. Never overlaps `matchedFiles`, and never
+    /// names a file no rule governs at all.
+    ///
+    /// It answers the question `matchedFiles` structurally cannot: when no
+    /// rule governs the target file, `matchedFiles` is empty and a caller's
+    /// scope falls back to everything it found — including files whose keys
+    /// another rule decides. This is how many.
+    public let filesGovernedByOtherRules: [String]
     /// Whether `config` differs from what is on disk. False when the rule
     /// already declares exactly the requested set, in which case `config` is
     /// the file's current text.

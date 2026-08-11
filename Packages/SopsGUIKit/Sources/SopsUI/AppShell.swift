@@ -555,22 +555,27 @@ private struct ProjectWorkspaceView: View {
                 fileName: selectedFileURL.lastPathComponent,
                 unsavedChanges: unsavedChanges,
                 recipientAccess: SecretEditorView.RecipientAccessContext(
-                    fileURL: selectedFileURL, keyStore: keyStore, projectURL: activeProjectRootURL))
+                    fileURL: selectedFileURL, keyStore: keyStore,
+                    projectURL: recipientRegistryProjectRoot))
         } else {
             centeredPlaceholder(.editorNoFileSelected)
         }
     }
 
-    /// The active project's root, for `RecipientAccessModel`'s registry
-    /// labels — `nil` for the moment between a project switch request and
-    /// `activateProject` landing, in which case Access simply shows every
-    /// recipient unlabeled rather than the wrong project's labels.
-    private var activeProjectRootURL: URL? {
-        guard let activeProjectID,
-              let project = projects.groups.flatMap(\.members).first(where: { $0.id == activeProjectID })
-        else { return nil }
-        return URL(fileURLWithPath: project.rootPath)
-    }
+    /// The project root both Access panels read their recipient registry from.
+    ///
+    /// One source, deliberately. This used to be two: the per-file panel
+    /// re-derived the root by looking `activeProjectID` up in
+    /// `projects.groups`, while the project-wide panel took
+    /// `fileListModel.projectRoot`. They answer differently whenever the lookup
+    /// comes back empty — the project dropped out of the sidebar, or the store
+    /// has not settled after a change — and the visible result was the same
+    /// project showing recipients *with* labels in one panel and *without* them
+    /// in the other, at the same moment. The file list model is the surviving
+    /// source because it is the one already deciding which project's files are
+    /// on screen: if a panel can be opened at all, this is the project it is
+    /// about.
+    private var recipientRegistryProjectRoot: URL? { fileListModel?.projectRoot }
 
     private func centeredPlaceholder(_ key: LocalizedKey) -> some View {
         Text(key)

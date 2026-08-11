@@ -646,3 +646,66 @@ struct ProjectRecipientApplierOrderingTests {
         #expect(plan.filesInScope == plan.encryptedFiles)
     }
 }
+
+@Suite("ProjectRecipientApplier — a fingerprint it could not take is never treated as consent")
+struct ProjectRecipientApplierMissingFingerprintTests {
+
+    /// M6. `applyToOne` takes the fingerprint *before* the read and hands it to
+    /// `AtomicFileWriter.write(expecting:)`. A `nil` there does not mean "check
+    /// anyway with no expectation" — it **disables** the changed-since-read
+    /// check outright (`AtomicFileWriter.swift`), so the one file whose
+    /// fingerprint could not be taken is the one file this app would clobber
+    /// unconditionally. `RecipientAccessModel.load()` refuses the analogous
+    /// state; this had no guard at all.
+    ///
+    /// The seam stands in for the real window — the file appearing between the
+    /// fingerprint call and the read — which cannot be produced on demand.
+    @Test("a file that reads fine but yields no fingerprint is refused, not written")
+    func aMissingFingerprintRefusesTheWrite() async throws {
+        let owner = try AgeKeyPair.generate()
+        let added = try AgeKeyPair.generate()
+        let root = try applierScratchDirectory("applier-no-fingerprint")
+        let file = root.appendingPathComponent("a.yaml")
+        let encrypted = try SopsBridge.encryptYAML(applierPlainYAML, recipients: [owner.public])
+        try encrypted.write(to: file, atomically: true, encoding: .utf8)
+
+        nonisolated(unsafe) var writes = 0
+        let applier = ProjectRecipientApplier(
+            fingerprintFile: { _ in nil },
+            writeFile: { contents, url, expecting in
+                writes += 1
+                try AtomicFileWriter.write(contents, to: url, expecting: expecting)
+            })
+
+        let outcome = await applier.apply(
+            files: [file], recipients: [owner.public, added.public], agePrivateKey: owner.private)
+
+        guard case .failed(let reason) = outcome.results[0].outcome else {
+            Issue.record("expected a refusal, got \(outcome.results[0].outcome)")
+            return
+        }
+        #expect(reason.contains("changed while it was being read"))
+        #expect(writes == 0, "the write must not be reached at all, let alone reached unguarded")
+        #expect(try String(contentsOf: file, encoding: .utf8) == encrypted)
+    }
+
+    /// The complement, so the guard cannot be satisfied by refusing everything:
+    /// a file with no fingerprint *and* no file on disk is the ordinary
+    /// missing-file path, and still reports the read failure it always did.
+    @Test("a file that is genuinely absent still reports the read failure")
+    func anAbsentFileStillReportsTheReadFailure() async throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try applierScratchDirectory("applier-absent")
+        let missing = root.appendingPathComponent("gone.yaml")
+
+        let applier = ProjectRecipientApplier()
+        let outcome = await applier.apply(
+            files: [missing], recipients: [owner.public], agePrivateKey: owner.private)
+
+        guard case .failed(let reason) = outcome.results[0].outcome else {
+            Issue.record("expected a failure, got \(outcome.results[0].outcome)")
+            return
+        }
+        #expect(reason.contains("could not be read"))
+    }
+}

@@ -6,9 +6,18 @@ import SwiftUI
 /// separate, separately confirmed applies — one for `.sops.yaml`, one for the
 /// files.
 ///
-/// Public rather than private only so the headless snapshot catalog can render
-/// it — same reasoning as `RecipientAccessView`'s. Nothing in the app
-/// constructs it except `ProjectWorkspaceView`.
+/// Public rather than private so a test in `SopsUITests` can render it through
+/// `GatingHost` and read the result off the accessibility tree — which is how
+/// `ProjectAccessScopeDisclosureTests` checks that a scope sentence is really
+/// on the panel and not merely correct in the model.
+///
+/// It has deliberately **no** `SnapshotTool/Catalog.swift` entry, unlike most
+/// public views here: this one runs a live `ProjectScanner` walk from its own
+/// `.task`, which the single-shot headless renderer would race — it draws once
+/// and exits, so it would capture a spinner or a half-loaded panel depending on
+/// timing. Accepted as carried-forward debt rather than papered over with a
+/// fixture that renders a state the real panel never holds. Nothing in the app
+/// constructs this except `AppShell`'s file-list pane.
 ///
 /// ## Staged, not live
 /// Every add/remove only calls `ProjectAccessModel.stageAdd`/`stageRemove`.
@@ -203,7 +212,7 @@ public struct ProjectAccessView: View {
                     .font(.system(.body, design: .monospaced))
                     .onSubmit(addStagedRecipient)
                 Button(LocalizedKey.actionAdd.text, action: addStagedRecipient)
-                    .disabled(newRecipientText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(!RecipientRowContent.canAdd(newRecipientText))
             }
             .disabled(model.isApplyingFiles)
 
@@ -245,7 +254,7 @@ public struct ProjectAccessView: View {
                 Text(
                     String(
                         format: LocalizedKey.projectAccessFilesSummary.text,
-                        "\(plan.matchedFiles.count)", "\(plan.encryptedFiles.count)")
+                        plan.matchedFiles.count, plan.encryptedFiles.count)
                 )
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -272,6 +281,24 @@ public struct ProjectAccessView: View {
                 )
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+                // And the half of that widening the count alone hides: this
+                // branch reaches across creation-rule boundaries. A file
+                // governed by a rule with a different key set is re-wrapped
+                // here exactly like one governed by nothing, and
+                // `projectAccessUnmatchedNote` — the sentence that says
+                // "governed by a different creation rule" — renders only in
+                // the branch above, which is the one branch where it is not
+                // needed.
+                if !plan.filesGovernedByOtherRules.isEmpty {
+                    Text(
+                        String(
+                            format: LocalizedKey.projectAccessOtherRulesInScope.text,
+                            plan.filesGovernedByOtherRules.count)
+                    )
+                    .font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }
@@ -355,7 +382,7 @@ public struct ProjectAccessView: View {
         addRefusal = model.stageAdd(newRecipientText)
         if addRefusal == nil {
             newRecipientText = ""
-            Task { await model.refreshPlan() }
+            model.startRefreshingPlan()
         }
     }
 
@@ -365,7 +392,7 @@ public struct ProjectAccessView: View {
         } else {
             model.stageRemove(entry.ageRecipient)
         }
-        Task { await model.refreshPlan() }
+        model.startRefreshingPlan()
     }
 
     private func applyConfig() async {
@@ -374,20 +401,39 @@ public struct ProjectAccessView: View {
             break
         case .refusedEmptyRecipients:
             errorMessage = LocalizedKey.projectAccessErrorEmptyRecipients.text
+        case .refusedStalePlan:
+            errorMessage = LocalizedKey.projectAccessErrorStalePlan.text
         case .failed(let message):
             errorMessage = message
         }
     }
 
-    private var fileApplyConfirmationMessage: String {
+    /// Internal rather than private so a test can read the exact sentence the
+    /// dialog will carry — a `.confirmationDialog`'s own body is not reachable
+    /// from a unit test (the documented limitation `WorkspaceSwitchDecisionTests`
+    /// states), so the string it is handed is the last thing that can be pinned.
+    var fileApplyConfirmationMessage: String {
         let count = model.filesToApply.count
-        guard !model.pendingRemovals.isEmpty else {
-            return String(format: LocalizedKey.projectAccessApplyFilesConfirmMessage.text, count)
+        var message: String
+        if model.pendingRemovals.isEmpty {
+            message = String(format: LocalizedKey.projectAccessApplyFilesConfirmMessage.text, count)
+        } else {
+            let names = model.pendingRemovals.map { $0.label ?? $0.ageRecipient }
+            message = String(
+                format: LocalizedKey.projectAccessApplyFilesRemovalMessage.text,
+                names.joined(separator: ", "), count)
         }
-        let names = model.pendingRemovals.map { $0.label ?? $0.ageRecipient }
-        return String(
-            format: LocalizedKey.projectAccessApplyFilesRemovalMessage.text,
-            names.joined(separator: ", "), "\(count)")
+        // The panel says this too (see `scope`), and the dialog says it again:
+        // this is the last screen before files governed by *other* creation
+        // rules are re-wrapped for a key set those rules never named.
+        if let plan = model.plan, !plan.governingRuleIdentified,
+            !plan.filesGovernedByOtherRules.isEmpty
+        {
+            message += "\n\n" + String(
+                format: LocalizedKey.projectAccessOtherRulesInScope.text,
+                plan.filesGovernedByOtherRules.count)
+        }
+        return message
     }
 
     static func explanation(for refusal: ProjectAccessModel.FileApplyRefusal) -> String {
@@ -419,7 +465,10 @@ enum ProjectAccessGate {
 }
 
 /// One recipient row: label (or raw public key, when the registry has no
-/// record), the key beneath a label, a staged-change badge, and the toggle.
+/// record), the key beneath a label, the registry's kind, a staged-change
+/// badge, and the toggle. The kind badge is `RecipientKindBadge`, shared with
+/// the per-file panel so the same recipient cannot read differently in the two
+/// places it appears.
 private struct ProjectAccessRow: View {
     let entry: RecipientAccessModel.AccessEntry
     let onToggle: () -> Void
@@ -440,6 +489,8 @@ private struct ProjectAccessRow: View {
                         .truncationMode(.middle)
                 }
             }
+
+            RecipientKindBadge(kind: entry.kind)
 
             Spacer()
 

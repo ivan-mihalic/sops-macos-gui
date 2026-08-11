@@ -1,11 +1,22 @@
+import SopsProjects
 import SwiftUI
 
 /// The sheet behind the editor toolbar's Access button: who can currently
 /// decrypt the open file, staged add/remove changes, and Apply/Cancel.
 ///
-/// Public rather than private only so the headless snapshot catalog can
-/// render it — same reasoning as `EditorAddRowSheet`'s doc comment. Nothing
-/// in the app constructs it except `SecretEditorView`.
+/// Public rather than private so a test in `SopsUITests` can render it through
+/// `GatingHost` and read the result off the accessibility tree — the same
+/// reason `ProjectAccessView` is, and how `RecipientAccessGatingTests` checks
+/// that a gate is really wired into a rendered view rather than only correct in
+/// isolation.
+///
+/// It has deliberately **no** `SnapshotTool/Catalog.swift` entry, despite what
+/// this comment claimed until the final review: the panel runs a live load from
+/// its own `.task`, which the single-shot headless renderer would race — it
+/// draws once and exits, so it would capture whichever half-loaded state the
+/// timing produced. Accepted as carried-forward debt rather than papered over
+/// with a fixture that renders a state the real panel never holds. Nothing in
+/// the app constructs this except `SecretEditorView`.
 ///
 /// ## Staged, not live
 /// Every add/remove tap only calls `RecipientAccessModel.stageAdd`/
@@ -151,7 +162,7 @@ public struct RecipientAccessView: View {
                     .font(.system(.body, design: .monospaced))
                     .onSubmit(addStagedRecipient)
                 Button(LocalizedKey.actionAdd.text, action: addStagedRecipient)
-                    .disabled(newRecipientText.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(!RecipientRowContent.canAdd(newRecipientText))
             }
             .disabled(model.isApplying)
 
@@ -220,9 +231,63 @@ public struct RecipientAccessView: View {
     }
 }
 
+/// The parts of a recipient row both Access panels share.
+///
+/// One place rather than two, because the two panels had already drifted apart
+/// once in exactly this seam: the per-file panel enabled its Add button on
+/// `.whitespaces` while the model that answers it trimmed
+/// `.whitespacesAndNewlines`, so a pasted lone newline enabled Add and then
+/// returned `.empty` — whose `explanation(for:)` is `nil`. A live button, a
+/// press, and nothing at all in response.
+enum RecipientRowContent {
+
+    /// Whether the Add button may be pressed for what is typed right now.
+    ///
+    /// The set trimmed here has to be the one `RecipientAccessModel.stageAdd`
+    /// and `ProjectAccessModel.stageAdd` trim, or the button offers something
+    /// the model then refuses without a sentence to show for it. Pulled out as
+    /// a pure function — like `canApply` and `canUpdateConfig` — so that
+    /// agreement is testable without rendering either panel.
+    static func canAdd(_ text: String) -> Bool {
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// What a registry `kind` reads as on screen. The design spec asks for the
+    /// human name, the *type* and the public key; this is the type.
+    static func label(for kind: RecipientKind) -> LocalizedKey {
+        switch kind {
+        case .device: .recipientKindDevice
+        case .server: .recipientKindServer
+        case .person: .recipientKindPerson
+        }
+    }
+}
+
+/// The registry's descriptive role for a recipient — device, server or person.
+///
+/// Descriptive only, and drawn as such: SOPS metadata and `.sops.yaml` remain
+/// the access authority (see `RecipientKind`), so this never changes what a row
+/// *means*, only what it tells you about who is behind the key. Absent for a
+/// recipient the registry has no record of, which is never a reason to hide the
+/// row itself.
+struct RecipientKindBadge: View {
+    let kind: RecipientKind?
+
+    var body: some View {
+        if let kind {
+            Text(RecipientRowContent.label(for: kind))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .background(.quaternary, in: Capsule())
+        }
+    }
+}
+
 /// One row: label (or raw public key, if the registry has no record for it),
-/// the public key beneath a label when one exists, a staged-change badge, and
-/// the add/remove toggle.
+/// the public key beneath a label when one exists, the registry's kind, a
+/// staged-change badge, and the add/remove toggle.
 private struct RecipientAccessRow: View {
     let entry: RecipientAccessModel.AccessEntry
     let onToggle: () -> Void
@@ -243,6 +308,8 @@ private struct RecipientAccessRow: View {
                         .truncationMode(.middle)
                 }
             }
+
+            RecipientKindBadge(kind: entry.kind)
 
             Spacer()
 

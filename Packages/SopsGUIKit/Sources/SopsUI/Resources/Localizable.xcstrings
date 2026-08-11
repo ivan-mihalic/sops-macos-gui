@@ -194,7 +194,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ will no longer be able to decrypt this file."
+            "value": "%@ will no longer be able to decrypt this file. Rotate the secret values afterwards: anyone removed may still hold an old copy."
           }
         }
       }
@@ -1627,7 +1627,29 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "%1$@ will no longer be able to decrypt %2$@ of this project's files. Rotate the secret values afterwards: anyone removed may still hold an old copy."
+            "value": "%1$@ will no longer be able to decrypt %2$#@count@. Rotate the secret values afterwards: anyone removed may still hold an old copy."
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 2,
+              "formatSpecifier": "d",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "this project's one encrypted file"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg of this project's files"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -1776,6 +1798,17 @@
         }
       }
     },
+    "project-access.error.stale-plan": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The staged recipients changed while this panel was working out what to write, so nothing was written. Press Update .sops.yaml again."
+          }
+        }
+      }
+    },
     "project-access.error.title": {
       "extractionState": "manual",
       "localizations": {
@@ -1793,7 +1826,49 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "%1$@ of the %2$@ encrypted files found here fall under the creation rule this panel updates."
+            "value": "The creation rule this panel updates governs %1$#@matched@ of the %2$#@found@ found in this project."
+          },
+          "substitutions": {
+            "matched": {
+              "argNum": 1,
+              "formatSpecifier": "d",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "1 file"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg files"
+                    }
+                  }
+                }
+              }
+            },
+            "found": {
+              "argNum": 2,
+              "formatSpecifier": "d",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "1 encrypted file"
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "%arg encrypted files"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -1816,6 +1891,29 @@
           "stringUnit": {
             "state": "translated",
             "value": "No sops-encrypted YAML files were found in this project."
+          }
+        }
+      }
+    },
+    "project-access.other-rules-in-scope": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%d of them is governed by a different creation rule in this project's .sops.yaml, and will be re-wrapped for the staged recipients anyway."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%d of them are governed by different creation rules in this project's .sops.yaml, and will be re-wrapped for the staged recipients anyway."
+                }
+              }
+            }
           }
         }
       }
@@ -1981,7 +2079,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This rewrites the creation rule that governs these files. It changes who new and re-wrapped files will be encrypted for. Files already on disk are not touched by this.\n\nThe whole file is written out again, so blank lines, a leading \"---\" marker and the exact alignment of trailing comments will not survive. Every rule, key and comment does. Expect a slightly larger diff than the keys you changed."
+            "value": "This rewrites the creation rule that governs these files. It changes who new and re-wrapped files will be encrypted for. Files already on disk are not touched by this.\n\nThe whole file is written out again, so blank lines, a leading \"---\" marker and the exact alignment of trailing comments will not survive. Every rule, key and comment does. Expect a larger diff than the keys you changed — and if the rules in this file sit flush against \"creation_rules:\" rather than indented under it, every line inside it shifts."
           }
         }
       }
@@ -2147,6 +2245,39 @@
           "stringUnit": {
             "state": "translated",
             "value": "Worktree"
+          }
+        }
+      }
+    },
+    "recipient.kind.device": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Device"
+          }
+        }
+      }
+    },
+    "recipient.kind.person": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Person"
+          }
+        }
+      }
+    },
+    "recipient.kind.server": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Server"
           }
         }
       }

@@ -777,3 +777,87 @@ creation_rules:
 		}
 	}
 }
+
+// MARK: - Disclosing what the fallback scope quietly includes
+
+// I2. When no rule governs the target file the caller's scope falls back to
+// every encrypted file it found — including files other creation rules govern,
+// whose key sets this call was never asked about. MatchedFiles is empty in
+// exactly this case, so it cannot carry that disclosure; without
+// FilesGovernedByOtherRules the panel re-wrapped them and said nothing.
+func TestUpdateConfigRecipients_NoMatchingRuleNamesTheFilesOtherRulesGovern(t *testing.T) {
+	a := newAgeKeyPair(t)
+	config := `creation_rules:
+  - path_regex: ^prod/.*\.yaml$
+    age: ` + a.Public + `
+`
+	got, dir := mustUpdate(t, config, "dev/local.yaml", []string{a.Public},
+		"dev/local.yaml", "prod/db.yaml", "prod/api.yaml")
+
+	if got.Writable {
+		t.Fatalf("Writable = true for a config whose rules govern nothing here")
+	}
+	if got.RuleIndex != -1 {
+		t.Errorf("RuleIndex = %d, want -1", got.RuleIndex)
+	}
+	if len(got.MatchedFiles) != 0 {
+		t.Errorf("MatchedFiles = %v, want empty", got.MatchedFiles)
+	}
+	want := []string{filepath.Join(dir, "prod/db.yaml"), filepath.Join(dir, "prod/api.yaml")}
+	if !equalStrings(got.FilesGovernedByOtherRules, want) {
+		t.Errorf("FilesGovernedByOtherRules = %v, want %v", got.FilesGovernedByOtherRules, want)
+	}
+}
+
+// The complement of MatchedFiles, never overlapping it, and never naming a
+// file no rule governs at all — "a different rule decides this file's keys" is
+// the disclosure, and "nothing decides them" is not that.
+func TestUpdateConfigRecipients_FilesGovernedByOtherRulesExcludesTheSelectedRule(t *testing.T) {
+	a := newAgeKeyPair(t)
+	config := `creation_rules:
+  - path_regex: ^prod/.*\.yaml$
+    age: ` + a.Public + `
+  - path_regex: ^staging/.*\.yaml$
+    age: ` + a.Public + `
+`
+	got, dir := mustUpdate(t, config, "prod/db.yaml", []string{a.Public},
+		"prod/db.yaml", "staging/db.yaml", "dev/local.yaml")
+
+	if !got.Writable {
+		t.Fatalf("Writable = false, Reason = %q", got.Reason)
+	}
+	if !equalStrings(got.MatchedFiles, []string{filepath.Join(dir, "prod/db.yaml")}) {
+		t.Errorf("MatchedFiles = %v", got.MatchedFiles)
+	}
+	if !equalStrings(got.FilesGovernedByOtherRules, []string{filepath.Join(dir, "staging/db.yaml")}) {
+		t.Errorf("FilesGovernedByOtherRules = %v, want just the staging file", got.FilesGovernedByOtherRules)
+	}
+}
+
+// A config with no usable rules governs nothing, so there is nothing to
+// disclose — and the field still has to marshal as [] rather than null, or
+// Swift's non-optional [String] refuses the whole payload.
+func TestUpdateConfigRecipients_FilesGovernedByOtherRulesIsAlwaysAnArray(t *testing.T) {
+	a := newAgeKeyPair(t)
+	dir := t.TempDir()
+	confPath := writeConfig(t, dir, `creation_rules:
+  - path_regex: ^prod/.*\.yaml$
+    age: `+a.Public+`
+`)
+	recipients, err := json.Marshal([]string{a.Public})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates, err := json.Marshal([]string{filepath.Join(dir, "dev/local.yaml")})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	payload, err := UpdateConfigRecipientsJSON(confPath, filepath.Join(dir, "dev/local.yaml"), recipients, candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(payload), `"filesGovernedByOtherRules":[`) {
+		t.Errorf("filesGovernedByOtherRules must marshal as an array: %s", payload)
+	}
+}

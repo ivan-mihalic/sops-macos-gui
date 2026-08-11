@@ -45,6 +45,20 @@ type ConfigRecipientUpdate struct {
 	// governs, in the order they were given. Empty (never nil) when no rule
 	// matched or no candidates were supplied.
 	MatchedFiles []string `json:"matchedFiles"`
+	// FilesGovernedByOtherRules are the candidate paths that some creation
+	// rule *other* than RuleIndex governs, in the order they were given.
+	//
+	// It exists for the case RuleIndex = -1, where a caller's scope falls back
+	// to every encrypted file it found: some of those files may well be
+	// governed by rules this call was not asked about, and re-wrapping them is
+	// a decision about *other* rules' key sets. A caller that widens its scope
+	// like that has to be able to say so before it acts, which it cannot do
+	// from MatchedFiles alone — that list is empty in exactly this case.
+	//
+	// Empty (never nil) when no candidates were supplied, when the config
+	// declares no usable rules, or when every candidate is governed by
+	// RuleIndex itself. Path strings only; nothing is opened.
+	FilesGovernedByOtherRules []string `json:"filesGovernedByOtherRules"`
 	// Changed is true when Config differs from what is on disk. False when the
 	// rule already declares exactly the requested set — in which case Config
 	// is the file's current text, so a caller that writes anyway writes the
@@ -273,7 +287,14 @@ func UpdateConfigRecipients(
 		return nil, err
 	}
 	if index < 0 {
-		return refuse(reasonNoMatchingRule), nil
+		// No rule governs the target file, so a caller's scope falls back to
+		// everything it found. Which of those files *other* rules govern is
+		// the one thing that fallback cannot be honest about without being
+		// told, so it is answered even on this refusal path.
+		refusal := refuse(reasonNoMatchingRule)
+		refusal.FilesGovernedByOtherRules = filesGovernedElsewhere(
+			index, decoded.CreationRules, configDir, candidates)
+		return refusal, nil
 	}
 
 	// sops's own answer for this file, which is what CurrentRecipients
@@ -287,6 +308,8 @@ func UpdateConfigRecipients(
 		RuleIndex:         index,
 		CurrentRecipients: lookup.AgeRecipients,
 		MatchedFiles:      filesGovernedBy(index, decoded.CreationRules, configDir, candidates),
+		FilesGovernedByOtherRules: filesGovernedElsewhere(
+			index, decoded.CreationRules, configDir, candidates),
 	}
 	if result.CurrentRecipients == nil {
 		result.CurrentRecipients = []string{}
@@ -463,10 +486,11 @@ func joinWithAnd(names []string) string {
 
 func refuse(reason string) *ConfigRecipientUpdate {
 	return &ConfigRecipientUpdate{
-		RuleIndex:         -1,
-		Reason:            reason,
-		CurrentRecipients: []string{},
-		MatchedFiles:      []string{},
+		RuleIndex:                 -1,
+		Reason:                    reason,
+		CurrentRecipients:         []string{},
+		MatchedFiles:              []string{},
+		FilesGovernedByOtherRules: []string{},
 	}
 }
 
@@ -587,6 +611,32 @@ func filesGovernedBy(index int, rules []writeCreationRule, configDir string, can
 		}
 	}
 	return matched
+}
+
+// filesGovernedElsewhere is filesGovernedBy's complement: the candidates some
+// rule other than `index` governs. Candidates no rule governs at all are not
+// in it — "a different rule decides this file's keys" is the disclosure a
+// caller needs, and "no rule decides them" is not that.
+//
+// With index < 0 (no rule governs the target file) this is every candidate any
+// rule governs, which is exactly the set a caller widening its scope to the
+// whole project would otherwise re-wrap without being able to say so.
+func filesGovernedElsewhere(index int, rules []writeCreationRule, configDir string, candidates []string) []string {
+	elsewhere := []string{}
+	for _, candidate := range candidates {
+		absolute, err := filepath.Abs(candidate)
+		if err != nil {
+			continue
+		}
+		found, err := matchingRuleIndex(rules, configDir, absolute)
+		if err != nil {
+			continue
+		}
+		if found >= 0 && found != index {
+			elsewhere = append(elsewhere, candidate)
+		}
+	}
+	return elsewhere
 }
 
 // readingsDisagree reports whether the two readings of this config — the node
@@ -860,9 +910,13 @@ func newAgeNode(existing *yaml.Node, recipients []string) *yaml.Node {
 			continue
 		}
 		item := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: recipient}
-		// A comma-joined scalar can name several recipients under one comment;
-		// the comment follows the first of them that survives, and is used at
-		// most once.
+		// A comma-joined scalar can name several recipients under one comment
+		// (`age: A,B # the team`). The comment is carried over only when the
+		// *first* of those recipients survives the change, and is used at most
+		// once — deliberately narrower than "the first survivor gets it":
+		// `A,B # the team` becoming [B, C] drops the comment rather than
+		// re-pointing it at B, because a comment written about the head of a
+		// list is not a statement about whatever happens to be left of it.
 		if scalarComment != "" && len(scalarValues) > 0 && scalarValues[0] == recipient {
 			item.LineComment = scalarComment
 			scalarComment = ""

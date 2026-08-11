@@ -208,7 +208,11 @@ struct LocalizationTests {
             // matching only on a decimal specifier would quietly stop checking
             // the very keys this rule already reached — including a future one
             // whose substitution carries no plural split at all.
-            let formatsACount = forms.contains { $0.contains(countSpecifier) || $0.contains("%#@") }
+            // `#@` rather than `%#@`: a key with more than one varying number
+            // is written positionally (`%1$#@matched@`), which the narrower
+            // spelling does not match — and a two-count sentence is exactly
+            // where a missing plural is hardest to notice.
+            let formatsACount = forms.contains { $0.contains(countSpecifier) || $0.contains("#@") }
             guard formatsACount else { continue }
             if let reason = Self.countedStringsWithNoSingularCase[key] {
                 #expect(!Self.hasPluralForms(entry),
@@ -218,6 +222,114 @@ struct LocalizationTests {
             #expect(Self.hasPluralForms(entry),
                     "\(key) formats a count with no plural variation: \"\(forms.first ?? "")\" — a count of 1 will read wrong. Add one, or list the key in countedStringsWithNoSingularCase with the reason 1 cannot occur.")
         }
+    }
+
+    // MARK: - The hole countedStringsPluralize could not see
+
+    /// Call sites whose `String(format:)` argument is deliberately a
+    /// pre-stringified number, each with the reason no plural split applies.
+    /// Same shape, and same purpose, as `countedStringsWithNoSingularCase`: the
+    /// value of the check below is that it forces the question to be answered
+    /// once, in writing, rather than answered by accident.
+    private static let preStringifiedCountsWithNoSingularCase: [String: String] = [
+        // "%1$@ updated, %2$@ unchanged, %3$@ failed" — three bare tallies, no
+        // noun and no verb agreeing with any of them, so none has a singular
+        // form to get wrong. Pluralizing three counts in one sentence would
+        // need three substitutions to produce the identical string.
+        "project-access.results.summary":
+            "three bare tallies with no noun or verb agreeing with them; every form reads the same at 1",
+    ]
+
+    /// M2. `project-access.files-summary` read "1 of the 1 encrypted files found
+    /// here **fall** under…" at the most common case a small project has, and
+    /// `countedStringsPluralize` walked straight past it: both counts were
+    /// interpolated into strings at the call site (`"\(count)"`) and arrived as
+    /// `%@`, so the catalog entry contained no decimal specifier for that check
+    /// to match on. The catalog cannot see this — the call site can.
+    ///
+    /// So this reads the module's own source and refuses a
+    /// `String(format: LocalizedKey…text, …)` whose arguments interpolate
+    /// anything into a string literal. A count that reaches a format string as
+    /// `%@` is a count no plural rule will ever apply to, in any language.
+    @Test("no call site turns a count into a string before formatting it")
+    func noCallSitePreStringifiesACount() throws {
+        for (file, source) in try Self.moduleSources() {
+            for (key, arguments) in Self.formatCalls(in: source) {
+                guard arguments.contains("\"\\(") else { continue }
+                if let reason = Self.preStringifiedCountsWithNoSingularCase[key] {
+                    _ = reason
+                    continue
+                }
+                Issue.record(
+                    """
+                    \(file) formats \(key) with a pre-stringified value: \(arguments.trimmingCharacters(in: .whitespacesAndNewlines))
+                    Pass the number itself and pluralize the catalog entry on it, or list the key \
+                    in preStringifiedCountsWithNoSingularCase with the reason a singular form cannot differ.
+                    """)
+            }
+        }
+    }
+
+    /// Every Swift file of the `SopsUI` module, resolved from source rather
+    /// than from a build product — same reasoning as `catalogURL` above.
+    private static func moduleSources() throws -> [(String, String)] {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/SopsUI")
+        let enumerator = try #require(
+            FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil),
+            "could not walk Sources/SopsUI")
+        var files: [(String, String)] = []
+        for case let url as URL in enumerator where url.pathExtension == "swift" {
+            files.append((url.lastPathComponent, try String(contentsOf: url, encoding: .utf8)))
+        }
+        #expect(!files.isEmpty, "found no SopsUI sources to scan")
+        return files
+    }
+
+    /// Every `String(format: LocalizedKey.x.text, …)` in `source`, as (catalog
+    /// key, argument text). The argument text is taken by balancing parentheses
+    /// from the format argument to the end of the call, so a `.filter { … }
+    /// .count` inside it does not truncate the scan early.
+    private static func formatCalls(in source: String) -> [(String, String)] {
+        var calls: [(String, String)] = []
+        var search = source.startIndex..<source.endIndex
+        while let start = source.range(of: "LocalizedKey.", range: search) {
+            search = start.upperBound..<source.endIndex
+
+            // Only the format argument of a `String(format:…)`, not every
+            // mention of a key: anything else's arguments are not this test's
+            // business, and balancing parens from them would read the wrong
+            // call entirely.
+            let before = source[source.startIndex..<start.lowerBound]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard before.hasSuffix("format:") else { continue }
+
+            let tail = source[start.upperBound...]
+            guard let dotText = tail.range(of: ".text"),
+                  tail[dotText.upperBound...].first == ","
+            else { continue }
+            let name = String(tail[tail.startIndex..<dotText.lowerBound])
+            guard let key = LocalizedKey.allCases.first(where: { "\($0)" == name }) else { continue }
+
+            // From the comma to the close of the `String(` call, counting
+            // nested parens so a `.filter { … }.count` inside does not end the
+            // scan early.
+            var depth = 1
+            var arguments = ""
+            for character in tail[tail.index(after: dotText.upperBound)...] {
+                if character == "(" { depth += 1 }
+                if character == ")" {
+                    depth -= 1
+                    if depth == 0 { break }
+                }
+                arguments.append(character)
+            }
+            calls.append((key.rawValue, arguments))
+        }
+        return calls
     }
 
     // MARK: - Bundle-based checks (only meaningful where a build system compiles the catalog)
@@ -290,6 +402,20 @@ struct LocalizationTests {
         // survive, and the sentence has to say so or it reads as data loss.
         #expect(message.lowercased().contains("every rule"),
                 "the confirmation must also say what does survive: \(message)")
+
+        // M1. "Expect a *slightly* larger diff" was an understatement for the
+        // one shape it most needed to describe: a `.sops.yaml` whose rules sit
+        // flush with `creation_rules:` (`- path_regex:` at column 1) cannot be
+        // re-emitted in that form, `inferIndent` falls back to two, and every
+        // line inside `creation_rules` shifts. Nothing is harmed — the post-edit
+        // guard proves semantic identity — but a user who reads "slightly"
+        // cannot predict the diff they are about to see in git.
+        #expect(!message.lowercased().contains("slightly"),
+                "the confirmation must not understate a whole-file re-indent: \(message)")
+        #expect(message.lowercased().contains("flush"),
+                "the confirmation must name the flush-style config whose every line shifts: \(message)")
+        #expect(message.lowercased().contains("every line"),
+                "the confirmation must say every line inside creation_rules can shift: \(message)")
     }
 
     /// That the plural variations actually *resolve* — the half the catalog-JSON
@@ -340,5 +466,30 @@ struct LocalizationTests {
                     != plural.replacingOccurrences(of: "5", with: "#"),
                 "\(key.rawValue) reads the same at one and at many: \(singular)")
         }
+
+        // M2. `project-access.files-summary` formats *two* counts, so it needs
+        // two substitutions rather than one — a shape nothing else in this
+        // catalog uses, and one that resolves to a literal `%1$#@matched@` at
+        // the user if it is written wrong. The case it read wrongest is the
+        // most common one in a small project: matched == found == 1, which used
+        // to say "1 of the 1 encrypted files found here fall under…".
+        let bothAtOne = String(format: LocalizedKey.projectAccessFilesSummary.text, 1, 1)
+        let bothAtMany = String(format: LocalizedKey.projectAccessFilesSummary.text, 2, 3)
+        #expect(bothAtOne.contains("1 file of the 1 encrypted file"),
+                "the matched-of-found summary at one reads: \(bothAtOne)")
+        #expect(bothAtMany.contains("2 files of the 3 encrypted files"),
+                "the matched-of-found summary at many reads: \(bothAtMany)")
+        #expect(!bothAtOne.contains("%"), "unexpanded format specifier in: \(bothAtOne)")
+        #expect(!bothAtMany.contains("%"), "unexpanded format specifier in: \(bothAtMany)")
+
+        // And the removal confirmation's file count, which was the other
+        // pre-stringified one.
+        let removalAtOne = String(
+            format: LocalizedKey.projectAccessApplyFilesRemovalMessage.text, "Alice", 1)
+        let removalAtMany = String(
+            format: LocalizedKey.projectAccessApplyFilesRemovalMessage.text, "Alice", 4)
+        #expect(!removalAtOne.contains("%"), "unexpanded format specifier in: \(removalAtOne)")
+        #expect(removalAtMany.contains("4 of this project's files"),
+                "the removal confirmation at many reads: \(removalAtMany)")
     }
 }

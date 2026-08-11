@@ -312,6 +312,15 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // worse reading), so the panel has to say so before the button is pressed
     // rather than only in the confirmation dialog.
     case projectAccessAllFilesInScope = "project-access.all-files-in-scope"
+    // The other half of that widening, and the half the count alone hides:
+    // the fallback scope reaches across creation-rule boundaries, so files
+    // whose keys a *different* rule decides are re-wrapped alongside the ones
+    // no rule governs. Formatted with how many. Shown on the panel and again
+    // in the file-apply confirmation, because
+    // `project-access.unmatched-note` — the sentence that names other rules —
+    // renders only in the branch where a rule *was* identified, which is the
+    // one branch that does not need it.
+    case projectAccessOtherRulesInScope = "project-access.other-rules-in-scope"
     case projectAccessScanIncompleteTitle = "project-access.scan-incomplete.title"
     // The two ways a project can produce an *empty* scan that is not an
     // answer about anything. Reported rather than folded into "no encrypted
@@ -359,6 +368,20 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case projectAccessErrorTitle = "project-access.error.title"
     case projectAccessErrorEmptyRecipients = "project-access.error.empty-recipients"
     case projectAccessErrorNoFiles = "project-access.error.no-files"
+    // `ProjectAccessModel.ConfigApplyOutcome.refusedStalePlan`: the staged set
+    // moved again while the panel was working out what to write, so the only
+    // `.sops.yaml` text on hand belongs to an older set. Nothing is written —
+    // writing it would drop the recipients staged since, silently.
+    case projectAccessErrorStalePlan = "project-access.error.stale-plan"
+
+    // MARK: Recipient kinds — the registry's descriptive role for a key
+
+    // Descriptive only: `.sops.yaml` and SOPS metadata remain the access
+    // authority (see `RecipientKind`). Shown in both Access panels, which the
+    // design spec asks for — "the human name, the *type* and the public key".
+    case recipientKindDevice = "recipient.kind.device"
+    case recipientKindServer = "recipient.kind.server"
+    case recipientKindPerson = "recipient.kind.person"
 
     /// The resolved English text. Used in views and asserted in tests.
     public var text: String {

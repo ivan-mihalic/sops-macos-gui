@@ -45,6 +45,10 @@ public final class ProjectAccessModel {
         /// The staged set is empty. Refused before anything is touched: a
         /// creation rule with no recipients encrypts new files for nobody.
         case refusedEmptyRecipients
+        /// The staged set moved again while this was working out what to
+        /// write, so the only text available belongs to an older set.
+        /// Refused rather than written — see `applyConfig()`.
+        case refusedStalePlan
         case failed(String)
     }
 
@@ -80,6 +84,18 @@ public final class ProjectAccessModel {
     private let applier: ProjectRecipientApplier
     private let loadRegistry: (URL) -> [RecipientRecord]
     private var runTask: Task<Void, Never>?
+    /// Which refresh is allowed to publish its result.
+    ///
+    /// `plan(...)` is a whole-tree walk plus a bridge call — hundreds of
+    /// milliseconds — and the panel stays interactive throughout, so two
+    /// refreshes can be in flight at once and can complete in either order.
+    /// Without this, the *last to finish* won, which is not the same as the
+    /// last to start: a plan computed for an older staged set could land on top
+    /// of a newer one, and `plan.configUpdateText` is the exact text a
+    /// confirmed "Update .sops.yaml" writes. The same generation-stamp
+    /// technique `SecretDocumentViewModel.rowIdentityGeneration` uses.
+    private var planGeneration = 0
+    private var refreshTask: Task<Void, Never>?
 
     /// - Parameters:
     ///   - projectRoot: The project this panel is about.
@@ -202,11 +218,33 @@ public final class ProjectAccessModel {
 
     /// Re-plans against the current staged set, so the config preview
     /// (`plan.configUpdateText`, `plan.configRefusal`) matches what Apply
-    /// would actually do. Cheap enough to call on every staging change: it is
-    /// a scan plus one bridge call that writes nothing.
+    /// would actually do. A scan plus one bridge call; it writes nothing.
+    ///
+    /// A result is published only if no later refresh has started since this
+    /// one did — see `planGeneration`. A refresh overtaken by a newer one
+    /// therefore leaves `plan` alone rather than replacing a newer plan with an
+    /// older one; it is never the case that finishing last means being right.
     public func refreshPlan() async {
         guard loadState == .loaded else { return }
-        plan = await applier.plan(projectRoot: projectRoot, recipients: stagedRecipients)
+        planGeneration &+= 1
+        let generation = planGeneration
+        let fresh = await applier.plan(projectRoot: projectRoot, recipients: stagedRecipients)
+        guard generation == planGeneration else { return }
+        plan = fresh
+    }
+
+    /// Runs `refreshPlan()` in a task this model owns, cancelling whichever
+    /// refresh was already in flight.
+    ///
+    /// The view calls this on every staging change rather than spawning its own
+    /// detached `Task`: an unowned task cannot be cancelled, so a burst of
+    /// toggles left a queue of whole-tree walks running to completion with only
+    /// the generation stamp deciding which one mattered. Cancellation is a
+    /// courtesy — correctness is `planGeneration`'s job — but a walk nobody
+    /// will read should not go on walking.
+    public func startRefreshingPlan() {
+        refreshTask?.cancel()
+        refreshTask = Task { [weak self] in await self?.refreshPlan() }
     }
 
     // MARK: - Staging
@@ -233,15 +271,35 @@ public final class ProjectAccessModel {
 
     /// Writes the planned `.sops.yaml` update. Never touches a single
     /// encrypted file.
+    ///
+    /// The plan in hand is checked against the staged set *before* its text is
+    /// written. A plan carries the recipient list it was computed for
+    /// (`Plan.requestedRecipients`) precisely so this check can exist: a
+    /// refresh that is still in flight, or one overtaken by a later staging
+    /// change, leaves `plan.configUpdateText` holding the text for an older
+    /// set — and writing that text would silently drop every recipient staged
+    /// since, while `configRecipients` went on claiming they were in the file.
+    /// A mismatch re-plans; if it still does not agree (the user staged
+    /// something else again in the meantime) nothing is written at all.
     public func applyConfig() async -> ConfigApplyOutcome {
-        guard let plan else { return .nothingToWrite }
+        guard plan != nil else { return .nothingToWrite }
         guard !stagedRecipients.isEmpty else { return .refusedEmptyRecipients }
+
+        if plan?.requestedRecipients != stagedRecipients {
+            await refreshPlan()
+        }
+        guard let plan, plan.requestedRecipients == stagedRecipients else {
+            return .refusedStalePlan
+        }
         guard plan.configUpdateText != nil else { return .nothingToWrite }
 
         switch applier.writeConfig(plan) {
         case .written:
             configWritten = true
-            configRecipients = stagedRecipients
+            // From the plan, not from `stagedRecipients`: they are equal by the
+            // guard above, and taking it from the thing that was actually
+            // written is what keeps that true if the guard ever loosens.
+            configRecipients = plan.requestedRecipients
             await refreshPlan()
             return .written
         case .nothingToWrite:

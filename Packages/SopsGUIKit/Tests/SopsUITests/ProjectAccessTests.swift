@@ -1,6 +1,7 @@
 import Foundation
 import ScratchCleanup
 import SopsEngine
+import SopsHealth
 import SopsProjects
 import SwiftUI
 import Testing
@@ -605,7 +606,362 @@ struct ProjectAccessScopeDisclosureTests {
         await host.settle(until: { model.plan?.governingRuleIdentified == true })
 
         try #require(model.plan?.governingRuleIdentified == true)
-        let expected = String(format: LocalizedKey.projectAccessFilesSummary.text, "2", "2")
+        // Ints, not strings: the counts are pluralized on now (M2), so the
+        // catalog entry carries `%1$#@matched@`/`%2$#@found@` and a
+        // pre-stringified argument would expand to nothing under a build that
+        // compiles the catalog.
+        let expected = String(format: LocalizedKey.projectAccessFilesSummary.text, 2, 2)
         #expect(labels(in: host.nodes()).contains(expected))
+    }
+}
+
+// MARK: - I1: a plan computed for an older staged set must never be written
+
+/// Holds the *next* scan that starts after `arm()` until the test releases it,
+/// so two `refreshPlan()` calls can be made to complete in a chosen order
+/// rather than a hoped-for one. A sleep would make the same point on a good day
+/// and a flake on a bad one; this makes the interleave exact.
+private actor ScanGate {
+    private var armed = false
+    private var arrived = false
+    private var released = false
+    private var release: CheckedContinuation<Void, Never>?
+
+    func arm() {
+        armed = true
+        arrived = false
+        released = false
+    }
+
+    /// Called from inside the injected scan seam.
+    func enter() async {
+        guard armed else { return }
+        armed = false
+        arrived = true
+        if released { return }
+        await withCheckedContinuation { release = $0 }
+    }
+
+    func hasArrived() -> Bool { arrived }
+
+    func releaseNow() {
+        released = true
+        release?.resume()
+        release = nil
+    }
+}
+
+@Suite("ProjectAccessModel — .sops.yaml is never written from a stale plan")
+@MainActor
+struct ProjectAccessPlanGenerationTests {
+
+    /// Polls rather than suspending on a continuation, and gives up.
+    ///
+    /// The pre-fix `applyConfig()` never re-plans at all, so a continuation
+    /// waiting for its scan to start waits forever: the test would hang instead
+    /// of failing, which is the worst way for a guard to report a regression.
+    private func waitForArrival(_ gate: ScanGate) async {
+        for _ in 0..<200 {
+            if await gate.hasArrived() { return }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        Issue.record("no scan started within 10s — nothing re-planned")
+    }
+
+    private func gatedApplier(_ gate: ScanGate) -> ProjectRecipientApplier {
+        ProjectRecipientApplier(scanProject: { root in
+            await gate.enter()
+            return await ProjectScanner.scan(root: root)
+        })
+    }
+
+    /// The exact failure the final review named. Config declares [A]. The user
+    /// adds B, which starts a refresh planning for [A, B]; while that whole-tree
+    /// walk is in flight they add C, and a second refresh plans for [A, B, C].
+    /// The first one finishes *last*.
+    ///
+    /// Before the generation stamp, last-to-finish won: `plan.configUpdateText`
+    /// was the text for [A, B], the panel showed all three (rows come from
+    /// `stagedRecipients`), and a confirmed "Update .sops.yaml" wrote a rule
+    /// that had never heard of C — with `configRecipients` then claiming it had.
+    @Test("a refresh that finishes last cannot overwrite a newer one")
+    func aStalePlanIsNeverTheOneThatGetsWritten() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let second = try ProjectAgeKeyPair.generate()
+        let third = try ProjectAgeKeyPair.generate()
+        let (root, _) = try makeProject(owner: owner)
+
+        let gate = ScanGate()
+        let keyStore = SessionKeyStore()
+        try keyStore.importKey(owner.private)
+        let model = ProjectAccessModel(
+            projectRoot: root, keyStore: keyStore, applier: gatedApplier(gate))
+        await model.load()
+
+        model.stageAdd(second.public)
+        await gate.arm()
+        let overtaken = Task { await model.refreshPlan() }
+        await waitForArrival(gate)
+
+        // Staged while the first refresh is still walking the tree.
+        model.stageAdd(third.public)
+        await model.refreshPlan()
+
+        // ...and only now does the first one land.
+        await gate.releaseNow()
+        await overtaken.value
+
+        #expect(model.plan?.requestedRecipients == model.stagedRecipients,
+                "the overtaken refresh published its older plan on top of the newer one")
+        #expect(await model.applyConfig() == .written)
+
+        let config = try String(contentsOf: root.appendingPathComponent(".sops.yaml"), encoding: .utf8)
+        #expect(config.contains(third.public),
+                "the recipient staged during the refresh was silently dropped from .sops.yaml")
+        #expect(config.contains(second.public))
+        #expect(config.contains(owner.public))
+        #expect(Set(model.configRecipients) == Set(model.stagedRecipients))
+    }
+
+    /// The other half of the guard: a plan that is merely *out of date* (no
+    /// refresh was ever started for the current staged set) is re-planned rather
+    /// than written or silently treated as "nothing to write".
+    @Test("applying with a plan nobody refreshed re-plans first")
+    func applyConfigReplansAStalePlan() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let added = try ProjectAgeKeyPair.generate()
+        let (root, _) = try makeProject(owner: owner)
+
+        let keyStore = SessionKeyStore()
+        try keyStore.importKey(owner.private)
+        let model = ProjectAccessModel(projectRoot: root, keyStore: keyStore)
+        await model.load()
+
+        // Deliberately no refreshPlan() — the plan in hand is the load's own
+        // inspection, computed for a set that is not what would be written.
+        model.stageAdd(added.public)
+
+        #expect(await model.applyConfig() == .written)
+        let config = try String(contentsOf: root.appendingPathComponent(".sops.yaml"), encoding: .utf8)
+        #expect(config.contains(added.public))
+        #expect(config.contains(owner.public))
+    }
+
+    /// And when the staged set moves again *during* that re-plan, nothing is
+    /// written at all: there is no text on hand for what the user is looking at,
+    /// and the older text is the one thing that must not be used.
+    @Test("a staged change during the re-plan refuses the write outright")
+    func applyConfigRefusesWhenTheStagedSetMovesAgain() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let second = try ProjectAgeKeyPair.generate()
+        let third = try ProjectAgeKeyPair.generate()
+        let (root, config) = try makeProject(owner: owner)
+
+        let gate = ScanGate()
+        let keyStore = SessionKeyStore()
+        try keyStore.importKey(owner.private)
+        let model = ProjectAccessModel(
+            projectRoot: root, keyStore: keyStore, applier: gatedApplier(gate))
+        await model.load()
+
+        model.stageAdd(second.public)
+        await gate.arm()
+        let applying = Task { await model.applyConfig() }
+        await waitForArrival(gate)
+
+        model.stageAdd(third.public)
+        await gate.releaseNow()
+
+        #expect(await applying.value == .refusedStalePlan)
+        #expect(try String(contentsOf: root.appendingPathComponent(".sops.yaml"), encoding: .utf8) == config,
+                "a refusal must leave .sops.yaml byte-identical")
+    }
+}
+
+// MARK: - I2: the fallback scope crosses creation-rule boundaries, and says so
+
+/// One rule, `^prod/`, and a file outside it that sorts first. The panel targets
+/// `dev/local.yaml`, no rule governs it, and `filesInScope` widens to all three
+/// — including the two `prod/` files a different rule's key set decides.
+private func makeCrossRuleProject(owner: ProjectAgeKeyPair) throws -> URL {
+    let root = try projectScratchDirectory("project-access-cross-rule")
+    try """
+        creation_rules:
+          - path_regex: ^prod/.*\\.yaml$
+            age: \(owner.public)
+
+        """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+    let encrypted = try SopsBridge.encryptYAML(projectPlainYAML, recipients: [owner.public])
+    for directory in ["dev", "prod"] {
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent(directory), withIntermediateDirectories: true)
+    }
+    for path in ["dev/local.yaml", "prod/api.yaml", "prod/db.yaml"] {
+        try encrypted.write(to: root.appendingPathComponent(path), atomically: true, encoding: .utf8)
+    }
+    return root
+}
+
+@Suite("ProjectAccessView — a fallback scope that crosses rules never does it quietly")
+@MainActor
+struct ProjectAccessCrossRuleDisclosureTests {
+
+    private func labels(in nodes: [GatingAXProbe.Node]) -> [String] {
+        nodes.flatMap { [$0.label, $0.value] }
+    }
+
+    @Test("files another creation rule governs are counted, not just swept in")
+    func theFallbackScopeNamesTheOtherRulesFiles() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let root = try makeCrossRuleProject(owner: owner)
+
+        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
+        await model.load()
+
+        try #require(model.plan?.governingRuleIdentified == false,
+                     "precondition: the alphabetically first file matches no rule")
+        #expect(model.filesToApply.count == 3)
+        #expect(model.plan?.filesGovernedByOtherRules.map(\.lastPathComponent).sorted()
+                == ["api.yaml", "db.yaml"])
+    }
+
+    @Test("the panel says so before the button is pressed")
+    func thePanelDisclosesIt() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let root = try makeCrossRuleProject(owner: owner)
+
+        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
+        let host = GatingHost(size: CGSize(width: 560, height: 620)) {
+            AnyView(ProjectAccessView(model: model, onClose: {}, onFilesApplied: {}))
+        }
+        defer { host.finish() }
+        await host.settle(until: { model.loadState == .loaded })
+
+        try #require(model.plan?.governingRuleIdentified == false)
+        // Key-derived on both sides, for the reason the suite above states: the
+        // catalog is copied uncompiled under plain `swift test`.
+        let expected = String(format: LocalizedKey.projectAccessOtherRulesInScope.text, 2)
+        #expect(labels(in: host.nodes()).contains(expected),
+                "the panel must say how many of the files in scope another rule governs")
+    }
+
+    @Test("and the confirmation dialog says it again")
+    func theConfirmationDisclosesIt() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let root = try makeCrossRuleProject(owner: owner)
+
+        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
+        await model.load()
+        try #require(model.plan?.governingRuleIdentified == false)
+
+        let view = ProjectAccessView(model: model, onClose: {}, onFilesApplied: {})
+        let expected = String(format: LocalizedKey.projectAccessOtherRulesInScope.text, 2)
+        #expect(view.fileApplyConfirmationMessage.contains(expected),
+                "the last screen before the write must name the other rules' files too")
+    }
+
+    /// The branch that must *not* gain the sentence: a rule was identified, so
+    /// `project-access.unmatched-note` already says what is left out, and this
+    /// one would contradict it.
+    @Test("a project whose rule was identified does not claim to cross rules")
+    func anIdentifiedRuleSaysNothingAboutOtherRules() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let (root, _) = try makeProject(owner: owner)
+
+        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
+        await model.load()
+        try #require(model.plan?.governingRuleIdentified == true)
+
+        let view = ProjectAccessView(model: model, onClose: {}, onFilesApplied: {})
+        let sentence = String(format: LocalizedKey.projectAccessOtherRulesInScope.text, 2)
+        #expect(!view.fileApplyConfirmationMessage.contains(sentence))
+    }
+}
+
+// MARK: - I3 / M3: what a row shows, and what the Add button agrees to
+
+@Suite("Recipient rows — the registry's kind is shown, in both panels")
+@MainActor
+struct RecipientKindDisplayTests {
+
+    private func labels(in nodes: [GatingAXProbe.Node]) -> [String] {
+        nodes.flatMap { [$0.label, $0.value] }
+    }
+
+    @Test("the project panel draws the recipient's kind")
+    func projectPanelShowsTheKind() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let (root, _) = try makeProject(owner: owner)
+        try RecipientRegistry.upsert(
+            RecipientRecord(label: "Build server", kind: .server, ageRecipient: owner.public),
+            in: root)
+
+        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
+        let host = GatingHost(size: CGSize(width: 560, height: 620)) {
+            AnyView(ProjectAccessView(model: model, onClose: {}, onFilesApplied: {}))
+        }
+        defer { host.finish() }
+        await host.settle(until: { model.loadState == .loaded })
+
+        #expect(labels(in: host.nodes()).contains(LocalizedKey.recipientKindServer.text),
+                "AccessEntry.kind is populated and was never drawn")
+    }
+
+    @Test("the per-file panel draws the same kind the same way")
+    func filePanelShowsTheKind() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let (root, _) = try makeProject(owner: owner)
+        try RecipientRegistry.upsert(
+            RecipientRecord(label: "Alice's laptop", kind: .device, ageRecipient: owner.public),
+            in: root)
+
+        let model = RecipientAccessModel(
+            fileURL: root.appendingPathComponent("a.yaml"), projectURL: root,
+            keyStore: SessionKeyStore())
+        let host = GatingHost(size: CGSize(width: 460, height: 520)) {
+            AnyView(RecipientAccessView(model: model, onClose: {}, onApplied: {}))
+        }
+        defer { host.finish() }
+        await host.settle(until: { model.loadState == .loaded })
+
+        #expect(labels(in: host.nodes()).contains(LocalizedKey.recipientKindDevice.text))
+    }
+
+    /// M3. The per-file panel enabled Add on `.whitespaces` while both models
+    /// trim `.whitespacesAndNewlines`, so a pasted lone newline lit the button
+    /// up and pressing it returned `.empty` — whose `explanation(for:)` is
+    /// `nil`. A live button, a press, and no feedback of any kind.
+    @Test("the Add button agrees with what the models will accept")
+    func addButtonTrimsWhatTheModelsTrim() {
+        #expect(!RecipientRowContent.canAdd("\n"))
+        #expect(!RecipientRowContent.canAdd(" \n\t "))
+        #expect(!RecipientRowContent.canAdd(""))
+        #expect(RecipientRowContent.canAdd("age1abc"))
+        #expect(RecipientRowContent.canAdd("  age1abc\n"))
+    }
+
+    /// A correct helper nothing calls is not a fix, and the two panels drifting
+    /// apart is the defect rather than either spelling on its own — so what is
+    /// pinned is that neither view trims for itself. `AppShellProjectRootSourceTests`
+    /// reads source for the same reason: a `View` struct's `.disabled(…)`
+    /// modifier is not reachable from a unit test.
+    @Test("neither Access panel decides for itself what an empty recipient is")
+    func neitherPanelTrimsOnItsOwn() throws {
+        let sources = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/SopsUI")
+        for relative in ["Editor/RecipientAccessView.swift", "Projects/ProjectAccessView.swift"] {
+            let text = try String(
+                contentsOf: sources.appendingPathComponent(relative), encoding: .utf8)
+            // The narrower set, spelled exactly: `.whitespacesAndNewlines)`
+            // does not match this, so the shared helper's own definition (which
+            // lives in one of these two files) is not a false positive.
+            #expect(!text.contains("trimmingCharacters(in: .whitespaces)"),
+                    "\(relative) trims the new-recipient field with the narrower set the models do not use — route it through RecipientRowContent.canAdd")
+            #expect(text.contains("RecipientRowContent.canAdd"),
+                    "\(relative) no longer asks RecipientRowContent whether Add may be pressed")
+        }
     }
 }
