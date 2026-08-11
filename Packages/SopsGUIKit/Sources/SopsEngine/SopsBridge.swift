@@ -54,6 +54,15 @@ public struct ConfigRecipientUpdate: Decodable, Equatable, Sendable {
     /// rule governs the target file. This is what makes `matchedFiles`
     /// meaningful — "the same rule" is a position, not a resemblance between
     /// two key lists.
+    ///
+    /// No view reads it, and that is not an oversight. The bridge's rule
+    /// *selection* is the load-bearing decision in this whole surface — it is
+    /// what decides whose keys get rewritten — and this field is the only
+    /// place that decision is observable from the Swift side at all. It is
+    /// decoded so `ConfigRecipientUpdateTests` can pin it across the C
+    /// boundary rather than inferring it from `matchedFiles`, which would pass
+    /// just as happily if the bridge had picked a different rule that happens
+    /// to govern the same files.
     public let ruleIndex: Int
     /// The age public keys that rule resolves to today, from sops's own
     /// config parser.
@@ -180,7 +189,11 @@ public enum SopsBridge {
         do {
             return try JSONDecoder().decode(CreationRuleLookup.self, from: data)
         } catch {
-            throw SopsBridgeError(description: "could not decode creation rule lookup JSON: \(error)")
+            // Fixed text, `error` deliberately unused — see the same catch in
+            // `updateConfigRecipients` for why a `DecodingError`'s own
+            // description may not be relayed.
+            throw SopsBridgeError(
+                description: "the bridge's answer about this project's .sops.yaml could not be read")
         }
     }
 
@@ -211,7 +224,10 @@ public enum SopsBridge {
         do {
             return try JSONDecoder().decode(ConfigBackends.self, from: data)
         } catch {
-            throw SopsBridgeError(description: "could not decode config backend JSON: \(error)")
+            // Fixed text, `error` deliberately unused — see the same catch in
+            // `updateConfigRecipients`.
+            throw SopsBridgeError(
+                description: "the bridge's answer about this project's .sops.yaml could not be read")
         }
     }
 
@@ -272,7 +288,16 @@ public enum SopsBridge {
         do {
             return try JSONDecoder().decode(ConfigRecipientUpdate.self, from: data)
         } catch {
-            throw SopsBridgeError(description: "could not decode config update JSON: \(error)")
+            // Fixed text, and the `error` deliberately unused. A
+            // `DecodingError`'s description quotes the payload it choked on,
+            // and that payload is this project's `.sops.yaml` — public, but
+            // the rule in this codebase is that an error carries no content at
+            // all rather than content someone has judged harmless, because the
+            // judgement is what rots. The condition is a bridge-contract
+            // break, not something a user can act on: the two sides of a
+            // statically linked struct disagreeing about their own JSON.
+            throw SopsBridgeError(
+                description: "the bridge's answer about this project's .sops.yaml could not be read")
         }
     }
 

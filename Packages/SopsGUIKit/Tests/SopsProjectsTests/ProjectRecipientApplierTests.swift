@@ -709,3 +709,88 @@ struct ProjectRecipientApplierMissingFingerprintTests {
         #expect(reason.contains("could not be read"))
     }
 }
+
+@Suite("ProjectRecipientApplier — one file reached by two names is still one file")
+struct ProjectRecipientApplierAliasTests {
+
+    /// F2. `ProjectScanner` reports a symlink to a regular file as a file in
+    /// its own right — deliberately, because from the project's point of view
+    /// it is one — so a project holding both a symlink and its target hands
+    /// the plan two URLs for one inode. Both resolve to the same
+    /// `ruleMatchingPath`, and everything downstream counts them twice: the
+    /// number of files on the panel, the number in the destructive
+    /// confirmation, and the per-file result table, which shows the same file
+    /// twice with two different outcomes.
+    @Test("a symlink and its target are planned as one file, under the name that is the file")
+    func anAliasedFileIsPlannedOnce() async throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try applierScratchDirectory("alias-plan")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try """
+            creation_rules:
+              - path_regex: .*\\.yaml$
+                age: \(owner.public)
+
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+
+        let target = root.appendingPathComponent("db.yaml")
+        try SopsBridge.encryptYAML(applierPlainYAML, recipients: [owner.public])
+            .write(to: target, atomically: true, encoding: .utf8)
+        // Sorts *before* "db.yaml", so a plan that simply keeps the first of
+        // the two keeps the alias — which is the wrong one of the two names to
+        // keep, and the assertion below is what pins that.
+        let alias = root.appendingPathComponent("alias.yaml")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: target)
+
+        let plan = await ProjectRecipientApplier().plan(projectRoot: root, recipients: [owner.public])
+
+        #expect(plan.encryptedFiles.count == 1)
+        #expect(plan.encryptedFiles.first?.lastPathComponent == "db.yaml")
+        #expect(plan.matchedFiles.count == 1)
+        #expect(plan.filesInScope.count == 1)
+        #expect(plan.targetFile?.lastPathComponent == "db.yaml")
+    }
+
+    /// And the consequence the plan's count exists to prevent: a run over the
+    /// planned scope reports one row per file, not one per name. Before the
+    /// deduplication this produced `[.updated, .unchanged]` — the second name
+    /// arriving at a file the first had already re-wrapped — so a user was
+    /// told a file they do not have was left alone.
+    @Test("a run over the planned scope reports the aliased file once")
+    func anAliasedFileIsAppliedOnce() async throws {
+        let owner = try AgeKeyPair.generate()
+        let added = try AgeKeyPair.generate()
+        let root = try applierScratchDirectory("alias-apply")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try """
+            creation_rules:
+              - path_regex: .*\\.yaml$
+                age: \(owner.public)
+
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+
+        let target = root.appendingPathComponent("db.yaml")
+        try SopsBridge.encryptYAML(applierPlainYAML, recipients: [owner.public])
+            .write(to: target, atomically: true, encoding: .utf8)
+        let alias = root.appendingPathComponent("alias.yaml")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: target)
+
+        let applier = ProjectRecipientApplier()
+        let plan = await applier.plan(projectRoot: root, recipients: [owner.public, added.public])
+        let run = await applier.apply(
+            files: plan.filesInScope, recipients: [owner.public, added.public],
+            agePrivateKey: owner.private)
+
+        #expect(run.results.count == 1)
+        #expect(run.results.first?.outcome == .updated)
+        #expect(run.unchangedCount == 0)
+        #expect(run.failedCount == 0)
+
+        // The alias is still an alias: nothing here replaced a symlink with a
+        // copy of what it pointed at.
+        let kind = try FileManager.default.attributesOfItem(atPath: alias.path)[.type] as? FileAttributeType
+        #expect(kind == .typeSymbolicLink)
+    }
+}

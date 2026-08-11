@@ -101,6 +101,10 @@ public struct ProjectRecipientApplier: Sendable {
         /// path relative to `projectRoot` — the order the user already sees in
         /// the file list, and the order `targetFile` is taken from. See
         /// `sortedByProjectRelativePath`.
+        ///
+        /// One entry per file, not per name: a project holding both a symlink
+        /// and its target holds one file, and it appears once, under the name
+        /// that is the file. See `deduplicatedByResolvedPath`.
         public let encryptedFiles: [URL]
         /// The subset of `encryptedFiles` governed by the same creation rule
         /// as `targetFile` — identified by the rule's *position* in
@@ -262,7 +266,10 @@ public struct ProjectRecipientApplier: Sendable {
     /// produces the text.
     public func plan(projectRoot: URL, recipients: [String]) async -> Plan {
         let tree = await scanProject(projectRoot)
-        let encryptedFiles = Self.sortedByProjectRelativePath(tree.encrypted.map(\.url), under: projectRoot)
+        let encryptedFiles = Self.sortedByProjectRelativePath(
+            Self.deduplicatedByResolvedPath(
+                Self.sortedByProjectRelativePath(tree.encrypted.map(\.url), under: projectRoot)),
+            under: projectRoot)
         let configURL = projectRoot.appendingPathComponent(".sops.yaml")
         let configExists = FileManager.default.fileExists(atPath: configURL.path)
 
@@ -409,6 +416,53 @@ public struct ProjectRecipientApplier: Sendable {
         url.standardizedFileURL.resolvingSymlinksInPath().path
     }
 
+    /// One entry per *file*, where `urls` may hold several names for one.
+    ///
+    /// `ProjectScanner` reports a symlink to a regular file as a file in its
+    /// own right, deliberately — from the project's point of view it is one.
+    /// But a project holding both a symlink and its target hands this two URLs
+    /// for one inode, and every count downstream then double-counts it: the
+    /// files on the panel, the number in the destructive confirmation, and the
+    /// per-file result table, which showed the same file twice with two
+    /// different outcomes (`.updated` for the first name, then `.unchanged`
+    /// for the second, arriving at a file the first had already re-wrapped —
+    /// so a user was told a file they do not have was left alone).
+    ///
+    /// The survivor is the name that *is* the file, not one that merely
+    /// reaches it, whatever the sort order says. Not cosmetic: it is the name
+    /// shown in the results, and a file listed under a name whose contents can
+    /// change from underneath it is a confusing thing to report a write
+    /// against. (The write itself is safe either way —
+    /// `AtomicFileWriter.write` resolves the path before replacing it, so a
+    /// symlink is never overwritten with a copy of its target.)
+    ///
+    /// Where neither name is the file — two symlinks to a target outside the
+    /// project — the first in the order given wins, which is why this is
+    /// handed an already-sorted list: the choice must not depend on
+    /// `FileManager.enumerator` order. `sortedByProjectRelativePath`'s doc
+    /// comment has the full account of why that order is never trusted here.
+    ///
+    /// The duplicate is dropped silently. Saying so would take a sentence on
+    /// the panel, and there is no honest one-line version of it — "this file
+    /// is also reachable as ./alias.yaml" is a disclosure about the project's
+    /// layout, not about the change being applied, and inventing a
+    /// user-facing string for it is a decision for the view.
+    static func deduplicatedByResolvedPath(_ urls: [URL]) -> [URL] {
+        var chosen: [String: URL] = [:]
+        var order: [String] = []
+        for url in urls {
+            let resolved = ruleMatchingPath(url)
+            guard let existing = chosen[resolved] else {
+                chosen[resolved] = url
+                order.append(resolved)
+                continue
+            }
+            let existingIsTheFile = existing.standardizedFileURL.path == resolved
+            let thisIsTheFile = url.standardizedFileURL.path == resolved
+            if thisIsTheFile, !existingIsTheFile { chosen[resolved] = url }
+        }
+        return order.compactMap { chosen[$0] }
+    }
 
     // MARK: - Writing the config
 
