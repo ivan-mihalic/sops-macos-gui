@@ -440,6 +440,13 @@ public enum AtomicFileWriter {
             try refuseIfChanged(destination, from: expecting)
         }
 
+        // Test-only, and a no-op in every build that does not set it. See
+        // `beforeReplaceHookForTesting`'s own doc comment for why this
+        // exists at all: it is what lets `AtomicFileWriterTests` land a
+        // destination created mid-staging deterministically, at exactly this
+        // point, instead of racing a second thread against the clock.
+        beforeReplaceHookForTesting?(destination)
+
         switch expecting {
         case .absent:
             // `RENAME_EXCL` fails the rename itself, atomically, if
@@ -510,6 +517,59 @@ public enum AtomicFileWriter {
             throw Error.destinationExists(path: destination.path)
         }
     }
+
+    // MARK: - Testing
+
+    /// A synchronization point for tests, invoked on the calling thread
+    /// immediately before the final replace step (see the call site above) —
+    /// after staging and every check that runs before it. `nil` in every
+    /// build that never sets it, which is every build except
+    /// `AtomicFileWriterTests`.
+    ///
+    /// Exists for exactly one property: `.absent`'s guarantee that a
+    /// destination which appears *during* staging — after the early check
+    /// already returned "nothing there" — is still refused by `RENAME_EXCL`
+    /// at replace time (see "A third case" in this type's doc comment). That
+    /// window is a handful of CPU instructions wide in production, far too
+    /// narrow to hit reliably by racing a second thread against the clock —
+    /// an earlier version of the covering test tried exactly that and landed
+    /// the race in only some fraction of runs, which is a real flake risk in
+    /// a slower or more contended environment (a CI runner, a VM) even
+    /// though it read comfortably margined on this machine. This hook lets
+    /// the test plant a file at `destination` from *inside* the write call,
+    /// at the exact instant in question, so the scenario happens on every
+    /// run rather than most of them.
+    ///
+    /// `internal`, not `public`: nothing outside this module's own test
+    /// target can see it (via `@testable import`), and nothing in the app
+    /// itself ever sets it. Guarded by `hookLock` because `swift test` runs
+    /// suites — including ones that call `write` for unrelated reasons, such
+    /// as `ProjectRecipientApplierTests` — in parallel, and the getter/setter
+    /// pair below is what keeps reading and writing the pointer itself
+    /// race-free. The lock does *not* by itself make a closure installed
+    /// here safe against a concurrent, unrelated `write` call also invoking
+    /// it: a test that sets this must check the `URL` it's handed and no-op
+    /// for anything it does not recognize, which `absentRefusesADestinationThatAppearsMidStaging`
+    /// does.
+    static var beforeReplaceHookForTesting: (@Sendable (URL) -> Void)? {
+        get {
+            hookLock.lock()
+            defer { hookLock.unlock() }
+            return unguardedBeforeReplaceHook
+        }
+        set {
+            hookLock.lock()
+            defer { hookLock.unlock() }
+            unguardedBeforeReplaceHook = newValue
+        }
+    }
+    private static let hookLock = NSLock()
+    /// Backing storage for `beforeReplaceHookForTesting`. Never touched
+    /// directly outside that property's own getter/setter, both of which
+    /// hold `hookLock` — `nonisolated(unsafe)` records that this type is
+    /// making its own thread-safety promise rather than asking the compiler
+    /// to infer one, which it cannot for a plain mutable `static var`.
+    private static nonisolated(unsafe) var unguardedBeforeReplaceHook: (@Sendable (URL) -> Void)?
 
     // MARK: - Steps
 

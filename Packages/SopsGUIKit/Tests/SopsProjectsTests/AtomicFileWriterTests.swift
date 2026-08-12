@@ -657,7 +657,7 @@ ScratchDirectoryRegistry.shared.register(targetDirectory)
     }
 
     /// The property the `RENAME_EXCL` choice specifically buys, and the
-    /// reason `.absent` needs a race rather than a "create it first" test: a
+    /// reason `.absent` needs something more than a "create it first" test: a
     /// destination that exists *before* `write` is called is caught by the
     /// cheap early check alone (see `absentOntoExistingFileIsRefused` above),
     /// which would pass identically if the final step were a manually-guarded
@@ -668,82 +668,63 @@ ScratchDirectoryRegistry.shared.register(targetDirectory)
     /// replace (see the comment there), so `RENAME_EXCL` is the sole guard
     /// for that window.
     ///
-    /// This races a second thread's plain `open(O_CREAT | O_EXCL)` against
-    /// `AtomicFileWriter.write`'s staging of a payload large enough to give
-    /// the race a real window (`write(2)` plus `F_FULLFSYNC` on a few
-    /// megabytes). Whichever side lands first must win outright: the loser's
-    /// bytes must never appear on disk, and the two outcomes — this write
-    /// throws `.destinationExists`, or it succeeds and the racer's own
-    /// `open` fails with `EEXIST` — are exhaustive and mutually exclusive.
+    /// **Landed deterministically, not raced.** An earlier version of this
+    /// test raced a second thread's plain `open(O_CREAT | O_EXCL)` against
+    /// staging of a multi-megabyte payload, on the theory that `write(2)` +
+    /// `F_FULLFSYNC` gives a wide enough window for GCD to reliably schedule
+    /// the racer inside it. Measured on this machine: comfortable, 33 of 40
+    /// rounds landed the race. But "comfortable on this machine" is not the
+    /// same claim as "will not flake in CI or a loaded VM with different
+    /// dispatch latency" — a run where the racer thread never got scheduled
+    /// in time would have failed this test red with no actual regression,
+    /// which is exactly the flake risk review caught. `beforeReplaceHookForTesting`
+    /// (see its own doc comment) removes the coin flip: it fires
+    /// synchronously, on `write`'s own calling thread, at exactly the point
+    /// in question, so the scenario in this test's name happens on every
+    /// single run rather than most of them.
+    ///
+    /// The assertion still cannot pass vacuously: the planted marker bytes
+    /// only end up on disk if the hook actually ran, and `write` only throws
+    /// `.destinationExists` if the final rename actually saw them there —
+    /// under a "check, then unconditionally replace" implementation (see the
+    /// falsifiability note below), the hook still runs and plants the
+    /// marker, but the replace silently overwrites it and no error is
+    /// thrown, so both assertions below catch that failure mode directly
+    /// rather than depending on who "won."
     ///
     /// **Falsifiability, checked by hand, not just asserted:** with the
-    /// `.absent` branch of the final step temporarily reverted to plain
-    /// `FileManager.replaceItemAt` (no `RENAME_EXCL`), this test failed —
-    /// the racer created the file, `AtomicFileWriter.write` still
-    /// "succeeded", and the racer's marker bytes were gone, silently
-    /// replaced. See `task-2-report.md` for the actual failing output; that
+    /// `.absent` branch of the final step temporarily reverted to plain,
+    /// unconditional `FileManager.replaceItemAt` (no `RENAME_EXCL`), this
+    /// test failed — the hook's planted marker was gone, silently replaced
+    /// by the writer's payload, and no error was thrown. See
+    /// `task-2-report.md`'s fix report for the actual failing output; that
     /// revert is not part of this commit.
-    @Test("a destination created mid-staging is refused, proving the final rename is RENAME_EXCL")
-    func absentRefusesADestinationCreatedDuringStaging() throws {
+    @Test("a destination that appears mid-staging is refused, proving the final rename is RENAME_EXCL")
+    func absentRefusesADestinationThatAppearsMidStaging() throws {
         let directory = try makeScratchDirectory()
-        // Large enough that write(2) + F_FULLFSYNC take low-single-digit
-        // milliseconds — long enough for a concurrently-started racer thread
-        // to reliably land inside the staging window without needing precise
-        // timing.
-        let payload = Data(repeating: UInt8(ascii: "W"), count: 4_000_000)
-        let racerMarker = Data("RACER".utf8)
+        let destination = directory.appendingPathComponent("secrets.yaml")
+        let marker = Data("PLANTED-MID-STAGING".utf8)
 
-        var writerWins = 0
-        var racerWins = 0
+        // Plants a plain (non-atomic, not-through-this-writer) file at
+        // `destination` from inside `write` itself, standing in for "another
+        // process created this file while we were staging". Guards on the
+        // URL so a concurrently-running, unrelated `write` call from another
+        // suite — `swift test` runs suites in parallel — is a no-op here
+        // rather than getting a marker file planted underneath it.
+        AtomicFileWriter.beforeReplaceHookForTesting = { url in
+            guard url == destination else { return }
+            try? marker.write(to: url)
+        }
+        defer { AtomicFileWriter.beforeReplaceHookForTesting = nil }
 
-        for round in 0..<40 {
-            let destination = directory.appendingPathComponent("racing-\(round).yaml")
-            let path = destination.path
-
-            let racerCreated = RaceFlag()
-            let semaphore = DispatchSemaphore(value: 0)
-            DispatchQueue.global(qos: .userInitiated).async {
-                let descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
-                if descriptor >= 0 {
-                    _ = racerMarker.withUnsafeBytes { Darwin.write(descriptor, $0.baseAddress, $0.count) }
-                    close(descriptor)
-                    racerCreated.set()
-                }
-                semaphore.signal()
-            }
-
-            let writeResult = Result { try AtomicFileWriter.write(payload, to: destination, expecting: .absent) }
-            semaphore.wait()
-
-            switch writeResult {
-            case .success:
-                writerWins += 1
-                #expect(!racerCreated.value, "the write succeeded but the racer also created the file")
-                #expect(try Data(contentsOf: destination) == payload)
-            case .failure(let error):
-                racerWins += 1
-                #expect(
-                    error as? AtomicFileWriter.Error == .destinationExists(path: destination.path),
-                    "unexpected failure: \(error)")
-                #expect(racerCreated.value, "the write refused but the racer never created anything")
-                #expect(
-                    try Data(contentsOf: destination) == racerMarker,
-                    "the racer's file was clobbered despite the refusal")
-            }
+        #expect(throws: AtomicFileWriter.Error.destinationExists(path: destination.path)) {
+            try AtomicFileWriter.write(Data("the write that must be refused".utf8), to: destination, expecting: .absent)
         }
 
-        #expect(writerWins + racerWins == 40)
-        #expect(racerWins > 0, "the racer never won a single round — the race window was never exercised")
-    }
-
-    /// The lock-protected flag the race test above uses to learn what the
-    /// racer thread did, from the main thread, without a data race of its
-    /// own. Same shape as `Observations` above, scoped down to one `Bool`.
-    private final class RaceFlag: @unchecked Sendable {
-        private let lock = NSLock()
-        private var flag = false
-        func set() { lock.lock(); flag = true; lock.unlock() }
-        var value: Bool { lock.lock(); defer { lock.unlock() }; return flag }
+        #expect(
+            try Data(contentsOf: destination) == marker,
+            "the planted file is missing or was overwritten — either the hook never fired, or the refusal did not actually stop the replace"
+        )
     }
 
     /// `.matching` and `.unchecked` behave exactly the same reached through
