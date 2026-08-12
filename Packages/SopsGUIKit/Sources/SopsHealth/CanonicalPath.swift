@@ -17,8 +17,15 @@ import Foundation
 /// one of them to drift, and the failure mode when they do is silent: a
 /// comparison that never matches, an assertion that passes vacuously against
 /// zero bytes, a scope disclosure that fails to recognise its own root.
-enum CanonicalPath {
-    static func of(_ path: String) -> String {
+///
+/// `public` since `SopsProjects`' `SecretFileCreator` (Task 6 of the "create a
+/// secret file" phase) needed the identical containment check for a
+/// not-yet-existing destination path — the same silent-drift risk this type's
+/// own doc comment already warns about, one module over. `SopsProjects`
+/// already depends on `SopsHealth` (see `ProjectRecipientApplier.swift`), so
+/// this is the whole change: no new module edge, one fewer reimplementation.
+public enum CanonicalPath {
+    public static func of(_ path: String) -> String {
         let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
         return resolved.hasPrefix("/private/") ? String(resolved.dropFirst("/private".count)) : resolved
     }
