@@ -598,6 +598,188 @@ ScratchDirectoryRegistry.shared.register(targetDirectory)
         }
     }
 
+    // MARK: - 6. Create-only, never clobber
+
+    /// The straightforward case: nothing is at the destination, so `.absent`
+    /// writes exactly as `.unchecked` would, and the new file gets the same
+    /// owner-only mode as any other file this writer creates.
+    @Test("`.absent` creates the file when the destination is empty")
+    func absentCreatesInEmptyDirectory() throws {
+        let directory = try makeScratchDirectory()
+        let destination = directory.appendingPathComponent("secrets.yaml")
+
+        let receipt = try AtomicFileWriter.write(Data("fresh".utf8), to: destination, expecting: .absent)
+
+        #expect(try Data(contentsOf: destination) == Data("fresh".utf8))
+        #expect(try mode(of: destination) == 0o600)
+        #expect(receipt.destination == destination.resolvingSymlinksInPath())
+    }
+
+    /// A destination that already exists is refused by name, and refused
+    /// *before* anything is staged — the same "cheap early refusal" shape as
+    /// `.matching`'s stale-fingerprint case, just with a different reason.
+    @Test("`.absent` onto an existing file is refused and the original is untouched")
+    func absentOntoExistingFileIsRefused() throws {
+        let directory = try makeScratchDirectory()
+        let destination = directory.appendingPathComponent("secrets.yaml")
+        let original = Data("do not touch\n".utf8)
+        try original.write(to: destination)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+
+        #expect(throws: AtomicFileWriter.Error.destinationExists(path: destination.path)) {
+            try AtomicFileWriter.write(Data("clobber".utf8), to: destination, expecting: .absent)
+        }
+
+        #expect(try Data(contentsOf: destination) == original)
+        #expect(try mode(of: destination) == 0o600)
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        #expect(leftovers == ["secrets.yaml"], "something was staged before the refusal: \(leftovers)")
+    }
+
+    /// A dangling symlink is "something at that path" too, even though there
+    /// is no file behind it to collide with. `.absent` must still refuse:
+    /// letting the write through would have `RENAME_EXCL` land the new file
+    /// on top of the link name, silently detaching it from whatever expected
+    /// to find a symlink there.
+    @Test("`.absent` refuses a dangling symlink at the destination too")
+    func absentRefusesADanglingSymlink() throws {
+        let directory = try makeScratchDirectory()
+        let missingTarget = directory.appendingPathComponent("nowhere.yaml")
+        let link = directory.appendingPathComponent("secrets.yaml")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: missingTarget)
+        #expect(!FileManager.default.fileExists(atPath: missingTarget.path))
+
+        #expect(throws: AtomicFileWriter.Error.destinationExists(path: link.path)) {
+            try AtomicFileWriter.write(Data("nope".utf8), to: link, expecting: .absent)
+        }
+
+        #expect(isSymbolicLink(link), "the dangling symlink itself must survive the refusal")
+    }
+
+    /// The property the `RENAME_EXCL` choice specifically buys, and the
+    /// reason `.absent` needs a race rather than a "create it first" test: a
+    /// destination that exists *before* `write` is called is caught by the
+    /// cheap early check alone (see `absentOntoExistingFileIsRefused` above),
+    /// which would pass identically if the final step were a manually-guarded
+    /// `replaceItemAt` instead of `renamex_np`. The only thing that actually
+    /// needs OS-level exclusivity is a destination that appears *during*
+    /// staging, after the early check already returned "nothing there" —
+    /// `.absent` deliberately does not repeat that check right before the
+    /// replace (see the comment there), so `RENAME_EXCL` is the sole guard
+    /// for that window.
+    ///
+    /// This races a second thread's plain `open(O_CREAT | O_EXCL)` against
+    /// `AtomicFileWriter.write`'s staging of a payload large enough to give
+    /// the race a real window (`write(2)` plus `F_FULLFSYNC` on a few
+    /// megabytes). Whichever side lands first must win outright: the loser's
+    /// bytes must never appear on disk, and the two outcomes — this write
+    /// throws `.destinationExists`, or it succeeds and the racer's own
+    /// `open` fails with `EEXIST` — are exhaustive and mutually exclusive.
+    ///
+    /// **Falsifiability, checked by hand, not just asserted:** with the
+    /// `.absent` branch of the final step temporarily reverted to plain
+    /// `FileManager.replaceItemAt` (no `RENAME_EXCL`), this test failed —
+    /// the racer created the file, `AtomicFileWriter.write` still
+    /// "succeeded", and the racer's marker bytes were gone, silently
+    /// replaced. See `task-2-report.md` for the actual failing output; that
+    /// revert is not part of this commit.
+    @Test("a destination created mid-staging is refused, proving the final rename is RENAME_EXCL")
+    func absentRefusesADestinationCreatedDuringStaging() throws {
+        let directory = try makeScratchDirectory()
+        // Large enough that write(2) + F_FULLFSYNC take low-single-digit
+        // milliseconds — long enough for a concurrently-started racer thread
+        // to reliably land inside the staging window without needing precise
+        // timing.
+        let payload = Data(repeating: UInt8(ascii: "W"), count: 4_000_000)
+        let racerMarker = Data("RACER".utf8)
+
+        var writerWins = 0
+        var racerWins = 0
+
+        for round in 0..<40 {
+            let destination = directory.appendingPathComponent("racing-\(round).yaml")
+            let path = destination.path
+
+            let racerCreated = RaceFlag()
+            let semaphore = DispatchSemaphore(value: 0)
+            DispatchQueue.global(qos: .userInitiated).async {
+                let descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+                if descriptor >= 0 {
+                    _ = racerMarker.withUnsafeBytes { Darwin.write(descriptor, $0.baseAddress, $0.count) }
+                    close(descriptor)
+                    racerCreated.set()
+                }
+                semaphore.signal()
+            }
+
+            let writeResult = Result { try AtomicFileWriter.write(payload, to: destination, expecting: .absent) }
+            semaphore.wait()
+
+            switch writeResult {
+            case .success:
+                writerWins += 1
+                #expect(!racerCreated.value, "the write succeeded but the racer also created the file")
+                #expect(try Data(contentsOf: destination) == payload)
+            case .failure(let error):
+                racerWins += 1
+                #expect(
+                    error as? AtomicFileWriter.Error == .destinationExists(path: destination.path),
+                    "unexpected failure: \(error)")
+                #expect(racerCreated.value, "the write refused but the racer never created anything")
+                #expect(
+                    try Data(contentsOf: destination) == racerMarker,
+                    "the racer's file was clobbered despite the refusal")
+            }
+        }
+
+        #expect(writerWins + racerWins == 40)
+        #expect(racerWins > 0, "the racer never won a single round — the race window was never exercised")
+    }
+
+    /// The lock-protected flag the race test above uses to learn what the
+    /// racer thread did, from the main thread, without a data race of its
+    /// own. Same shape as `Observations` above, scoped down to one `Bool`.
+    private final class RaceFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var flag = false
+        func set() { lock.lock(); flag = true; lock.unlock() }
+        var value: Bool { lock.lock(); defer { lock.unlock() }; return flag }
+    }
+
+    /// `.matching` and `.unchecked` behave exactly the same reached through
+    /// the `Expectation` overload directly as they do through the
+    /// `FileFingerprint?` convenience tested elsewhere in this file — the
+    /// convenience is a thin forwarding wrapper, not a second implementation.
+    @Test("the Expectation overload's .matching behaves like the FileFingerprint overload")
+    func expectationMatchingBehavesLikeFingerprintOverload() throws {
+        let directory = try makeScratchDirectory()
+        let destination = directory.appendingPathComponent("secrets.yaml")
+        try Data("before".utf8).write(to: destination)
+        let fingerprint = try #require(FileFingerprint.of(destination))
+
+        let receipt = try AtomicFileWriter.write(
+            Data("after".utf8), to: destination, expecting: .matching(fingerprint))
+
+        #expect(try Data(contentsOf: destination) == Data("after".utf8))
+        #expect(receipt.fingerprint != nil)
+
+        // And a stale one is still refused.
+        #expect(throws: AtomicFileWriter.Error.destinationChangedOnDisk(path: destination.path)) {
+            try AtomicFileWriter.write(Data("clobber".utf8), to: destination, expecting: .matching(fingerprint))
+        }
+    }
+
+    @Test("the Expectation overload's .unchecked skips the check, including over an existing file")
+    func expectationUncheckedSkipsTheCheck() throws {
+        let directory = try makeScratchDirectory()
+        let destination = directory.appendingPathComponent("secrets.yaml")
+        try Data("before".utf8).write(to: destination)
+
+        try AtomicFileWriter.write(Data("overwritten".utf8), to: destination, expecting: .unchecked)
+
+        #expect(try Data(contentsOf: destination) == Data("overwritten".utf8))
+    }
+
     // MARK: - The String convenience the editor actually calls
 
     @Test("the String overload round-trips UTF-8 exactly")
