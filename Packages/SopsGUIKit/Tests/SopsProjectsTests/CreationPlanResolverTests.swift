@@ -262,4 +262,75 @@ struct CreationPlanResolverTests {
             try CreationPlanResolver.plan(forTarget: target, in: root)
         }
     }
+
+    // MARK: - Containment
+
+    /// The concrete escape this guard exists to close, measured against the
+    /// real bridge rather than assumed: without the containment check,
+    /// `target` — absolute, but nowhere near `root` — reaches
+    /// `SopsBridge.lookupCreationRule` unchanged. `Engine/gobridge/config.go`'s
+    /// `LookupCreationRule` strips `root`'s path as a *literal* prefix
+    /// (`strings.TrimPrefix`), which is a no-op here since `target` does not
+    /// share it, leaving `target`'s full absolute path to be matched against
+    /// `path_regex` **unanchored** — and `secrets/.*\.yaml$` matches
+    /// `/…/elsewhere/secrets/prod.yaml` as a substring. Without this guard
+    /// that would come back `.governedByRule` with this project's
+    /// recipients, for a file this project has nothing to do with.
+    @Test("a target far outside the project root is refused, not matched unanchored")
+    func targetOutsideProjectRootIsRefused() throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try applierScratchDirectory("creation-plan-outside")
+        try """
+            creation_rules:
+              - path_regex: secrets/.*\\.yaml$
+                age: \(owner.public)
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+
+        let elsewhere = try applierScratchDirectory("creation-plan-elsewhere")
+        let target = elsewhere.appendingPathComponent("secrets/prod.yaml")
+
+        #expect(throws: CreationPlanResolver.Error.targetOutsideProjectRoot(target.path)) {
+            try CreationPlanResolver.plan(forTarget: target, in: root)
+        }
+    }
+
+    /// The sharper version of the same escape: `target` shares `root`'s
+    /// literal string prefix — so a containment check built on
+    /// `hasPrefix(_:)` alone would call it "inside" — but a `..` component
+    /// walks it back out. Same shape `SopsConfigGeneratorTests
+    /// .dotDotComponentIsRefused` pins for `SopsConfigGenerator`; this is the
+    /// identical escape one caller over.
+    @Test("a target sharing the root's string prefix but escaping via .. is refused")
+    func dotDotEscapeIsRefused() throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try applierScratchDirectory("creation-plan-dotdot")
+        try """
+            creation_rules:
+              - path_regex: .*
+                age: \(owner.public)
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+
+        let target = root.appendingPathComponent("secrets/../../evil.yaml")
+        #expect(target.path.hasPrefix(root.path), "sanity: the literal prefix check alone would pass this")
+
+        #expect(throws: CreationPlanResolver.Error.targetOutsideProjectRoot(target.path)) {
+            try CreationPlanResolver.plan(forTarget: target, in: root)
+        }
+    }
+
+    /// A `projectRoot` that is not there yet (or was deleted) makes "inside
+    /// `projectRoot`" unprovable — the identical guard
+    /// `SopsConfigGenerator.requireProjectRootExists` and
+    /// `SecretFileCreator.refuseIfOutsideProject` apply, for the identical
+    /// reason.
+    @Test("a project root that does not exist is refused, and the bridge is never asked")
+    func missingProjectRootIsRefused() throws {
+        let parent = try applierScratchDirectory("creation-plan-missing-root-parent")
+        let root = parent.appendingPathComponent("never-created", isDirectory: true)
+        let target = root.appendingPathComponent("secrets/prod.yaml")
+
+        #expect(throws: CreationPlanResolver.Error.projectRootDoesNotExist(root.path)) {
+            try CreationPlanResolver.plan(forTarget: target, in: root)
+        }
+    }
 }

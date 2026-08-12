@@ -51,6 +51,30 @@ public enum CreationPlan: Equatable, Sendable {
 /// file existed in this codebase once and was deleted after three separate
 /// silent-corruption bugs; see `ProjectHealthCheck.swift`'s account of why.
 /// Everything here goes through `SopsBridge.lookupCreationRule`.
+///
+/// ## Which containment predicate, and why it differs from `SecretFileCreator`'s
+///
+/// `SecretFileCreator.refuseIfOutsideProject` resolves symlinks
+/// (`CanonicalPath.of` plus its walk-upward-to-an-existing-ancestor trick)
+/// before comparing `target` against `projectRoot`, because that type is
+/// about to *write a file* and a symlinked directory is a real way to escape
+/// the project on disk. This type never writes anything, and the question it
+/// exists to answer is narrower and more literal: "what would
+/// `SopsBridge.lookupCreationRule` say about this `target` right now?" — and
+/// that call's own containment logic is not symlink-aware at all, it strips
+/// `projectRoot` as a plain string prefix (see `Error`'s own doc comment for
+/// the exact mechanism and the wrong answer it produces when the prefix does
+/// not match). Resolving symlinks here would make this type's notion of
+/// "inside `projectRoot`" disagree with the one the bridge call it wraps
+/// actually uses — passing a `target` this type approved as contained into a
+/// bridge call that would itself compute a *different* relative path for it.
+/// So the guard below uses the identical literal-prefix comparison
+/// `SopsConfigGenerator.relativePath` uses, for the identical reason that
+/// type's own doc comment gives ("Containment is enforced here,
+/// independently of `SecretFileCreator`" — its closing paragraph makes
+/// exactly this same call, for the same reason: matching what
+/// `lookupCreationRule` itself computes, not introducing a second,
+/// disagreeing notion of "inside").
 public enum CreationPlanResolver {
     /// Thrown before `.sops.yaml` is ever looked at, when `target` or
     /// `projectRoot` is not an absolute path.
@@ -74,9 +98,46 @@ public enum CreationPlanResolver {
     /// originate from a path the user typed, and a caller's mistake here
     /// should be something the caller's existing `try` already handles, not
     /// a process crash over what is, from the user's chair, just a typo.
+    ///
+    /// `.projectRootDoesNotExist` and `.targetOutsideProjectRoot` are the
+    /// same discipline, for a related shape of mistake: without them,
+    /// `target` is handed to `SopsBridge.lookupCreationRule` as-is, and that
+    /// call matches `path_regex` against `target` *relative to the config's
+    /// own directory*, computed the identical way — stripping that
+    /// directory as a literal prefix
+    /// (`Engine/gobridge/config.go`'s `LookupCreationRule`, and one level
+    /// below it, the vendored sops `config.parseCreationRuleForFile`). A
+    /// `target` that does not share that literal prefix does not fail to
+    /// strip loudly — `strings.TrimPrefix` is a no-op when the prefix is not
+    /// there, leaving `target`'s *full absolute path*, which then gets
+    /// matched against every rule's `path_regex` **unanchored**
+    /// (`regexp.MatchString`, not an anchored match). A rule such as
+    /// `path_regex: secrets/.*\.yaml$`, asked about
+    /// `/somewhere/else/secrets/prod.yaml`, matches that unrelated path as a
+    /// substring and reports `.governedByRule` with that project's
+    /// recipients — a confidently wrong answer, not a failure. See this
+    /// type's own doc comment for why this is the same shape of mistake
+    /// `.targetNotAbsolute`/`.projectRootNotAbsolute` already guard, just one
+    /// step further down the same code path.
     public enum Error: Swift.Error, Equatable, Sendable, CustomStringConvertible {
         case targetNotAbsolute(String)
         case projectRootNotAbsolute(String)
+        /// `projectRoot` does not exist, or exists as something other than a
+        /// directory. Checked before containment, for the identical reason
+        /// `SopsConfigGenerator.requireProjectRootExists` and
+        /// `SecretFileCreator.refuseIfOutsideProject` check it: "inside
+        /// `projectRoot`" is not a claim a literal-prefix comparison can
+        /// honestly make against a root that is not really there.
+        case projectRootDoesNotExist(String)
+        /// `target` contains a literal `..` path component, or does not lie
+        /// under `projectRoot` at all — including a `target` that shares
+        /// `projectRoot`'s string prefix only to walk back out via `..`
+        /// components, which a plain prefix check alone would miss (see
+        /// `SopsConfigGeneratorTests.dotDotComponentIsRefused` for the
+        /// identical concrete escape, pinned there first). `path` is
+        /// `target`, always — `projectRoot` is not the thing that was
+        /// rejected.
+        case targetOutsideProjectRoot(String)
 
         public var description: String {
             switch self {
@@ -84,6 +145,12 @@ public enum CreationPlanResolver {
                 return "the target path \(path) is not absolute, so no creation rule could be resolved for it"
             case .projectRootNotAbsolute(let path):
                 return "the project root \(path) is not absolute, so no creation rule could be resolved for it"
+            case .projectRootDoesNotExist(let path):
+                return "the project root \(path) does not exist or is not a directory, so no creation rule "
+                    + "could be resolved for it"
+            case .targetOutsideProjectRoot(let path):
+                return "the target path \(path) does not lie inside the project root, so no creation rule "
+                    + "could be honestly resolved for it"
             }
         }
     }
@@ -91,12 +158,16 @@ public enum CreationPlanResolver {
     /// Decides which creation rule would govern a file at `target` if it
     /// were created there right now.
     ///
-    /// `target` and `projectRoot` must both be absolute paths — throws
-    /// `Error.targetNotAbsolute` / `.projectRootNotAbsolute` otherwise,
-    /// before `.sops.yaml` is ever looked at. See `Error`'s own doc comment
-    /// for why this is enforced rather than merely documented. `target`
-    /// itself need not exist: this answers "if a file were created here",
-    /// not "what governs this file today".
+    /// `target` and `projectRoot` must both be absolute paths, `projectRoot`
+    /// must exist as a real directory, and `target` must lie inside
+    /// `projectRoot` with no literal `..` component anywhere in it — throws
+    /// `Error` otherwise, before `.sops.yaml` is ever looked at. See
+    /// `Error`'s own doc comment for why this is enforced rather than merely
+    /// documented, and this type's own doc comment, "Which containment
+    /// predicate", for why the check is a literal string-prefix comparison
+    /// rather than `SecretFileCreator`'s symlink-aware one. `target` itself
+    /// need not exist: this answers "if a file were created here", not "what
+    /// governs this file today".
     ///
     /// Decision order is load-bearing, because the cases genuinely overlap —
     /// a rule can name a non-age backend *and* set an unsupported scoping
@@ -122,6 +193,7 @@ public enum CreationPlanResolver {
         guard projectRoot.path.hasPrefix("/") else {
             throw Error.projectRootNotAbsolute(projectRoot.path)
         }
+        try Self.refuseIfOutsideProject(target, projectRoot: projectRoot)
 
         let configURL = projectRoot.appendingPathComponent(".sops.yaml")
 
@@ -161,6 +233,41 @@ public enum CreationPlanResolver {
         }
 
         return .governedByRule(recipients: lookup.ageRecipients, encryptedRegex: lookup.encryptedRegex)
+    }
+
+    // MARK: - Containment
+
+    /// Refuses `target` unless `projectRoot` exists as a real directory and
+    /// `target` lies inside it with no literal `..` component anywhere in
+    /// it. See this type's own doc comment, "Which containment predicate",
+    /// for why the check below is a literal string-prefix comparison —
+    /// matching what `SopsBridge.lookupCreationRule` itself computes — and
+    /// not `SecretFileCreator`'s symlink-aware one.
+    private static func refuseIfOutsideProject(_ target: URL, projectRoot: URL) throws {
+        var isDirectory: ObjCBool = false
+        guard
+            FileManager.default.fileExists(atPath: projectRoot.path, isDirectory: &isDirectory),
+            isDirectory.boolValue
+        else {
+            throw Error.projectRootDoesNotExist(projectRoot.path)
+        }
+
+        // Refused outright, before the prefix comparison below, for the
+        // identical reason `SecretFileCreator.Failure.destinationOutsideProject`'s
+        // doc comment gives ("Why `..` is refused rather than resolved") and
+        // `SopsConfigGeneratorTests.dotDotComponentIsRefused` measures
+        // directly: a `target` can share `projectRoot`'s literal string
+        // prefix and still walk back outside it via `..` components, which
+        // the prefix check alone cannot see.
+        guard !target.path.split(separator: "/").contains("..") else {
+            throw Error.targetOutsideProjectRoot(target.path)
+        }
+
+        let rootPath = projectRoot.path
+        let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        guard target.path.hasPrefix(prefix) else {
+            throw Error.targetOutsideProjectRoot(target.path)
+        }
     }
 
     /// Names every non-age backend the matched rule found, in the sops CLI's
