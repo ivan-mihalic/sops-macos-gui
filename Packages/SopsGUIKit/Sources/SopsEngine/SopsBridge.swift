@@ -21,6 +21,24 @@ public struct CreationRuleLookup: Decodable, Equatable, Sendable {
     /// "azure_kv", "hc_vault") present anywhere in the matched rule's key
     /// groups. Empty when `matched` is false or the rule is age-only.
     public let nonAgeBackends: [String]
+    /// The matched rule's `encrypted_regex`, if it sets one — scopes
+    /// encryption to only the document keys it matches, everything else
+    /// stays plaintext. Empty when `matched` is false or the rule does not
+    /// set this field.
+    public let encryptedRegex: String
+    /// The matched rule's `unencrypted_regex`, if it sets one — the inverse
+    /// of `encryptedRegex`: matching keys stay plaintext, everything else is
+    /// encrypted. Empty when `matched` is false or the rule does not set
+    /// this field.
+    public let unencryptedRegex: String
+    /// The matched rule's `unencrypted_suffix`, if it sets one. Empty when
+    /// `matched` is false or the rule does not set this field — including
+    /// when the rule relies on sops's own implicit default suffix, which is
+    /// never conflated with an explicit setting here.
+    public let unencryptedSuffix: String
+    /// The matched rule's `encrypted_suffix`, if it sets one. Empty when
+    /// `matched` is false or the rule does not set this field.
+    public let encryptedSuffix: String
 }
 
 /// Which key backends a whole `.sops.yaml` declares, anywhere in it —

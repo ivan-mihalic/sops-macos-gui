@@ -34,6 +34,27 @@ type CreationRuleLookup struct {
 	// rule, so no separate "key_groups" case is needed here. Empty (never
 	// nil) when Matched is false or the rule is age-only.
 	NonAgeBackends []string `json:"nonAgeBackends"`
+	// EncryptedRegex is the matched rule's encrypted_regex, if it sets
+	// one — the value scopes encryption to only the document keys it
+	// matches, everything else stays plaintext. Empty when Matched is
+	// false or the rule does not set this field.
+	EncryptedRegex string `json:"encryptedRegex"`
+	// UnencryptedRegex is the matched rule's unencrypted_regex, if it
+	// sets one — the inverse of EncryptedRegex: matching keys stay
+	// plaintext, everything else is encrypted. Empty when Matched is
+	// false or the rule does not set this field.
+	UnencryptedRegex string `json:"unencryptedRegex"`
+	// UnencryptedSuffix is the matched rule's unencrypted_suffix, if it
+	// sets one. Empty when Matched is false or the rule does not set
+	// this field — including when the rule relies on sops's own default
+	// unencrypted_suffix ("_unencrypted"), which config.Config only
+	// applies at encrypt time, not while parsing the rule, so it is
+	// never conflated with an explicit setting here.
+	UnencryptedSuffix string `json:"unencryptedSuffix"`
+	// EncryptedSuffix is the matched rule's encrypted_suffix, if it sets
+	// one. Empty when Matched is false or the rule does not set this
+	// field.
+	EncryptedSuffix string `json:"encryptedSuffix"`
 }
 
 // LookupCreationRule resolves which creation rule in the .sops.yaml at
@@ -102,9 +123,13 @@ func LookupCreationRule(confPath string, targetFile string) (*CreationRuleLookup
 	sort.Strings(backends)
 
 	return &CreationRuleLookup{
-		Matched:        true,
-		AgeRecipients:  age,
-		NonAgeBackends: backends,
+		Matched:           true,
+		AgeRecipients:     age,
+		NonAgeBackends:    backends,
+		EncryptedRegex:    cfg.EncryptedRegex,
+		UnencryptedRegex:  cfg.UnencryptedRegex,
+		UnencryptedSuffix: cfg.UnencryptedSuffix,
+		EncryptedSuffix:   cfg.EncryptedSuffix,
 	}, nil
 }
 
