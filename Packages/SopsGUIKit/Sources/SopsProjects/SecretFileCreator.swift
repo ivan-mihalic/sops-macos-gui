@@ -144,6 +144,38 @@ public struct ResolvedEncryption: Equatable, Sendable {
 /// exist cannot itself be a symlink pointing anywhere. Verified directly
 /// against a real symlink in `SecretFileCreatorTests`, for one and for two
 /// missing levels below it.
+///
+/// ## Why `..` is refused rather than resolved
+///
+/// A `..` component that follows a symlink is a second, sharper version of
+/// the same problem, and it is not hypothetical — it was measured directly
+/// against `refuseIfOutsideProject`'s first implementation. With a real
+/// symlink `project/link -> /outside` and `destination =
+/// project/link/../inside.yaml`, that implementation approved the write:
+/// `URL.standardizedFileURL` — the one tool available for a path that does
+/// not exist yet — collapses `..` *lexically*, cancelling it against the
+/// token immediately before it in the string without knowing that token
+/// names a symlink. It reported `project/inside.yaml`: inside. The real
+/// filesystem does not agree — `open(2)`/`renamex_np` walk the identical raw
+/// path component by component, follow `link` to `/outside` *first*, and
+/// only then apply `..`, landing at `/inside.yaml`: outside. Measured with
+/// the file actually created both ways on the same input, side by side.
+///
+/// There is no safe fix that still resolves `..` here. Doing it correctly
+/// means re-deriving the kernel's own path-walking order in Swift —
+/// exactly the reimplementation-of-something-foundational risk ADR 0002
+/// warns about, just for path resolution instead of YAML. So
+/// `refuseIfOutsideProject` refuses any `..` path component outright,
+/// before `canonicalizedForContainment` ever runs, rather than trying to
+/// resolve it. This is not merely moving the problem to a different
+/// caller: nothing in this app's real call sites needs to *express* `..`
+/// to reach a legitimate destination — a file picker returns an already-
+/// canonical absolute path with no `..` in it, and a project-relative
+/// name typed by a user is joined with `appendingPathComponent`, not
+/// pasted in as a single string a user could smuggle `../` into. The one
+/// way to *construct* a `destination` containing `..` is deliberately, and
+/// that is exactly the input this guard exists to catch. `SecretFileCreatorTests
+/// .dotDotThroughASymlinkIsRefused` pins the measured scenario above.
 public enum SecretFileCreator {
 
     public enum Source: Sendable {
@@ -159,11 +191,15 @@ public enum SecretFileCreator {
         /// read.
         case destinationExists(path: String)
         /// Step 1: `destination` does not resolve to somewhere inside
-        /// `projectRoot` — a `..` escape, an absolute path elsewhere, a
-        /// symlink out of the project, or a `destination`/`projectRoot` that
-        /// was not given as an absolute path in the first place (see
-        /// `refuseIfOutsideProject`'s doc comment for why that last case is
-        /// folded in here rather than given its own case).
+        /// `projectRoot` — a literal `..` component anywhere in the path
+        /// (refused outright rather than resolved; see
+        /// `refuseIfOutsideProject`'s doc comment), an absolute path
+        /// elsewhere, a symlink out of the project, a `projectRoot` that is
+        /// not there (or not a directory) at all, or a `destination`/
+        /// `projectRoot` that was not given as an absolute path in the
+        /// first place (see `refuseIfOutsideProject`'s doc comment for why
+        /// that last case is folded in here rather than given its own
+        /// case).
         case destinationOutsideProject(path: String)
         /// Step 6: the recipient set could decrypt what was produced, but
         /// what came back does not match what was meant to be written. No
@@ -172,17 +208,33 @@ public enum SecretFileCreator {
         /// values that made it that shape.
         case roundTripMismatch
         /// Step 3 (see this type's doc comment for why its *check* runs
-        /// where step 6 does): the recipient set could not be proven to
-        /// include this session's own identity, and the caller has not set
+        /// where step 6 does): decrypting what step 5 just produced, with
+        /// `sessionKey`, failed, and the caller has not set
         /// `ResolvedEncryption.acknowledgedUnreadable`.
+        ///
+        /// `SopsBridgeError` carries only a `description` string with no
+        /// structured cause (`SopsBridge.swift`), so this type cannot
+        /// reliably tell "this identity genuinely is not among the
+        /// recipients" apart from some other decrypt-time engine fault
+        /// without pattern-matching the bridge's own error text — exactly
+        /// the kind of dependency on prose this codebase does not take
+        /// elsewhere (`Failure.engine`'s own doc comment states the
+        /// opposite discipline: names are checked structurally, never by
+        /// string content). So every decrypt failure at this point is
+        /// reported as `wouldBeUnreadable`, never `.engine` — see that
+        /// case's doc comment for the consequence this has for it.
         case wouldBeUnreadable
-        /// Step 5 (or the decrypt in step 3/6, for a bridge failure that is
-        /// not simply "this identity cannot read it" — see
-        /// `SopsBridgeError`'s own contract): the bridge's own diagnostic.
-        /// Fixed, value-free text by the bridge's own construction —
+        /// Step 5: `plan.recipients`/`plan.encryptedRegex` could not be
+        /// encrypted for — the bridge's own diagnostic. Fixed, value-free
+        /// text by the bridge's own construction —
         /// `Engine/gobridge/bridge.go`'s recipient checks name an index,
         /// never the recipient string itself, precisely so a pasted private
         /// key never reaches here.
+        ///
+        /// Never thrown from the decrypt in step 3/6 — see
+        /// `.wouldBeUnreadable`'s doc comment for why that path cannot
+        /// distinguish its own failures and reports all of them the other
+        /// way instead.
         case engine(String)
         /// Step 8: `AtomicFileWriter.write` itself refused. Its own
         /// `Error.description` is path- and errno-derived only — see that
@@ -248,6 +300,17 @@ public enum SecretFileCreator {
         // is the default", for why the check that spec §3.5 numbers as step
         // 3 can only be *answered* here, one decrypt call shared with step
         // 6's own verification.
+        //
+        // Every failure here — wrong identity, a genuine engine fault, a
+        // malformed bridge response — becomes `wouldBeUnreadable` rather
+        // than `.engine`. `SopsBridgeError` is a bare `description` string
+        // with no structured cause to switch on, and this codebase does not
+        // infer behaviour from bridge error *text* anywhere else either. See
+        // `Failure.wouldBeUnreadable`'s doc comment for the full account and
+        // why this is the honest choice rather than a shortcut: a caller
+        // that has not acknowledged unreadability is refused either way, and
+        // one that has already accepts not being able to verify content at
+        // all — see the branch below.
         let rows: [SecretRow]?
         do {
             rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: sessionKey)
@@ -351,7 +414,8 @@ public enum SecretFileCreator {
     /// Refuses `destination` unless it resolves to somewhere inside
     /// `projectRoot`. See this type's doc comment, "Containment, including
     /// through a symlink that does not exist yet", for why a plain
-    /// `CanonicalPath.of(destination.path)` is not enough on its own.
+    /// `CanonicalPath.of(destination.path)` is not enough on its own, and
+    /// "Why `..` is refused rather than resolved" for the guard below.
     private static func refuseIfOutsideProject(_ destination: URL, projectRoot: URL) throws {
         // A relative `destination`/`projectRoot` cannot be proven to lie
         // anywhere in particular — resolving it would silently fall back to
@@ -362,6 +426,31 @@ public enum SecretFileCreator {
         // the honest answer is the same one a proven escape gets, because
         // this type genuinely cannot tell the two apart from a path alone.
         guard destination.path.hasPrefix("/"), projectRoot.path.hasPrefix("/") else {
+            throw Failure.destinationOutsideProject(path: destination.path)
+        }
+
+        // `projectRoot` itself has to be a real, present directory, or
+        // "inside `projectRoot`" is not a claim anything below can honestly
+        // make: a project root that does not exist yet makes the prefix
+        // check below vacuously true against any literal path sharing its
+        // spelling, and step 7's `createDirectory(withIntermediateDirectories:
+        // true)` would then happily create the "project" itself as a side
+        // effect of creating the file inside it.
+        var projectRootIsDirectory: ObjCBool = false
+        guard
+            FileManager.default.fileExists(
+                atPath: projectRoot.path, isDirectory: &projectRootIsDirectory),
+            projectRootIsDirectory.boolValue
+        else {
+            throw Failure.destinationOutsideProject(path: destination.path)
+        }
+
+        // See "Why `..` is refused rather than resolved" in this type's doc
+        // comment: there is no safe way in this implementation to resolve a
+        // `..` component that might follow a symlink, so any literal `..`
+        // anywhere in `destination` is refused outright, before anything
+        // tries to canonicalize it.
+        guard !destination.path.split(separator: "/").contains("..") else {
             throw Failure.destinationOutsideProject(path: destination.path)
         }
 
@@ -377,17 +466,22 @@ public enum SecretFileCreator {
     /// One spelling for `url`, safe to compare against a canonicalized
     /// project root even when most of `url` does not exist on disk yet.
     ///
-    /// Walks upward from `url` until it finds an ancestor that actually
-    /// exists (following symlinks — a symlinked directory counts as
-    /// "there"), resolves *that* through `CanonicalPath.of` — the only call
-    /// in this file that ever asks the filesystem to follow a symlink — and
-    /// reattaches every path component below it exactly as spelled, because
-    /// a component that does not exist cannot itself be a symlink pointing
-    /// anywhere. See this type's doc comment for the measured reason
-    /// `CanonicalPath.of(url.path)` alone cannot do this: it needs the
-    /// *entire* path to exist before it will resolve any part of it.
+    /// Walks upward from `url` — exactly as given, never lexically
+    /// standardized first (see "Why `..` is refused rather than resolved" in
+    /// this type's doc comment for why that distinction is load-bearing) —
+    /// until it finds an ancestor that actually exists (following symlinks —
+    /// a symlinked directory counts as "there"), resolves *that* through
+    /// `CanonicalPath.of` — the only call in this file that ever asks the
+    /// filesystem to follow a symlink — and reattaches every path component
+    /// below it exactly as spelled, because a component that does not exist
+    /// cannot itself be a symlink pointing anywhere. See this type's doc
+    /// comment for the measured reason `CanonicalPath.of(url.path)` alone
+    /// cannot do this: it needs the *entire* path to exist before it will
+    /// resolve any part of it. Only ever called after `refuseIfOutsideProject`
+    /// has already refused any `..` component, so there is nothing left here
+    /// for a lexical shortcut to mishandle.
     private static func canonicalizedForContainment(_ url: URL) -> String {
-        var current = url.standardizedFileURL
+        var current = url
         var trailingComponents: [String] = []
 
         while !FileManager.default.fileExists(atPath: current.path) {

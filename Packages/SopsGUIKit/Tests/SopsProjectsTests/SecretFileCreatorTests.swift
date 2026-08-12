@@ -250,6 +250,65 @@ struct SecretFileCreatorTests {
         #expect(fileTreeSnapshot(root) == before)
     }
 
+    /// The escape a lexical `..` collapse misses: `link -> outside` is a
+    /// *real* symlink, and `destination` walks through it and then back out
+    /// with `..`. `URL.standardizedFileURL` cancels `link/..` textually —
+    /// without knowing `link` is a symlink — and reports a path back inside
+    /// the project; the real filesystem resolves `link` to `outside` first
+    /// and only then applies `..`, landing at `root/inside.yaml`, a sibling
+    /// of `project`, not inside it. Measured directly (see this type's doc
+    /// comment, "Why `..` is refused rather than resolved") before this test
+    /// was written: the containment check approved the write while
+    /// `open(2)`/`renamex_np` on the identical raw path landed outside.
+    ///
+    /// The escaped file would land at `root/inside.yaml`, not under
+    /// `outside/` — so the snapshot has to be `fileTreeSnapshot(root)`,
+    /// which already covers that.
+    @Test("a .. component that crosses a symlink is refused, not resolved")
+    func dotDotThroughASymlinkIsRefused() throws {
+        let owner = try AgeKeyPair.generate()
+        let (root, project) = try makeProject()
+        let outside = root.appendingPathComponent("outside")
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+
+        let link = project.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+        let destination = link.appendingPathComponent("../inside.yaml")
+
+        let before = fileTreeSnapshot(root)
+        #expect(throws: SecretFileCreator.Failure.destinationOutsideProject(path: destination.path)) {
+            try SecretFileCreator.create(
+                .empty, plan: plan([owner.public]), at: destination, in: project,
+                sessionKey: owner.private)
+        }
+        #expect(fileTreeSnapshot(root) == before)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("inside.yaml").path))
+    }
+
+    /// A `projectRoot` that is not there yet makes "inside `projectRoot`" an
+    /// unprovable claim — without this guard, both sides of the containment
+    /// check reduce to unresolved literal strings sharing a prefix, so the
+    /// check passes vacuously and step 7's `createDirectory(withIntermediateDirectories:
+    /// true)` would go on to create the "project" itself as a side effect of
+    /// creating the file inside it.
+    @Test("a project root that does not exist is refused, and nothing is created")
+    func missingProjectRootIsRefused() throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try applierScratchDirectory("secret-file-creator")
+        let ghostProject = root.appendingPathComponent("ghost")
+        let destination = ghostProject.appendingPathComponent("a/b/secret.yaml")
+        #expect(!FileManager.default.fileExists(atPath: ghostProject.path))
+
+        let before = fileTreeSnapshot(root)
+        #expect(throws: SecretFileCreator.Failure.destinationOutsideProject(path: destination.path)) {
+            try SecretFileCreator.create(
+                .empty, plan: plan([owner.public]), at: destination, in: ghostProject,
+                sessionKey: owner.private)
+        }
+        #expect(fileTreeSnapshot(root) == before)
+        #expect(!FileManager.default.fileExists(atPath: ghostProject.path))
+    }
+
     @Test("a recipient set without this session's identity is refused by default")
     func unreadableSetIsRefusedByDefault() throws {
         let owner = try AgeKeyPair.generate()
