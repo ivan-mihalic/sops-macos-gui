@@ -60,8 +60,15 @@ public struct ResolvedEncryption: Equatable, Sendable {
 ///
 /// Steps 1–6 never touch disk and never write anything. A file that fails
 /// any check above simply never existed — there is no delete-on-failure path
-/// anywhere in this type, because there is nothing to delete: nothing was
-/// ever there.
+/// anywhere in this type, because there is nothing to delete: the *file* was
+/// never there. Step 7 is the exception worth naming precisely: it can
+/// create intermediate directories before step 8 ever runs, and this type
+/// does not unwind them if step 8 then fails — a losing `RENAME_EXCL` race,
+/// or `AtomicFileWriter` refusing for some other reason, can leave an empty
+/// directory behind even though the secrets file itself still never
+/// existed. That directory is not itself sensitive (nothing about a
+/// directory name is a secret value) and a later retry at the same
+/// destination reuses it rather than tripping over it.
 ///
 /// ## Self-readability is the default, and the check happens where the
 /// answer actually exists
@@ -121,7 +128,7 @@ public struct ResolvedEncryption: Equatable, Sendable {
 /// | Source | What is checked |
 /// |---|---|
 /// | `.dotEnv` | Every entry has exactly one row with `path == [key]` and a matching `value`; `rows.count == entries.count`. This is the one source with a hand-rolled serialiser (`FlatYAMLEmitter`) standing between the user's values and the bridge, and it is the reason this post-condition exists at all — see that type's own doc comment. |
-/// | `.verbatimYAML` | `decryptToRows` succeeds — nothing about the row *count* is checked. An empty result is a legitimate document, not corruption: a user pasting a `config.yaml` that is only a comments-only template, or literally `{}`, means to create the file and fill it in afterward, exactly as `.empty` already does deliberately. The bridge agrees — `Engine/gobridge/bridge.go:337` has an explicit carve-out for "an empty file has nothing to encrypt, and that is not a broken rule." Reporting it as `roundTripMismatch` would tell a user their file was corrupted when it was not. |
+/// | `.verbatimYAML` | `decryptToRows` succeeds — nothing about the row *count* is checked. An empty result is a legitimate document, not corruption: a user pasting literally `{}` means to create the file and fill it in afterward, exactly as `.empty` already does deliberately. The bridge's own comment agrees — `Engine/gobridge/bridge.go:332-333`: "an empty file has nothing to encrypt, and that is not a broken rule." (A comments-only template is a *different* case, not this one: the bridge's YAML loader rejects a document with no actual node in it before this type's round-trip logic is ever reached — `.engine("the document is not valid YAML")` — see the comment on `verbatimYAMLEmptyDocumentIsCreated` in `SecretFileCreatorTests` for that measurement.) Reporting `{}` as `roundTripMismatch` would tell a user their file was corrupted when it was not. |
 /// | `.empty` | Not compared — there is nothing to compare — but `decryptToRows` still has to succeed for the write to proceed; see step 3/6 above. |
 ///
 /// ## Why this never resolves its own plan
@@ -247,6 +254,16 @@ public enum SecretFileCreator {
         /// distinguish its own failures and reports all of them the other
         /// way instead.
         case engine(String)
+        /// Step 7: the intermediate directories on the way to `destination`
+        /// could not be created — a read-only project directory, or a path
+        /// component that already exists as a regular file (`ENOTDIR`).
+        /// Reachable without anything exotic: `destination` is
+        /// `project/secrets/prod.yaml` and `project/secrets` already exists
+        /// as a plain file rather than a directory. `path` is the directory
+        /// this call tried to create; `reason` is errno-derived only, the
+        /// same contract `AtomicFileWriter.Error`'s cases keep — see that
+        /// type's "Errors never contain the file's contents" section.
+        case couldNotCreateDirectory(path: String, reason: String)
         /// Step 8: `AtomicFileWriter.write` itself refused. Its own
         /// `Error.description` is path- and errno-derived only — see that
         /// type's "Errors never contain the file's contents" section.
@@ -402,10 +419,16 @@ public enum SecretFileCreator {
         //    documentation for `createDirectory(at:withIntermediateDirectories:attributes:)`,
         //    which applies `attributes` to every directory this call
         //    creates, not only the last).
-        try FileManager.default.createDirectory(
-            at: destination.deletingLastPathComponent(),
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: modeForNewDirectories])
+        let directory = destination.deletingLastPathComponent()
+        do {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: modeForNewDirectories])
+        } catch {
+            throw Failure.couldNotCreateDirectory(
+                path: directory.path, reason: (error as NSError).localizedDescription)
+        }
 
         // 8. The only step that touches disk in this whole call, and the
         //    only one still capable of refusing: `.absent` closes the

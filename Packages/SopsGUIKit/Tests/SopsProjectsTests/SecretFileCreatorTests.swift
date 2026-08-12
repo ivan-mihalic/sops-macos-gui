@@ -93,11 +93,13 @@ struct SecretFileCreatorTests {
 
     /// Human ruling on the plan's Task 6 review: a legitimately empty
     /// `.verbatimYAML` document must be created, not reported as
-    /// `roundTripMismatch`. A user pasting `{}` or a comments-only template
-    /// means to create the file and fill it in afterward — the same intent
-    /// `.empty` already serves deliberately — and the engine agrees: an
-    /// empty document has nothing to encrypt, which is not a broken rule
-    /// (`Engine/gobridge/bridge.go:337`).
+    /// `roundTripMismatch`. A user pasting `{}` means to create the file and
+    /// fill it in afterward — the same intent `.empty` already serves
+    /// deliberately — and the engine agrees: an empty document has nothing
+    /// to encrypt, which is not a broken rule (`Engine/gobridge/bridge.go
+    /// :332-333`). A comments-only template is a different case entirely —
+    /// see the comment just below this test for the measurement showing why
+    /// it does not reach this check at all.
     @Test("pasted YAML that is legitimately empty is created, not reported as corrupted")
     func verbatimYAMLEmptyDocumentIsCreated() throws {
         let owner = try AgeKeyPair.generate()
@@ -196,6 +198,40 @@ struct SecretFileCreatorTests {
         }
         #expect(fileTreeSnapshot(root) == before)
         #expect(try String(contentsOf: destination, encoding: .utf8) == "not sops")
+    }
+
+    /// A regular file sitting where an intermediate directory needs to be —
+    /// `project/secrets` exists as a plain file, `destination` is
+    /// `project/secrets/prod.yaml`. Step 2's `lstat` on the *full*
+    /// destination path returns `ENOTDIR` (not `0`), so `refuseIfPresent`
+    /// does not fire, and everything through step 6 succeeds — this is
+    /// exactly the shape that used to escape `Failure` entirely and throw a
+    /// raw `NSCocoaErrorDomain` error straight out of `create` before step 7
+    /// gained its own case.
+    @Test("a regular file in the way of an intermediate directory is refused as a typed Failure")
+    func regularFileBlockingIntermediateDirectoryIsRefused() throws {
+        let owner = try AgeKeyPair.generate()
+        let (root, project) = try makeProject()
+        let blocking = project.appendingPathComponent("secrets")
+        try "not a directory".write(to: blocking, atomically: true, encoding: .utf8)
+        let destination = blocking.appendingPathComponent("prod.yaml")
+
+        let before = fileTreeSnapshot(root)
+        let result = Result(catching: {
+            try SecretFileCreator.create(
+                .empty, plan: plan([owner.public]), at: destination, in: project,
+                sessionKey: owner.private)
+        })
+        guard case .failure(let error) = result,
+            case SecretFileCreator.Failure.couldNotCreateDirectory(let path, let reason) = error
+        else {
+            Issue.record("expected .couldNotCreateDirectory, got \(result)")
+            return
+        }
+        #expect(path == blocking.path)
+        #expect(!reason.isEmpty)
+        #expect(fileTreeSnapshot(root) == before)
+        #expect(try String(contentsOf: blocking, encoding: .utf8) == "not a directory")
     }
 
     @Test("a destination reached through .. is refused as outside the project")
@@ -340,6 +376,59 @@ struct SecretFileCreatorTests {
         }
         #expect(fileTreeSnapshot(root) == before)
         #expect(!FileManager.default.fileExists(atPath: ghostProject.path))
+    }
+
+    /// Proves `verifyRoundTrip`'s `.dotEnv` arm actually fires — not a
+    /// synthetic call to a private function, a real corruption reaching it
+    /// through the public `create` API.
+    ///
+    /// The reviewer's first-suggested route (`DotEnvParser` bypassed to hand
+    /// `emit` two entries sharing one key) was tried and measured, not
+    /// assumed, and does not reach this check at all: sops's own YAML loader
+    /// rejects a document with a literal duplicate mapping key outright —
+    /// `.engine("the document is not valid YAML (line 2)")` — before
+    /// `decryptToRows` is ever called. A second route (a `.dotEnv` key
+    /// literally named `sops`, colliding with the metadata block sops itself
+    /// adds) was also tried and is separately guarded — `.engine("file
+    /// already encrypted: it has a top-level \"sops\" entry")`.
+    ///
+    /// This is the route that actually works, and it is a real gap, not a
+    /// contrived one: `FlatYAMLEmitter.quotedValue`'s escape table (see that
+    /// type's doc comment) covers every ASCII C0 control character and
+    /// `U+007F`, but not `U+0085` (NEL) — a legitimate Unicode line-break
+    /// character outside that range. A value containing it survives
+    /// `quotedValue` unescaped, and sops's own YAML layer reads the NEL back
+    /// differently than it was written, so `decryptToRows` returns something
+    /// that no longer equals `entry.value`. Measured directly: the identical
+    /// probe with `U+2028` (LINE SEPARATOR) or `U+2029` (PARAGRAPH
+    /// SEPARATOR) in place of NEL round-trips intact — this is not "any
+    /// unescaped line-break character", specifically NEL. `verifyRoundTrip`
+    /// catches the corruption and refuses the write rather than silently
+    /// producing a secret that decrypts to the wrong value — proving the
+    /// exact property `FlatYAMLEmitter`'s doc comment says this check exists
+    /// for.
+    ///
+    /// Fixing `FlatYAMLEmitter` to also escape `U+0085` is a real
+    /// improvement (a value containing it is refused today rather than
+    /// corrupted, which is safe but not the friendliest outcome) — flagged
+    /// for a follow-up rather than folded in here, since it is a distinct
+    /// change from what this test exists to prove: that the safety net
+    /// itself works.
+    @Test("a value containing U+0085 (NEL) is caught as a round-trip mismatch, not silently corrupted")
+    func dotEnvNELValueIsCaughtAsRoundTripMismatch() throws {
+        let owner = try AgeKeyPair.generate()
+        let (root, project) = try makeProject()
+        let destination = project.appendingPathComponent("secret.yaml")
+
+        let entries = [DotEnvEntry(key: "KEY", value: "before\u{0085}after", line: 1)]
+
+        let before = fileTreeSnapshot(root)
+        #expect(throws: SecretFileCreator.Failure.roundTripMismatch) {
+            try SecretFileCreator.create(
+                .dotEnv(entries), plan: plan([owner.public]), at: destination, in: project,
+                sessionKey: owner.private)
+        }
+        #expect(fileTreeSnapshot(root) == before)
     }
 
     @Test("a recipient set without this session's identity is refused by default")
