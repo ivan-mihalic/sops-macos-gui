@@ -48,11 +48,13 @@ struct CreationPlanResolverTests {
         #expect(plan == .noRuleMatched)
     }
 
-    /// This is also the proof that a project with no config never asks the
-    /// bridge anything: if it had, sops would have been handed a config path
-    /// that does not exist and this would come back `.configUnreadable`, not
-    /// `.noConfig` — the two are only distinguishable if the no-config branch
-    /// truly returns before the bridge is called.
+    /// This is also indirect evidence that a project with no config never
+    /// asks the bridge anything: if it had, sops would have been handed a
+    /// config path that does not exist and this would come back
+    /// `.configUnreadable`, not `.noConfig`. Not a call-count assertion —
+    /// there is no seam here to count calls through — just the fact that the
+    /// two results are only distinguishable if the no-config branch truly
+    /// returns before the bridge is called.
     @Test("a project with no .sops.yaml resolves to .noConfig")
     func noConfigWithoutCallingTheBridge() throws {
         let root = try applierScratchDirectory("creation-plan")
@@ -122,6 +124,50 @@ struct CreationPlanResolverTests {
         #expect(reason.contains("unencrypted_suffix"))
     }
 
+    @Test("a rule with unencrypted_regex is refused, and the reason names the field")
+    func unsupportedUnencryptedRegexNamesIt() throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try applierScratchDirectory("creation-plan")
+        try """
+            creation_rules:
+              - path_regex: secrets/.*\\.yaml$
+                age: \(owner.public)
+                unencrypted_regex: '^metadata$'
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+
+        let target = root.appendingPathComponent("secrets/prod.yaml")
+
+        let plan = try CreationPlanResolver.plan(forTarget: target, in: root)
+
+        guard case .unsupportedRule(let reason) = plan else {
+            Issue.record("expected .unsupportedRule, got \(plan)")
+            return
+        }
+        #expect(reason.contains("unencrypted_regex"))
+    }
+
+    @Test("a rule with encrypted_suffix is refused, and the reason names the field")
+    func unsupportedEncryptedSuffixNamesIt() throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try applierScratchDirectory("creation-plan")
+        try """
+            creation_rules:
+              - path_regex: secrets/.*\\.yaml$
+                age: \(owner.public)
+                encrypted_suffix: "_secret"
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+
+        let target = root.appendingPathComponent("secrets/prod.yaml")
+
+        let plan = try CreationPlanResolver.plan(forTarget: target, in: root)
+
+        guard case .unsupportedRule(let reason) = plan else {
+            Issue.record("expected .unsupportedRule, got \(plan)")
+            return
+        }
+        #expect(reason.contains("encrypted_suffix"))
+    }
+
     @Test("encrypted_regex is not a refusal — governedByRule passes it through")
     func encryptedRegexPassesThrough() throws {
         let owner = try AgeKeyPair.generate()
@@ -166,5 +212,54 @@ struct CreationPlanResolverTests {
         }
         #expect(reason.contains("pgp"))
         #expect(!reason.contains("unencrypted_suffix"))
+    }
+
+    // MARK: - The absolute-path contract
+
+    /// `SopsBridge.lookupCreationRule` matches `path_regex` against the
+    /// target relative to the config's own directory, computed by stripping
+    /// that directory as a literal prefix — a relative target silently fails
+    /// to strip, so a caller's bug there does not surface as an error at
+    /// all, it just matches every rule against the wrong string (see
+    /// `Engine/gobridge/config.go`'s `filepath.Abs`, which joins a relative
+    /// path onto the Go process's own working directory rather than
+    /// rejecting it). This is the resolver refusing that bug before it can
+    /// happen, rather than relying on the bridge to catch it.
+    @Test("a relative target is refused before the bridge is ever asked")
+    func relativeTargetIsRefused() throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try applierScratchDirectory("creation-plan")
+        try """
+            creation_rules:
+              - path_regex: .*
+                age: \(owner.public)
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+
+        // A URL whose `.path` is relative, not one merely built with a
+        // relative-looking string — `URL(fileURLWithPath:)` resolves against
+        // the process's current directory and would already be absolute.
+        let target = URL(string: "secrets/prod.yaml")!
+        #expect(!target.path.hasPrefix("/"))
+
+        #expect(throws: CreationPlanResolver.Error.targetNotAbsolute(target.path)) {
+            try CreationPlanResolver.plan(forTarget: target, in: root)
+        }
+    }
+
+    @Test("a relative project root is refused before the bridge is ever asked")
+    func relativeProjectRootIsRefused() throws {
+        let root = URL(string: "some/relative/project")!
+        #expect(!root.path.hasPrefix("/"))
+
+        // Absolute and otherwise unremarkable — deliberately not built off
+        // `root`, so this isolates the project-root check: were `target`
+        // also relative, a resolver that checks `target` first would throw
+        // `.targetNotAbsolute` here instead, and this test would not be
+        // pinning what it claims to.
+        let target = URL(fileURLWithPath: "/tmp/creation-plan-unused/secrets/prod.yaml")
+
+        #expect(throws: CreationPlanResolver.Error.projectRootNotAbsolute(root.path)) {
+            try CreationPlanResolver.plan(forTarget: target, in: root)
+        }
     }
 }

@@ -52,17 +52,51 @@ public enum CreationPlan: Equatable, Sendable {
 /// silent-corruption bugs; see `ProjectHealthCheck.swift`'s account of why.
 /// Everything here goes through `SopsBridge.lookupCreationRule`.
 public enum CreationPlanResolver {
+    /// Thrown before `.sops.yaml` is ever looked at, when `target` or
+    /// `projectRoot` is not an absolute path.
+    ///
+    /// This is not optional defensive coding: `SopsBridge.lookupCreationRule`
+    /// matches a rule's `path_regex` against the target *relative to the
+    /// config's own directory*, computed by stripping that directory as a
+    /// literal prefix, and a relative or differently-rooted path silently
+    /// fails to strip rather than erroring — every `path_regex` then gets
+    /// matched against the wrong string, a confident, wrong answer rather
+    /// than a failure. Nor does the bridge catch it lower down:
+    /// `Engine/gobridge/config.go`'s `LookupCreationRule` calls Go's
+    /// `filepath.Abs` on the target, which does not reject a relative path,
+    /// it silently joins it onto the *Go process's own working directory*
+    /// and proceeds. Left unchecked, the one caller mistake this type's own
+    /// doc comment warns about would not surface as an error anywhere in the
+    /// stack — this guard is what makes that warning actually true.
+    ///
+    /// A thrown error rather than a `precondition`, deliberately:
+    /// `plan(forTarget:in:)` sits behind a wizard where `target` can
+    /// originate from a path the user typed, and a caller's mistake here
+    /// should be something the caller's existing `try` already handles, not
+    /// a process crash over what is, from the user's chair, just a typo.
+    public enum Error: Swift.Error, Equatable, Sendable, CustomStringConvertible {
+        case targetNotAbsolute(String)
+        case projectRootNotAbsolute(String)
+
+        public var description: String {
+            switch self {
+            case .targetNotAbsolute(let path):
+                return "the target path \(path) is not absolute, so no creation rule could be resolved for it"
+            case .projectRootNotAbsolute(let path):
+                return "the project root \(path) is not absolute, so no creation rule could be resolved for it"
+            }
+        }
+    }
+
     /// Decides which creation rule would govern a file at `target` if it
     /// were created there right now.
     ///
-    /// `target` must be an absolute path. `SopsBridge.lookupCreationRule`
-    /// matches a rule's `path_regex` against the target *relative to the
-    /// config's own directory*, computed by stripping that directory as a
-    /// literal prefix — a relative or differently-rooted `target` would
-    /// silently fail to strip, and every `path_regex` would then be matched
-    /// against the wrong string, producing a confident, wrong answer rather
-    /// than an error. `target` itself need not exist: this answers "if a
-    /// file were created here", not "what governs this file today".
+    /// `target` and `projectRoot` must both be absolute paths — throws
+    /// `Error.targetNotAbsolute` / `.projectRootNotAbsolute` otherwise,
+    /// before `.sops.yaml` is ever looked at. See `Error`'s own doc comment
+    /// for why this is enforced rather than merely documented. `target`
+    /// itself need not exist: this answers "if a file were created here",
+    /// not "what governs this file today".
     ///
     /// Decision order is load-bearing, because the cases genuinely overlap —
     /// a rule can name a non-age backend *and* set an unsupported scoping
@@ -82,6 +116,13 @@ public enum CreationPlanResolver {
     ///    `CreationPlan.governedByRule`.
     /// 6. Otherwise → `.governedByRule`.
     public static func plan(forTarget target: URL, in projectRoot: URL) throws -> CreationPlan {
+        guard target.path.hasPrefix("/") else {
+            throw Error.targetNotAbsolute(target.path)
+        }
+        guard projectRoot.path.hasPrefix("/") else {
+            throw Error.projectRootNotAbsolute(projectRoot.path)
+        }
+
         let configURL = projectRoot.appendingPathComponent(".sops.yaml")
 
         guard FileManager.default.fileExists(atPath: configURL.path) else {
