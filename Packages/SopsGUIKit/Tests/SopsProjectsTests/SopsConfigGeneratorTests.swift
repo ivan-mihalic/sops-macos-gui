@@ -64,6 +64,28 @@ struct SopsConfigGeneratorTests {
         #expect(plan == .governedByRule(recipients: [key.public], encryptedRegex: ""))
     }
 
+    /// The finding this pins: sops's own `age.MasterKeysFromRecipients`
+    /// resolves an empty `age:` string to zero master keys with **no
+    /// error** (`age/keysource.go:88-91` in the vendored sops module), and
+    /// `getKeyGroupsFromCreationRule` has no guard requiring a non-empty
+    /// result — so without this guard, `lookupCreationRule` on the staged
+    /// probe would report `matched == true, ageRecipients == []`, and
+    /// `Set([]) == Set([])` in `verify` is vacuously true. Without this
+    /// check, an empty recipient list would come back `verified: true` with
+    /// a `.sops.yaml` that protects nothing.
+    @Test("an empty recipient list is refused before anything is staged, not silently verified")
+    func emptyRecipientsIsRefused() throws {
+        let root = try applierScratchDirectory("config-generator-empty-recipients")
+        let target = root.appendingPathComponent("secrets/prod.yaml")
+
+        let proposed = try SopsConfigGenerator.propose(forTarget: target, in: root, recipients: [])
+
+        #expect(!proposed.verified)
+        #expect(proposed.text.isEmpty)
+        #expect(!proposed.reason.isEmpty)
+        #expect(try Self.probeLeftovers(in: root).isEmpty)
+    }
+
     @Test("no probe file survives a successful proposal")
     func noProbeFileSurvivesSuccess() throws {
         let key = try AgeKeyPair.generate()

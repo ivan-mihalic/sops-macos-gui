@@ -35,17 +35,20 @@ public struct ProposedConfig: Equatable, Sendable {
 /// Proposes a `.sops.yaml` that would govern one not-yet-existing target
 /// file, for exactly the age recipients a caller names.
 ///
-/// **Never writes.** A project with no `.sops.yaml` cannot say who its
-/// secrets should be encrypted to, so nothing in this app may create a
-/// secret file there until someone decides what the config should say — and
-/// deciding is not the same act as writing it down, nor the same act as
+/// **Never writes the config.** A project with no `.sops.yaml` cannot say
+/// who its secrets should be encrypted to, so nothing in this app may create
+/// a secret file there until someone decides what the config should say —
+/// and deciding is not the same act as writing it down, nor the same act as
 /// creating a file under it. `SecretFileCreator`, `CreationPlanResolver` and
 /// `ProjectRecipientApplier` each already keep exactly one of those three
 /// acts to itself; this type keeps the first. Phase 2's wizard shows
 /// `ProposedConfig.text` to the user and, only on their explicit
 /// confirmation, writes it with `AtomicFileWriter.write(_:to:expecting:
 /// .absent)` — a separate call this type never makes and does not import
-/// the ability to make.
+/// the ability to make. (`verify`, below, does stage a real — but
+/// temporary, always-removed — probe file in `projectRoot` to prove the
+/// proposal against sops's own parser; "never writes" is a claim about
+/// `.sops.yaml` itself, not about every byte this type ever puts on disk.)
 ///
 /// ## Why `verified` is proven, not asserted
 ///
@@ -226,6 +229,26 @@ public enum SopsConfigGenerator {
         try Self.requireProjectRootExists(projectRoot)
         try Self.refuseDotDotComponent(in: target)
 
+        // An empty `recipients` is not a caller mistake in the same sense as
+        // a relative path or a `..` component — it is a proposal that is not
+        // legitimate no matter what sops itself says about it, so it is
+        // reported the same way every other failed-to-verify proposal is:
+        // `ProposedConfig(verified: false, reason:)`, not a thrown `Error`.
+        // It has to be caught *before* `verify` runs rather than left to
+        // that call, because `verify`'s own check — `Set(lookup
+        // .ageRecipients) == Set(recipients)` — is vacuously true for two
+        // empty sets: sops's own `LoadCreationRuleForFile` resolves zero
+        // master keys and returns no error for `age: ` with nothing after
+        // it (`age/keysource.go:88-91` in the vendored sops module), and
+        // `getKeyGroupsFromCreationRule` has no non-empty guard of its own,
+        // so `matched` comes back `true` with `ageRecipients == []` and the
+        // set comparison would pass a `.sops.yaml` that protects nothing.
+        guard !recipients.isEmpty else {
+            return ProposedConfig(
+                text: "", verified: false,
+                reason: "No recipients were given, so the proposed rule would protect nothing.")
+        }
+
         let relativeTargetPath = try Self.relativePath(of: target, in: projectRoot)
         let pathRegex = "^" + NSRegularExpression.escapedPattern(for: relativeTargetPath) + "$"
         let text = Self.configText(pathRegex: pathRegex, recipients: recipients)
@@ -288,6 +311,15 @@ public enum SopsConfigGenerator {
 
     // MARK: - Text
 
+    /// `recipients` is interpolated into `age:` unvalidated — no `age1…`
+    /// shape check, no charset check. That is deliberately not this
+    /// function's job: `verify`'s `Set(lookup.ageRecipients) ==
+    /// Set(recipients)` comparison is what actually bounds the risk,
+    /// failing verification for essentially every malformed string (the
+    /// bridge's own config parser rejects anything that does not parse as a
+    /// native `age1…` key before `ageRecipients` is ever populated), so an
+    /// unvalidated string reaching this function is defence-in-depth against
+    /// a caller bug, not a live hole on its own.
     private static func configText(pathRegex: String, recipients: [String]) -> String {
         """
         creation_rules:
