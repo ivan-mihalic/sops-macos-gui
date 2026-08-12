@@ -21,6 +21,12 @@ not populate under that technique, so the sidebar below is rendered from
 `SectionSidebarList` standing on its own. It is the same type the app puts in
 that column, not a mock-up.
 
+**Part 5 has no pictures at all**, and that is the same limitation rather than
+an oversight. Both access panels start a live scan of the project when they
+appear; the renderer takes a single shot and would catch them mid-scan, showing
+a spinner and a count of zero. A picture of the wrong moment is worse than no
+picture, so that part is written to stand on its own.
+
 The data in every picture is a throwaway: keys generated per render by
 `age-keygen` and discarded when the process exits, hostnames under `.invalid`
 (RFC 6761 — guaranteed never to resolve), and API keys with `DEMO` where the
@@ -285,6 +291,9 @@ sits in a list rather than a map, the sheet appends instead of asking for a name
 The new row is marked **New** until saved. Removing a row is **−**, and it too
 is a pending change until Save.
 
+Editing values is not the only thing you can do to an open file. Changing *who
+can read it* is Part 5.
+
 ---
 
 ## Part 4 — Settings and About
@@ -367,6 +376,129 @@ anywhere."*
 
 ---
 
+## Part 5 — Access: who can read a file
+
+Everything so far has been about the *contents* of a file. This part is about
+its *recipients* — the age public keys a file is encrypted to. Add one and that
+person, server or laptop can decrypt the file; remove one and, from then on,
+they cannot.
+
+There are three separate places this can change, and the app keeps them separate
+on purpose, because they mean different things:
+
+| Where | What it changes | What it does **not** change |
+|---|---|---|
+| **Access** (one open file) | who can decrypt *that file*, from now on | any other file |
+| **Update .sops.yaml** (project) | who *new and re-wrapped* files will be encrypted for | any file already on disk |
+| **Apply to Files** (project) | who can decrypt every file the rule governs | the rule itself |
+
+None of the three happens as a side effect of anything else. Saving a file never
+re-targets it. Each is its own action behind its own confirmation.
+
+### Step 19 · Extending the walkthrough project
+
+The demo project from the top has one key, which makes for a dull recipients
+list. Add a second — pretend it belongs to a colleague:
+
+```bash
+cd ~/Development/sops-demo-project
+age-keygen -o colleague-age-key.txt
+grep '^# public key:' colleague-age-key.txt | cut -d' ' -f4    # this is what you paste
+echo colleague-age-key.txt >> .gitignore
+```
+
+Keep the public key (`age1…`) on the clipboard. You never need the private half
+of it for this part — and the app will refuse it if you try, in every field.
+
+### Step 20 · One file
+
+Open `config/production.secrets.yaml` and use **Access** in the toolbar.
+
+What it shows is read from the file's own `sops` metadata, not from
+`.sops.yaml` — that is the difference between who *can* read this file and who
+*ought* to be able to. A recipient the project has no name for is shown by its
+`age1…` key rather than hidden.
+
+Reading the list needs no key at all. *Changing* it does, because the app has to
+decrypt the data key with an identity you hold before it can re-wrap it for
+someone else.
+
+Additions and removals are staged: they show as **New** and **Losing access**,
+and nothing on disk moves until you press **Apply**. Two things the app will not
+do:
+
+- **Remove the last recipient.** *"Removing every recipient would leave this
+  file unreadable. Keep at least one."* That includes leaving only keys you do
+  not hold.
+- **Let you apply over unsaved edits.** The Access button is disabled while the
+  document is dirty — *"Save your changes before managing access."* Applying
+  reloads the file from disk, which would have silently discarded what you
+  typed.
+
+Removing someone is confirmed by name, and the confirmation says the part people
+forget: *"Rotate the secret values afterwards: anyone removed may still hold an
+old copy."* Taking a key out of a file does not un-see what was already read.
+
+### Step 21 · A whole project
+
+**Project Access…** does the same job at the level of a creation rule.
+
+It works out which rule in `.sops.yaml` governs the project's files, shows the
+recipients that rule names, and previews **which files** a run would re-wrap —
+not merely how many. Where files fall under a *different* rule, it says so and
+how many; where it could not identify a governing rule at all, it says the scope
+widened to every encrypted file it found rather than quietly applying to more
+than you expected.
+
+The two buttons do genuinely different things, and the confirmations spell out
+the difference rather than assuming you know it:
+
+- **Update .sops.yaml…** rewrites the rule. Dropping someone here *"takes
+  nothing away — every file already on disk still decrypts for them, because
+  their key is still in that file's own metadata."*
+- **Apply to Files…** is what actually changes access to existing files. Each
+  file is reported on its own as **Updated**, **Already correct** or **Failed**,
+  and one unreadable file does not stop the rest of the run. **Stop** ends it
+  between files, never mid-write.
+
+Only a flat, age-only creation rule is rewritten. Anything else — several key
+groups, a rule mixing age with PGP or KMS, shamir thresholds, YAML anchors — is
+read-only, and the panel names the shape it found instead of guessing. The app
+does not edit a config it does not fully understand.
+
+Two honest warnings the confirmation gives before it rewrites anything: the file
+is written out again in full, so blank lines, a leading `---` and the exact
+alignment of trailing comments do not survive (every rule, key and comment
+does); and if your rules sit flush against `creation_rules:` rather than
+indented under it, every line inside it shifts. Expect a larger diff than the
+keys you changed.
+
+### Step 22 · Naming recipients
+
+An `age1…` key is not a person. Any recipient row, in either panel, can be given
+a **name**, a **type** (Device, Server, Person) and an optional note.
+
+Names live in `.sops-gui/recipients.json` inside the project — a shared,
+version-controlled file that holds **no secrets and grants nothing**. Commit it
+and your whole team sees the same names. Nothing private-key-shaped is accepted
+in any field of it, including the note.
+
+The one thing worth being clear about: **forgetting a name is not revoking
+access.**
+
+> The name “Colleague's laptop” will be dropped from this project's directory of
+> names, and this recipient will be shown by its age public key again.
+>
+> Nothing about access changes. This recipient can still decrypt every file it
+> can decrypt now. To actually take that away, remove the recipient in the
+> Access panel and apply the change.
+
+That is why forgetting a name is not styled as a destructive action — it destroys
+nothing. Removing access is a different control, in a different panel, with a
+different confirmation.
+
+---
+
 ## Troubleshooting
 
 **A file I can see in Finder is not in the list.** Either it is not sops-
@@ -379,6 +511,30 @@ recipients in the file's `sops` block against your public key.
 
 **The wizard said my sops is out of date.** That is about your *CLI*, not this
 app. The app's own engine is the version in About and is unaffected.
+
+**The Access button is greyed out.** The document has unsaved changes. Applying
+access changes reloads the file from disk, so the app makes you save or discard
+first rather than throwing away what you typed.
+
+**"This .sops.yaml will not be rewritten."** The governing rule is a shape the
+app will not edit — several key groups, age mixed with PGP/KMS/Vault, a shamir
+threshold, or YAML anchors. The panel names which one it found. Editing that
+file by hand still works; **Apply to Files** still works, because it does not
+touch the config.
+
+**I removed someone from `.sops.yaml` and they can still read the files.**
+Working as intended, and the confirmation says so: the rule decides who *new and
+re-wrapped* files are encrypted for. Existing files still carry that key in
+their own metadata. **Apply to Files** is what changes them.
+
+**I forgot a recipient's name and nothing else happened.** Also intended. Names
+are labels in `.sops-gui/recipients.json`; they grant nothing. Access lives in
+`.sops.yaml` and in each file's metadata.
+
+**One file came back Failed in a project run.** The other files still went
+through — a run does not stop at the first problem. The usual causes are a file
+your session key cannot decrypt, and a file that changed on disk after the run
+read it, which is refused rather than overwritten.
 
 **The window opens too large, or will not resize.** It should do neither; both
 were real defects, both are fixed, and the minimum is now stated in one place
