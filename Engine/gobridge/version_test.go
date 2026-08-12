@@ -3,7 +3,6 @@ package gobridge
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -12,18 +11,6 @@ import (
 	"sync"
 	"testing"
 )
-
-// probeTempDir holds the scratch directory the version probe binary is built
-// into; TestMain removes it once every test in this package has run.
-var probeTempDir string
-
-func TestMain(m *testing.M) {
-	code := m.Run()
-	if probeTempDir != "" {
-		_ = os.RemoveAll(probeTempDir)
-	}
-	os.Exit(code)
-}
 
 var (
 	probeOnce  sync.Once
@@ -55,12 +42,23 @@ func probeEngineVersions(t *testing.T) (sopsVersion, ageVersion string) {
 		}
 		engineDir := filepath.Dir(filepath.Dir(thisFile)) // Engine/gobridge -> Engine
 
-		dir, err := os.MkdirTemp("", "versionprobe-*")
-		if err != nil {
-			probeErr = fmt.Errorf("create temp dir: %w", err)
-			return
-		}
-		probeTempDir = dir
+		// `t.TempDir()`, not `os.MkdirTemp`: cleanup is registered with the
+		// test itself (`t.Cleanup`, removed once the test that triggered
+		// this `sync.Once` completes) rather than depending on a
+		// package-level `TestMain` to `RemoveAll` a hand-tracked path after
+		// every test in the package has finished — one mechanism instead of
+		// two, and the idiomatic one. (`Scripts/clean-test-temp.sh` is
+		// specifically the Swift-side `swift test` backstop for
+		// `$TMPDIR/<label>-<UUID>` fixtures and was never scoped to this Go
+		// module's own temp dirs either way — `t.TempDir()`'s own
+		// `<TestName><random>` naming doesn't change that.) Safe to let
+		// expire with this test's own lifetime: `dir` and `bin` are only
+		// ever used inside this closure, to build and run the probe binary
+		// and capture its output into `probedSops`/`probedAge` before
+		// returning — nothing outside this closure, including a later test
+		// that hits the memoized `sync.Once`, ever touches the directory
+		// again.
+		dir := t.TempDir()
 
 		bin := filepath.Join(dir, "versionprobe")
 		build := exec.Command("go", "build", "-o", bin, "./internal/versionprobe")
