@@ -17,9 +17,12 @@ public struct ResolvedEncryption: Equatable, Sendable {
     public let recipients: [String]
     public let encryptedRegex: String
     /// Set by a caller who has explicitly chosen to create a file the
-    /// current session identity cannot read back. See `Failure
-    /// .wouldBeUnreadable` and this type's "Self-readability is the
-    /// default" section for what setting this trades away.
+    /// current session identity cannot read back. Trades away more than
+    /// that one thing: it also means the file is written with **no content
+    /// verification at all**, because there is no identity in hand to
+    /// decrypt it back for comparison — see `Failure.wouldBeUnreadable` and
+    /// this type's "Self-readability is the default" section for the full
+    /// account.
     public let acknowledgedUnreadable: Bool
 
     public init(recipients: [String], encryptedRegex: String, acknowledgedUnreadable: Bool) {
@@ -92,10 +95,18 @@ public struct ResolvedEncryption: Equatable, Sendable {
 /// bookkeeping order of "which in-memory step runs first" differs from the
 /// spec's numbering, never what a caller observes.
 ///
-/// When the recipient set cannot be proven readable and the caller has
-/// acknowledged that, the round trip's *content* comparison is skipped
-/// outright — not attempted and ignored, skipped — because there is no
-/// identity here that can decrypt the result to compare against.
+/// **With `acknowledgedUnreadable == true`, a decrypt failure for *any*
+/// reason — a wrong or missing identity, or a genuine engine fault, and
+/// this implementation cannot tell those apart (see `Failure
+/// .wouldBeUnreadable`'s own doc comment for why) — results in the file
+/// being written with no content verification at all.** Not attempted and
+/// ignored: skipped outright, because there is no identity in hand that
+/// could decrypt the result to compare against either way. This is
+/// defensible — the caller has already said this session cannot read the
+/// file back — but it is a real, load-bearing consequence of the flag and
+/// not just a footnote: it must never be added to a code path where "the
+/// bridge glitched" and "this recipient set is genuinely unreadable to me"
+/// need to be told apart.
 ///
 /// ## The round trip is semantic, not byte-for-byte
 ///
@@ -109,8 +120,8 @@ public struct ResolvedEncryption: Equatable, Sendable {
 ///
 /// | Source | What is checked |
 /// |---|---|
-/// | `.dotEnv` | Every entry has exactly one row with `path == [key]` and a matching `value`; `rows.count == entries.count`. |
-/// | `.verbatimYAML` | `decryptToRows` succeeds and returns a non-empty row list. |
+/// | `.dotEnv` | Every entry has exactly one row with `path == [key]` and a matching `value`; `rows.count == entries.count`. This is the one source with a hand-rolled serialiser (`FlatYAMLEmitter`) standing between the user's values and the bridge, and it is the reason this post-condition exists at all — see that type's own doc comment. |
+/// | `.verbatimYAML` | `decryptToRows` succeeds — nothing about the row *count* is checked. An empty result is a legitimate document, not corruption: a user pasting a `config.yaml` that is only a comments-only template, or literally `{}`, means to create the file and fill it in afterward, exactly as `.empty` already does deliberately. The bridge agrees — `Engine/gobridge/bridge.go:337` has an explicit carve-out for "an empty file has nothing to encrypt, and that is not a broken rule." Reporting it as `roundTripMismatch` would tell a user their file was corrupted when it was not. |
 /// | `.empty` | Not compared — there is nothing to compare — but `decryptToRows` still has to succeed for the write to proceed; see step 3/6 above. |
 ///
 /// ## Why this never resolves its own plan
@@ -320,9 +331,17 @@ public enum SecretFileCreator {
 
         guard let rows else {
             guard plan.acknowledgedUnreadable else { throw Failure.wouldBeUnreadable }
-            // Acknowledged: there is no identity here that can decrypt the
-            // result to compare against, so the content comparison is
-            // skipped outright rather than attempted and ignored.
+            // Acknowledged: the decrypt above failed for *some* reason —
+            // wrong identity or a genuine engine fault, indistinguishable
+            // from here (see the comment above) — and there is no identity
+            // in hand that can decrypt the result to compare against
+            // either way. So this file is written with **no content
+            // verification at all**, not "verification attempted and
+            // ignored". That is the real, load-bearing consequence of
+            // setting `acknowledgedUnreadable`, spelled out here because it
+            // is easy to read the flag's name as being only about *who can
+            // read the file later* rather than also about *what this call
+            // itself can still promise*.
             return try finishWriting(encrypted, to: destination)
         }
         try verifyRoundTrip(source, rows: rows)
@@ -354,7 +373,13 @@ public enum SecretFileCreator {
         case .empty:
             return
         case .verbatimYAML:
-            guard !rows.isEmpty else { throw Failure.roundTripMismatch }
+            // Only reaching here already proves `decryptToRows` succeeded —
+            // that is the whole check for this source. `rows` being empty
+            // is not itself a defect: a comments-only or `{}` document is a
+            // legitimate thing to paste in and fill out later. See the
+            // table above for the fuller account and why this must not
+            // throw `roundTripMismatch`.
+            return
         case .dotEnv(let entries):
             guard rows.count == entries.count else { throw Failure.roundTripMismatch }
             for entry in entries {

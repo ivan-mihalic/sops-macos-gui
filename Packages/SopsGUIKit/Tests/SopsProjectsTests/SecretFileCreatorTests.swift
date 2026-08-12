@@ -91,6 +91,39 @@ struct SecretFileCreatorTests {
         #expect(rows.first { $0.path == ["database", "password"] }?.value == sentinelValue)
     }
 
+    /// Human ruling on the plan's Task 6 review: a legitimately empty
+    /// `.verbatimYAML` document must be created, not reported as
+    /// `roundTripMismatch`. A user pasting `{}` or a comments-only template
+    /// means to create the file and fill it in afterward — the same intent
+    /// `.empty` already serves deliberately — and the engine agrees: an
+    /// empty document has nothing to encrypt, which is not a broken rule
+    /// (`Engine/gobridge/bridge.go:337`).
+    @Test("pasted YAML that is legitimately empty is created, not reported as corrupted")
+    func verbatimYAMLEmptyDocumentIsCreated() throws {
+        let owner = try AgeKeyPair.generate()
+        let (_, project) = try makeProject()
+        let destination = project.appendingPathComponent("secret.yaml")
+
+        let receipt = try SecretFileCreator.create(
+            .verbatimYAML("{}\n"), plan: plan([owner.public]), at: destination, in: project,
+            sessionKey: owner.private)
+
+        #expect(receipt.destination.path == destination.path)
+        let encrypted = try String(contentsOf: destination, encoding: .utf8)
+        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        #expect(rows.isEmpty)
+    }
+
+    // A comments-only variant (`"# TODO: fill this in\n"`) was tried as a
+    // second case for the ruling above and measured to fail earlier and for
+    // an unrelated reason: the bridge's own YAML loader rejects a document
+    // with no actual node in it — `.engine("the document is not valid
+    // YAML")` — before this type's round-trip logic is ever reached. That
+    // is a pre-existing constraint of `SopsBridge.encryptYAML` (and, one
+    // level down, the underlying store's `LoadPlainFile`), not something
+    // this fix touches or should paper over, so it is not asserted here.
+    // `{}\n` above is the actually-empty document this ruling is about.
+
     @Test("a parsed .env creates a file decryptToRows can read back, entry for entry")
     func dotEnvSourceCreatesReadableFile() throws {
         let owner = try AgeKeyPair.generate()
