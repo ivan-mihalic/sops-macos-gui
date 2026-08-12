@@ -224,6 +224,16 @@ public enum SecretFileCreator {
         /// associated value — see this type's file-level "no secret values"
         /// discipline; a mismatch is a shape a document took, never the
         /// values that made it that shape.
+        ///
+        /// Not always evidence of corruption in the alarming sense: a
+        /// `.dotEnv` value containing `U+0085` (NEL) reaches this case today
+        /// because `FlatYAMLEmitter.quotedValue` does not yet escape it (see
+        /// that function's own doc comment, "Known gap"), not because
+        /// anything was tampered with. Whatever user-facing text phase 2
+        /// eventually writes for this case should account for that — "this
+        /// document was corrupted" is not the honest framing for every
+        /// input that reaches here, and this specific gap is expected to
+        /// close before that copy is finalized.
         case roundTripMismatch
         /// Step 3 (see this type's doc comment for why its *check* runs
         /// where step 6 does): decrypting what step 5 just produced, with

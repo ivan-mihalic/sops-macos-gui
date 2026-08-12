@@ -90,8 +90,8 @@ public enum FlatYAMLEmitter {
     // MARK: - Values
 
     /// Wraps `value` in double quotes, escaping every character a
-    /// double-quoted YAML scalar requires escaping. This is the complete
-    /// table, not "and similar":
+    /// double-quoted YAML scalar requires escaping. Meant to be the complete
+    /// table, not "and similar" — but it is known to be short one entry:
     ///
     /// | Character | Escape |
     /// |---|---|
@@ -102,6 +102,21 @@ public enum FlatYAMLEmitter {
     /// | TAB | `\t` |
     /// | other C0 (`U+0000`–`U+001F`) and `U+007F` | `\xNN` |
     /// | everything else, including emoji | written literally |
+    ///
+    /// **Known gap: `U+0085` (NEL) is not in this table.** It falls to the
+    /// `default:` arm below and is written literally, but sops's YAML layer
+    /// reads it back differently than written, so a value containing it does
+    /// not round-trip intact — measured directly in
+    /// `SecretFileCreatorTests.dotEnvNELValueIsCaughtAsRoundTripMismatch`.
+    /// `U+2028` (LS) and `U+2029` (PS) were probed too and round-trip fine;
+    /// this is specifically NEL, not "any unescaped line-break character".
+    /// Caught, not silent — `SecretFileCreator.verifyRoundTrip` refuses the
+    /// write rather than producing a corrupted file — but the honest fix is
+    /// to add `U+0085` to this table and this doc comment's claim to being
+    /// complete; tracked as a follow-up, not fixed here. The same table
+    /// governs `quotedKey` too (via `quotedValue` for any key that is not
+    /// plain-scalar-safe), so a key containing NEL is caught the same way a
+    /// value is.
     static func quotedValue(_ value: String) -> String {
         var result = "\""
         result.reserveCapacity(value.count + 2)

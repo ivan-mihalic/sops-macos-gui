@@ -269,10 +269,15 @@ struct CreationPlanResolverTests {
     /// real bridge rather than assumed: without the containment check,
     /// `target` — absolute, but nowhere near `root` — reaches
     /// `SopsBridge.lookupCreationRule` unchanged. `Engine/gobridge/config.go`'s
-    /// `LookupCreationRule` strips `root`'s path as a *literal* prefix
-    /// (`strings.TrimPrefix`), which is a no-op here since `target` does not
-    /// share it, leaving `target`'s full absolute path to be matched against
-    /// `path_regex` **unanchored** — and `secrets/.*\.yaml$` matches
+    /// `LookupCreationRule` itself only resolves `target` to an absolute
+    /// path and calls into `config.LoadCreationRuleForFile`; it is the
+    /// vendored sops config package, one level below that
+    /// (`config.parseCreationRuleForFile`, `config/config.go:582`), that
+    /// strips `root`'s path as a *literal* prefix (`strings.TrimPrefix`) —
+    /// see `CreationPlanResolver.Error`'s own doc comment for the full
+    /// two-level account. That strip is a no-op here since `target` does not
+    /// share the prefix, leaving `target`'s full absolute path to be matched
+    /// against `path_regex` **unanchored** — and `secrets/.*\.yaml$` matches
     /// `/…/elsewhere/secrets/prod.yaml` as a substring. Without this guard
     /// that would come back `.governedByRule` with this project's
     /// recipients, for a file this project has nothing to do with.
