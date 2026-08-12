@@ -90,10 +90,10 @@ public struct ProposedConfig: Equatable, Sendable {
 /// comes back as `ProposedConfig(text: "", verified: false, reason: …)`,
 /// never a thrown error: see `ProposedConfig`'s own doc comment for why a
 /// second failure shape here would drift from `ConfigRecipientUpdate`'s.
-/// `propose(forTarget:in:recipients:)` still `throws`, but only for the two
-/// cases below that are caller mistakes rather than proposals that failed to
-/// verify — the same split `CreationPlanResolver.Error` and
-/// `SecretFileCreator.Failure` already make for the identical shape of
+/// `propose(forTarget:in:recipients:)` still `throws`, but only for the
+/// `Error` cases below, which are caller mistakes rather than proposals
+/// that failed to verify — the same split `CreationPlanResolver.Error` and
+/// `SecretFileCreator.Failure` already make for the identical shapes of
 /// mistake.
 ///
 /// ## `path_regex` is escaped, not interpolated
@@ -107,15 +107,54 @@ public struct ProposedConfig: Equatable, Sendable {
 /// same-length sibling, silently widening which files this app hands a
 /// given set of recipients to. Which files a rule governs is who can read
 /// them, so this is not a cosmetic detail.
+///
+/// ## Containment is enforced here, independently of `SecretFileCreator`
+///
+/// `SecretFileCreator.refuseIfOutsideProject` already refuses a `..`
+/// component and requires `projectRoot` to exist as a real directory before
+/// it ever writes a secret file — the obvious question is why this type
+/// repeats that rather than leaning on it. The answer is that this type's
+/// output is not a file `SecretFileCreator` — or anything else in this
+/// app — ever opens again. It is a **`.sops.yaml` written into the user's
+/// own repository**, where it outlives this app's control entirely: the real
+/// `sops` CLI, CI, and a colleague's editor all read it later, and none of
+/// them inherit `SecretFileCreator`'s guard. A `path_regex` built from a
+/// target path containing a literal `..` component is a rule whose meaning
+/// depends on where it happens to be evaluated from — not a hazard this type
+/// gets to bound by pointing at what a sibling type in this same process
+/// would have refused. So `target` is checked for a literal `..` component,
+/// and `projectRoot` is required to exist and be a directory, before
+/// anything is staged — the same two guards `refuseIfOutsideProject`
+/// applies, in the same order, before its own write.
+///
+/// One thing is deliberately *not* copied from `refuseIfOutsideProject`:
+/// symlink-aware canonicalization (`CanonicalPath.of` plus
+/// `canonicalizedForContainment`'s walk-upward-to-an-existing-ancestor
+/// trick). `relativePath(of:in:)` below strips `projectRoot` as a literal
+/// string prefix, never resolving symlinks — because that is exactly what
+/// `SopsBridge.lookupCreationRule` itself does when it later strips
+/// `configPath`'s directory to match `path_regex` (see that call's own doc
+/// comment). Resolving symlinks here would make this type check `target`
+/// against a *different* string than the one the bridge verifies it
+/// against a moment later — the literal `..` refusal closes the one escape
+/// that distinction would otherwise leave open, without introducing a
+/// second, disagreeing notion of "inside".
 public enum SopsConfigGenerator {
 
-    /// Thrown before `.sops.yaml` is ever staged, when `target` or
-    /// `projectRoot` is not an absolute path, or when `target` does not lie
-    /// inside `projectRoot` at all.
+    /// Thrown before `.sops.yaml` is ever staged: when `target` or
+    /// `projectRoot` is not an absolute path, when `projectRoot` does not
+    /// exist as a real directory, or when `target` does not lie inside
+    /// `projectRoot` — including via a literal `..` path component, which is
+    /// refused outright rather than resolved, for the identical reason
+    /// `SecretFileCreator.Failure.destinationOutsideProject`'s doc comment
+    /// gives ("Why `..` is refused rather than resolved"): there is no safe
+    /// way to resolve a `..` that might follow a symlink without
+    /// re-deriving the kernel's own path-walking order in Swift, which ADR
+    /// 0002 already rules out doing by hand.
     ///
     /// This is not optional defensive coding — it is the same discipline
     /// `CreationPlanResolver.Error` and `SecretFileCreator.Failure` already
-    /// established for the identical shape of mistake, and for the same
+    /// established for the identical shapes of mistake, and for the same
     /// reason: `SopsBridge.lookupCreationRule` matches `path_regex` against
     /// the target *relative to the config's own directory*, computed by
     /// stripping that directory as a literal prefix. A relative or
@@ -124,9 +163,15 @@ public enum SopsConfigGenerator {
     /// so the check has to live here, before any text is even built,
     /// because a `path_regex` derived from a target outside `projectRoot`
     /// is not a proposal this type can honestly make in the first place.
+    /// See this type's own doc comment, "Containment is enforced here,
+    /// independently of `SecretFileCreator`", for why a `..` in `target`
+    /// is not merely a caller mistake this app happens to guard against
+    /// elsewhere: the config this type proposes outlives this app and is
+    /// read by tools that have no such guard of their own.
     public enum Error: Swift.Error, Equatable, Sendable, CustomStringConvertible {
         case targetNotAbsolute(String)
         case projectRootNotAbsolute(String)
+        case projectRootDoesNotExist(String)
         case targetOutsideProjectRoot(String)
 
         public var description: String {
@@ -135,6 +180,9 @@ public enum SopsConfigGenerator {
                 return "the target path \(path) is not absolute, so no .sops.yaml could be proposed for it"
             case .projectRootNotAbsolute(let path):
                 return "the project root \(path) is not absolute, so no .sops.yaml could be proposed for it"
+            case .projectRootDoesNotExist(let path):
+                return "the project root \(path) does not exist or is not a directory, so no .sops.yaml "
+                    + "could be proposed for it"
             case .targetOutsideProjectRoot(let path):
                 return "the target path \(path) does not lie inside the project root, so no project-relative "
                     + "path_regex could be derived for it"
@@ -156,10 +204,14 @@ public enum SopsConfigGenerator {
     /// sops's own parser rather than trusted, and why this never writes
     /// anything a caller did not ask it to.
     ///
-    /// `target` and `projectRoot` must both be absolute paths, and `target`
-    /// must lie inside `projectRoot` — throws `Error` otherwise, before
-    /// `.sops.yaml` is ever staged. `target` itself need not exist: this
-    /// proposes a config for a file that is not there yet.
+    /// `target` and `projectRoot` must both be absolute paths, `projectRoot`
+    /// must exist as a real directory, and `target` must lie inside
+    /// `projectRoot` with no literal `..` component anywhere in it — throws
+    /// `Error` otherwise, before `.sops.yaml` is ever staged. `target` itself
+    /// need not exist: this proposes a config for a file that is not there
+    /// yet. See this type's doc comment, "Containment is enforced here,
+    /// independently of `SecretFileCreator`", for why these checks are not
+    /// borrowed from that sibling type instead.
     public static func propose(
         forTarget target: URL,
         in projectRoot: URL,
@@ -171,12 +223,46 @@ public enum SopsConfigGenerator {
         guard projectRoot.path.hasPrefix("/") else {
             throw Error.projectRootNotAbsolute(projectRoot.path)
         }
+        try Self.requireProjectRootExists(projectRoot)
+        try Self.refuseDotDotComponent(in: target)
 
         let relativeTargetPath = try Self.relativePath(of: target, in: projectRoot)
         let pathRegex = "^" + NSRegularExpression.escapedPattern(for: relativeTargetPath) + "$"
         let text = Self.configText(pathRegex: pathRegex, recipients: recipients)
 
         return Self.verify(text, forTarget: target, in: projectRoot, recipients: recipients)
+    }
+
+    // MARK: - Containment
+
+    /// `projectRoot` has to be a real, present directory, or "inside
+    /// `projectRoot`" is not a claim the prefix check in `relativePath(of:
+    /// in:)` can honestly make — a project root that does not exist yet
+    /// makes that check vacuously true against any literal path sharing its
+    /// spelling. The identical guard `SecretFileCreator
+    /// .refuseIfOutsideProject` applies before its own write, for the
+    /// identical reason.
+    private static func requireProjectRootExists(_ projectRoot: URL) throws {
+        var isDirectory: ObjCBool = false
+        guard
+            FileManager.default.fileExists(atPath: projectRoot.path, isDirectory: &isDirectory),
+            isDirectory.boolValue
+        else {
+            throw Error.projectRootDoesNotExist(projectRoot.path)
+        }
+    }
+
+    /// Refuses any literal `..` path component in `target`, before anything
+    /// tries to treat `target` as being inside `projectRoot` at all. See
+    /// this type's doc comment, "Containment is enforced here, independently
+    /// of `SecretFileCreator`", and `SecretFileCreator.Failure
+    /// .destinationOutsideProject`'s own doc comment ("Why `..` is refused
+    /// rather than resolved") for the full account of why resolving it
+    /// instead is not a safe option.
+    private static func refuseDotDotComponent(in target: URL) throws {
+        guard !target.path.split(separator: "/").contains("..") else {
+            throw Error.targetOutsideProjectRoot(target.path)
+        }
     }
 
     // MARK: - path_regex derivation
@@ -187,7 +273,10 @@ public enum SopsConfigGenerator {
     /// `path_regex` this builds is checked against the identical string the
     /// bridge will strip when it verifies this exact proposal a moment
     /// later. Throws `Error.targetOutsideProjectRoot` when `target` does not
-    /// share that literal prefix at all.
+    /// share that literal prefix at all. Only ever called after
+    /// `refuseDotDotComponent` has already refused any `..` component, so
+    /// there is nothing left here for the literal-prefix check to
+    /// mishandle.
     private static func relativePath(of target: URL, in projectRoot: URL) throws -> String {
         let rootPath = projectRoot.path
         let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"

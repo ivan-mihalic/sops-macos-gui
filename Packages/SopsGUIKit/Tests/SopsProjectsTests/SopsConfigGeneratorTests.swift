@@ -163,6 +163,81 @@ struct SopsConfigGeneratorTests {
         #expect(try Self.probeLeftovers(in: root).isEmpty)
     }
 
+    /// A project root that has never been created (or was deleted) makes
+    /// "inside `projectRoot`" a claim nothing can honestly check — see
+    /// `requireProjectRootExists`'s doc comment. This also pins the Minor
+    /// review finding: the reason names the actual problem rather than
+    /// falling through to the generic "could not be staged" catch-all,
+    /// which it would if this check did not exist.
+    @Test("a project root that does not exist is refused, and the reason names it")
+    func nonExistentProjectRootIsRefused() throws {
+        let parent = try applierScratchDirectory("config-generator-missing-root-parent")
+        let root = parent.appendingPathComponent("never-created", isDirectory: true)
+        let target = root.appendingPathComponent("secrets/prod.yaml")
+
+        #expect(throws: SopsConfigGenerator.Error.projectRootDoesNotExist(root.path)) {
+            try SopsConfigGenerator.propose(forTarget: target, in: root, recipients: ["age1anything"])
+        }
+    }
+
+    /// A project root that exists as a plain file, not a directory, must be
+    /// refused the same way — `isDirectory` is checked, not merely
+    /// existence.
+    @Test("a project root that is a file, not a directory, is refused")
+    func fileProjectRootIsRefused() throws {
+        let parent = try applierScratchDirectory("config-generator-file-root-parent")
+        let root = parent.appendingPathComponent("not-a-directory")
+        try "not a directory".write(to: root, atomically: true, encoding: .utf8)
+        let target = root.appendingPathComponent("secrets/prod.yaml")
+
+        #expect(throws: SopsConfigGenerator.Error.projectRootDoesNotExist(root.path)) {
+            try SopsConfigGenerator.propose(forTarget: target, in: root, recipients: ["age1anything"])
+        }
+    }
+
+    /// The reviewer's concrete escape: a target whose literal path shares
+    /// `root`'s string prefix (so the plain prefix check in `relativePath`
+    /// alone would call it "inside") but that walks back out via `..`
+    /// components. Refused *before* anything is staged, and before
+    /// `path_regex` is ever derived from it — see this type's doc comment,
+    /// "Containment is enforced here, independently of `SecretFileCreator`",
+    /// for why this app cannot rely on `SecretFileCreator`'s own `..`
+    /// refusal to cover a `.sops.yaml` this type proposes, which
+    /// `SecretFileCreator` never opens.
+    @Test("a target containing a literal .. component is refused, even though it shares the root's string prefix")
+    func dotDotComponentIsRefused() throws {
+        let root = try applierScratchDirectory("config-generator-dotdot")
+        let target = root.appendingPathComponent("secrets/../../../../tmp/config-generator-dotdot-evil.yaml")
+        #expect(target.path.hasPrefix(root.path), "sanity: the literal string prefix check alone would pass this")
+
+        #expect(throws: SopsConfigGenerator.Error.targetOutsideProjectRoot(target.path)) {
+            try SopsConfigGenerator.propose(forTarget: target, in: root, recipients: ["age1anything"])
+        }
+        #expect(try Self.probeLeftovers(in: root).isEmpty)
+    }
+
+    /// Cheap extra coverage past the dot: other regex metacharacters in a
+    /// target's own name must also be escaped, or the staged probe either
+    /// fails to compile as a regex or matches something other than what was
+    /// asked for — either way `verified` would come back `false`, so a
+    /// passing `verified == true` here is itself the proof.
+    @Test("path_regex escapes other regex metacharacters too, not only the dot")
+    func otherMetacharactersAreEscaped() throws {
+        let key = try AgeKeyPair.generate()
+        let root = try applierScratchDirectory("config-generator-other-metachars")
+        let target = root.appendingPathComponent("secrets/a+b(c)[d]$e.yaml")
+
+        let proposed = try SopsConfigGenerator.propose(
+            forTarget: target, in: root, recipients: [key.public])
+
+        #expect(
+            proposed.verified,
+            """
+            sops itself failed to match a target whose name contains regex metacharacters — one of them \
+            was left unescaped: \(proposed.reason)
+            """)
+    }
+
     // MARK: - Helpers
 
     private static func probeLeftovers(in root: URL) throws -> [String] {
