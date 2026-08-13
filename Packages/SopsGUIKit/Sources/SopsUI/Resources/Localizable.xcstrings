@@ -508,6 +508,17 @@
         }
       }
     },
+    "creation-failure.recovery.check-sops-yaml-syntax": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check .sops.yaml for a syntax error, then try again."
+          }
+        }
+      }
+    },
     "creation-failure.recovery.check-unusual-characters": {
       "extractionState": "manual",
       "localizations": {

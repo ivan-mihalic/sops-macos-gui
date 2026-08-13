@@ -30,14 +30,14 @@ public struct CreationFailureMessage: Equatable, Sendable {
     }
 }
 
-/// Turns a refusal from any of the four types the new-file wizard calls in
-/// sequence — `CreationPlanResolver`, `SecretFileCreator`,
-/// `SopsConfigGenerator`, `DotEnvParser` — into one sentence for a user, in
-/// one voice.
+/// Turns a refusal — or, for `CreationPlan`, a blocking answer — from any of
+/// the types the new-file wizard calls in sequence — `CreationPlanResolver`,
+/// `SecretFileCreator`, `SopsConfigGenerator`, `DotEnvParser` — into one
+/// sentence for a user, in one voice.
 ///
 /// ## Why one type, not a `catch` at each call site
 ///
-/// Phase 1's final whole-branch review measured that these three types
+/// Phase 1's final whole-branch review measured that three of these types
 /// describe the same family of caller mistake in three different
 /// vocabularies: `CreationPlanResolver.Error` has 4 cases,
 /// `SecretFileCreator.Failure` has 7 (one of which deliberately folds 4
@@ -49,29 +49,43 @@ public struct CreationFailureMessage: Equatable, Sendable {
 /// single place where any of that becomes text, so the wording is decided
 /// once.
 ///
+/// `message(forBlocking:)` joined the other four as an amendment once the
+/// same review this doc comment describes noticed `CreationPlan` itself
+/// belongs to the identical family: `.unsupportedRule` and
+/// `.configUnreadable` are both "the wizard cannot proceed", carrying reason
+/// text this presenter must not re-derive, same as `.engine` below. Left
+/// out, Task 5's model would have had to build those two sentences itself —
+/// precisely the scattering this type exists to prevent. `CreationPlan` is
+/// an answer, not a thrown error, hence the different method name and the
+/// `Optional` return — see that method's own doc comment.
+///
 /// ## Every `switch` below has no `default`
 ///
 /// A `default` case would silently swallow a case added later to any of the
-/// four consumed types — and swallowing it, unnoticed, is exactly the defect
-/// this type exists to prevent: a wizard that hits a case with no sentence
-/// and shows nothing, or shows a stale one. The compiler is the completeness
+/// consumed types — and swallowing it, unnoticed, is exactly the defect this
+/// type exists to prevent: a wizard that hits a case with no sentence and
+/// shows nothing, or shows a stale one. The compiler is the completeness
 /// check; `CreationFailurePresenterTests` checks the text.
 ///
 /// ## Bridge text passes through unchanged
 ///
-/// `SecretFileCreator.Failure.engine(String)` carries sops's own diagnostic.
-/// It is never rewritten, prefixed, or prettified here — `CreationPlanResolver`
-/// held the identical line for the identical reason (see that type's own doc
+/// `SecretFileCreator.Failure.engine(String)` and `CreationPlan
+/// .configUnreadable(reason:)` carry sops's own diagnostic. Neither is
+/// rewritten, prefixed, or prettified here — `CreationPlanResolver` held the
+/// identical line for the identical reason (see that type's own doc
 /// comment): re-wording what sops says is how this app's understanding of a
 /// failure drifts from what sops actually reports. Where a sentence below
-/// wraps that text in a lead-in ("Encryption failed: …"), the bridge's own
-/// words still survive verbatim inside it.
+/// wraps that text in a lead-in ("Encryption failed: …", "…could not be
+/// read: …"), the bridge's own words still survive verbatim inside it.
+/// `CreationPlan.unsupportedRule(reason:)` is the sibling case: not bridge
+/// text, but a whole sentence `CreationPlanResolver` already composed for a
+/// user — passed through as-is for the same reason.
 ///
 /// ## What `detail` is never allowed to carry
 ///
 /// A path, a key name, an errno-derived reason, or the bridge's own
 /// diagnostic text is fine — a value from the document being created, or a
-/// private identity, is not. None of the four types this presenter consumes
+/// private identity, is not. None of the types this presenter consumes
 /// actually has a case that could carry one (see each type's own doc
 /// comment), so this is a property of what is fed in, not something this
 /// type has to filter — but it is the invariant `CreationFailurePresenterTests
@@ -214,6 +228,46 @@ public enum CreationFailurePresenter {
                 title: .creationFailureDotEnvTitle,
                 detail: "That file isn't valid UTF-8 text, so it can't be read as a .env file.",
                 recovery: .creationRecoveryReencodeAsUTF8)
+        }
+    }
+
+    /// The two blocking outcomes of a `CreationPlan`. `CreationPlan` is an
+    /// answer, not a thrown error — but two of its cases are exactly the
+    /// "the wizard cannot proceed" situation this presenter exists to voice,
+    /// so translating them to text belongs here rather than being
+    /// re-derived by whatever calls `CreationPlanResolver.plan`.
+    ///
+    /// `.noConfig` and `.noRuleMatched` are deliberately **not** handled
+    /// here — they are not blocking. `.noRuleMatched` in particular is a
+    /// legitimate state, established in phase 1: a project can have a
+    /// `.sops.yaml` whose rules simply don't cover a location yet, and
+    /// Task 5's manual recipient picker is where both of these are
+    /// resolved. Returning a failure sentence for either would be actively
+    /// wrong, not merely unhelpful — it would tell a user this app refuses
+    /// something it is in fact equipped to handle by falling back to the
+    /// picker. `.governedByRule` returns `nil` for the simpler reason that
+    /// nothing is blocked.
+    public static func message(forBlocking plan: CreationPlan) -> CreationFailureMessage? {
+        switch plan {
+        case .noConfig, .noRuleMatched, .governedByRule:
+            return nil
+        case .unsupportedRule(let reason):
+            // `reason` is already a complete sentence written for a user —
+            // `CreationPlanResolver.nonAgeBackendsReason`/`.scopingFieldReason`
+            // compose it, name the offending backend or field, and each
+            // already ends with what to do about it ("Create the file with
+            // sops and it will appear here."). A second recovery hint here
+            // would repeat that, so this is the one blocking case with none.
+            return CreationFailureMessage(title: .creationFailureTitle, detail: reason, recovery: nil)
+        case .configUnreadable(let reason):
+            // `reason` is sops's own diagnostic, carried unchanged — the
+            // same discipline `.engine` above keeps, for the same reason:
+            // rewording it is how this app's understanding of the config
+            // drifts from what sops actually reports.
+            return CreationFailureMessage(
+                title: .creationFailureTitle,
+                detail: "This project's .sops.yaml could not be read: \(reason)",
+                recovery: .creationRecoveryCheckSopsYamlSyntax)
         }
     }
 }

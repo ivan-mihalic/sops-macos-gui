@@ -506,6 +506,9 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case creationRecoveryCheckRecipients = "creation-failure.recovery.check-recipients"
     case creationRecoveryCheckFolderPermissions = "creation-failure.recovery.check-folder-permissions"
     case creationRecoveryReencodeAsUTF8 = "creation-failure.recovery.reencode-as-utf8"
+    // `CreationPlan.configUnreadable`'s recovery — added when
+    // `message(forBlocking:)` joined the other four overloads.
+    case creationRecoveryCheckSopsYamlSyntax = "creation-failure.recovery.check-sops-yaml-syntax"
 
     /// The resolved English text. Used in views and asserted in tests.
     public var text: String {

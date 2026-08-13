@@ -238,6 +238,65 @@ struct CreationFailurePresenterTests {
         }
     }
 
+    // MARK: - CreationPlan's two blocking outcomes
+    //
+    // Amendment to the plan (2026-08-13): the original brief's interface
+    // list named four thrown `Error`/`Failure` types, but omitted
+    // `CreationPlan` itself — even though `.unsupportedRule` and
+    // `.configUnreadable` are exactly the same shape of "the wizard cannot
+    // proceed" this presenter exists to voice, and both already carry
+    // reason text this presenter must not re-derive (see
+    // `CreationFailurePresenter.message(forBlocking:)`'s own doc comment).
+    // `.noConfig`, `.noRuleMatched` and `.governedByRule` are not blocking —
+    // see that method's own doc comment for why inventing a sentence for
+    // either of the first two would be actively wrong, not just unhelpful.
+
+    @Test("every CreationPlan case is covered, and only the two blocking ones produce a message")
+    func everyCreationPlanCaseIsHandled() {
+        let nonBlocking: [CreationPlan] = [
+            .noConfig,
+            .noRuleMatched,
+            .governedByRule(recipients: ["age1exampleexampleexampleexampleexampleexampleexampleexample"], encryptedRegex: ""),
+        ]
+        for plan in nonBlocking {
+            #expect(CreationFailurePresenter.message(forBlocking: plan) == nil, "\(plan) should not block")
+        }
+
+        let blocking: [CreationPlan] = [
+            .unsupportedRule(reason: "some sentence naming pgp and what to do instead"),
+            .configUnreadable(reason: "yaml: line 3: did not find expected key"),
+        ]
+        for plan in blocking {
+            #expect(CreationFailurePresenter.message(forBlocking: plan) != nil, "\(plan) should block")
+        }
+    }
+
+    /// Drives a real `.sops.yaml` with a `pgp:` rule through the real
+    /// `CreationPlanResolver.plan(forTarget:in:)` — the same technique
+    /// `CreationPlanResolverTests.unsupportedBackendNamesIt` uses — rather
+    /// than constructing `.unsupportedRule` by hand, so this pins the same
+    /// thing phase 1's own tests assert: the reason names the offending
+    /// backend. This presenter must carry that name through, not paraphrase
+    /// it away.
+    @Test("an unsupported-rule message still names the backend phase 1 put in the reason")
+    func unsupportedRuleNamesTheBackend() throws {
+        let project = try makeProject()
+        try """
+            creation_rules:
+              - path_regex: secrets/.*\\.yaml$
+                pgp: 0000000000000000000000000000000000AAAA
+            """.write(to: project.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let target = project.appendingPathComponent("secrets/prod.yaml")
+
+        let plan = try CreationPlanResolver.plan(forTarget: target, in: project)
+        guard case .unsupportedRule = plan else {
+            Issue.record("expected .unsupportedRule, got \(plan)")
+            return
+        }
+        let message = try #require(CreationFailurePresenter.message(forBlocking: plan), "expected a message")
+        #expect(message.detail.contains("pgp"))
+    }
+
     // MARK: - No secret value ever reaches a message
     //
     // Phase 1's own security test (`SecretFileCreatorTests
