@@ -72,14 +72,14 @@ public struct CreationFailureMessage: Equatable, Sendable {
 /// .noPickerYetMessage` used to be the one accepted, dated exception: it
 /// existed only because `.noConfig`/`.noRuleMatched` are deliberately *not*
 /// failures from this type's point of view (see `message(forBlocking:)`'s
-/// own doc comment) until Task 5's manual recipient picker shipped. It has —
-/// `RecipientPicker` and `NewSecretFileModel.currentGovernedPlan()` now
+/// own doc comment) — until Task 5's manual recipient picker shipped, which
+/// it now has: `RecipientPicker` and `NewSecretFileModel.currentGovernedPlan()`
 /// handle both cases directly, and that constant is gone, not promoted, per
 /// the plan this paragraph already committed to. A future state that will
 /// *never* stop being a refusal — the way an empty key store never stops
 /// needing a key — does not get to claim the same exception; it earns a
 /// case or a method here instead, the same way `message(forConfigWriteFailure:)`
-/// below does for a `.sops.yaml` write's own failure.
+/// and `messageForStaleProposal()` below do for two more such states.
 ///
 /// `message(forUnreadableSourceFile:)` is the case that paragraph predicted:
 /// a Plain YAML or `.env` file the user picked via `NSOpenPanel` whose
@@ -346,6 +346,27 @@ public enum CreationFailurePresenter {
         CreationFailureMessage(
             title: .creationFailureTitle,
             detail: "This app could not describe why creation is blocked here.",
+            recovery: nil)
+    }
+
+    /// `NewSecretFileModel.writeProposedConfig()`'s refusal when there is no
+    /// proposal on file for the name and recipients currently chosen — either
+    /// nothing has been proposed yet, or the name/selection has changed since
+    /// the last `proposeConfig()` call (`ProposalSubject`'s own doc comment
+    /// has the full account of what that guards against). Reachable — it is
+    /// the primary refusal path of that guard, not a theoretical one — so it
+    /// belongs here on the same terms every other permanent, real state does:
+    /// this is not `SopsConfigGenerator`'s vocabulary (there is no bridge
+    /// call or thrown error to translate), the same way an empty key store
+    /// is not any called type's vocabulary either — `message(forEmptyKeyStore:)`
+    /// is the precedent, not the exception, for a state that is purely this
+    /// app's own bookkeeping still earning a method here rather than a
+    /// sentence composed at the call site.
+    public static func messageForStaleProposal() -> CreationFailureMessage {
+        CreationFailureMessage(
+            title: .creationFailureConfigTitle,
+            detail: "This proposal is no longer for the name or recipients currently chosen. "
+                + "Propose again before writing.",
             recovery: nil)
     }
 

@@ -318,6 +318,38 @@ struct CreationFailurePresenterTests {
         #expect(message.detail.contains("Keychain key storage arrives in M3."))
     }
 
+    // MARK: - Task 5 additions: config write failures, the unreachable
+    // fallback, and a stale proposal — each asserted by name, not merely
+    // exercised indirectly. `message(forUnreadableSourceFile:)` and
+    // `message(forDotEnvWithNoUsableEntries:)` (Tasks 1/3) already get this
+    // treatment one file over, in `NewSecretFileSheetTests.swift`, by
+    // comparing a model's own stored error against the exact presenter
+    // call — these three had no such comparison anywhere, which review
+    // round 3 caught for two of them and asked to close for all three so
+    // the next one doesn't reopen it.
+
+    @Test("a .sops.yaml write failure carries AtomicFileWriter's own description into the message")
+    func configWriteFailureCarriesTheWritersDescription() {
+        let message = CreationFailurePresenter.message(
+            forConfigWriteFailure: .destinationExists(path: "/p/.sops.yaml"))
+        #expect(message.detail.contains("/p/.sops.yaml"))
+        #expect(message.title == .creationFailureConfigTitle)
+    }
+
+    @Test("the unexpectedly-unblocked-plan fallback has non-empty text and no recovery to fabricate")
+    func unexpectedlyUnblockedPlanFallbackHasText() {
+        let message = CreationFailurePresenter.messageForUnexpectedlyUnblockedPlan()
+        #expect(!message.detail.isEmpty)
+        #expect(message.title == .creationFailureTitle)
+    }
+
+    @Test("a stale proposal's message tells the user to propose again, under the config title")
+    func staleProposalMessageNamesTheRecovery() {
+        let message = CreationFailurePresenter.messageForStaleProposal()
+        #expect(message.detail.localizedCaseInsensitiveContains("propose again"))
+        #expect(message.title == .creationFailureConfigTitle)
+    }
+
     // MARK: - No secret value ever reaches a message
     //
     // Phase 1's own security test (`SecretFileCreatorTests

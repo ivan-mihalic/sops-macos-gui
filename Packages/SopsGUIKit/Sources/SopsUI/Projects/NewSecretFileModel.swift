@@ -912,12 +912,15 @@ public final class NewSecretFileModel {
     ///    with — the identical guarantee `Learned<Subject, Value>` already
     ///    gives `unreadability`/`lastCreateFailure` for `create()`.
     ///
-    /// `.refused` with a "propose again" sentence when there is no proposal
-    /// on file for the current name/selection, or when the one on file is
-    /// for a different one — this is not `SopsConfigGenerator`'s vocabulary
-    /// (there is no bridge call to blame it on), so it is worded here rather
-    /// than added to `CreationFailurePresenter` as a fifth vocabulary for a
-    /// situation that is purely about this model's own bookkeeping.
+    /// `.refused(CreationFailurePresenter.messageForStaleProposal())` when
+    /// there is no proposal on file for the current name/selection, or when
+    /// the one on file is for a different one. Worded there, not here — an
+    /// earlier version composed this sentence inline, which is exactly the
+    /// model-local-sentence mistake this task's own review already caught
+    /// once for `.unsupportedRule`/`.configUnreadable`'s unreachable
+    /// fallback; this one is reachable (it is the primary refusal path of
+    /// this whole guard), which makes the presenter's rule apply even more
+    /// directly, not less.
     ///
     /// `.absent`: a project with no `.sops.yaml` at all is exactly the
     /// precondition this whole flow exists for (`RecipientPicker`'s write
@@ -941,13 +944,7 @@ public final class NewSecretFileModel {
     public func writeProposedConfig() -> ConfigWriteOutcome {
         let subject = ProposalSubject(name: relativeName, recipients: manuallyChosenRecipients)
         guard let proposal = lastProposal?.value(ifStillAbout: subject) else {
-            return .refused(
-                CreationFailureMessage(
-                    title: .creationFailureConfigTitle,
-                    detail:
-                        "This proposal is no longer for the name or recipients currently chosen. "
-                        + "Propose again before writing.",
-                    recovery: nil))
+            return .refused(CreationFailurePresenter.messageForStaleProposal())
         }
         guard proposal.verified else {
             return .refused(CreationFailureMessage(title: .creationFailureConfigTitle, detail: proposal.reason, recovery: nil))
