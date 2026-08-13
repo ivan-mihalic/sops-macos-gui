@@ -470,7 +470,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Couldn't Import This File"
+            "value": "Couldn't Unlock This File"
           }
         }
       }
@@ -547,7 +547,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Import the session key that can decrypt this file, then choose it again."
+            "value": "Make sure this is really a SOPS-encrypted YAML file, and that this session has the key that can decrypt it, then choose it again."
           }
         }
       }
@@ -1014,13 +1014,35 @@
         }
       }
     },
+    "new-file.encrypted-import.awaiting-plan": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This file has been unlocked. Choose a name (and, if needed, recipients) to see who would gain or lose access to the new file."
+          }
+        }
+      }
+    },
     "new-file.encrypted-import.diff-title": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Importing this file will change who can read it:"
+            "value": "Importing this file will create a new file with different access:"
+          }
+        }
+      }
+    },
+    "new-file.encrypted-import.no-change-title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Importing this file will create a new file with the same access as the source:"
           }
         }
       }
@@ -1031,7 +1053,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ will gain access to this file."
+            "value": "%@ will be able to read the new file this creates."
           }
         }
       }
@@ -1042,7 +1064,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ will lose access to this file."
+            "value": "%@ won't be able to read the new file this creates. The file you're importing from is untouched, and still readable by them there."
           }
         }
       }
@@ -1053,7 +1075,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ keeps access to this file."
+            "value": "%@ will still be able to read the new file this creates."
           }
         }
       }

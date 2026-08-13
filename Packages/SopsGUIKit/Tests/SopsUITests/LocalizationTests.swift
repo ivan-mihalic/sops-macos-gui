@@ -528,6 +528,47 @@ struct LocalizationTests {
                 "the sentence must point at the control that does change access: \(sentence)")
     }
 
+    /// Task 6, Important 2 from the review: importing an already-encrypted
+    /// file never modifies the source, only creates a new one — a recipient
+    /// named in `newFileEncryptedImportLoses` still reads the source exactly
+    /// as before, and only loses the ability to read the *new* copy. The
+    /// borrowed "gains"/"loses" vocabulary from `ProjectAccessView` came
+    /// without this clarification the first time; this pins that it is
+    /// there, the same shape `configUpdateRemovalSentenceDisclaimsRevocation`
+    /// already pins for the sibling sentence one screen over.
+    @Test("the encrypted-import loses sentence says the source file is untouched")
+    func encryptedImportLosesSentenceDisclaimsSourceModification() throws {
+        let sentence = try #require(
+            Self.englishForms(for: .newFileEncryptedImportLoses).first,
+            "missing catalog entry for the encrypted-import loses sentence")
+        #expect(sentence.lowercased().contains("new file"),
+                "the sentence must scope the loss to the new file, not the source: \(sentence)")
+        #expect(sentence.lowercased().contains("untouched"),
+                "the sentence must say the source file is untouched: \(sentence)")
+        #expect(sentence.lowercased().contains("still readable"),
+                "the sentence must say the source stays readable to them there: \(sentence)")
+    }
+
+    /// Task 6, Important 1: a same-recipients import must not headline
+    /// itself as a change. The two titles have to actually read differently
+    /// — a catalog entry that pasted the same text under both keys would
+    /// satisfy `everyKeyHasCatalogEntry` while leaving the contradiction the
+    /// review found fully in place.
+    @Test("the encrypted-import diff title and its no-change counterpart read differently")
+    func encryptedImportDiffTitlesAreDistinct() throws {
+        let change = try #require(
+            Self.englishForms(for: .newFileEncryptedImportDiffTitle).first,
+            "missing catalog entry for the encrypted-import diff title")
+        let noChange = try #require(
+            Self.englishForms(for: .newFileEncryptedImportNoChangeTitle).first,
+            "missing catalog entry for the encrypted-import no-change title")
+        #expect(change != noChange, "the two titles must not read the same: \(change)")
+        #expect(change.lowercased().contains("different access"),
+                "the change title must say access differs: \(change)")
+        #expect(noChange.lowercased().contains("same access"),
+                "the no-change title must say access does not differ: \(noChange)")
+    }
+
     /// Forgetting a registry label removes a nickname and no access at all. A
     /// user who reads it as a revocation and moves on has been misled by the one
     /// tool whose job is to say who can read their secrets — so each of the

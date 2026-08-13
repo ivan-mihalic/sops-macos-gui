@@ -18,7 +18,8 @@ import SwiftUI
 /// anything to encrypt at all; see that model's own doc comment on
 /// `encryptedImport` for the full account, including why the three-way diff
 /// below is computed fresh on every read rather than carried as a stored
-/// fact.
+/// fact, and why `.unlockedAwaitingPlan` exists as its own state rather than
+/// a diff computed against an invented empty target.
 ///
 /// ## The view decides nothing, same as `NewSecretFileSheet`
 ///
@@ -33,15 +34,36 @@ import SwiftUI
 /// line and `RecipientPicker` already use — a labeled recipient by its
 /// label, an unlabeled one shortened, never an invented name.
 ///
+/// ## What "this file" means, and why the filename stays on screen
+///
+/// Every sentence below is about the **new** file this import would create
+/// — never the source file the user picked, which this app never modifies.
+/// A recipient in `losing` still reads the source exactly as before; what
+/// they lose is the ability to read the *new* copy. Losing that distinction
+/// in the wording is exactly the mistake `ProjectAccessView`'s own
+/// `project-access.update-config-confirm.loses` sentence was written to
+/// avoid for the identical shape of confusion one screen over — this task
+/// borrowed that sentence's vocabulary without the clarifying half, and an
+/// earlier version of this file both dropped that clause and stopped
+/// showing which file was even selected once unlocked (`.unlocked` used to
+/// carry no path at all), which made "this file" ambiguous in exactly the
+/// place where ambiguity is dangerous. Both are fixed together here: the
+/// chosen file's name is shown unconditionally, from `model
+/// .chosenEncryptedFileURL` (never through `EncryptedImportState` — that
+/// model property already exists for `.locked(path:)` and there is no
+/// reason to duplicate it into every other case), and `newFileEncryptedImportLoses`
+/// says explicitly that the source file is untouched.
+///
 /// ## What this view never touches
 ///
 /// The decrypted plaintext itself. `NewSecretFileModel.encryptedImport`
-/// structurally cannot expose it — `EncryptedImportState.unlocked` carries
-/// only the three recipient arrays, never the bytes `unlockChosenEncryptedFile()`
-/// decrypted — so there is no plaintext for this view to leak into a
-/// sentence, a log, or the accessibility tree even by mistake. The one
-/// reader of that plaintext is `NewSecretFileModel.currentSource()`, and it
-/// hands it straight to `SecretFileCreator.Source.verbatimYAML(_:)`.
+/// structurally cannot expose it — neither `EncryptedImportState` case
+/// carries anything but recipient keys, never the bytes
+/// `unlockChosenEncryptedFile()` decrypted — so there is no plaintext for
+/// this view to leak into a sentence, a log, or the accessibility tree even
+/// by mistake. The one reader of that plaintext is `NewSecretFileModel
+/// .currentSource()`, and it hands it straight to `SecretFileCreator
+/// .Source.verbatimYAML(_:)`.
 public struct EncryptedImportPreview: View {
     @Bindable private var model: NewSecretFileModel
 
@@ -54,6 +76,7 @@ public struct EncryptedImportPreview: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Button(LocalizedKey.newFileChooseFileButton.text, action: chooseFile)
+            selectedFileLabel
             content
         }
         .task {
@@ -62,6 +85,24 @@ public struct EncryptedImportPreview: View {
             // same contract `NewSecretFileSheet`/`RecipientPicker` keep for
             // their own registry loads.
             registryRecords = (try? RecipientRegistry.load(in: model.projectRoot)) ?? []
+        }
+    }
+
+    /// Shown in every state once a file has been picked, not only
+    /// `.locked` — see this file's own doc comment, "What 'this file'
+    /// means, and why the filename stays on screen". Reads
+    /// `model.chosenEncryptedFileURL` directly rather than the path
+    /// `.locked(path:)` carries, so it does not go blank the moment
+    /// `unlockChosenEncryptedFile()` finishes.
+    @ViewBuilder
+    private var selectedFileLabel: some View {
+        if let chosenEncryptedFileURL = model.chosenEncryptedFileURL {
+            Text(
+                String(
+                    format: LocalizedKey.newFileFileChosen.text,
+                    chosenEncryptedFileURL.lastPathComponent)
+            )
+            .font(.callout)
         }
     }
 
@@ -75,30 +116,29 @@ public struct EncryptedImportPreview: View {
         switch model.encryptedImport {
         case .notChosen:
             Text(.newFileNoFileChosen).foregroundStyle(.secondary)
-        case .locked(let path):
-            lockedState(path: path)
-        case .unlockFailed(let message):
-            failureBanner(message)
-        case .unlocked(let gaining, let losing, let keeping):
-            diff(gaining: gaining, losing: losing, keeping: keeping)
-        }
-    }
-
-    /// Between `chooseFile()` picking a file and `unlockChosenEncryptedFile()`
-    /// finishing for it — in practice a brief window, since `chooseFile()`
-    /// kicks the unlock off immediately, but a model handed in already at
-    /// `.locked` (a fixture, or a caller mid-attempt) must render this
-    /// honestly rather than assume the transition is instant.
-    private func lockedState(path: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(String(format: LocalizedKey.newFileFileChosen.text, URL(fileURLWithPath: path).lastPathComponent))
-                .font(.callout)
+        case .locked:
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
                 Text(.newFileEncryptedImportUnlockingLabel)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        case .unlockFailed(let message):
+            failureBanner(message)
+        case .unlockedAwaitingPlan:
+            // The file decrypted, but there is nothing yet to diff it
+            // against — see `NewSecretFileModel.encryptedImport`'s own doc
+            // comment, "The diff needs a known target, not just a decrypted
+            // file", for the finding this state exists to close. Rendered
+            // as a plain, neutral sentence: not a failure (nothing is
+            // `.blocked`, and this view never overrides `readiness`), not a
+            // diff (there is nothing honest to diff yet).
+            Text(.newFileEncryptedImportAwaitingPlanLabel)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        case .unlocked(let gaining, let losing, let keeping):
+            diff(gaining: gaining, losing: losing, keeping: keeping)
         }
     }
 
@@ -107,10 +147,19 @@ public struct EncryptedImportPreview: View {
     /// omitted rather than rendered as an empty sentence, the same
     /// conditional-parts pattern `ProjectAccessView
     /// .configUpdateConfirmationMessage` uses for its own gains/loses.
+    ///
+    /// The title itself is conditional too — `gaining`/`losing` both empty
+    /// (every source recipient survives into the target unchanged) is the
+    /// single most common case for an import into a project whose rule
+    /// already matches the source, and it is the one case the "will
+    /// change" title contradicted outright: a headline claiming a change
+    /// directly above a body that names only who *keeps* access.
     @ViewBuilder
     private func diff(gaining: [String], losing: [String], keeping: [String]) -> some View {
+        let changes = !gaining.isEmpty || !losing.isEmpty
         VStack(alignment: .leading, spacing: 4) {
-            Text(.newFileEncryptedImportDiffTitle).font(.caption.weight(.semibold))
+            Text(changes ? LocalizedKey.newFileEncryptedImportDiffTitle : .newFileEncryptedImportNoChangeTitle)
+                .font(.caption.weight(.semibold))
             if !gaining.isEmpty {
                 Text(String(format: LocalizedKey.newFileEncryptedImportGains.text, names(gaining)))
                     .font(.caption)

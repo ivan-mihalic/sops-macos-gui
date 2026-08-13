@@ -96,15 +96,17 @@ public struct CreationFailureMessage: Equatable, Sendable {
 /// not as a bare `computeReadiness()` branch with its own inline text.
 ///
 /// `message(forEncryptedImportUnlockFailure:)` (Task 6) is the fifth: an
-/// `.encryptedYAML` source `SopsBridge.decryptYAML` could not open with this
-/// session's key. Not one of the four vocabularies either — decrypting an
-/// *import* is a `NewSecretFileModel`-only bridge call none of
-/// `CreationPlanResolver`/`SecretFileCreator`/`SopsConfigGenerator`/
-/// `DotEnvParseFailure` has a case for — and a permanent state on the same
-/// terms as an empty key store: no future task removes this refusal, a
-/// session key that cannot decrypt the file simply cannot decrypt the file.
+/// `.encryptedYAML` source `SopsBridge.decryptYAML` could not open — a wrong
+/// key, a genuine engine fault, or the file simply not being SOPS-encrypted
+/// at all; see that method's own doc comment for why it takes the bridge's
+/// own diagnostic rather than asserting which of those it was. Not one of
+/// the four vocabularies either — decrypting an *import* is a
+/// `NewSecretFileModel`-only bridge call none of `CreationPlanResolver`/
+/// `SecretFileCreator`/`SopsConfigGenerator`/`DotEnvParseFailure` has a case
+/// for — and a permanent state on the same terms as an empty key store: no
+/// future task removes this refusal, a file that will not decrypt simply
+/// will not decrypt.
 ///
-
 /// ## Every `switch` below has no `default`
 ///
 /// A `default` case would silently swallow a case added later to any of the
@@ -471,32 +473,44 @@ public enum CreationFailurePresenter {
             recovery: nil)
     }
 
-    /// An `.encryptedYAML` source (Task 6) `SopsBridge.decryptYAML` could not
-    /// open with this session's key — a wrong or missing identity, or a
-    /// genuine engine fault; `SopsBridgeError` carries only a bare
-    /// `description`, so, like `SecretFileCreator.Failure.wouldBeUnreadable`,
-    /// this cannot tell those apart and does not try.
+    /// An `.encryptedYAML` source (Task 6) `SopsBridge.decryptYAML` (or, once
+    /// that succeeds, `.recipients(in:)`) could not open with this session's
+    /// key — a wrong or missing identity, a genuine engine fault, or the
+    /// file simply not being a SOPS document at all. `reason` is the
+    /// bridge's own diagnostic, carried through unchanged — see this type's
+    /// own doc comment, "Bridge text passes through unchanged". That
+    /// distinction is load-bearing here specifically: an earlier version of
+    /// this method took no reason and asserted unconditionally that "this
+    /// session's key could not decrypt this file", which is not true of
+    /// every path that reaches here — a plain (unencrypted) YAML file picked
+    /// for this source fails at the identical call site with a completely
+    /// different cause, and telling that user their *key* is wrong, with
+    /// advice to import a different one, can never be corrected by anything
+    /// they do with a key. `CreationFailurePresenterTests
+    /// .encryptedImportUnlockFailureNamesTheBridgesOwnReason` pins that the
+    /// bridge's own words survive into `detail`, not a fixed claim about the
+    /// key.
     ///
-    /// Unlike `.wouldBeUnreadable`, there is nothing here for
-    /// `acknowledgedUnreadable` to waive. That flag exists to skip *content
-    /// verification* for a file this app is about to *write*, once
-    /// encryption has already produced something to compare against. Here
-    /// nothing has been decrypted at all — there is no plaintext to import,
-    /// acknowledged or not — so the only way past this refusal is a session
-    /// key that actually decrypts the file, which is exactly what
-    /// `recovery` says.
+    /// Unlike `SecretFileCreator.Failure.wouldBeUnreadable`, there is
+    /// nothing here for `acknowledgedUnreadable` to waive. That flag exists
+    /// to skip *content verification* for a file this app is about to
+    /// *write*, once encryption has already produced something to compare
+    /// against. Here nothing has been decrypted at all — there is no
+    /// plaintext to import, acknowledged or not — so the only way past this
+    /// refusal is a session key that actually decrypts the file, which is
+    /// what `recovery` points at, phrased to cover the "this isn't SOPS at
+    /// all" case too rather than presuming the key is the problem.
     ///
     /// Also reached — deliberately, not as an oversight — when a decrypt
     /// *succeeds* but reading this file's own recipients afterward
     /// (`SopsBridge.recipients(in:)`) then fails: unreachable in practice (a
     /// document that decrypted has already proven its own metadata parses),
     /// but a caller that cannot tell why recipient metadata failed to read
-    /// has nothing more specific to say than "this file could not be
-    /// unlocked" either.
-    public static func message(forEncryptedImportUnlockFailure: Void = ()) -> CreationFailureMessage {
+    /// has nothing more specific to say than the bridge's own words either.
+    public static func message(forEncryptedImportUnlockFailure reason: String) -> CreationFailureMessage {
         CreationFailureMessage(
             title: .creationFailureEncryptedImportTitle,
-            detail: "This session's key could not decrypt this file, so nothing was imported.",
+            detail: "This file could not be unlocked: \(reason)",
             recovery: .creationRecoveryImportAKeyThatCanDecryptThisFile)
     }
 }

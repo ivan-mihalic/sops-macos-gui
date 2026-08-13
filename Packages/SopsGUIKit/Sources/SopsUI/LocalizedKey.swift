@@ -642,13 +642,32 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // a creation rule) and so gets its own keys rather than reusing theirs.
 
     case newFileEncryptedImportUnlockingLabel = "new-file.encrypted-import.unlocking"
+    // Shown for `.unlockedAwaitingPlan` — decrypted, but no destination plan
+    // is known yet, so there is nothing honest to diff against. See
+    // `NewSecretFileModel.encryptedImport`'s own doc comment, "The diff
+    // needs a known target, not just a decrypted file", for the review
+    // finding this state (and this sentence) exist to close.
+    case newFileEncryptedImportAwaitingPlanLabel = "new-file.encrypted-import.awaiting-plan"
+    // The diff's title when `gaining`/`losing` are not both empty.
     case newFileEncryptedImportDiffTitle = "new-file.encrypted-import.diff-title"
+    // The diff's title when `gaining` and `losing` are both empty — every
+    // source recipient survives into the target unchanged. Its own sentence
+    // rather than reusing `newFileEncryptedImportDiffTitle`: that one
+    // asserts a change, which is false here, and a headline contradicting
+    // the body underneath it is worse than no headline at all.
+    case newFileEncryptedImportNoChangeTitle = "new-file.encrypted-import.no-change-title"
     // Each formatted with the comma-joined recipient names/keys this half of
     // the diff names — the same `RecipientRegistry` lookup, falling back to
     // `NewSecretFileSheet.shortenedKey(_:)`, that the ⓘ line and
     // `RecipientPicker` already use. Never a count, so none of these needs a
     // plural split — see `LocalizationTests.countedStringsPluralize`.
     case newFileEncryptedImportGains = "new-file.encrypted-import.gains"
+    // Names both that the *new* file will not be readable by these
+    // recipients and that the *source* file is untouched — the same
+    // clarification `project-access.update-config-confirm.loses` makes for
+    // the identical shape of possible misreading. See
+    // `EncryptedImportPreview`'s own doc comment, "What 'this file' means,
+    // and why the filename stays on screen".
     case newFileEncryptedImportLoses = "new-file.encrypted-import.loses"
     case newFileEncryptedImportKeeps = "new-file.encrypted-import.keeps"
 

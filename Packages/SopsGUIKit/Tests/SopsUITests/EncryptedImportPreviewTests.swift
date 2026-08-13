@@ -121,6 +121,7 @@ struct EncryptedImportModelTests {
         let root = try scratchDirectory()
         let keyStore = try makeKeyStore(importing: owner.private)
         let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+        model.relativeName = "imported.yaml"
 
         #expect(model.encryptedImport == .notChosen)
 
@@ -132,6 +133,95 @@ struct EncryptedImportModelTests {
         // model.unlockChosenEncryptedFile()` is ever called: choosing a file
         // reads nothing and unlocks nothing on its own.
         #expect(model.encryptedImport == .locked(path: source.path))
+        // `.locked` reads exactly like "nothing loaded yet" to `readiness` —
+        // the same `.needsSource` every other source reports before it has
+        // content, and specifically not `.ready`: an in-flight unlock must
+        // never let Create fire against a source that has not actually
+        // produced anything to encrypt.
+        model.sourceChoice = .encryptedYAML
+        #expect(model.readiness == .needsSource)
+    }
+
+    /// The Critical review finding: `currentGovernedPlan()` is `nil` before
+    /// any `.sops.yaml`/recipients exist for the target, and an earlier
+    /// version of `encryptedImport` treated `nil` as "the target is nobody"
+    /// — naming every one of the source's own recipients as *losing*
+    /// access, a false statement about an outcome nothing has decided yet.
+    /// `.unlockedAwaitingPlan` is the fix: decrypted, but nothing to compare
+    /// against, reported as its own state rather than a diff against an
+    /// invented empty target.
+    @Test("a decrypted file with no target plan yet reports unlockedAwaitingPlan, not a diff against nobody")
+    func unlockedWithNoTargetPlanYetReportsAwaitingPlan() async throws {
+        let a = try AgeKeyPair.generate()
+        let b = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        // No `.sops.yaml` at all — `CreationPlanResolver` resolves this to
+        // `.noConfig`, and `currentGovernedPlan()` returns `nil` until
+        // `manuallyChosenRecipients` is non-empty (Task 5's own picker path).
+        let keyStore = try makeKeyStore(importing: a.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+        model.relativeName = "imported.yaml"
+        await model.resolvePlan()
+        try #require(model.plan == .noConfig)
+
+        let source = root.appendingPathComponent("source.yaml")
+        try writeEncryptedFixture(plaintext: "greeting: hello\n", recipients: [a.public, b.public], to: source)
+        model.sourceChoice = .encryptedYAML
+        model.chooseEncryptedFile(at: source)
+        await model.unlockChosenEncryptedFile()
+
+        #expect(model.encryptedImport == .unlockedAwaitingPlan)
+        // Not `.blocked` either — `.noConfig` was never a failure (see
+        // `CreationPlan`'s own doc comment) and this state must not invent
+        // one. `RecipientPicker` is the way out, exactly as it already is
+        // for every other source.
+        #expect(model.readiness == .needsRecipients)
+
+        // And once a target *is* chosen, the very next read reports the real
+        // diff — no second unlock, matching `diffTracksTheLivePlanAfterUnlock`.
+        model.manuallyChosenRecipients = [a.public]
+        #expect(model.encryptedImport == .unlocked(gaining: [], losing: [b.public], keeping: [a.public]))
+    }
+
+    /// Important 3 from the review: every `decryptYAML`/`recipients(in:)`
+    /// throw used to be reported with the fixed sentence "This session's
+    /// key could not decrypt this file" — true for a wrong identity, false
+    /// for this scenario, where the file is not a SOPS document at all (a
+    /// wizard whose neighbouring source is literally "Plain YAML" makes this
+    /// an easy file to pick by mistake). The message must carry the bridge's
+    /// own diagnostic, not a claim about the key that cannot be corrected by
+    /// importing a different one.
+    @Test("a source that is not a SOPS document at all is unlockFailed with the bridge's own reason, not a false claim about the key")
+    func nonSopsSourceReportsTheBridgesOwnReason() async throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        let keyStore = try makeKeyStore(importing: owner.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+        model.relativeName = "imported.yaml"
+
+        // A plain, unencrypted YAML file — no `sops:` metadata at all, the
+        // exact shape `NewSecretFileSheet`'s "Plain YAML" source expects,
+        // picked here for "Encrypted YAML" by mistake.
+        let source = root.appendingPathComponent("source.yaml")
+        try "greeting: hello\n".write(to: source, atomically: true, encoding: .utf8)
+        model.sourceChoice = .encryptedYAML
+        model.chooseEncryptedFile(at: source)
+
+        await model.unlockChosenEncryptedFile()
+
+        guard case .unlockFailed(let message) = model.encryptedImport else {
+            Issue.record("expected .unlockFailed, got \(model.encryptedImport) — this test would be vacuous")
+            return
+        }
+        // The bridge's own diagnostic, not silently dropped — `Void` used to
+        // be all this call site could pass, so every cause collapsed into
+        // one fixed, sometimes-false sentence.
+        #expect(message.detail.hasPrefix("This file could not be unlocked:"))
+        #expect(message.detail != "This file could not be unlocked: ",
+                "the bridge's own reason must actually be present, not an empty suffix")
+        // The old, unconditional claim must not survive anywhere in the
+        // sentence for a cause that has nothing to do with the key at all.
+        #expect(!message.detail.contains("session's key could not decrypt"))
     }
 
     /// The scenario this task's own brief spells out: a source encrypted for
@@ -396,9 +486,104 @@ struct EncryptedImportPreviewTests {
         }
     }
 
-    @Test("an unlock failure's message renders, and the sentinel from a wrongly-keyed file still never reaches the tree")
+    /// Important 1 from the review: a same-recipients import — the single
+    /// most common case for a project whose rule already governs the
+    /// source's own recipients — used to render "Importing this file will
+    /// change who can read it:" directly above a body naming only who
+    /// *keeps* access, a headline contradicting its own body. This proves
+    /// the *other* title renders instead, and that the "will change" one
+    /// does not, for the identical state `diffTracksTheLivePlanAfterUnlock`
+    /// already proves at the model level (`gaining: [], losing: []`).
+    @Test("importing into an identical recipient set renders the no-change title, not the change one")
     @MainActor
-    func unlockFailureRendersWithNoLeak() async throws {
+    func identicalRecipientSetRendersNoChangeTitle() async throws {
+        let a = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        try ageConfig([a.public])
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let keyStore = try makeKeyStore(importing: a.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+        model.relativeName = "imported.yaml"
+        await model.resolvePlan()
+
+        let source = root.appendingPathComponent("source.yaml")
+        try writeEncryptedFixture(plaintext: "greeting: hello\n", recipients: [a.public], to: source)
+        model.sourceChoice = .encryptedYAML
+        model.chooseEncryptedFile(at: source)
+        await model.unlockChosenEncryptedFile()
+        try #require(model.encryptedImport == .unlocked(gaining: [], losing: [], keeping: [a.public]))
+
+        let nodes = AXProbe.tree(size: CGSize(width: 640, height: 400)) {
+            EncryptedImportPreview(model: model)
+        }
+        let values = nodes.map(\.value)
+        let labels = nodes.map(\.label)
+
+        #expect(values.contains(LocalizedKey.newFileEncryptedImportNoChangeTitle.text)
+            || labels.contains(LocalizedKey.newFileEncryptedImportNoChangeTitle.text),
+            "the no-change title did not render — this test would be vacuous")
+        #expect(!values.contains(LocalizedKey.newFileEncryptedImportDiffTitle.text)
+            && !labels.contains(LocalizedKey.newFileEncryptedImportDiffTitle.text),
+            "the \"will change\" title rendered for a state that changes nothing")
+    }
+
+    /// The Critical review finding, proven at the view level: a decrypted
+    /// file with no target plan yet must render the neutral
+    /// "awaiting a plan" sentence, never the diff (which would have to
+    /// invent an empty target and name every source recipient as losing
+    /// access to a destination nobody has chosen yet). The model-level proof
+    /// is `unlockedWithNoTargetPlanYetReportsAwaitingPlan`; this is the
+    /// rendering half, since the state alone does not prove the view
+    /// actually branches on it correctly.
+    @Test("a decrypted file with no target plan yet renders the awaiting-plan sentence, never a diff")
+    @MainActor
+    func awaitingPlanRendersNeitherDiffTitle() async throws {
+        let a = try AgeKeyPair.generate()
+        let b = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        // No `.sops.yaml` — `.noConfig`, so `currentGovernedPlan()` is `nil`
+        // until a recipient is chosen by hand.
+        let keyStore = try makeKeyStore(importing: a.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+        model.relativeName = "imported.yaml"
+        await model.resolvePlan()
+
+        let source = root.appendingPathComponent("source.yaml")
+        try writeEncryptedFixture(plaintext: "greeting: hello\n", recipients: [a.public, b.public], to: source)
+        model.sourceChoice = .encryptedYAML
+        model.chooseEncryptedFile(at: source)
+        await model.unlockChosenEncryptedFile()
+        try #require(model.encryptedImport == .unlockedAwaitingPlan)
+
+        let nodes = AXProbe.tree(size: CGSize(width: 640, height: 400)) {
+            EncryptedImportPreview(model: model)
+        }
+        let values = nodes.map(\.value)
+        let labels = nodes.map(\.label)
+
+        #expect(values.contains(LocalizedKey.newFileEncryptedImportAwaitingPlanLabel.text)
+            || labels.contains(LocalizedKey.newFileEncryptedImportAwaitingPlanLabel.text),
+            "the awaiting-plan sentence did not render — this test would be vacuous")
+        #expect(!values.contains(LocalizedKey.newFileEncryptedImportDiffTitle.text)
+            && !labels.contains(LocalizedKey.newFileEncryptedImportDiffTitle.text),
+            "the \"will change\" diff title rendered with no target plan known")
+        #expect(!values.contains(LocalizedKey.newFileEncryptedImportNoChangeTitle.text)
+            && !labels.contains(LocalizedKey.newFileEncryptedImportNoChangeTitle.text),
+            "the no-change diff title rendered with no target plan known")
+    }
+
+    /// Not a plaintext-decrypted-then-masked scenario like the two tests
+    /// above — `stranger`'s key never decrypts anything on this path, so
+    /// what this actually proves is narrower and worth stating precisely:
+    /// the bridge's own error text (now threaded through `message.detail` —
+    /// see `nonSopsSourceReportsTheBridgesOwnReason`) does not itself echo
+    /// the source document's plaintext back at the user. A decrypt failure
+    /// producing a diagnostic that happened to quote ciphertext or plaintext
+    /// would be exactly as much of a leak as a masked value reaching the
+    /// tree; this is the check for that half of the surface.
+    @Test("an unlock failure's message renders, and the bridge's own error text never echoes the source's plaintext")
+    @MainActor
+    func unlockFailureRendersAndNeverEchoesTheSourcesPlaintext() async throws {
         let owner = try AgeKeyPair.generate()
         let stranger = try AgeKeyPair.generate()
         let root = try scratchDirectory()

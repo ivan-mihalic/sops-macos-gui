@@ -189,6 +189,26 @@ struct CreationFailurePresenterTests {
         #expect(message.detail.contains("recipient 2: not a valid age recipient"))
     }
 
+    /// Task 6, Important 3 from the review: an earlier version of
+    /// `message(forEncryptedImportUnlockFailure:)` took no reason at all and
+    /// asserted, unconditionally, that the session's key could not decrypt
+    /// the file — which is not what every path that reaches it actually
+    /// found (a plain, unencrypted YAML file fails there with a completely
+    /// unrelated cause). Direct, narrow proof that the reason this method is
+    /// handed survives into `detail` verbatim, and that the old fixed claim
+    /// is gone — `EncryptedImportModelTests
+    /// .nonSopsSourceReportsTheBridgesOwnReason` is the end-to-end version,
+    /// driven through the real bridge against a real non-SOPS file; this is
+    /// the presenter's own unit, matching `engineTextPassesThroughUnchanged`
+    /// immediately above for the identical discipline on `.engine`.
+    @Test("the encrypted-import unlock failure's reason survives into the message verbatim, with no fixed claim about the key")
+    func encryptedImportUnlockFailureNamesTheBridgesOwnReason() {
+        let message = CreationFailurePresenter.message(
+            forEncryptedImportUnlockFailure: "yaml: line 2: did not find expected key")
+        #expect(message.detail.contains("yaml: line 2: did not find expected key"))
+        #expect(!message.detail.contains("session's key could not decrypt"))
+    }
+
     // MARK: - Paths are actually surfaced, not swallowed
 
     @Test("path-bearing failures name the path in the message")
