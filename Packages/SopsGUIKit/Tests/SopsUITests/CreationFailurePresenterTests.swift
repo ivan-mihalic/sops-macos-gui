@@ -1,0 +1,277 @@
+import Foundation
+import ScratchCleanup
+import Testing
+import SopsEngine
+import SopsProjects
+@testable import SopsUI
+
+// MARK: - Fixture plumbing
+//
+// Only the "no message ever names the sentinel value" test needs a real
+// failure produced by the real creation pipeline — every other test in this
+// file constructs the four consumed enums directly, because none of their
+// cases carry anything but a path, an errno-derived reason, or the bridge's
+// own diagnostic text (see each type's own doc comment). Mirrors the
+// per-file `AgeKeyPair`/`scratchDirectory` pattern `RecipientAccessTests.swift`
+// and `SecretFileCreatorTests.swift` both already use — shelling out to
+// `age-keygen` because there is no in-process keygen.
+
+private struct FixtureError: Error, CustomStringConvertible {
+    let description: String
+    init(_ description: String) { self.description = description }
+}
+
+private func toolPath(_ name: String) throws -> String {
+    let candidates = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+        .map { ($0 as NSString).appendingPathComponent(name) }
+    guard let found = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+        throw FixtureError("\(name) not found in \(candidates)")
+    }
+    return found
+}
+
+@discardableResult
+private func run(_ executable: String, _ arguments: [String]) throws -> String {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: executable)
+    process.arguments = arguments
+    let stdout = Pipe(), stderr = Pipe()
+    process.standardOutput = stdout
+    process.standardError = stderr
+    try process.run()
+    let outData = stdout.fileHandleForReading.readDataToEndOfFile()
+    let errData = stderr.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else {
+        throw FixtureError(
+            "\(executable) \(arguments.joined(separator: " ")) exited \(process.terminationStatus): "
+                + String(decoding: errData, as: UTF8.self))
+    }
+    return String(decoding: outData, as: UTF8.self)
+}
+
+private struct AgeKeyPair {
+    let `private`: String
+    let `public`: String
+
+    static func generate() throws -> AgeKeyPair {
+        let output = try run(try toolPath("age-keygen"), [])
+        var priv = "", pub = ""
+        for line in output.split(whereSeparator: \.isNewline) {
+            if line.hasPrefix("AGE-SECRET-KEY-") {
+                priv = String(line)
+            } else if line.hasPrefix("# public key: ") {
+                pub = String(line.dropFirst("# public key: ".count))
+            }
+        }
+        guard !priv.isEmpty, !pub.isEmpty else {
+            throw FixtureError("age-keygen produced no usable key pair")
+        }
+        return AgeKeyPair(private: priv, public: pub)
+    }
+}
+
+private func scratchDirectory(_ label: String = "creation-failure-presenter") throws -> URL {
+    let dir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("\(label)-" + UUID().uuidString)
+    ScratchDirectoryRegistry.shared.register(dir)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    return dir
+}
+
+private func makeProject() throws -> URL {
+    let root = try scratchDirectory()
+    let project = root.appendingPathComponent("project", isDirectory: true)
+    try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+    return project
+}
+
+/// Recognisable value planted wherever a fixture in this file builds a
+/// document — the same technique, and the same string,
+/// `SecretFileCreatorTests.sentinelValue` uses for the identical purpose.
+private let sentinelValue = "correct-horse-battery-staple"
+
+@Suite("CreationFailurePresenter")
+struct CreationFailurePresenterTests {
+
+    // MARK: - Exhaustiveness: every case of every consumed type
+    //
+    // ⚠️ Every array below is a manual, hand-maintained list — it goes stale
+    // silently the moment a case is added to any of the four enums this
+    // presenter consumes. The list is not what catches that: adding a case
+    // to `SecretFileCreator.Failure` (or any of the other three) breaks the
+    // `switch` with no `default` in `CreationFailurePresenter.swift`, which
+    // fails the *build*, not this test. Verified directly: temporarily
+    // adding `case bogus` to `SecretFileCreator.Failure` makes
+    // `CreationFailurePresenter.swift`'s `switch` over it stop compiling,
+    // with a "switch must be exhaustive" diagnostic pointing at the new
+    // case. These lists exist only to pin the *text* for cases that do
+    // exist; completeness is the compiler's job.
+
+    @Test("every SecretFileCreator failure has a message that names something actionable")
+    func everyCreatorFailureIsPresented() {
+        let all: [SecretFileCreator.Failure] = [
+            .destinationExists(path: "/p/a.yaml"),
+            .destinationOutsideProject(path: "/p/../x.yaml"),
+            .roundTripMismatch,
+            .wouldBeUnreadable,
+            .engine("bridge text"),
+            .couldNotCreateDirectory(path: "/p/secrets", reason: "Permission denied"),
+            .write(.destinationExists(path: "/p/a.yaml")),
+        ]
+        for failure in all {
+            let message = CreationFailurePresenter.message(for: failure)
+            #expect(!message.detail.isEmpty, "\(failure) produced an empty detail")
+        }
+    }
+
+    @Test("every CreationPlanResolver error has a message that names something actionable")
+    func everyPlanResolverErrorIsPresented() {
+        let all: [CreationPlanResolver.Error] = [
+            .targetNotAbsolute("relative/path.yaml"),
+            .projectRootNotAbsolute("relative/root"),
+            .projectRootDoesNotExist("/gone"),
+            .targetOutsideProjectRoot("/elsewhere/secret.yaml"),
+        ]
+        for error in all {
+            let message = CreationFailurePresenter.message(for: error)
+            #expect(!message.detail.isEmpty, "\(error) produced an empty detail")
+        }
+    }
+
+    @Test("every SopsConfigGenerator error has a message that names something actionable")
+    func everyConfigGeneratorErrorIsPresented() {
+        let all: [SopsConfigGenerator.Error] = [
+            .targetNotAbsolute("relative/path.yaml"),
+            .projectRootNotAbsolute("relative/root"),
+            .projectRootDoesNotExist("/gone"),
+            .targetOutsideProjectRoot("/elsewhere/secret.yaml"),
+        ]
+        for error in all {
+            let message = CreationFailurePresenter.message(for: error)
+            #expect(!message.detail.isEmpty, "\(error) produced an empty detail")
+        }
+    }
+
+    @Test("every DotEnvParseFailure has a message that names something actionable")
+    func everyDotEnvFailureIsPresented() {
+        let all: [DotEnvParseFailure] = [.notUTF8]
+        for failure in all {
+            let message = CreationFailurePresenter.message(for: failure)
+            #expect(!message.detail.isEmpty, "\(failure) produced an empty detail")
+        }
+    }
+
+    // MARK: - Phase 1 findings, pinned
+
+    @Test("a round-trip refusal does not tell the user their document is corrupted")
+    func roundTripMismatchDoesNotClaimCorruption() {
+        let message = CreationFailurePresenter.message(for: .roundTripMismatch)
+        let text = message.detail.lowercased()
+        #expect(!text.contains("corrupt"))
+        #expect(!text.contains("damaged"))
+    }
+
+    @Test("a missing project root is not reported as a missing .sops.yaml")
+    func missingRootIsNotMissingConfig() {
+        let message = CreationFailurePresenter.message(
+            for: CreationPlanResolver.Error.projectRootDoesNotExist("/gone"))
+        #expect(!message.detail.contains(".sops.yaml"))
+    }
+
+    // MARK: - Bridge text passes through unchanged
+
+    @Test("the bridge's own encryption diagnostic survives into the message verbatim")
+    func engineTextPassesThroughUnchanged() {
+        let message = CreationFailurePresenter.message(
+            for: SecretFileCreator.Failure.engine("recipient 2: not a valid age recipient"))
+        #expect(message.detail.contains("recipient 2: not a valid age recipient"))
+    }
+
+    // MARK: - Paths are actually surfaced, not swallowed
+
+    @Test("path-bearing failures name the path in the message")
+    func pathBearingFailuresNameThePath() {
+        let destinationExists = CreationFailurePresenter.message(
+            for: SecretFileCreator.Failure.destinationExists(path: "/p/a.yaml"))
+        #expect(destinationExists.detail.contains("/p/a.yaml"))
+
+        let outsideProject = CreationFailurePresenter.message(
+            for: SecretFileCreator.Failure.destinationOutsideProject(path: "/p/../x.yaml"))
+        #expect(outsideProject.detail.contains("/p/../x.yaml"))
+
+        let missingRoot = CreationFailurePresenter.message(
+            for: CreationPlanResolver.Error.projectRootDoesNotExist("/gone"))
+        #expect(missingRoot.detail.contains("/gone"))
+
+        let configMissingRoot = CreationFailurePresenter.message(
+            for: SopsConfigGenerator.Error.projectRootDoesNotExist("/gone"))
+        #expect(configMissingRoot.detail.contains("/gone"))
+    }
+
+    // MARK: - Recovery guidance
+
+    @Test("every case offers recovery guidance except where nothing but a different attempt helps")
+    func recoveryIsPresentExceptWhereDocumented() {
+        // `.write` wraps `AtomicFileWriter.Error`, whose own `description` is
+        // already a complete, situation-specific sentence — for several of
+        // its cases it already states what to do (see that type's own
+        // doc comment). A second, generic recovery key here would either
+        // repeat it or contradict it depending on which case fired, so this
+        // is the one documented `nil`.
+        let write = CreationFailurePresenter.message(
+            for: SecretFileCreator.Failure.write(.destinationExists(path: "/p/a.yaml")))
+        #expect(write.recovery == nil)
+
+        let others: [SecretFileCreator.Failure] = [
+            .destinationExists(path: "/p/a.yaml"),
+            .destinationOutsideProject(path: "/p/x.yaml"),
+            .roundTripMismatch,
+            .wouldBeUnreadable,
+            .engine("bridge text"),
+            .couldNotCreateDirectory(path: "/p/secrets", reason: "Permission denied"),
+        ]
+        for failure in others {
+            #expect(
+                CreationFailurePresenter.message(for: failure).recovery != nil,
+                "\(failure) has no recovery")
+        }
+    }
+
+    // MARK: - No secret value ever reaches a message
+    //
+    // Phase 1's own security test (`SecretFileCreatorTests
+    // .noThrownErrorEverNamesTheSentinelValue`) proves the *enum cases*
+    // never carry a document value. This test proves the same thing one
+    // layer further out: it drives a real, failing `SecretFileCreator
+    // .create` call whose document actually contains the sentinel, and
+    // checks that the *message this presenter builds* — title, detail, and
+    // recovery — still names none of it. `owner`'s key is deliberately not
+    // among `plan.recipients`, so the round trip in step 3/6 fails and
+    // `.wouldBeUnreadable` is thrown — the one failure shape that is only
+    // reachable after the document (sentinel included) was actually built
+    // and encrypted.
+    @Test("no message from a real failed creation ever names the sentinel value")
+    func noRealFailureMessageNamesTheSentinelValue() throws {
+        let owner = try AgeKeyPair.generate()
+        let stranger = try AgeKeyPair.generate()
+        let project = try makeProject()
+        let destination = project.appendingPathComponent("secret.yaml")
+
+        let entries = [DotEnvEntry(key: "SECRET", value: sentinelValue, line: 1)]
+        let plan = ResolvedEncryption(
+            recipients: [stranger.public], encryptedRegex: "", acknowledgedUnreadable: false)
+
+        do {
+            _ = try SecretFileCreator.create(
+                .dotEnv(entries), plan: plan, at: destination, in: project, sessionKey: owner.private)
+            Issue.record("expected creation to fail: owner's key is not among the recipients")
+        } catch let failure as SecretFileCreator.Failure {
+            #expect(failure == .wouldBeUnreadable, "expected .wouldBeUnreadable, got \(failure)")
+            let message = CreationFailurePresenter.message(for: failure)
+            #expect(!message.detail.contains(sentinelValue))
+            #expect(!message.title.text.contains(sentinelValue))
+            #expect(!(message.recovery?.text.contains(sentinelValue) ?? false))
+        }
+    }
+}

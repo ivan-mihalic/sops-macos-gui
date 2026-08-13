@@ -442,6 +442,138 @@
         }
       }
     },
+    "creation-failure.config-title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't Propose a .sops.yaml"
+          }
+        }
+      }
+    },
+    "creation-failure.dotenv-title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't Read That File"
+          }
+        }
+      }
+    },
+    "creation-failure.recovery.add-your-key-or-acknowledge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add a recipient you can decrypt with, or confirm you understand you won't be able to read this file back."
+          }
+        }
+      }
+    },
+    "creation-failure.recovery.check-folder-permissions": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check the folder's permissions, then try again."
+          }
+        }
+      }
+    },
+    "creation-failure.recovery.check-project-connected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Make sure the project's folder is connected, then try again."
+          }
+        }
+      }
+    },
+    "creation-failure.recovery.check-recipients": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check the recipients you chose, then try again."
+          }
+        }
+      }
+    },
+    "creation-failure.recovery.check-unusual-characters": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check the values for unusual characters, then try again."
+          }
+        }
+      }
+    },
+    "creation-failure.recovery.choose-another-name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose a different name."
+          }
+        }
+      }
+    },
+    "creation-failure.recovery.choose-location-inside-project": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose a location inside the project."
+          }
+        }
+      }
+    },
+    "creation-failure.recovery.pick-location-again": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pick the location again using the browse button."
+          }
+        }
+      }
+    },
+    "creation-failure.recovery.reencode-as-utf8": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Re-save the file as UTF-8, then try again."
+          }
+        }
+      }
+    },
+    "creation-failure.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't Create the File"
+          }
+        }
+      }
+    },
     "detail.no-selection": {
       "extractionState": "manual",
       "localizations": {

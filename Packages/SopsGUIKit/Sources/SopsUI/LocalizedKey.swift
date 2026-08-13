@@ -475,6 +475,38 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case recipientEditorErrorPathEscapesProject = "recipient.editor.error.path-escapes-project"
     case recipientEditorErrorCouldNotSave = "recipient.editor.error.could-not-save"
 
+    // MARK: Phase 2 Task 1 — CreationFailurePresenter
+    //
+    // One voice for `CreationPlanResolver.Error`, `SecretFileCreator.Failure`,
+    // `SopsConfigGenerator.Error` and `DotEnvParseFailure` — see
+    // `CreationFailurePresenter`'s own doc comment for why a single presenter
+    // owns all four rather than each call site wording its own sentence.
+    // `detail` itself is never a catalog key (it can carry a path or a
+    // bridge diagnostic, neither of which is translatable), so only the
+    // title and the recovery hint live here.
+
+    // A generic title for the file-creation half (`CreationPlanResolver
+    // .Error`, `SecretFileCreator.Failure`): both describe the same action —
+    // the file was not created — so one title, distinguished by `detail`,
+    // reads more honestly than inventing a different headline per case.
+    case creationFailureTitle = "creation-failure.title"
+    // `SopsConfigGenerator.Error` is about proposing a `.sops.yaml`, a
+    // different action from creating a file — sharing `creationFailureTitle`
+    // with it would claim a file creation attempt that never happened.
+    case creationFailureConfigTitle = "creation-failure.config-title"
+    // `DotEnvParseFailure` fires before any encryption is attempted at all.
+    case creationFailureDotEnvTitle = "creation-failure.dotenv-title"
+
+    case creationRecoveryPickLocationAgain = "creation-failure.recovery.pick-location-again"
+    case creationRecoveryCheckProjectConnected = "creation-failure.recovery.check-project-connected"
+    case creationRecoveryChooseLocationInsideProject = "creation-failure.recovery.choose-location-inside-project"
+    case creationRecoveryChooseAnotherName = "creation-failure.recovery.choose-another-name"
+    case creationRecoveryCheckUnusualCharacters = "creation-failure.recovery.check-unusual-characters"
+    case creationRecoveryAddYourKeyOrAcknowledge = "creation-failure.recovery.add-your-key-or-acknowledge"
+    case creationRecoveryCheckRecipients = "creation-failure.recovery.check-recipients"
+    case creationRecoveryCheckFolderPermissions = "creation-failure.recovery.check-folder-permissions"
+    case creationRecoveryReencodeAsUTF8 = "creation-failure.recovery.reencode-as-utf8"
+
     /// The resolved English text. Used in views and asserted in tests.
     public var text: String {
         String(localized: String.LocalizationValue(rawValue), bundle: .module)
