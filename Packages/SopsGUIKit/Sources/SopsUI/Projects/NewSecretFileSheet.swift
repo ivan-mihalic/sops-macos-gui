@@ -51,7 +51,13 @@ import SwiftUI
 /// has no property observer of its own on the model (see that property's
 /// doc comment) — but still needs `readiness` recomputed, so
 /// `resolveNow()` calls `resolvePlan()` immediately, unguarded, whenever
-/// `sourceChoice` changes.
+/// `sourceChoice` changes. Deliberately unguarded, unlike the debounced
+/// path: `resolvePlan()` resets `acknowledgedUnreadable` on every call, so
+/// switching sources while `.needsAcknowledgement` is showing does throw
+/// away a fresh tick — but that is the user's own action, `readiness`
+/// visibly reflects it (the checkbox and the failure banner both update),
+/// and there is no plausible scenario where the tick belonged to the
+/// *source being switched away from* rather than the new one.
 ///
 /// ## What Plain YAML and `.env` actually create
 ///
@@ -215,21 +221,34 @@ public struct NewSecretFileSheet: View {
         }
     }
 
+    /// `nil` — nothing shown — before any name has produced a plan at all
+    /// (`model.plan == nil` and not resolving), which covers both
+    /// `.needsName` and a thrown `CreationPlanResolver.Error`; the latter
+    /// already has its own sentence in `model.planError`, rendered through
+    /// `failureBanner(_:)` above via `readiness == .blocked`, so this line
+    /// has nothing useful to add for it.
+    private var infoLineText: String? {
+        Self.infoLineText(isResolving: model.isResolving, plan: model.plan, recipientNames: recipientNames)
+    }
+
     /// The `ⓘ` line's text: five shapes matching `CreationPlan`'s cases, plus
-    /// a sixth for "still resolving". `nil` — nothing shown — before any
-    /// name has produced a plan at all (`model.plan == nil` and not
-    /// resolving), which covers both `.needsName` and a thrown
-    /// `CreationPlanResolver.Error`; the latter already has its own sentence
-    /// in `model.planError`, rendered through `failureBanner(_:)` above via
-    /// `readiness == .blocked`, so this line has nothing useful to add for
-    /// it.
+    /// a sixth for "still resolving". Pure and `static` — `isResolving` is a
+    /// plain `Bool` argument here rather than read live off `model
+    /// .isResolving`, precisely so a test can check every shape (including
+    /// "still resolving") without racing a real async resolve: this app's
+    /// `CreationPlanResolver.plan(forTarget:in:)` is itself synchronous, so
+    /// there is no `await` point inside `resolvePlan()` a test could
+    /// reliably interleave with to catch `isResolving` genuinely `true` —
+    /// see `NewSecretFileSheetTests.InfoLineTextTests`.
     ///
     /// No `default` in the switch — a case added to `CreationPlan` later
     /// must fail this file's build, the same discipline
     /// `CreationFailurePresenter` documents for its own switches.
-    private var infoLineText: String? {
-        if model.isResolving { return LocalizedKey.newFileInfoResolving.text }
-        guard let plan = model.plan else { return nil }
+    static func infoLineText(
+        isResolving: Bool, plan: CreationPlan?, recipientNames: ([String]) -> String
+    ) -> String? {
+        if isResolving { return LocalizedKey.newFileInfoResolving.text }
+        guard let plan else { return nil }
         switch plan {
         case .governedByRule(let recipients, _):
             return String(format: LocalizedKey.newFileInfoGovernedByRule.text, recipientNames(recipients))
@@ -313,14 +332,28 @@ public struct NewSecretFileSheet: View {
         }
     }
 
+    /// Gated on `model.plainYAMLText`, not on the view-local
+    /// `plainYAMLFileName` — a model handed in already loaded (every
+    /// `CreateFromSourceTests` fixture does exactly this, and Tasks 6/7
+    /// will too, presenting a sheet built around a model whose source was
+    /// set up before the view ever existed) must not render "No file
+    /// chosen yet." beside an enabled Create button. `plainYAMLFileName`
+    /// only decorates *which* file, when this view happens to know — the
+    /// model deliberately never carries a path (see this file's own doc
+    /// comment, "What Plain YAML and `.env` actually create"), so there is
+    /// no filename to recover for a model loaded before this view existed.
     private var plainYAMLPreview: some View {
         VStack(alignment: .leading, spacing: 8) {
             Button(LocalizedKey.newFileChooseFileButton.text, action: choosePlainYAMLFile)
             if let plainYAMLLoadError = model.plainYAMLLoadError {
                 failureBanner(plainYAMLLoadError)
-            } else if let plainYAMLFileName, model.plainYAMLText != nil {
-                Text(String(format: LocalizedKey.newFileFileChosen.text, plainYAMLFileName))
-                    .font(.callout)
+            } else if model.plainYAMLText != nil {
+                if let plainYAMLFileName {
+                    Text(String(format: LocalizedKey.newFileFileChosen.text, plainYAMLFileName))
+                        .font(.callout)
+                } else {
+                    Text(.newFileFileChosenNoName).font(.callout)
+                }
             } else {
                 Text(.newFileNoFileChosen).foregroundStyle(.secondary)
             }

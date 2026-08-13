@@ -860,6 +860,17 @@
         }
       }
     },
+    "new-file.file-chosen-no-name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A file is selected."
+          }
+        }
+      }
+    },
     "new-file.empty-preview-note": {
       "extractionState": "manual",
       "localizations": {

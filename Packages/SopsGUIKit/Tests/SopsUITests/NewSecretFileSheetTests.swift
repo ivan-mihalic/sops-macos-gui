@@ -171,6 +171,85 @@ struct ShortenedKeyTests {
     }
 }
 
+// MARK: - The ⓘ line's six shapes, pure — no rendering, no async race
+//
+// `isResolving` is a plain `Bool` argument to `NewSecretFileSheet
+// .infoLineText(isResolving:plan:recipientNames:)`, not read live off a
+// model — this app's `CreationPlanResolver.plan(forTarget:in:)` is itself
+// synchronous, so `resolvePlan()` never actually suspends, and there is no
+// reliable way for a test to interleave with it and observe `model
+// .isResolving == true` for any real duration. Passing it as a parameter
+// sidesteps that entirely: every shape, including "still resolving", is
+// checked directly.
+
+@Suite("NewSecretFileSheet.infoLineText — the ⓘ line's six shapes")
+@MainActor
+struct InfoLineTextTests {
+
+    private func joinedNames(_ recipients: [String]) -> String { recipients.joined(separator: ", ") }
+
+    @Test("still resolving")
+    func resolving() {
+        let text = NewSecretFileSheet.infoLineText(
+            isResolving: true, plan: .governedByRule(recipients: ["age1abc"], encryptedRegex: ""),
+            recipientNames: joinedNames)
+        #expect(text == LocalizedKey.newFileInfoResolving.text)
+    }
+
+    @Test("resolving takes priority even over an already-resolved plan")
+    func resolvingTakesPriorityOverAStalePlan() {
+        let text = NewSecretFileSheet.infoLineText(isResolving: true, plan: .noConfig, recipientNames: joinedNames)
+        #expect(text == LocalizedKey.newFileInfoResolving.text)
+    }
+
+    @Test("no plan yet, not resolving — nothing shown")
+    func noPlanYet() {
+        #expect(NewSecretFileSheet.infoLineText(isResolving: false, plan: nil, recipientNames: joinedNames) == nil)
+    }
+
+    @Test(".governedByRule names the recipients through the injected formatter")
+    func governedByRule() {
+        let text = NewSecretFileSheet.infoLineText(
+            isResolving: false, plan: .governedByRule(recipients: ["age1abc", "age1def"], encryptedRegex: ""),
+            recipientNames: joinedNames)
+        #expect(text == String(format: LocalizedKey.newFileInfoGovernedByRule.text, "age1abc, age1def"))
+    }
+
+    @Test(".noConfig")
+    func noConfig() {
+        let text = NewSecretFileSheet.infoLineText(isResolving: false, plan: .noConfig, recipientNames: joinedNames)
+        #expect(text == LocalizedKey.newFileInfoNoConfig.text)
+    }
+
+    @Test(".noRuleMatched")
+    func noRuleMatched() {
+        let text = NewSecretFileSheet.infoLineText(
+            isResolving: false, plan: .noRuleMatched, recipientNames: joinedNames)
+        #expect(text == LocalizedKey.newFileInfoNoRuleMatched.text)
+    }
+
+    /// The case the reviewer named specifically: a wrong-branch mistake in
+    /// the `.unsupportedRule`/`.configUnreadable` arm — say, swapping which
+    /// `CreationPlan` case it matches, or forgetting the `?? nil` fallback
+    /// — would be silent without this, because both cases already return
+    /// non-`nil`, non-empty text from *some* source either way.
+    @Test(".unsupportedRule reuses CreationFailurePresenter's own sentence, not a re-worded one")
+    func unsupportedRule() {
+        let plan = CreationPlan.unsupportedRule(reason: "A rule names pgp, which this app cannot hold.")
+        let text = NewSecretFileSheet.infoLineText(isResolving: false, plan: plan, recipientNames: joinedNames)
+        #expect(text == CreationFailurePresenter.message(forBlocking: plan)?.detail)
+        #expect(text == "A rule names pgp, which this app cannot hold.")
+    }
+
+    @Test(".configUnreadable reuses CreationFailurePresenter's own sentence, not a re-worded one")
+    func configUnreadable() {
+        let plan = CreationPlan.configUnreadable(reason: "yaml: line 3: mapping values are not allowed here")
+        let text = NewSecretFileSheet.infoLineText(isResolving: false, plan: plan, recipientNames: joinedNames)
+        #expect(text == CreationFailurePresenter.message(forBlocking: plan)?.detail)
+        #expect(text?.contains("yaml: line 3") == true)
+    }
+}
+
 // MARK: - The tick-then-retry race, proven without any Task.sleep
 //
 // This is the regression the plan's own review flagged for Task 2 and
@@ -436,8 +515,11 @@ struct NewSecretFileSheetRenderedTests {
         // comment.
         let values = Set(host.nodes().map(\.value))
         #expect(values.contains(LocalizedKey.newFileNoFileChosen.text))
-        // Still not ready — Task 4 wires the preview, not the creation; see
-        // `NewSecretFileModel.create()`'s own `sourceChoice == .empty` guard.
+        // Still not ready — no file has been picked yet, so `dotEnvParsed`
+        // is `nil` and `computeReadiness()`'s `.dotEnv` branch reports
+        // `.needsSource`. `CreateFromSourceTests.dotEnvCreatesAReadableFile`
+        // covers the other half: once `loadDotEnv(from:)` actually loads a
+        // file, `create()` uses it and `readiness` reaches `.ready`.
         #expect(model.readiness == .needsSource)
     }
 }
@@ -640,5 +722,198 @@ struct CreateFromSourceTests {
         model.loadPlainYAML(from: missing)
         #expect(model.plainYAMLText == nil)
         #expect(model.plainYAMLLoadError == CreationFailurePresenter.message(forUnreadableSourceFile: ()))
+    }
+
+    // MARK: - Fix round: acknowledging unreadability must survive re-picking the source
+    //
+    // The reopened door the reviewer found: `acknowledgedUnreadable`'s own
+    // `didSet` sets `readiness = .ready` directly but never clears
+    // `discoveredUnreadable` — only `resolvePlan()` and a successful
+    // `create()` do. `loadPlainYAML(from:)`/`loadDotEnv(from:)` are a
+    // *second* path into `computeReadiness()` beyond those two, and before
+    // this fix it read `discoveredUnreadable` alone, reintroducing
+    // `.needsAcknowledgement` with the checkbox still rendered ticked — and
+    // re-ticking an already-`true` checkbox is a no-op per the `didSet`
+    // guard, so there was no visible way out except unticking and
+    // re-ticking. `computeReadiness()` now reads
+    // `discoveredUnreadable && !acknowledgedUnreadable`.
+
+    @Test("acknowledging unreadability survives re-picking a .env source file")
+    func acknowledgementSurvivesReloadingDotEnv() async throws {
+        let owner = try AgeKeyPair.generate()
+        let stranger = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        try ageOnlyConfig(stranger.public)
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let keyStore = try makeKeyStore(importing: owner.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+
+        let picked = try sourceFile(named: "input.env", containing: "KEY=value\n")
+        model.loadDotEnv(from: picked)
+        model.sourceChoice = .dotEnv
+        model.relativeName = "secret.yaml"
+        await model.resolvePlan()
+
+        _ = await model.create()  // discovers wouldBeUnreadable
+        try #require(model.readiness == .needsAcknowledgement)
+
+        model.acknowledgedUnreadable = true
+        try #require(model.readiness == .ready(recipients: [stranger.public]))
+
+        let repicked = try sourceFile(named: "input2.env", containing: "OTHER=value\n")
+        model.loadDotEnv(from: repicked)
+
+        #expect(model.acknowledgedUnreadable, "the tick itself must survive re-picking the source")
+        #expect(model.readiness == .ready(recipients: [stranger.public]))
+    }
+
+    @Test("acknowledging unreadability survives re-picking a Plain YAML source file")
+    func acknowledgementSurvivesReloadingPlainYAML() async throws {
+        let owner = try AgeKeyPair.generate()
+        let stranger = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        try ageOnlyConfig(stranger.public)
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let keyStore = try makeKeyStore(importing: owner.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+
+        let picked = try sourceFile(named: "input.yaml", containing: "a: b\n")
+        model.loadPlainYAML(from: picked)
+        model.sourceChoice = .plainYAML
+        model.relativeName = "secret.yaml"
+        await model.resolvePlan()
+
+        _ = await model.create()  // discovers wouldBeUnreadable
+        try #require(model.readiness == .needsAcknowledgement)
+
+        model.acknowledgedUnreadable = true
+        try #require(model.readiness == .ready(recipients: [stranger.public]))
+
+        let repicked = try sourceFile(named: "input2.yaml", containing: "c: d\n")
+        model.loadPlainYAML(from: repicked)
+
+        #expect(model.acknowledgedUnreadable, "the tick itself must survive re-picking the source")
+        #expect(model.readiness == .ready(recipients: [stranger.public]))
+    }
+
+    // MARK: - Minor A: the preview-then-create guarantee, pinned with a test
+    //
+    // Nothing currently re-reads the source file at `create()` time — but
+    // nothing proved it. Deleting the file between `loadDotEnv(from:)` and
+    // `create()` makes a future re-read impossible to land green, and
+    // comparing against `model.dotEnvParsed?.entries` (not string literals)
+    // means this test would fail if `create()` ever diverged from what was
+    // actually previewed, not just from what this test happened to type.
+
+    @Test("what create() writes is exactly what was previewed, even after the source file is deleted")
+    func previewedEntriesSurviveTheSourceFileDisappearing() async throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        try ageOnlyConfig(owner.public)
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let keyStore = try makeKeyStore(importing: owner.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+
+        let picked = try sourceFile(
+            named: "input.env",
+            containing: "DB_PASSWORD=correct-horse-battery-staple-EXAMPLE\nAPI_KEY=sk_live_EXAMPLE\n")
+        model.loadDotEnv(from: picked)
+        let previewedEntries = try #require(model.dotEnvParsed?.entries)
+        #expect(previewedEntries.count == 2)
+
+        // Deleted the moment the preview has its own copy — a real re-read
+        // at `create()` time would fail right here, not silently diverge.
+        try FileManager.default.removeItem(at: picked)
+
+        model.sourceChoice = .dotEnv
+        model.relativeName = "secret.yaml"
+        await model.resolvePlan()
+
+        let created = await model.create()
+        let destination = try #require(created, "create() must not need the source file to still exist")
+
+        let encrypted = try String(contentsOf: destination, encoding: .utf8)
+        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        #expect(rows.count == previewedEntries.count)
+        for entry in previewedEntries {
+            let row = try #require(rows.first { $0.path == [entry.key] })
+            #expect(row.value == entry.value)
+        }
+    }
+
+    // MARK: - Minor B: a zero-entry .env is decided, not accidental
+    //
+    // A genuinely empty or comments-only `.env` (`entries` and `skipped`
+    // both empty) creates the same legitimate `{}` document `.empty`'s own
+    // source does — `FlatYAMLEmitter.emit([])` already treats it that way.
+    // The state to avoid is different: lines that looked like assignments,
+    // held onto by `skipped`, with nothing salvaged into `entries` — that
+    // must not offer an enabled Create next to a preview showing only
+    // unreadable lines that very plausibly held secrets.
+
+    @Test("a .env with lines that all failed to parse, and nothing salvaged, is blocked, not silently empty")
+    func dotEnvWithOnlySkippedLinesIsBlocked() async throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        try ageOnlyConfig(owner.public)
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let keyStore = try makeKeyStore(importing: owner.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+
+        // No `=` and no `: ` anywhere on this line — `DotEnvParser` cannot
+        // read it as an assignment at all, so it lands in `skipped`, not
+        // `entries` with a suspicion (that's what a line like
+        // `KEY="unterminated` gets instead — still an accepted entry).
+        let picked = try sourceFile(named: "input.env", containing: "not a valid config line at all\n")
+        model.loadDotEnv(from: picked)
+        let parsed = try #require(model.dotEnvParsed)
+        try #require(parsed.entries.isEmpty, "precondition: nothing was salvaged")
+        try #require(!parsed.skipped.isEmpty, "precondition: something looked like an assignment and failed")
+
+        model.sourceChoice = .dotEnv
+        model.relativeName = "secret.yaml"
+        await model.resolvePlan()
+
+        guard case .blocked(let message) = model.readiness else {
+            Issue.record("expected .blocked, got \(model.readiness)")
+            return
+        }
+        #expect(!message.detail.isEmpty)
+        #expect(message == CreationFailurePresenter.message(forDotEnvWithNoUsableEntries: ()))
+
+        let created = await model.create()
+        #expect(created == nil)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("secret.yaml").path))
+    }
+
+    @Test("a genuinely empty or comments-only .env is ready, and creates the same {} document .empty would")
+    func emptyOrCommentsOnlyDotEnvIsReadyAndCreatable() async throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        try ageOnlyConfig(owner.public)
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let keyStore = try makeKeyStore(importing: owner.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+
+        let picked = try sourceFile(named: "input.env", containing: "# just a comment\n\n")
+        model.loadDotEnv(from: picked)
+        let parsed = try #require(model.dotEnvParsed)
+        try #require(parsed.entries.isEmpty)
+        try #require(parsed.skipped.isEmpty, "precondition: nothing even looked like a failed assignment")
+
+        model.sourceChoice = .dotEnv
+        model.relativeName = "secret.yaml"
+        await model.resolvePlan()
+        guard case .ready = model.readiness else {
+            Issue.record("expected .ready for a genuinely empty .env, got \(model.readiness)")
+            return
+        }
+
+        let created = await model.create()
+        let destination = try #require(created)
+
+        let encrypted = try String(contentsOf: destination, encoding: .utf8)
+        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        #expect(rows.isEmpty)
     }
 }

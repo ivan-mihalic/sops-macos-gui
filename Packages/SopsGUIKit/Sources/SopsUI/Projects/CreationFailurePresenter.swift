@@ -87,6 +87,11 @@ public struct CreationFailureMessage: Equatable, Sendable {
 /// none for an empty key store. It earned a method here rather than a
 /// second `NewSecretFileModel`-local exception, exactly as instructed.
 ///
+/// `message(forDotEnvWithNoUsableEntries:)` is the same shape of permanent
+/// state again: a `.env` file whose every candidate line was rejected has
+/// nothing waiting on a future task to unlock it, so it belongs here too,
+/// not as a bare `computeReadiness()` branch with its own inline text.
+///
 /// ## Every `switch` below has no `default`
 ///
 /// A `default` case would silently swallow a case added later to any of the
@@ -361,6 +366,32 @@ public enum CreationFailurePresenter {
         CreationFailureMessage(
             title: .creationFailureTitle,
             detail: LocalizedKey.creationFailureSourceFileUnreadable.text,
+            recovery: nil)
+    }
+
+    /// A `.dotEnv` source that parsed without throwing but produced **no
+    /// usable entries** while still holding lines `DotEnvParser` could not
+    /// read as `KEY=value` at all (`ParsedDotEnv.skipped`, non-empty;
+    /// `.entries`, empty).
+    ///
+    /// Deliberately narrower than "entries is empty": a genuinely empty or
+    /// comments-only `.env` file (`entries` *and* `skipped` both empty) is
+    /// not this case — `FlatYAMLEmitter.emit([])` produces `"{}\n"`, the
+    /// same legitimate empty document `.empty`'s own source produces, and
+    /// creating it is an honest reflection of an empty input. What this
+    /// case catches is different: lines that *looked like* assignments and
+    /// very plausibly held secrets, all rejected by the parser, with
+    /// nothing salvaged. `NewSecretFileModel.create()` would otherwise
+    /// happily hand `SecretFileCreator` the same empty `{}` document while
+    /// `DotEnvPreviewTable` is showing the user exactly those lines,
+    /// discarding whatever they held with nothing but a masked preview
+    /// standing between "nothing was imported" and a "Create" button that
+    /// still reads as success.
+    public static func message(forDotEnvWithNoUsableEntries: Void = ()) -> CreationFailureMessage {
+        CreationFailureMessage(
+            title: .creationFailureDotEnvTitle,
+            detail: "None of this file's lines could be read as KEY=value assignments, so nothing would "
+                + "be imported. Check the lines below, fix the file, or choose a different source.",
             recovery: nil)
     }
 }

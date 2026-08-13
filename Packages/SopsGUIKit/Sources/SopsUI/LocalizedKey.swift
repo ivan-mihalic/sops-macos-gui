@@ -595,6 +595,12 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // Formatted with the chosen file's name only — never its full path,
     // which is not a secret but also not needed to identify what was picked.
     case newFileFileChosen = "new-file.file-chosen"
+    // A Plain YAML source loaded before this view existed (every
+    // `CreateFromSourceTests` fixture, and Task 6/7's presented sheets) has
+    // no filename to show — `NewSecretFileModel` deliberately never carries
+    // a path, only the content. Confirms a file is loaded without naming
+    // one it does not have.
+    case newFileFileChosenNoName = "new-file.file-chosen-no-name"
 
     case newFileEmptyPreviewNote = "new-file.empty-preview-note"
     case newFileCreateButton = "new-file.create-button"

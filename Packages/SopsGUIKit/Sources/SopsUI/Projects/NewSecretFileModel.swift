@@ -360,6 +360,11 @@ public final class NewSecretFileModel {
             source = .verbatimYAML(plainYAMLText)
         case .dotEnv:
             guard let dotEnvParsed else { return nil }
+            // Same guard `computeReadiness()` already applies — repeated
+            // here rather than trusted, same discipline every guard in this
+            // switch keeps. See `Self.hasNoUsableDotEnvContent(_:)`'s own
+            // doc comment for why this is not simply "entries is empty".
+            guard !Self.hasNoUsableDotEnvContent(dotEnvParsed) else { return nil }
             // `.entries` only — `SecretFileCreator` never sees `.skipped`
             // or `.suspicions`, the same way `DotEnvPreviewTable` renders
             // them but never lets them change what actually gets written
@@ -459,7 +464,13 @@ public final class NewSecretFileModel {
             guard plainYAMLText != nil else { return .needsSource }
         case .dotEnv:
             if let dotEnvLoadError { return .blocked(dotEnvLoadError) }
-            guard dotEnvParsed != nil else { return .needsSource }
+            guard let dotEnvParsed else { return .needsSource }
+            // A genuinely empty or comments-only `.env` (both empty) is
+            // fine — see `Self.hasNoUsableDotEnvContent(_:)`'s own doc
+            // comment for why that case is deliberately excluded here.
+            if Self.hasNoUsableDotEnvContent(dotEnvParsed) {
+                return .blocked(CreationFailurePresenter.message(forDotEnvWithNoUsableEntries: ()))
+            }
         case .encryptedYAML:
             // Task 6 owns unlocking and importing this source.
             return .needsSource
@@ -480,7 +491,27 @@ public final class NewSecretFileModel {
 
         switch plan {
         case .governedByRule(let recipients, _):
-            return discoveredUnreadable ? .needsAcknowledgement : .ready(recipients: recipients)
+            // Not `discoveredUnreadable` alone. `acknowledgedUnreadable`'s
+            // own `didSet` already handles the *direct* path out of
+            // `.needsAcknowledgement` (tick the box while `readiness` is
+            // already `.needsAcknowledgement` → `.ready` immediately, no
+            // `computeReadiness()` call needed) — but it does not clear
+            // `discoveredUnreadable` itself, only `resolvePlan()` and a
+            // successful `create()` do that. So a *second* path into this
+            // function — `loadPlainYAML(from:)`/`loadDotEnv(from:)`
+            // recomputing `readiness` after the box is already ticked, e.g.
+            // from picking a different source file — would read
+            // `discoveredUnreadable` alone as still `true` and reintroduce
+            // `.needsAcknowledgement` with the checkbox still showing
+            // ticked (the view binds straight to `acknowledgedUnreadable`).
+            // Re-ticking an already-`true` checkbox is a no-op per the
+            // `didSet` guard above, so that would be the exact "loop with no
+            // visible exit" this type's doc comment describes elsewhere —
+            // arrived at through a different door. Checking
+            // `!acknowledgedUnreadable` here closes it for every caller of
+            // `computeReadiness()`, not just the one that exposed it.
+            return discoveredUnreadable && !acknowledgedUnreadable
+                ? .needsAcknowledgement : .ready(recipients: recipients)
         case .noConfig, .noRuleMatched:
             return .blocked(Self.noPickerYetMessage)
         case .unsupportedRule, .configUnreadable:
@@ -501,5 +532,21 @@ public final class NewSecretFileModel {
     /// path component, just not a name anyone typed on purpose.
     private func isBlank(_ name: String) -> Bool {
         name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Whether `parsed` has candidate lines that looked like assignments and
+    /// very plausibly held secrets (`skipped`, non-empty), but salvaged none
+    /// of them (`entries`, empty) — the state
+    /// `CreationFailurePresenter.message(forDotEnvWithNoUsableEntries:)`
+    /// exists to refuse.
+    ///
+    /// Deliberately **not** `parsed.entries.isEmpty` alone: a genuinely
+    /// empty or comments-only `.env` file has `skipped.isEmpty` too, and
+    /// `FlatYAMLEmitter.emit([])` already treats an empty entry list as a
+    /// legitimate `"{}\n"` document — the same one `.empty`'s own source
+    /// produces. That case is not a bug being caught here; only the one
+    /// where lines existed and none of them survived is.
+    static func hasNoUsableDotEnvContent(_ parsed: ParsedDotEnv) -> Bool {
+        parsed.entries.isEmpty && !parsed.skipped.isEmpty
     }
 }
