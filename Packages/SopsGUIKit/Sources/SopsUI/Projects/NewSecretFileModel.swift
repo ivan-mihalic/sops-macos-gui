@@ -656,33 +656,6 @@ public final class NewSecretFileModel {
         }
     }
 
-    /// The `encrypted_regex` a create would actually run under right now, or
-    /// `nil` when the plan sets none — computed, like everything else here,
-    /// from `currentGovernedPlan()`, so it cannot describe a plan that is no
-    /// longer the one in hand.
-    ///
-    /// Exists because `encrypted_regex` is a real, disclosable difference in
-    /// what gets created, not a detail: `CreationPlanResolver` deliberately
-    /// passes it through as *supported* while refusing the other three
-    /// scoping fields (see that type's doc comment, decision order step 5),
-    /// so a file created under such a rule stores every non-matching value
-    /// in plaintext, readable by anyone with the repository. Spec §4.1
-    /// decision 4 is "do not change access silently", and a screen that
-    /// discloses who can read the new file while saying nothing about how
-    /// much of it is encrypted is silent about exactly that.
-    ///
-    /// `NewSecretFileSheet`'s ⓘ line reads the regex straight off `plan` —
-    /// it already renders that value — and this property exists for the one
-    /// reader that has no plan in hand and should not grow one:
-    /// `EncryptedImportPreview`, whose own doc comment ("The view decides
-    /// nothing") keeps plan-reading judgment in this model. Deliberately not
-    /// the raw regex of *any* resolved rule: it reports what would be used,
-    /// which for a manually-chosen recipient set is nothing at all.
-    public var encryptedRegexInEffect: String? {
-        guard let regex = currentGovernedPlan()?.encryptedRegex, !regex.isEmpty else { return nil }
-        return regex
-    }
-
     public init(projectRoot: URL, keyStore: SessionKeyStore) {
         self.projectRoot = projectRoot
         self.keyStore = keyStore

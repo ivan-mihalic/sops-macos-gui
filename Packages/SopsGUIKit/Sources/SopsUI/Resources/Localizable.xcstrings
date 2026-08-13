@@ -833,7 +833,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This rule also sets encrypted_regex (%@): only values whose field names match it will be encrypted, and every other value is stored as plaintext. Check the rule in .sops.yaml before creating this file."
+            "value": "This rule also sets encrypted_regex (%@): it decides which values are encrypted, and anything it does not cover is stored as plaintext. Check the rule in .sops.yaml before creating this file."
           }
         }
       }

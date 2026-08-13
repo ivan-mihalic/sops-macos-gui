@@ -316,9 +316,19 @@ public struct NewSecretFileSheet: View {
             // rather than shown per source because this line is the one
             // disclosure every source passes through: `nameSection` renders
             // it for `.empty`, `.plainYAML`, `.dotEnv` and `.encryptedYAML`
-            // alike. `EncryptedImportPreview` repeats the identical sentence
-            // beside its access diff, which is the other screen making an
-            // access claim about the file this creates.
+            // alike. `EncryptedImportPreview` deliberately does *not* repeat
+            // it beside its access diff — that view sits directly below this
+            // line, not on a second screen; see its own `diff(…)` doc
+            // comment for why the two cannot come apart.
+            //
+            // Named plainly rather than glossed over: joining two catalog
+            // sentences with a literal `" "` is composition, the one
+            // instance of it in this file. Each half is a whole, separately
+            // translatable sentence and neither is assembled from fragments,
+            // which is the rule `CreationFailurePresenter` exists to keep —
+            // but a language that punctuates or orders sentences differently
+            // gets only the separator from here, and that is worth knowing
+            // before a second one is added.
             guard !encryptedRegex.isEmpty else { return governed }
             return governed + " "
                 + String(format: LocalizedKey.newFileInfoEncryptedRegexScoping.text, encryptedRegex)

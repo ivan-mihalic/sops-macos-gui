@@ -174,10 +174,30 @@ public struct EncryptedImportPreview: View {
     /// conditional-parts pattern `ProjectAccessView
     /// .configUpdateConfirmationMessage` uses for its own gains/loses.
     ///
-    /// One sentence below the three is not about *who* at all: a target rule
-    /// that sets `encrypted_regex` scopes *what* gets encrypted, and a diff
-    /// that names only recipients reads as the whole change when it is not.
-    /// See that branch's own comment.
+    /// ## What this deliberately does *not* repeat
+    ///
+    /// A target rule that sets `encrypted_regex` scopes *what* gets
+    /// encrypted, and a diff naming only recipients is not the whole account
+    /// of how access changes. That sentence exists — `NewSecretFileSheet`'s
+    /// ⓘ line appends it to every `.governedByRule` line that has one — and
+    /// it is deliberately **not** repeated here, because this is not a second
+    /// screen: `nameSection` renders that line directly above `previewArea`,
+    /// which is where this view sits (this file's `.unlockedAwaitingPlan`
+    /// branch already leans on that same ordering). A first version did
+    /// repeat it, and put the identical thirty-word sentence on screen twice,
+    /// about fifteen lines apart.
+    ///
+    /// The two are not merely usually both present — the diff below cannot
+    /// render without the ⓘ line rendering it too. `.unlocked` requires
+    /// `currentGovernedPlan()` to be non-`nil`, which requires a resolution
+    /// for the current name with a `.governedByRule` plan and a non-empty
+    /// recipient list, which is exactly the state in which `infoLineText`
+    /// takes its `.governedByRule` arm and appends the sentence for a
+    /// non-empty regex. The one exception is the instant a resolve is in
+    /// flight, when the ⓘ line reads "Checking .sops.yaml…" instead — and in
+    /// that instant it withholds *who* the file is encrypted for as well, so
+    /// the two halves of the disclosure appear and disappear together rather
+    /// than one of them being duplicated into one source's preview.
     ///
     /// The title itself is conditional too — `gaining`/`losing` both empty
     /// (every source recipient survives into the target unchanged) is the
@@ -205,23 +225,6 @@ public struct EncryptedImportPreview: View {
             }
             if !keeping.isEmpty {
                 Text(String(format: LocalizedKey.newFileEncryptedImportKeeps.text, names(keeping)))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            // Who can read the new file is only half of "how access
-            // changes" when the target rule sets `encrypted_regex`: the
-            // other half is that everything the expression does not match is
-            // written in plaintext, readable by anyone with the repository —
-            // and this diff, listing recipients gained and lost, reads as a
-            // complete account of the change without it. The identical
-            // sentence `NewSecretFileSheet`'s ⓘ line appends, repeated here
-            // because this is the second screen making an access claim about
-            // the file being created. Still no plan-reading judgment in this
-            // view: `NewSecretFileModel.encryptedRegexInEffect` is `nil`
-            // unless a plan is in hand and actually sets one.
-            if let encryptedRegex = model.encryptedRegexInEffect {
-                Text(String(format: LocalizedKey.newFileInfoEncryptedRegexScoping.text, encryptedRegex))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
