@@ -95,6 +95,16 @@ public struct CreationFailureMessage: Equatable, Sendable {
 /// nothing waiting on a future task to unlock it, so it belongs here too,
 /// not as a bare `computeReadiness()` branch with its own inline text.
 ///
+/// `message(forEncryptedImportUnlockFailure:)` (Task 6) is the fifth: an
+/// `.encryptedYAML` source `SopsBridge.decryptYAML` could not open with this
+/// session's key. Not one of the four vocabularies either — decrypting an
+/// *import* is a `NewSecretFileModel`-only bridge call none of
+/// `CreationPlanResolver`/`SecretFileCreator`/`SopsConfigGenerator`/
+/// `DotEnvParseFailure` has a case for — and a permanent state on the same
+/// terms as an empty key store: no future task removes this refusal, a
+/// session key that cannot decrypt the file simply cannot decrypt the file.
+///
+
 /// ## Every `switch` below has no `default`
 ///
 /// A `default` case would silently swallow a case added later to any of the
@@ -459,5 +469,34 @@ public enum CreationFailurePresenter {
             detail: "None of this file's lines could be read as KEY=value assignments, so nothing would "
                 + "be imported. Check the lines below, fix the file, or choose a different source.",
             recovery: nil)
+    }
+
+    /// An `.encryptedYAML` source (Task 6) `SopsBridge.decryptYAML` could not
+    /// open with this session's key — a wrong or missing identity, or a
+    /// genuine engine fault; `SopsBridgeError` carries only a bare
+    /// `description`, so, like `SecretFileCreator.Failure.wouldBeUnreadable`,
+    /// this cannot tell those apart and does not try.
+    ///
+    /// Unlike `.wouldBeUnreadable`, there is nothing here for
+    /// `acknowledgedUnreadable` to waive. That flag exists to skip *content
+    /// verification* for a file this app is about to *write*, once
+    /// encryption has already produced something to compare against. Here
+    /// nothing has been decrypted at all — there is no plaintext to import,
+    /// acknowledged or not — so the only way past this refusal is a session
+    /// key that actually decrypts the file, which is exactly what
+    /// `recovery` says.
+    ///
+    /// Also reached — deliberately, not as an oversight — when a decrypt
+    /// *succeeds* but reading this file's own recipients afterward
+    /// (`SopsBridge.recipients(in:)`) then fails: unreachable in practice (a
+    /// document that decrypted has already proven its own metadata parses),
+    /// but a caller that cannot tell why recipient metadata failed to read
+    /// has nothing more specific to say than "this file could not be
+    /// unlocked" either.
+    public static func message(forEncryptedImportUnlockFailure: Void = ()) -> CreationFailureMessage {
+        CreationFailureMessage(
+            title: .creationFailureEncryptedImportTitle,
+            detail: "This session's key could not decrypt this file, so nothing was imported.",
+            recovery: .creationRecoveryImportAKeyThatCanDecryptThisFile)
     }
 }

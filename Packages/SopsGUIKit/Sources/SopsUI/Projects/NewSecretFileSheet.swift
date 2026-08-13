@@ -69,14 +69,15 @@ import SwiftUI
 /// goes through as `.dotEnv(dotEnvParsed.entries)`, the identical entries
 /// the preview already showed.
 ///
-/// ## Encrypted YAML stays disabled in this task
+/// ## Encrypted YAML
 ///
-/// Its preview needs unlocking the file and diffing who would gain or lose
-/// access, which Task 6 adds. Offering the option before this app can
-/// finish it would walk the user into a dead end, so the radio option is
-/// disabled and the reason is a permanently visible sentence, not a
-/// tooltip nobody has a reason to hover — a disabled option's own reason
-/// has to be readable without interacting with it.
+/// The one source that needs an extra step before it can be used at all:
+/// the file arrives already encrypted, for a recipient set that routinely
+/// differs from whatever governs the destination, so unlocking it and
+/// disclosing exactly who would gain and lose access has to happen before
+/// `create()` has anything to encrypt. `EncryptedImportPreview` (Task 6)
+/// owns all of that — this view only ever renders it, the same way it
+/// renders `DotEnvPreviewTable` for `.dotEnv`.
 public struct NewSecretFileSheet: View {
     @Bindable private var model: NewSecretFileModel
     private let onCreated: (URL) -> Void
@@ -142,22 +143,16 @@ public struct NewSecretFileSheet: View {
     // MARK: - Source
 
     private var sourceSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 16) {
-                Text(.newFileSourceLabel)
-                ForEach(NewSecretFileModel.SourceChoice.allCases, id: \.self) { choice in
-                    sourceOption(choice)
-                }
+        HStack(spacing: 16) {
+            Text(.newFileSourceLabel)
+            ForEach(NewSecretFileModel.SourceChoice.allCases, id: \.self) { choice in
+                sourceOption(choice)
             }
-            Text(.newFileSourceEncryptedYAMLDisabledReason)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
         }
     }
 
     private func sourceOption(_ choice: NewSecretFileModel.SourceChoice) -> some View {
         let isSelected = model.sourceChoice == choice
-        let isDisabled = choice == .encryptedYAML
         return Button {
             model.sourceChoice = choice
         } label: {
@@ -167,8 +162,6 @@ public struct NewSecretFileSheet: View {
             }
         }
         .buttonStyle(.plain)
-        .disabled(isDisabled)
-        .foregroundStyle(isDisabled ? Color.secondary : Color.primary)
         .accessibilityLabel(sourceLabel(choice))
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
@@ -350,11 +343,7 @@ public struct NewSecretFileSheet: View {
         case .dotEnv:
             dotEnvPreviewArea
         case .encryptedYAML:
-            // Unreachable through this view's own radio row (disabled), but
-            // `sourceChoice` is a plain, externally-settable property — a
-            // caller that sets it directly must still see the same honest
-            // explanation, not a blank preview.
-            Text(.newFileSourceEncryptedYAMLDisabledReason).foregroundStyle(.secondary)
+            EncryptedImportPreview(model: model)
         }
     }
 

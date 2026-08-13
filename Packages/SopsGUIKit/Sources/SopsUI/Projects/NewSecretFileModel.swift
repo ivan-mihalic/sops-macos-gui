@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import SopsEngine
 import SopsHealth
 import SopsProjects
 
@@ -102,12 +103,13 @@ import SopsProjects
 @Observable
 public final class NewSecretFileModel {
 
-    /// Which kind of content a not-yet-created file would start from.
-    /// `.empty`, `.plainYAML` and `.dotEnv` are fully implemented — see
-    /// `loadPlainYAML(from:)`/`loadDotEnv(from:)` and `currentSource()`'s own
-    /// switch. `.encryptedYAML` alone still reports `.needsSource`
-    /// unconditionally: it needs unlocking the file and diffing who would
-    /// gain or lose access, which Task 6 adds.
+    /// Which kind of content a not-yet-created file would start from. All
+    /// four are fully implemented — see `loadPlainYAML(from:)`/
+    /// `loadDotEnv(from:)`/`chooseEncryptedFile(at:)` and `currentSource()`'s
+    /// own switch. `.encryptedYAML` is the one source that needs an extra
+    /// step before it can be used at all: unlocking the file and diffing who
+    /// would gain or lose access against the current plan — see
+    /// `encryptedImport`'s own doc comment.
     public enum SourceChoice: Equatable, Sendable, CaseIterable {
         case empty, plainYAML, encryptedYAML, dotEnv
     }
@@ -141,6 +143,29 @@ public final class NewSecretFileModel {
         /// (`.blocked`). See `currentGovernedPlan()`.
         case needsRecipients
         case ready(recipients: [String])
+    }
+
+    /// What choosing, and then unlocking, an `.encryptedYAML` source has
+    /// produced so far — see `encryptedImport`'s own doc comment for the
+    /// full account, including why `.unlocked`'s three arrays are computed
+    /// fresh on every read rather than carried here as stored facts.
+    public enum EncryptedImportState: Equatable, Sendable {
+        case notChosen
+        /// `NSOpenPanel` returned this path, but `unlockChosenEncryptedFile()`
+        /// has not yet finished for it (or has not been called at all).
+        case locked(path: String)
+        /// The file could not be unlocked — a read failure, or this
+        /// session's key could not decrypt it. Worded by
+        /// `CreationFailurePresenter`, never composed here; see
+        /// `unlockChosenEncryptedFile()`'s own doc comment for every way
+        /// this is reached.
+        case unlockFailed(CreationFailureMessage)
+        /// The file decrypted, and this is who the current target plan's
+        /// recipients differ from the source file's own: `gaining` is in the
+        /// target but not the source, `losing` is in the source but not the
+        /// target, `keeping` is in both. Every array is age recipients — the
+        /// view names them, this model never invents a name for one.
+        case unlocked(gaining: [String], losing: [String], keeping: [String])
     }
 
     // MARK: - Subjects: what a fact can be a fact *about*
@@ -329,6 +354,16 @@ public final class NewSecretFileModel {
     /// composed here. `nil` once a read has succeeded.
     public private(set) var dotEnvLoadError: CreationFailureMessage?
 
+    /// The file most recently chosen for the `.encryptedYAML` source, via
+    /// `chooseEncryptedFile(at:)`. Unlike `plainYAMLText`/`dotEnvParsed`, the
+    /// URL itself is kept, not only what was read from it: unlocking is a
+    /// separate, retriable, explicit step from choosing (`readiness` can sit
+    /// at `.needsSource` for a while in between, or `unlockChosenEncryptedFile()`
+    /// can be called again after `.unlockFailed`), and each attempt has to
+    /// re-read this exact file — `encryptedImport`'s own doc comment has the
+    /// full account of what unlocking produces and how it is kept fresh.
+    public private(set) var chosenEncryptedFileURL: URL?
+
     /// Set by the user once `readiness` has reported `.needsAcknowledgement`.
     /// A plain flag with no property observer: `readiness` is computed, so
     /// setting this is reflected on the next read with nothing to keep in
@@ -365,6 +400,47 @@ public final class NewSecretFileModel {
     /// describing the name and recipient set on screen right now. See
     /// `ProposalSubject`'s own doc comment for the finding this closes.
     private var lastProposal: Learned<ProposalSubject, ProposedConfig>?
+
+    /// What `unlockChosenEncryptedFile()` learned about the chosen file, on
+    /// success or failure — see `UnlockedImport`'s own doc comment for why
+    /// only these two things are learned, and `encryptedImport`'s for why
+    /// its own three-way diff is not a third.
+    private enum EncryptedImportOutcome {
+        case unlocked(UnlockedImport)
+        case failed(CreationFailureMessage)
+    }
+
+    /// The two things `unlockChosenEncryptedFile()` actually learns from a
+    /// successful decrypt: the source file's own recipients (from
+    /// `SopsBridge.recipients(in:)`, which needs no private identity — see
+    /// that method's own doc comment) and the plaintext the decrypt
+    /// produced. Deliberately not a third thing alongside them: the
+    /// three-way access diff `encryptedImport` reports is computed from
+    /// `sourceRecipients` fresh on every read, never stored here — see that
+    /// property's own doc comment for why.
+    ///
+    /// `decryptedText` is genuine secret material. It has exactly one
+    /// reader: `currentSource()`, which hands it straight to
+    /// `SecretFileCreator.Source.verbatimYAML(_:)` — never through any
+    /// public property, never logged, never rendered. Nothing about it
+    /// reaches `EncryptedImportState`, which is the whole of what
+    /// `EncryptedImportPreview` can see.
+    private struct UnlockedImport {
+        let sourceRecipients: [String]
+        let decryptedText: String
+    }
+
+    /// Filed under the file path `unlockChosenEncryptedFile()` read it from —
+    /// not under a `GovernedPlan` or an `AttemptSubject`, on purpose.
+    /// Unlocking is a fact about the *source* file alone: it needs no target
+    /// plan to attempt (`SopsBridge.decryptYAML`/`.recipients(in:)` never see
+    /// one), and its outcome cannot become untrue because the target plan
+    /// changed — only because the file itself was replaced by
+    /// `chooseEncryptedFile(at:)`, which is exactly what re-keys this
+    /// subject. A target plan changing afterwards is handled entirely by
+    /// `encryptedImport` re-deriving its diff against the live plan, not by
+    /// invalidating this fact — see that property's own doc comment.
+    private var encryptedImportOutcome: Learned<String, EncryptedImportOutcome>?
 
     // MARK: - Derived views of the resolve
 
@@ -408,6 +484,80 @@ public final class NewSecretFileModel {
         }
         guard let subject = currentSubject() else { return nil }
         return lastCreateFailure?.value(ifStillAbout: subject)
+    }
+
+    /// What choosing, and then unlocking, an `.encryptedYAML` source has
+    /// produced — the one source whose own doc comment (`SourceChoice`)
+    /// promises an extra step before it can be used at all: this source
+    /// arrives with its own recipient set, already encrypted for someone,
+    /// and re-encrypting it for a different set is a real access change that
+    /// has to be shown, not merely a file to read (spec §4.1, decision 4).
+    ///
+    /// `.locked(path:)` is the state between `chooseEncryptedFile(at:)`
+    /// returning and `unlockChosenEncryptedFile()` finishing — `path` is
+    /// exactly `chosenEncryptedFileURL.path`, not a value this file invents.
+    /// `.unlockFailed` carries a `CreationFailureMessage`, worded by
+    /// `CreationFailurePresenter` like every other refusal in this file; a
+    /// failed unlock **never** falls through to `.unlocked` — `create()`
+    /// finds nothing to encrypt for this source until this reports
+    /// `.unlocked`, so a refused unlock creates nothing (see
+    /// `currentSource()`).
+    ///
+    /// ## `.unlocked(gaining:losing:keeping:)` is derived, not stored — the
+    /// deliberate answer to the question this task's own brief asks about
+    /// subjects
+    ///
+    /// What `unlockChosenEncryptedFile()` actually *learns*, once, is the
+    /// source file's own recipients and its plaintext — both filed under
+    /// `encryptedImportOutcome`, keyed to the exact file path they were read
+    /// from (see that property's own doc comment). The three-way diff this
+    /// case reports is **not** part of that learned fact: it is computed
+    /// fresh, right here, every time this property is read, from the learned
+    /// source recipients on one side and `currentGovernedPlan()?.recipients`
+    /// — the *live* target — on the other.
+    ///
+    /// That split matters because the two halves of the diff change on
+    /// different schedules. The source side is fixed the moment a file is
+    /// picked; re-reading it needs another explicit unlock, which is why it
+    /// is filed as a `Learned` fact keyed to the file path alone, mirroring
+    /// `plainYAMLText`/`dotEnvParsed`. The target side is not fixed at all —
+    /// it is `currentGovernedPlan()`, the exact value `readiness` and
+    /// `create()` already treat as live, and it changes every time the name
+    /// is retyped or `manuallyChosenRecipients` is edited, with no unlock
+    /// involved. A version of this type that computed the diff once, at
+    /// unlock time, and stored the three arrays would be exactly this task's
+    /// brief's own cautionary tale one field over: `RecipientPicker`'s
+    /// `ProposalSubject` finding was closed by giving a proposal a subject
+    /// precisely because a stored verdict about "what would happen" silently
+    /// stopped describing the truth the moment an unrelated mutation changed
+    /// the inputs it was computed from. A stored diff here would go stale on
+    /// every keystroke in the name field after an unlock — showing a user
+    /// "gains: Alice" for a plan that no longer names Alice at all — which is
+    /// precisely the silent access-change disclosure decision 4 exists to
+    /// prevent, not a cosmetic staleness bug. Deriving it fresh on every read
+    /// makes that impossible the same structural way `readiness` already is:
+    /// there is no stored verdict to go stale, because there is nothing
+    /// stored to begin with — only the one fact that genuinely cannot change
+    /// without another unlock (the source's own recipients), read fresh
+    /// against the one input that changes freely (the target plan).
+    public var encryptedImport: EncryptedImportState {
+        guard let chosenEncryptedFileURL else { return .notChosen }
+        let path = chosenEncryptedFileURL.path
+        guard let outcome = encryptedImportOutcome?.value(ifStillAbout: path) else {
+            return .locked(path: path)
+        }
+        switch outcome {
+        case .failed(let message):
+            return .unlockFailed(message)
+        case .unlocked(let unlocked):
+            let target = currentGovernedPlan()?.recipients ?? []
+            let targetSet = Set(target)
+            let sourceSet = Set(unlocked.sourceRecipients)
+            return .unlocked(
+                gaining: target.filter { !sourceSet.contains($0) },
+                losing: unlocked.sourceRecipients.filter { !targetSet.contains($0) },
+                keeping: unlocked.sourceRecipients.filter { targetSet.contains($0) })
+        }
     }
 
     public init(projectRoot: URL, keyStore: SessionKeyStore) {
@@ -589,6 +739,126 @@ public final class NewSecretFileModel {
         }
     }
 
+    /// Records `url` as the file `.encryptedYAML` would import and drops
+    /// whatever a previous unlock attempt learned — a new file needs a new
+    /// unlock, and `encryptedImportOutcome` is filed under the *path* being
+    /// unlocked, not "whatever was most recently unlocked", so picking a
+    /// different file already makes any previous outcome unreadable through
+    /// `value(ifStillAbout:)`. Cleared here too, outright, for the identical
+    /// "err toward forgetting" reason `resolvePlan()` clears
+    /// `unreadability`/`acknowledgedUnreadable` unconditionally rather than
+    /// relying on the subject check alone: this call site knows for certain
+    /// the old fact no longer applies, so there is no reason to wait for a
+    /// read to discover that structurally.
+    ///
+    /// Reads nothing and unlocks nothing — this only records *which* file;
+    /// `unlockChosenEncryptedFile()` is the separate, explicit call that
+    /// actually attempts to open it. `NewSecretFileSheet`'s file picker
+    /// calls both, one after the other, the same way it calls
+    /// `loadPlainYAML(from:)`/`loadDotEnv(from:)` synchronously right after
+    /// `NSOpenPanel` returns — the two are only split here because unlocking
+    /// needs the session key and the bridge, and doing that inside a
+    /// property setter would make an ordinary assignment silently expensive
+    /// and asynchronous.
+    public func chooseEncryptedFile(at url: URL) {
+        chosenEncryptedFileURL = url
+        encryptedImportOutcome = nil
+    }
+
+    /// Attempts to unlock the file `chooseEncryptedFile(at:)` most recently
+    /// recorded — reads it, decrypts it with this session's key, and, only
+    /// once that succeeds, reads its own recipients. A no-op if no file has
+    /// been chosen at all.
+    ///
+    /// Every refusal is filed as `.failed(_:)`, worded by
+    /// `CreationFailurePresenter`, never composed here — matching this
+    /// file's own discipline throughout:
+    ///
+    /// - The file itself could not be read (`Data(contentsOf:)` failing, or
+    ///   its bytes not being UTF-8) — the same
+    ///   `message(forUnreadableSourceFile:)` `loadPlainYAML(from:)`/
+    ///   `loadDotEnv(from:)` already use for the identical failure shape on
+    ///   their own sources.
+    /// - No session key is configured at all — `message(forEmptyKeyStore:)`,
+    ///   the same sentence `readiness` itself falls back to for every other
+    ///   source once a key is genuinely required.
+    /// - The key that *is* configured could not decrypt this file —
+    ///   `message(forEncryptedImportUnlockFailure:)`, new for this task; see
+    ///   that method's own doc comment for why it is not
+    ///   `SecretFileCreator.Failure.wouldBeUnreadable` wearing a different
+    ///   name. This is also where a failure reading this file's own
+    ///   recipients after a successful decrypt lands — unreachable in
+    ///   practice (a document `SopsBridge.decryptYAML` could open has
+    ///   already proven its own metadata parses), but handled rather than
+    ///   assumed, the same discipline every catch-all in this file keeps.
+    ///
+    /// A failed unlock **never** produces a partial result — `encryptedImportOutcome`
+    /// is either `.unlocked` with both a real recipient list and real
+    /// plaintext, or `.failed`, and `currentSource()` returns `nil` for
+    /// anything but the former. There is no "try anyway": a source this
+    /// session's key cannot decrypt has no plaintext to import, acknowledged
+    /// or not — unlike `SecretFileCreator.Failure.wouldBeUnreadable`, there
+    /// is nothing here for `acknowledgedUnreadable` to waive.
+    ///
+    /// `sessionKey` is lent for exactly this call, through `keyStore.withKey`
+    /// — nothing here copies it out anywhere else; see `SessionKeyStore`'s
+    /// own doc comment, "Why `withKey` instead of a getter".
+    public func unlockChosenEncryptedFile() async {
+        guard let chosenEncryptedFileURL else { return }
+        let path = chosenEncryptedFileURL.path
+
+        let sourceText: String
+        do {
+            let data = try Data(contentsOf: chosenEncryptedFileURL)
+            guard let text = String(data: data, encoding: .utf8) else {
+                encryptedImportOutcome = Learned(
+                    .failed(CreationFailurePresenter.message(forUnreadableSourceFile: ())), about: path)
+                return
+            }
+            sourceText = text
+        } catch {
+            encryptedImportOutcome = Learned(
+                .failed(CreationFailurePresenter.message(forUnreadableSourceFile: ())), about: path)
+            return
+        }
+
+        let decrypted: Result<String, Swift.Error>? = keyStore.withKey { key in
+            do {
+                return .success(try SopsBridge.decryptYAML(sourceText, agePrivateKey: key))
+            } catch {
+                return .failure(error)
+            }
+        }
+        guard let decrypted else {
+            if let message = CreationFailurePresenter.message(forEmptyKeyStore: .empty) {
+                encryptedImportOutcome = Learned(.failed(message), about: path)
+            }
+            return
+        }
+        let plaintext: String
+        switch decrypted {
+        case .success(let text):
+            plaintext = text
+        case .failure:
+            encryptedImportOutcome = Learned(
+                .failed(CreationFailurePresenter.message(forEncryptedImportUnlockFailure: ())), about: path)
+            return
+        }
+
+        // Recipient metadata needs no private identity (`SopsBridge
+        // .recipients(in:)`'s own doc comment) — read only now, after a
+        // successful decrypt, since nothing downstream needs it otherwise.
+        do {
+            let sourceRecipients = try SopsBridge.recipients(in: sourceText)
+            encryptedImportOutcome = Learned(
+                .unlocked(UnlockedImport(sourceRecipients: sourceRecipients, decryptedText: plaintext)),
+                about: path)
+        } catch {
+            encryptedImportOutcome = Learned(
+                .failed(CreationFailurePresenter.message(forEncryptedImportUnlockFailure: ())), about: path)
+        }
+    }
+
     /// Drops the last create failure, called after a load has replaced the
     /// source content.
     ///
@@ -705,9 +975,18 @@ public final class NewSecretFileModel {
             // nothing to encrypt it *as*.
             return .dotEnv(dotEnvParsed.entries)
         case .encryptedYAML:
-            // Task 6 owns unlocking and importing this source. `readiness`
-            // reports `.needsSource` for it unconditionally.
-            return nil
+            // Reads `encryptedImportOutcome` directly rather than through the
+            // public `encryptedImport` — that computed property reports a
+            // *diff*, never the plaintext behind it (see its own doc
+            // comment); this is the one place `UnlockedImport.decryptedText`
+            // is ever read, and it goes straight into `.verbatimYAML(_:)`,
+            // exactly decision 4 in this task's brief: once decrypted, an
+            // imported file is plain YAML like any other, and
+            // `SecretFileCreator` needs no dedicated case for it.
+            guard let chosenEncryptedFileURL,
+                case .unlocked(let unlocked)? = encryptedImportOutcome?.value(ifStillAbout: chosenEncryptedFileURL.path)
+            else { return nil }
+            return .verbatimYAML(unlocked.decryptedText)
         }
     }
 
@@ -994,8 +1273,25 @@ public final class NewSecretFileModel {
                 return .blocked(CreationFailurePresenter.message(forDotEnvWithNoUsableEntries: ()))
             }
         case .encryptedYAML:
-            // Task 6 owns unlocking and importing this source.
-            return .needsSource
+            // `.notChosen`/`.locked` both mean there is nothing yet to
+            // create from — the same `.needsSource` every other source
+            // reports before it has content. `.unlockFailed` is a real
+            // refusal, worded by `CreationFailurePresenter` inside
+            // `unlockChosenEncryptedFile()`, so it renders through
+            // `.blocked` exactly like `plainYAMLLoadError`/`dotEnvLoadError`
+            // above — a failed unlock stops here and never reaches the
+            // key-store/plan checks below. `.unlocked` alone falls through:
+            // this source is exactly as ready as any other loaded one, and
+            // `readiness(for:)`'s own round-trip/acknowledgement handling
+            // applies to it identically.
+            switch encryptedImport {
+            case .notChosen, .locked:
+                return .needsSource
+            case .unlockFailed(let message):
+                return .blocked(message)
+            case .unlocked:
+                break
+            }
         }
 
         if let keyMessage = CreationFailurePresenter.message(forEmptyKeyStore: keyStore.state) {

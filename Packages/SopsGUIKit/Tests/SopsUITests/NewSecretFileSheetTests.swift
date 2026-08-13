@@ -480,8 +480,13 @@ struct NewSecretFileSheetRenderedTests {
         #expect(values.contains(LocalizedKey.newFileInfoNoConfig.text))
     }
 
-    @Test("Encrypted YAML's disabled reason is a visible sentence, not only a tooltip")
-    func encryptedYAMLDisabledReasonIsVisible() async throws {
+    /// Task 6's own carve-out expired: the Encrypted YAML radio used to be
+    /// `.disabled` with a permanently visible explanation. It is selectable
+    /// now, and choosing it renders `EncryptedImportPreview`'s own
+    /// "no file chosen" sentence — the same `newFileNoFileChosen` every
+    /// other unloaded source preview shows — not a dead end.
+    @Test("choosing Encrypted YAML selects it and renders EncryptedImportPreview, not a disabled explanation")
+    func encryptedYAMLSourceIsSelectableAndRendersItsOwnPreview() async throws {
         let (model, _) = try await readyModel()
 
         let host = GatingHost(size: Self.sheetSize) {
@@ -490,8 +495,15 @@ struct NewSecretFileSheetRenderedTests {
         defer { host.finish() }
         await host.settleAfterLoad()
 
+        model.sourceChoice = .encryptedYAML
+        await host.settleAfterAModelChange()
+
         let values = host.nodes().map(\.value)
-        #expect(values.contains(LocalizedKey.newFileSourceEncryptedYAMLDisabledReason.text))
+        let labels = host.nodes().map(\.label)
+        #expect(values.contains(LocalizedKey.newFileNoFileChosen.text) || labels.contains(LocalizedKey.newFileNoFileChosen.text),
+                "EncryptedImportPreview's own empty state did not render")
+        #expect(labels.contains(LocalizedKey.newFileChooseFileButton.text),
+                "EncryptedImportPreview's choose-file button did not render")
     }
 
     @Test("choosing .env renders DotEnvPreviewTable's own empty-state sentence before a file is picked")

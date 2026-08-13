@@ -496,6 +496,11 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case creationFailureConfigTitle = "creation-failure.config-title"
     // `DotEnvParseFailure` fires before any encryption is attempted at all.
     case creationFailureDotEnvTitle = "creation-failure.dotenv-title"
+    // Phase 2 Task 6: an `.encryptedYAML` source that could not be unlocked.
+    // Distinct from `creationFailureTitle` — nothing was written or refused
+    // to be written here; the file being *imported* could not be opened at
+    // all, a different action from creating the new one.
+    case creationFailureEncryptedImportTitle = "creation-failure.encrypted-import-title"
 
     case creationRecoveryPickLocationAgain = "creation-failure.recovery.pick-location-again"
     case creationRecoveryCheckProjectConnected = "creation-failure.recovery.check-project-connected"
@@ -517,6 +522,13 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // method's own doc comment for why none of the four vocabularies this
     // presenter unifies already has a case for it.
     case creationFailureSourceFileUnreadable = "creation-failure.source-file-unreadable"
+    // `CreationFailurePresenter.message(forEncryptedImportUnlockFailure:)`'s
+    // recovery — this session's key exists but cannot open the chosen
+    // `.encryptedYAML` source. See that method's own doc comment for why
+    // there is no acknowledgement path out of this, unlike
+    // `creationRecoveryAddYourKeyOrAcknowledge`.
+    case creationRecoveryImportAKeyThatCanDecryptThisFile =
+        "creation-failure.recovery.import-a-key-that-can-decrypt-this-file"
 
     // MARK: Phase 2 Task 3 — DotEnvPreviewTable
     //
@@ -567,11 +579,6 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case newFileSourcePlainYAML = "new-file.source.plain-yaml"
     case newFileSourceEncryptedYAML = "new-file.source.encrypted-yaml"
     case newFileSourceDotEnv = "new-file.source.dotenv"
-    // Shown whenever the Encrypted YAML source is visible, selected or not —
-    // it is disabled and unreachable in this task, so the reason has to be
-    // readable without hovering it. See `NewSecretFileSheet`'s own doc
-    // comment for why this source waits for Task 6.
-    case newFileSourceEncryptedYAMLDisabledReason = "new-file.source.encrypted-yaml-disabled-reason"
 
     case newFileNameLabel = "new-file.name.label"
     // An example path, not a real default — the field starts empty.
@@ -623,6 +630,27 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case recipientPickerWriteButton = "recipient-picker.write-button"
     case recipientPickerProposalHeading = "recipient-picker.proposal-heading"
     case recipientPickerWriteSuccess = "recipient-picker.write-success"
+
+    // MARK: Phase 2 Task 6 — EncryptedImportPreview
+    //
+    // Unlocking an `.encryptedYAML` source and disclosing exactly who gains
+    // and loses access by re-encrypting it for the target plan's recipients
+    // — spec §4.1, decision 4. See `EncryptedImportPreview`'s own doc
+    // comment: the language deliberately matches `ProjectAccessView`'s own
+    // "gains"/"loses" sentences (`projectAccessConfigGains`/`.Loses`), even
+    // though this is a different action (importing one file, not rewriting
+    // a creation rule) and so gets its own keys rather than reusing theirs.
+
+    case newFileEncryptedImportUnlockingLabel = "new-file.encrypted-import.unlocking"
+    case newFileEncryptedImportDiffTitle = "new-file.encrypted-import.diff-title"
+    // Each formatted with the comma-joined recipient names/keys this half of
+    // the diff names — the same `RecipientRegistry` lookup, falling back to
+    // `NewSecretFileSheet.shortenedKey(_:)`, that the ⓘ line and
+    // `RecipientPicker` already use. Never a count, so none of these needs a
+    // plural split — see `LocalizationTests.countedStringsPluralize`.
+    case newFileEncryptedImportGains = "new-file.encrypted-import.gains"
+    case newFileEncryptedImportLoses = "new-file.encrypted-import.loses"
+    case newFileEncryptedImportKeeps = "new-file.encrypted-import.keeps"
 
     /// The resolved English text. Used in views and asserted in tests.
     public var text: String {

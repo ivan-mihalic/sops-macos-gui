@@ -464,6 +464,17 @@
         }
       }
     },
+    "creation-failure.encrypted-import-title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't Import This File"
+          }
+        }
+      }
+    },
     "creation-failure.recovery.add-your-key-or-acknowledge": {
       "extractionState": "manual",
       "localizations": {
@@ -526,6 +537,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "That file could not be read."
+          }
+        }
+      }
+    },
+    "creation-failure.recovery.import-a-key-that-can-decrypt-this-file": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import the session key that can decrypt this file, then choose it again."
           }
         }
       }
@@ -735,17 +757,6 @@
           "stringUnit": {
             "state": "translated",
             "value": ".env…"
-          }
-        }
-      }
-    },
-    "new-file.source.encrypted-yaml-disabled-reason": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Importing an encrypted file needs to unlock it first and show what access would change — that isn't available yet. Choose a different source for now."
           }
         }
       }
@@ -988,6 +999,61 @@
           "stringUnit": {
             "state": "translated",
             "value": ".sops.yaml created."
+          }
+        }
+      }
+    },
+    "new-file.encrypted-import.unlocking": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unlocking…"
+          }
+        }
+      }
+    },
+    "new-file.encrypted-import.diff-title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Importing this file will change who can read it:"
+          }
+        }
+      }
+    },
+    "new-file.encrypted-import.gains": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ will gain access to this file."
+          }
+        }
+      }
+    },
+    "new-file.encrypted-import.loses": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ will lose access to this file."
+          }
+        }
+      }
+    },
+    "new-file.encrypted-import.keeps": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ keeps access to this file."
           }
         }
       }
