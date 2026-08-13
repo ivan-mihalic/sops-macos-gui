@@ -130,9 +130,26 @@ public struct EncryptedImportPreview: View {
             // against — see `NewSecretFileModel.encryptedImport`'s own doc
             // comment, "The diff needs a known target, not just a decrypted
             // file", for the finding this state exists to close. Rendered
-            // as a plain, neutral sentence: not a failure (nothing is
-            // `.blocked`, and this view never overrides `readiness`), not a
-            // diff (there is nothing honest to diff yet).
+            // as a plain, neutral *fact*, deliberately not an instruction —
+            // a second review finding, closed by removing the instruction
+            // rather than trying to word one that fits every cause this
+            // state merges. An earlier version said "Choose a name (and, if
+            // needed, recipients)…", which presumes the fix is always
+            // choosing something — wrong for two of the causes
+            // `currentGovernedPlan()` can return `nil` for: a name still
+            // mid-debounce (already chosen, just not resolved yet) and
+            // `.configUnreadable` (no name or recipient choice fixes an
+            // unparseable `.sops.yaml`). `NewSecretFileSheet` already
+            // renders the real explanation for those — the resolving
+            // spinner, or the `.blocked` banner — directly above this view
+            // (`nameSection` sits before `previewArea`), so the fix lives in
+            // not duplicating that judgment here, not in trying to make one
+            // sentence correct for every cause. Splitting the sentence per
+            // cause was the alternative and was rejected: it would mean this
+            // view inspecting `model.plan`/`readiness` to decide *why*
+            // there is no target, which is exactly the plan-reading
+            // judgment `EncryptedImportPreview`'s own doc comment ("The view
+            // decides nothing") says belongs to the model, not here.
             Text(.newFileEncryptedImportAwaitingPlanLabel)
                 .font(.caption)
                 .foregroundStyle(.secondary)

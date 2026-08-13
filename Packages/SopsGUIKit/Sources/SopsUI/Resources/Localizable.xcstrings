@@ -1020,7 +1020,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This file has been unlocked. Choose a name (and, if needed, recipients) to see who would gain or lose access to the new file."
+            "value": "This file has been unlocked, but there is no destination decided yet, so there is nothing to compare it against."
           }
         }
       }

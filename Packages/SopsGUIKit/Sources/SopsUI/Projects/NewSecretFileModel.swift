@@ -994,6 +994,7 @@ public final class NewSecretFileModel {
     /// every other case: `plan` not yet resolved for `relativeName` (see
     /// `currentSubject()`'s own comment on why that check matters), no
     /// `plan` at all, `.noConfig`/`.noRuleMatched` with nothing chosen yet,
+    /// a `.governedByRule` whose own recipient list is empty (see below),
     /// or one of the two blocking cases (`.unsupportedRule`,
     /// `.configUnreadable`).
     ///
@@ -1007,10 +1008,40 @@ public final class NewSecretFileModel {
     /// (it never sets `encrypted_regex` either), so a file created before
     /// any `.sops.yaml` write and one created after `RecipientPicker`
     /// writes the proposed config are encrypted identically.
+    ///
+    /// ## An empty recipient list is not a target
+    ///
+    /// A review finding on Task 6's own `EncryptedImportPreview`, closed
+    /// here rather than at that call site, because both of this method's
+    /// callers needed the identical fix: `CreationPlanResolverTests
+    /// .ruleWithNoKeyGroupIsGovernedByRuleWithNoRecipients` measured,
+    /// against the real bridge, that sops's own config loader admits a
+    /// creation rule whose `path_regex` matches but which names no key
+    /// group at all — no `age:`, no `pgp:`, nothing — and
+    /// `CreationPlanResolver.plan(forTarget:in:)` reports that as
+    /// `.governedByRule(recipients: [], encryptedRegex: "")`, not a
+    /// refusal. An earlier version of this method passed that empty list
+    /// straight through as a real `GovernedPlan`, which meant two things at
+    /// once, through this method's two callers: `readiness` reported
+    /// `.ready(recipients: [])` with Create *enabled* for a project whose
+    /// own config names nobody to encrypt for, and — the sharper case Task
+    /// 6 was actually reviewed for — `EncryptedImportPreview`'s diff
+    /// treated `[]` as a real target and named every one of an unlocked
+    /// source's own recipients as *losing* access, the exact false
+    /// disclosure the Critical finding was about, arriving through a second
+    /// door the first fix did not cover. Refusing an empty recipient list
+    /// here, the same way `.unsupportedRule`/`.configUnreadable` already
+    /// are, closes both at once: `readiness`'s `.governedByRule` branch
+    /// falls to a real refusal message (see its own comment), and
+    /// `NewSecretFileModel.encryptedImport` already treats a `nil`
+    /// `currentGovernedPlan()` as "nothing to diff against yet" —
+    /// `.unlockedAwaitingPlan`, not an invented empty target — with no
+    /// further change needed there at all.
     private func currentGovernedPlan() -> GovernedPlan? {
         guard let resolution, resolution.name == relativeName, let plan = resolution.plan else { return nil }
         switch plan {
         case .governedByRule(let recipients, let encryptedRegex):
+            guard !recipients.isEmpty else { return nil }
             return GovernedPlan(recipients: recipients, encryptedRegex: encryptedRegex)
         case .noConfig, .noRuleMatched:
             guard !manuallyChosenRecipients.isEmpty else { return nil }
@@ -1421,13 +1452,23 @@ public final class NewSecretFileModel {
         case .governedByRule:
             // `currentGovernedPlan()` re-derives the identical
             // `GovernedPlan` from `resolution` — see that method's own doc
-            // comment. Never `nil` here: this branch already established
-            // `resolution.plan` is `.governedByRule` for `resolution.name
-            // == relativeName` (the `guard` above this switch), which is
-            // exactly what `currentGovernedPlan()` itself checks first.
-            // Handled rather than force-unwrapped all the same, so a future
-            // change to either method's guard cannot crash this call.
-            guard let governed = currentGovernedPlan() else { return .needsName }
+            // comment. `nil` here used to be unreachable — this branch
+            // already established `resolution.plan` is `.governedByRule`
+            // for `resolution.name == relativeName` (the `guard` above this
+            // switch), which is exactly what `currentGovernedPlan()` itself
+            // checks first — but a review finding on Task 6 gave it a
+            // second, real cause: `currentGovernedPlan()` now also returns
+            // `nil` for a matched rule whose own recipient list is empty
+            // (see that method's own doc comment, "An empty recipient list
+            // is not a target"), which `CreationPlanResolverTests
+            // .ruleWithNoKeyGroupIsGovernedByRuleWithNoRecipients` proved is
+            // a real, sops-admitted shape, not a hypothetical one. `.needsName`
+            // used to be the (unreachable) fallback here; it would have been
+            // actively wrong for this cause — the name is not the problem —
+            // so this is a real, worded refusal now, not a placeholder.
+            guard let governed = currentGovernedPlan() else {
+                return .blocked(CreationFailurePresenter.messageForRuleWithNoRecipients())
+            }
             return readiness(for: governed)
         case .noConfig, .noRuleMatched:
             // Neither is a failure — see `CreationPlanResolver.plan`'s own

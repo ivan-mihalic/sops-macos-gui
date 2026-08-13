@@ -361,6 +361,32 @@ public enum CreationFailurePresenter {
             recovery: nil)
     }
 
+    /// `NewSecretFileModel.readiness`'s refusal for a `.governedByRule` plan
+    /// whose own recipient list is empty — a real, sops-admitted shape
+    /// (`CreationPlanResolverTests
+    /// .ruleWithNoKeyGroupIsGovernedByRuleWithNoRecipients` measured it
+    /// directly against the real bridge: a creation rule whose `path_regex`
+    /// matches but which names no key group at all is `.governedByRule(
+    /// recipients: [], …)`, not a refusal from `CreationPlanResolver`
+    /// itself), not a hypothetical this presenter is padding out.
+    ///
+    /// Not `CreationPlanResolver`'s own vocabulary — `CreationPlan` carries
+    /// no case for "matched, but no recipients", so this belongs here on
+    /// the same terms `messageForStaleProposal()`/`message(forEmptyKeyStore:)`
+    /// already do: a permanent state this app's own bookkeeping has an
+    /// opinion about, not a thrown error to translate. Reached from
+    /// `NewSecretFileModel.currentGovernedPlan()`'s own empty-recipients
+    /// guard — see that method's own doc comment, "An empty recipient list
+    /// is not a target", for the disclosure finding this refusal closes.
+    public static func messageForRuleWithNoRecipients() -> CreationFailureMessage {
+        CreationFailureMessage(
+            title: .creationFailureTitle,
+            detail: "The matching rule in this project's .sops.yaml names no recipients at all, so "
+                + "nothing could be encrypted for anyone. Add at least one recipient to the rule in "
+                + ".sops.yaml, or choose a different location.",
+            recovery: nil)
+    }
+
     /// `NewSecretFileModel.writeProposedConfig()`'s refusal when there is no
     /// proposal on file for the name and recipients currently chosen — either
     /// nothing has been proposed yet, or the name/selection has changed since

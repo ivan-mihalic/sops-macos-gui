@@ -646,7 +646,14 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // is known yet, so there is nothing honest to diff against. See
     // `NewSecretFileModel.encryptedImport`'s own doc comment, "The diff
     // needs a known target, not just a decrypted file", for the review
-    // finding this state (and this sentence) exist to close.
+    // finding this state (and this sentence) exist to close. States the
+    // fact only, deliberately not an instruction — see
+    // `EncryptedImportPreview`'s own doc comment on its `.unlockedAwaitingPlan`
+    // branch for why a second review round removed "Choose a name…": that
+    // wording presumed a fix that does not apply to every cause this state
+    // merges (a mid-debounce name, or an unparseable `.sops.yaml`), and
+    // `NewSecretFileSheet` already renders the real explanation for those
+    // directly above this sentence.
     case newFileEncryptedImportAwaitingPlanLabel = "new-file.encrypted-import.awaiting-plan"
     // The diff's title when `gaining`/`losing` are not both empty.
     case newFileEncryptedImportDiffTitle = "new-file.encrypted-import.diff-title"

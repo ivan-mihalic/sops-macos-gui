@@ -109,6 +109,32 @@ private func writeEncryptedFixture(plaintext: String, recipients: [String], to u
     try encrypted.write(to: url, atomically: true, encoding: .utf8)
 }
 
+/// Every `String` reachable from `value` by walking its storage with
+/// `Mirror` — including `private` stored properties, which `Mirror` does
+/// not respect access control for. This is the actual threat model
+/// `NewSecretFileModel`'s own doc comments name for "not logged, but still
+/// reachable": `forgetLastCreateFailure()` exists specifically so a sweep
+/// like this one, run against the live model, finds nothing left over from
+/// a file the user has already moved on from.
+///
+/// Depth-capped as a backstop against a reference cycle this object graph
+/// is not expected to have (`NewSecretFileModel` holds no back-reference to
+/// anything that holds it), not because one is anticipated.
+private func allStrings(reachableFrom value: Any, depth: Int = 0) -> [String] {
+    guard depth < 20 else { return [] }
+    var found: [String] = []
+    if let string = value as? String { found.append(string) }
+    let mirror = Mirror(reflecting: value)
+    for child in mirror.children {
+        found += allStrings(reachableFrom: child.value, depth: depth + 1)
+    }
+    return found
+}
+
+private func modelRetains(_ needle: String, _ model: NewSecretFileModel) -> Bool {
+    allStrings(reachableFrom: model).contains { $0.contains(needle) }
+}
+
 // MARK: - Model-level: chooseEncryptedFile / unlockChosenEncryptedFile
 
 @Suite("NewSecretFileModel.encryptedImport")
@@ -181,6 +207,48 @@ struct EncryptedImportModelTests {
         // diff — no second unlock, matching `diffTracksTheLivePlanAfterUnlock`.
         model.manuallyChosenRecipients = [a.public]
         #expect(model.encryptedImport == .unlocked(gaining: [], losing: [b.public], keeping: [a.public]))
+    }
+
+    /// The second door the review found into the Critical's exact false
+    /// disclosure — not "no `.sops.yaml` yet" (the test above) but "a real
+    /// `.sops.yaml` rule matches this path and names *zero* recipients",
+    /// which `CreationPlanResolverTests
+    /// .ruleWithNoKeyGroupIsGovernedByRuleWithNoRecipients` measured sops's
+    /// own config loader actually admits. `model.plan` here is
+    /// `.governedByRule(recipients: [], …)`, not `.noConfig` — a genuinely
+    /// different shape from the test above, so it is not covered by it: an
+    /// earlier version of `currentGovernedPlan()` only treated a `nil` plan
+    /// as "no target", and passed an *empty-but-present* recipient list
+    /// straight through as a real one. Proves the same guard now catches
+    /// this shape too — `.unlockedAwaitingPlan`, never a diff naming the
+    /// source's own recipients as losing access to a destination that, in
+    /// truth, the project's own config names nobody for at all.
+    @Test("a matched rule naming no recipients at all also reports unlockedAwaitingPlan, not a diff naming everyone as losing access")
+    func ruleWithNoRecipientsReportsAwaitingPlanNotADiff() async throws {
+        let a = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        try """
+            creation_rules:
+              - path_regex: .*\\.yaml$
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let keyStore = try makeKeyStore(importing: a.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+        model.relativeName = "imported.yaml"
+        await model.resolvePlan()
+        try #require(model.plan == .governedByRule(recipients: [], encryptedRegex: ""))
+
+        let source = root.appendingPathComponent("source.yaml")
+        try writeEncryptedFixture(plaintext: "greeting: hello\n", recipients: [a.public], to: source)
+        model.sourceChoice = .encryptedYAML
+        model.chooseEncryptedFile(at: source)
+        await model.unlockChosenEncryptedFile()
+
+        #expect(model.encryptedImport == .unlockedAwaitingPlan)
+        guard case .blocked(let message) = model.readiness else {
+            Issue.record("expected .blocked, got \(model.readiness)")
+            return
+        }
+        #expect(message.detail.localizedCaseInsensitiveContains("no recipients"))
     }
 
     /// Important 3 from the review: every `decryptYAML`/`recipients(in:)`
@@ -418,6 +486,61 @@ struct EncryptedImportModelTests {
         // Back to `.locked` for the new path — the old `.unlocked` verdict,
         // learned about `first.yaml`, must not still describe `second.yaml`.
         #expect(model.encryptedImport == .locked(path: second.path))
+    }
+
+    /// Review Important 4, re-checked rather than taken on trust: unlock A,
+    /// have `create()` refuse for a reason that has nothing to do with A's
+    /// content (the destination already exists — a pre-existing file, not a
+    /// content problem), pick B, then `Mirror`-sweep the *whole model* for
+    /// the sentinel that only ever appeared in A's decrypted plaintext.
+    ///
+    /// This is deliberately not an assertion about `plainYAMLText`-shaped
+    /// public state — that already changes the moment B loads, guard or no
+    /// guard, and would make the test pass for the wrong reason. The
+    /// sentinel can only still be reachable through `lastCreateFailure`'s
+    /// retained `AttemptSubject.source`, which is `private` and escapes only
+    /// through `value(ifStillAbout:)` — clearing it changes no *observable*
+    /// behaviour a black-box test could see, which is exactly why a
+    /// behavioural test proves nothing about whether `chooseEncryptedFile(
+    /// at:)` actually calls `forgetLastCreateFailure()`. `Mirror` reads
+    /// storage directly, `private` or not.
+    @Test("picking a different encrypted file after a refused create() does not retain the previous file's decrypted plaintext")
+    func pickingADifferentFileAfterARefusedCreateDropsThePreviousPlaintext() async throws {
+        let a = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        try ageConfig([a.public])
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let keyStore = try makeKeyStore(importing: a.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+        model.relativeName = "imported.yaml"
+        await model.resolvePlan()
+
+        // The destination already exists — `create()` refuses at step 2,
+        // deterministically, before it ever looks at what A's content is.
+        let destination = root.appendingPathComponent("imported.yaml")
+        try "already here\n".write(to: destination, atomically: true, encoding: .utf8)
+
+        let sentinel = "correct-horse-battery-staple"
+        let sourceA = root.appendingPathComponent("a.yaml")
+        try writeEncryptedFixture(plaintext: "password: \(sentinel)\n", recipients: [a.public], to: sourceA)
+        model.sourceChoice = .encryptedYAML
+        model.chooseEncryptedFile(at: sourceA)
+        await model.unlockChosenEncryptedFile()
+        try #require(model.encryptedImport == .unlocked(gaining: [], losing: [], keeping: [a.public]))
+
+        let created = await model.create()
+        #expect(created == nil)
+        guard case .blocked = model.readiness else {
+            Issue.record("expected .blocked (destinationExists) — this test would be vacuous")
+            return
+        }
+
+        let sourceB = root.appendingPathComponent("b.yaml")
+        try writeEncryptedFixture(plaintext: "other: value\n", recipients: [a.public], to: sourceB)
+        model.chooseEncryptedFile(at: sourceB)
+
+        #expect(!modelRetains(sentinel, model),
+                "the model still retains A's decrypted plaintext, reachable via Mirror, after B was picked")
     }
 }
 
