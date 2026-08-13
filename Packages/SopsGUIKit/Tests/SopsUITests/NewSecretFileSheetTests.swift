@@ -119,6 +119,7 @@ struct CanCreateTests {
     func everyOtherStateRefuses() {
         let message = CreationFailureMessage(title: .creationFailureTitle, detail: "x", recovery: nil)
         #expect(!NewSecretFileSheet.canCreate(readiness: .needsName, isCreating: false))
+        #expect(!NewSecretFileSheet.canCreate(readiness: .resolving, isCreating: false))
         #expect(!NewSecretFileSheet.canCreate(readiness: .needsSource, isCreating: false))
         #expect(!NewSecretFileSheet.canCreate(readiness: .needsAcknowledgement, isCreating: false))
         #expect(!NewSecretFileSheet.canCreate(readiness: .blocked(message), isCreating: false))
@@ -991,5 +992,377 @@ struct CreateFromSourceTests {
         let encrypted = try String(contentsOf: destination, encoding: .utf8)
         let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
         #expect(rows.isEmpty)
+    }
+}
+
+// MARK: - A verdict may not outlive what it was a verdict about
+//
+// Four rounds of this task fixed four separate instances of one class of
+// defect: `readiness` was a *stored* verdict, and the facts it was computed
+// from — `planError` above all — were cleared by only some of the code paths
+// that change what is being created. Every new path that recomputed
+// readiness, or every new way to change the inputs without recomputing it,
+// was another chance for the sheet to describe a situation that no longer
+// existed.
+//
+// These tests do not check four particular doors. They check the property
+// the fix rests on, along every axis by which "what would be created" can
+// change: **the name**, **the source kind**, and **the source content**. A
+// verdict about a previous create attempt must not survive any of them, and
+// `readiness` must follow the model's inputs with no recompute call in
+// between — because there is no stored verdict left to go stale.
+
+@Suite("A stale verdict cannot outlive what it describes")
+@MainActor
+struct StaleVerdictTests {
+
+    private func sourceFile(named name: String, containing text: String) throws -> URL {
+        let dir = try scratchDirectory("new-secret-file-sheet-stale-source")
+        let url = dir.appendingPathComponent(name)
+        try text.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    /// A project whose one rule names this session's own key, so nothing but
+    /// the thing under test can block a create.
+    private func ownedProject() throws -> (root: URL, owner: AgeKeyPair, keyStore: SessionKeyStore) {
+        let owner = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        try ageOnlyConfig(owner.public)
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        return (root, owner, try makeKeyStore(importing: owner.private))
+    }
+
+    // MARK: - The source content changed
+
+    /// The fourth instance, exactly as the review described it: a malformed
+    /// Plain YAML source makes `create()` fail with `SecretFileCreator
+    /// .Failure.engine`, which is *not* `wouldBeUnreadable`, so the failure
+    /// message was recorded and `readiness` went `.blocked`. The natural next
+    /// action is to pick a different file — and `NewSecretFileSheet` calls
+    /// `loadPlainYAML(from:)` directly, deliberately not through
+    /// `resolvePlan()`. The load succeeded, the content was replaced, and the
+    /// banner still described the file the user had already thrown away, with
+    /// Create still disabled and no signposted way out.
+    @Test("a create failure about one Plain YAML source does not survive picking a different one")
+    func createFailureDoesNotSurviveANewPlainYAMLSource() async throws {
+        let (root, owner, keyStore) = try ownedProject()
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+
+        let broken = try sourceFile(named: "broken.yaml", containing: "db: [unterminated\n")
+        model.loadPlainYAML(from: broken)
+        model.sourceChoice = .plainYAML
+        model.relativeName = "secret.yaml"
+        await model.resolvePlan()
+
+        #expect(await model.create() == nil)
+        guard case .blocked = model.readiness else {
+            Issue.record("precondition: expected .blocked after the malformed source, got \(model.readiness)")
+            return
+        }
+
+        // The user picks a different, valid file. Nothing else happens — no
+        // rename, no source-radio toggle, no `resolvePlan()`.
+        let good = try sourceFile(named: "good.yaml", containing: "db:\n    password: fine-EXAMPLE\n")
+        model.loadPlainYAML(from: good)
+
+        #expect(model.planError == nil, "the failure was about content that has been replaced")
+        guard case .ready = model.readiness else {
+            Issue.record("expected .ready for the freshly loaded source, got \(model.readiness)")
+            return
+        }
+
+        // And it is not merely cosmetic: creating now actually works.
+        let destination = try #require(await model.create())
+        let encrypted = try String(contentsOf: destination, encoding: .utf8)
+        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        #expect(rows.first { $0.path == ["db", "password"] }?.value == "fine-EXAMPLE")
+    }
+
+    /// The same axis through `loadDotEnv(from:)`, the second of the two
+    /// loaders that recompute readiness without going through
+    /// `resolvePlan()` — a fix that happened to work for one source and not
+    /// the other is exactly what the previous rounds kept producing.
+    ///
+    /// The refusal here (`SecretFileCreator.Failure.destinationExists`) is
+    /// about the *name*, not the content, and it deliberately does not
+    /// survive the content change either: forgetting the last attempt
+    /// wholesale returns the model to the state it would be in had that
+    /// attempt never happened, and for an occupied destination that state is
+    /// `.ready` — nothing in this model ever looks at the filesystem before
+    /// `create()` does, so a fresh model here reports `.ready` too. Erring
+    /// toward forgetting costs a repeated, accurate refusal; erring the other
+    /// way is what produced four rounds of stale banners with no way out.
+    @Test("a create failure does not survive picking a different .env source either")
+    func createFailureDoesNotSurviveANewDotEnvSource() async throws {
+        let (root, _, keyStore) = try ownedProject()
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+
+        try "occupied\n".write(
+            to: root.appendingPathComponent("taken.yaml"), atomically: true, encoding: .utf8)
+
+        let picked = try sourceFile(named: "input.env", containing: "API_KEY=sk_live_EXAMPLE\n")
+        model.loadDotEnv(from: picked)
+        model.sourceChoice = .dotEnv
+        model.relativeName = "taken.yaml"
+        await model.resolvePlan()
+
+        #expect(await model.create() == nil)
+        guard case .blocked = model.readiness else {
+            Issue.record("precondition: expected .blocked for an occupied destination, got \(model.readiness)")
+            return
+        }
+
+        let repicked = try sourceFile(named: "other.env", containing: "OTHER=value-EXAMPLE\n")
+        model.loadDotEnv(from: repicked)
+
+        #expect(model.planError == nil, "the verdict was about an attempt that is no longer the one in hand")
+        guard case .ready = model.readiness else {
+            Issue.record("expected the fresh-model state for the new content, got \(model.readiness)")
+            return
+        }
+
+        // And the refusal comes straight back, accurate, the moment it is
+        // earned again — forgetting is not the same as excusing.
+        #expect(await model.create() == nil)
+        guard case .blocked(let repeated) = model.readiness else {
+            Issue.record("expected .blocked again on the next attempt, got \(model.readiness)")
+            return
+        }
+        #expect(repeated.detail.contains("taken.yaml"))
+    }
+
+    // MARK: - The source kind changed
+
+    /// Switching the source radio is a change to what would be created that
+    /// goes through no model method at all — `sourceChoice` is a plain
+    /// property with no observer (the view calls `resolvePlan()` afterwards,
+    /// but a stored verdict is already wrong by then, and nothing obliges a
+    /// future caller to make that call).
+    @Test("a create failure does not survive switching to a source that has nothing loaded")
+    func createFailureDoesNotSurviveASourceChoiceChange() async throws {
+        let (root, _, keyStore) = try ownedProject()
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+
+        // Something is already at the destination, so `create()` refuses with
+        // `SecretFileCreator.Failure.destinationExists` — a failure with
+        // nothing to do with the source, which is exactly the point.
+        try "occupied\n".write(
+            to: root.appendingPathComponent("taken.yaml"), atomically: true, encoding: .utf8)
+        model.relativeName = "taken.yaml"
+        await model.resolvePlan()
+
+        #expect(await model.create() == nil)
+        guard case .blocked = model.readiness else {
+            Issue.record("precondition: expected .blocked for an occupied destination, got \(model.readiness)")
+            return
+        }
+
+        model.sourceChoice = .plainYAML
+
+        #expect(
+            model.readiness == .needsSource,
+            "a Plain YAML source with nothing picked yet is .needsSource, not a verdict about the empty source")
+    }
+
+    // MARK: - The name changed
+
+    @Test("a create failure about one name does not survive typing a different one")
+    func createFailureDoesNotSurviveANameChange() async throws {
+        let (root, _, keyStore) = try ownedProject()
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+
+        try "occupied\n".write(
+            to: root.appendingPathComponent("taken.yaml"), atomically: true, encoding: .utf8)
+        model.relativeName = "taken.yaml"
+        await model.resolvePlan()
+
+        #expect(await model.create() == nil)
+        guard case .blocked = model.readiness else {
+            Issue.record("precondition: expected .blocked for an occupied destination, got \(model.readiness)")
+            return
+        }
+
+        // One keystroke's worth of change, inside the view's own 200ms
+        // debounce window — before any resolve has run for the new name.
+        model.relativeName = "free.yaml"
+
+        if case .blocked = model.readiness {
+            Issue.record("the refusal named taken.yaml; the name is now free.yaml")
+        }
+        #expect(model.planError == nil)
+
+        await model.resolvePlan()
+        guard case .ready = model.readiness else {
+            Issue.record("expected .ready once free.yaml resolves, got \(model.readiness)")
+            return
+        }
+    }
+
+    // MARK: - Readiness follows its inputs with nothing in between
+
+    /// The property the three tests above all rest on, checked directly:
+    /// `readiness` is derived on every read, never a value some earlier call
+    /// happened to store. Clearing the name is the cheapest way to prove it —
+    /// no method call, no observer, no resolve.
+    @Test("readiness follows the name with no recompute call in between")
+    func readinessIsDerivedNotStored() async throws {
+        let (root, _, keyStore) = try ownedProject()
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+        model.relativeName = "secret.yaml"
+        await model.resolvePlan()
+        guard case .ready = model.readiness else {
+            Issue.record("precondition: expected .ready, got \(model.readiness)")
+            return
+        }
+
+        model.relativeName = ""
+
+        #expect(
+            model.readiness == .needsName,
+            "readiness must be derived from the model's inputs, not stored by whoever last recomputed it")
+    }
+
+    // MARK: - A name that has changed since the last resolve describes nothing
+
+    @Test("a name typed since the last resolve is .resolving, not the previous name's verdict")
+    func aNameNotYetResolvedIsResolving() async throws {
+        let (root, owner, keyStore) = try ownedProject()
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+        model.relativeName = "secret.yaml"
+        await model.resolvePlan()
+        try #require(model.readiness == .ready(recipients: [owner.public]))
+
+        model.relativeName = "other.yaml"
+
+        #expect(
+            model.readiness == .resolving,
+            "the plan in hand was resolved for secret.yaml and says nothing about other.yaml")
+        #expect(!NewSecretFileSheet.canCreate(readiness: model.readiness, isCreating: false))
+        // And `create()` still refuses, as it always did — the change is that
+        // the button is no longer offered in the first place.
+        #expect(await model.create() == nil)
+    }
+
+    // MARK: - The mechanism itself
+
+    @Test("a fact filed about one subject cannot be read back for another")
+    func aLearnedFactIsUnreadableOnceItsSubjectChanges() {
+        let message = CreationFailureMessage(title: .creationFailureTitle, detail: "refused", recovery: nil)
+        let plan = NewSecretFileModel.GovernedPlan(recipients: ["age1aaa"], encryptedRegex: "")
+        let subject = NewSecretFileModel.AttemptSubject(
+            name: "secret.yaml", plan: plan, source: .verbatimYAML("a: b\n"))
+        let learned = NewSecretFileModel.Learned(message, about: subject)
+
+        #expect(learned.value(ifStillAbout: subject) == message)
+
+        // Every field of the subject, one at a time — this is the whole
+        // surface by which "what is being created" can differ.
+        let renamed = NewSecretFileModel.AttemptSubject(
+            name: "other.yaml", plan: plan, source: subject.source)
+        let reaimed = NewSecretFileModel.AttemptSubject(
+            name: subject.name,
+            plan: NewSecretFileModel.GovernedPlan(recipients: ["age1bbb"], encryptedRegex: ""),
+            source: subject.source)
+        let rescoped = NewSecretFileModel.AttemptSubject(
+            name: subject.name,
+            plan: NewSecretFileModel.GovernedPlan(recipients: ["age1aaa"], encryptedRegex: "^data$"),
+            source: subject.source)
+        let refilled = NewSecretFileModel.AttemptSubject(
+            name: subject.name, plan: plan, source: .verbatimYAML("c: d\n"))
+        let resourced = NewSecretFileModel.AttemptSubject(
+            name: subject.name, plan: plan, source: .empty)
+
+        for changed in [renamed, reaimed, rescoped, refilled, resourced] {
+            #expect(learned.value(ifStillAbout: changed) == nil)
+        }
+    }
+}
+
+// MARK: - The structure the four fix rounds were missing
+//
+// Every instance of the stale-verdict defect had the same two ingredients: a
+// verdict held in a stored property, and a fact behind it that some code path
+// forgot to clear. Both are now impossible to write in `NewSecretFileModel` —
+// `readiness` and `planError` are computed, so there is no verdict to store,
+// and the facts they read are `Learned` values whose only accessor demands the
+// current subject.
+//
+// The `Learned` half is enforced by the compiler: there is no accessor that
+// does not take a subject, so no call site can read a fact without saying what
+// it would be a fact about. The computed half cannot be enforced by the
+// compiler — nothing stops someone turning `readiness` back into a `var` and
+// assigning it — so it is enforced here instead. This suite is the reason a
+// fifth instance would be caught before it shipped rather than in a fifth
+// review, and it reads the source directly for the same reason
+// `CreateButtonWiringTests` does.
+
+@Suite("NewSecretFileModel stores no verdicts")
+struct NoStoredVerdictTests {
+
+    private func modelSource() throws -> String {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // Tests/SopsUITests
+            .deletingLastPathComponent()  // Tests
+            .deletingLastPathComponent()  // package root
+            .appendingPathComponent("Sources/SopsUI/Projects/NewSecretFileModel.swift")
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// Lines of `source` with comment tails removed, so a property *named* in
+    /// a doc comment cannot make this check pass or fail.
+    private func codeLines(_ source: String) -> [Substring] {
+        source.split(whereSeparator: \.isNewline).map { line in
+            guard let comment = line.range(of: "//") else { return line }
+            return line[line.startIndex..<comment.lowerBound]
+        }
+    }
+
+    /// Whether any line assigns to `name` — `name =` but not `name ==`.
+    private func assigns(_ name: String, in lines: [Substring]) -> [String] {
+        lines.compactMap { line -> String? in
+            var search = line.startIndex
+            while let found = line.range(of: name + " =", range: search..<line.endIndex) {
+                let after = line[found.upperBound...]
+                if !after.hasPrefix("=") { return String(line).trimmingCharacters(in: .whitespaces) }
+                search = found.upperBound
+            }
+            return nil
+        }
+    }
+
+    @Test("readiness is computed, never assigned")
+    func readinessIsComputed() throws {
+        let source = try modelSource()
+        #expect(
+            source.contains("public var readiness: Readiness {"),
+            "readiness must stay a computed property — a stored one is what four fix rounds kept patching")
+        #expect(
+            assigns("readiness", in: codeLines(source)).isEmpty,
+            "nothing may assign readiness; it is derived from the model's inputs on every read")
+    }
+
+    @Test("planError is computed, never assigned")
+    func planErrorIsComputed() throws {
+        let source = try modelSource()
+        #expect(source.contains("public var planError: CreationFailureMessage? {"))
+        #expect(
+            assigns("planError", in: codeLines(source)).isEmpty,
+            "planError describes the attempt in hand, not one that was in hand when someone last set it")
+    }
+
+    /// The negative-space check: this guard is only worth anything if it can
+    /// actually fail. Proven against a line of the exact shape the guard
+    /// exists to reject, rather than trusted because it returned green.
+    @Test("the guard can fail — an assignment of the rejected shape is detected")
+    func theGuardDetectsAnAssignment() {
+        let planted = """
+            func recompute() {
+                readiness = computeReadiness()
+                if readiness == .needsName { return }
+            }
+            """
+        #expect(assigns("readiness", in: codeLines(planted)).count == 1)
+        #expect(assigns("readiness", in: codeLines("// readiness = .needsName")).isEmpty)
     }
 }

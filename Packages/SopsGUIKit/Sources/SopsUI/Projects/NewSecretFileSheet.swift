@@ -47,17 +47,14 @@ import SwiftUI
 /// function precisely so a test can drive it directly, with no `Task.sleep`
 /// anywhere in the test — see `NewSecretFileSheetTests`.
 ///
-/// Choosing a different source has no such bridge cost — `sourceChoice`
-/// has no property observer of its own on the model (see that property's
-/// doc comment) — but still needs `readiness` recomputed, so
-/// `resolveNow()` calls `resolvePlan()` immediately, unguarded, whenever
-/// `sourceChoice` changes. Deliberately unguarded, unlike the debounced
-/// path: `resolvePlan()` resets `acknowledgedUnreadable` on every call, so
-/// switching sources while `.needsAcknowledgement` is showing does throw
-/// away a fresh tick — but that is the user's own action, `readiness`
-/// visibly reflects it (the checkbox and the failure banner both update),
-/// and there is no plausible scenario where the tick belonged to the
-/// *source being switched away from* rather than the new one.
+/// Choosing a different source fires no resolve at all. An earlier version
+/// called `resolvePlan()` on every `sourceChoice` change "to recompute
+/// `readiness`" — `NewSecretFileModel.readiness` is now derived on every
+/// read, so there is nothing to recompute, and the plan cannot have changed
+/// anyway: `CreationPlanResolver.plan(forTarget:in:)` is a function of the
+/// name and the project root, not of the source. All that call did was cross
+/// the Go bridge for an unchanged answer and discard the user's
+/// acknowledgement on the way.
 ///
 /// ## What Plain YAML and `.env` actually create
 ///
@@ -128,9 +125,9 @@ public struct NewSecretFileSheet: View {
             // call here. A freshly constructed `NewSecretFileModel` always
             // starts with `relativeName == ""`, so `readiness` is already
             // the correct `.needsName` with no resolve needed; and
-            // `resolvePlan()` resets `discoveredUnreadable`/
-            // `acknowledgedUnreadable` on every call (see those properties'
-            // own doc comments), so calling it here would silently clobber
+            // `resolvePlan()` resets the unreadability discovery and
+            // `acknowledgedUnreadable` on every call (see that method's own
+            // doc comment), so calling it here would silently clobber
             // a model handed in already past that point — exactly the
             // fixtures `NewSecretFileSheetTests` builds to exercise
             // `.needsAcknowledgement` without a live user session. Matches
@@ -140,7 +137,6 @@ public struct NewSecretFileSheet: View {
             registryRecords = (try? RecipientRegistry.load(in: model.projectRoot)) ?? []
         }
         .onChange(of: model.relativeName) { _, _ in resolveDebounced() }
-        .onChange(of: model.sourceChoice) { _, _ in resolveNow() }
     }
 
     // MARK: - Source
@@ -228,7 +224,14 @@ public struct NewSecretFileSheet: View {
     /// `failureBanner(_:)` above via `readiness == .blocked`, so this line
     /// has nothing useful to add for it.
     private var infoLineText: String? {
-        Self.infoLineText(isResolving: model.isResolving, plan: model.plan, recipientNames: recipientNames)
+        // `.resolving` counts as resolving here, not only `model.isResolving`:
+        // between a keystroke and the debounce firing, `model.plan` is still
+        // the *previous* name's plan, and rendering its rule under the name
+        // now in the field would say something true about a file the user is
+        // no longer describing. `Readiness.resolving` is exactly that window.
+        Self.infoLineText(
+            isResolving: model.isResolving || model.readiness == .resolving,
+            plan: model.plan, recipientNames: recipientNames)
     }
 
     /// The `ⓘ` line's text: five shapes matching `CreationPlan`'s cases, plus
@@ -437,15 +440,7 @@ public struct NewSecretFileSheet: View {
 
     // MARK: - Debounce
 
-    /// Recomputes `readiness` immediately — no delay, no bridge-call cost to
-    /// justify one. Used whenever `sourceChoice` changes, per this file's
-    /// own doc comment.
-    private func resolveNow() {
-        resolveTask?.cancel()
-        resolveTask = Task { await model.resolvePlan() }
-    }
-
-    /// Recomputes `readiness` 200ms after the last call, cancelling
+    /// Re-resolves the plan 200ms after the last call, cancelling
     /// whatever resolve was still in flight — and skips the call entirely
     /// when nothing has actually changed since the last successful resolve.
     /// See this file's own doc comment, "The debounce, and why it checks

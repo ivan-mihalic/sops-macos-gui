@@ -10,6 +10,55 @@ import SopsProjects
 /// 3, 5 and 6 (previews and a recipient picker) have one place to hang their
 /// own state without duplicating this one's.
 ///
+/// ## No verdict is ever stored
+///
+/// `readiness` is **computed on every read**, never assigned. This is not a
+/// style preference; it is the fix for a defect that was found and closed
+/// four separate times during this task's review, each instance one door
+/// along from the last. The shape was always the same: `readiness` was a
+/// stored value, the facts behind it were cleared by only *some* of the
+/// paths that change what is being created, and so any path that recomputed
+/// — or any change that recomputed nothing at all — could leave the sheet
+/// describing a situation that no longer existed. A malformed source file
+/// refused at `create()` left a failure banner that survived the user
+/// picking a different file; changing the name left the previous name's
+/// verdict standing; switching the source radio left the previous source's.
+///
+/// A derived `readiness` cannot go stale, because there is nothing to go
+/// stale. Everything it reads is either a live input (`relativeName`,
+/// `sourceChoice`, the loaded source, `keyStore.state`) or a fact filed
+/// under the exact subject it was learned about (`Learned`, below).
+///
+/// ## Facts learned by attempting, and the subject each belongs to
+///
+/// Two things can only be learned by calling `create()` and seeing what
+/// happens: that this session's key is not among a plan's recipients
+/// (`SecretFileCreator.Failure.wouldBeUnreadable`), and any other refusal
+/// the creator reports. Both are stored as `Learned` values, whose *only*
+/// accessor takes the current subject and returns nothing when it has
+/// changed. There is no way to read such a fact without saying what it would
+/// be a fact about, so a fact about a file that has since changed cannot be
+/// returned at all — the compiler has no accessor to offer that would.
+///
+/// The two have deliberately different subjects:
+///
+/// - **`unreadability`** is filed under `GovernedPlan` — the recipients and
+///   `encryptedRegex` a create would use. Self-readability is a property of
+///   the recipient set, not of the bytes, so re-picking a source file must
+///   not discard it (that was the third instance: the user re-picked instead
+///   of ticking the box, and lost the checkbox that this type's own doc
+///   comment calls the only way out).
+/// - **`lastCreateFailure`** is filed under the whole `AttemptSubject` — the
+///   name, the plan and the exact source bytes. Any change to any of them
+///   drops it. That deliberately forgets more than strictly necessary: a
+///   `destinationExists` refusal is about the name and stays true when only
+///   the content changes. Forgetting it returns this model to the state it
+///   would be in had the attempt never happened — which for that case is
+///   `.ready`, exactly what a freshly built model reports, since nothing
+///   here looks at the filesystem before `create()` does. The cost of
+///   forgetting is one repeated, accurate refusal; the cost of remembering
+///   too long is the defect above, four times over.
+///
 /// ## Self-readability cannot be predicted, only discovered
 ///
 /// A `.governedByRule` plan's `recipients` are `age1…` public keys;
@@ -29,17 +78,17 @@ import SopsProjects
 /// that membership question has not been asked yet. Only after `create()`
 /// has actually been attempted and `SecretFileCreator` reports
 /// `.wouldBeUnreadable` does this model learn anything about it:
-/// `discoveredUnreadable` records that one fact for the plan currently in
-/// hand, and `readiness` reports `.needsAcknowledgement` from that point
-/// until `acknowledgedUnreadable` is set. Nothing in this type ever tries to
-/// guess the answer ahead of that call.
+/// `unreadability` records that one fact for the plan it was learned about,
+/// and `readiness` reports `.needsAcknowledgement` from that point until
+/// `acknowledgedUnreadable` is set. Nothing in this type ever tries to guess
+/// the answer ahead of that call.
 ///
 /// ## `Readiness.ready(recipients:)` carries only what gets displayed
 ///
 /// `ResolvedEncryption` — which also needs `encryptedRegex` — is built fresh
-/// inside `create()` from `plan`, never carried on `Readiness` itself. If
-/// `Readiness` carried it too, there would be two sources of truth about
-/// what the file is about to be encrypted with.
+/// inside `create()` from the current `AttemptSubject`, never carried on
+/// `Readiness` itself. If `Readiness` carried it too, there would be two
+/// sources of truth about what the file is about to be encrypted with.
 ///
 /// ## No debounce here
 ///
@@ -47,14 +96,15 @@ import SopsProjects
 /// anything on its own. `NewSecretFileSheet` (Task 4) owns the 200 ms
 /// debounce and its own cancellation as the user types — a model that
 /// debounced itself could not be driven directly from a test without
-/// actually waiting out the debounce.
+/// actually waiting out the debounce. `readiness` reports `.resolving` for
+/// the window in between, rather than the previous name's verdict.
 @MainActor
 @Observable
 public final class NewSecretFileModel {
 
     /// Which kind of content a not-yet-created file would start from.
     /// `.empty`, `.plainYAML` and `.dotEnv` are fully implemented — see
-    /// `loadPlainYAML(from:)`/`loadDotEnv(from:)` and `create()`'s own
+    /// `loadPlainYAML(from:)`/`loadDotEnv(from:)` and `currentSource()`'s own
     /// switch. `.encryptedYAML` alone still reports `.needsSource`
     /// unconditionally: it needs unlocking the file and diffing who would
     /// gain or lose access, which Task 6 adds.
@@ -65,6 +115,12 @@ public final class NewSecretFileModel {
     /// What clicking Create would do right now.
     public enum Readiness: Equatable, Sendable {
         case needsName
+        /// `relativeName` has changed since the last `resolvePlan()` call, so
+        /// no plan in hand describes the file the user is currently naming.
+        /// Deliberately not the previous name's verdict: that verdict is
+        /// about a different file. `NewSecretFileSheet`'s debounce closes
+        /// this window ~200 ms after the last keystroke.
+        case resolving
         case needsSource
         case blocked(CreationFailureMessage)
         /// `plan` is `.governedByRule`, but a previous `create()` attempt
@@ -77,17 +133,86 @@ public final class NewSecretFileModel {
         case ready(recipients: [String])
     }
 
+    // MARK: - Subjects: what a fact can be a fact *about*
+
+    /// A fact, inseparable from the exact subject it was learned about.
+    ///
+    /// `value(ifStillAbout:)` is the **only** accessor: there is no way to
+    /// get the value out without naming the subject it would apply to, and
+    /// no way to get it out at all once that subject has changed. This is
+    /// what makes a stale verdict inexpressible rather than merely absent —
+    /// a future field that forgets to clear itself cannot exist here,
+    /// because nothing is cleared; facts simply stop being readable when
+    /// what they describe is gone.
+    struct Learned<Subject: Equatable, Value> {
+        private let subject: Subject
+        private let value: Value
+
+        init(_ value: Value, about subject: Subject) {
+            self.value = value
+            self.subject = subject
+        }
+
+        func value(ifStillAbout current: Subject) -> Value? {
+            subject == current ? value : nil
+        }
+    }
+
+    /// The one `CreationPlan` case a file can actually be created under,
+    /// with its payload lifted into a value of its own. Two purposes: a
+    /// `Learned` fact about "the plan" compares exactly the recipients and
+    /// regex a create attempt would use, and `create()` never has to
+    /// re-destructure `CreationPlan` to reach them.
+    struct GovernedPlan: Equatable, Sendable {
+        let recipients: [String]
+        let encryptedRegex: String
+    }
+
+    /// Exactly what `create()` would hand `SecretFileCreator` right now: the
+    /// name it would write, the recipients and regex it would encrypt for,
+    /// and the bytes it would encrypt.
+    ///
+    /// This is the single description of "what is being created", and it is
+    /// load-bearing twice over: `create()` takes every input it uses from
+    /// this value (never from the properties behind it), and every failure
+    /// an attempt produces is filed under the value in hand at the time. So
+    /// a new input to creation cannot be added without adding it here — the
+    /// alternative is a field `create()` never reads, which by definition
+    /// changes nothing about the file — and adding it here is what makes a
+    /// change to it invalidate the facts learned before it changed.
+    struct AttemptSubject: Equatable {
+        let name: String
+        let plan: GovernedPlan
+        let source: SecretFileCreator.Source
+    }
+
+    /// The outcome of the most recent `resolvePlan()` call: the name it ran
+    /// for, and either the plan it produced or the reason it could not. One
+    /// value rather than three properties, so `plan`, the resolve's failure
+    /// message, and the name they belong to can never disagree about which
+    /// name is being described.
+    private struct Resolution: Equatable {
+        let name: String
+        /// `nil` when `name` was blank (the resolver is never asked about
+        /// the project root itself — see `resolvePlan()`) or the resolve
+        /// threw, in which case `error` explains it.
+        let plan: CreationPlan?
+        let error: CreationFailureMessage?
+    }
+
+    // MARK: - Inputs
+
     public let projectRoot: URL
-    /// No property observer here (unlike `acknowledgedUnreadable` below):
-    /// changing this does not refresh `readiness` on its own —
-    /// `NewSecretFileSheet` calls `resolvePlan()` (an equivalent recompute)
-    /// on every change, the same way it does for `relativeName`. Until that
-    /// call happens, changing this only takes effect the next time
-    /// `readiness` is recomputed by any means (`resolvePlan()`,
-    /// `loadPlainYAML(from:)`, `loadDotEnv(from:)`).
+    /// A plain property with no observer, and none is needed: `readiness` is
+    /// computed on every read (see this type's doc comment, "No verdict is
+    /// ever stored"), so changing this is reflected immediately, and it is
+    /// part of the `AttemptSubject`, so changing it drops any verdict about
+    /// the source it replaced. Nothing has to be called afterwards —
+    /// `NewSecretFileSheet` used to call `resolvePlan()` here and no longer
+    /// does; see that file's own doc comment for why that call was only ever
+    /// harmful.
     public var sourceChoice: SourceChoice = .empty
     public var relativeName: String = ""
-    public private(set) var plan: CreationPlan?
 
     /// The verbatim text of a `.plainYAML`-sourced file, once
     /// `loadPlainYAML(from:)` has read it successfully. Handed to
@@ -116,74 +241,68 @@ public final class NewSecretFileModel {
     /// composed here. `nil` once a read has succeeded.
     public private(set) var dotEnvLoadError: CreationFailureMessage?
 
-    /// The reason the most recent `resolvePlan()` or `create()` call could
-    /// not proceed: a thrown `CreationPlanResolver.Error` in the first case,
-    /// a thrown `SecretFileCreator.Failure` in the second — always turned
-    /// into text through `CreationFailurePresenter`, never composed here.
-    /// `nil` after a resolve or create that did not fail this way (`plan`
-    /// resolving to `.noConfig`/`.noRuleMatched` is not this kind of
-    /// failure — see `computeReadiness()`).
-    public private(set) var planError: CreationFailureMessage?
-    public private(set) var isResolving = false
-
     /// Set by the user once `readiness` has reported `.needsAcknowledgement`.
-    /// Setting it to `true` while still in that state resolves `readiness`
-    /// back to `.ready(recipients:)` immediately, without waiting for
-    /// another `resolvePlan()` call — see the property observer below.
-    public var acknowledgedUnreadable = false {
-        didSet {
-            guard acknowledgedUnreadable, !oldValue else { return }
-            guard case .needsAcknowledgement = readiness,
-                case .governedByRule(let recipients, _) = plan
-            else { return }
-            // `planError` is already `nil` by construction whenever
-            // `readiness == .needsAcknowledgement` — `create()`'s
-            // `wouldBeUnreadable` branch deliberately never sets it (see
-            // that branch's own comment) precisely so nothing here has to
-            // clear a stale failure message next to a readiness that now
-            // says nothing is blocking. Set anyway, defensively, rather
-            // than trusted: this `didSet` cannot see whether that invariant
-            // still holds.
-            planError = nil
-            readiness = .ready(recipients: recipients)
-        }
-    }
+    /// A plain flag with no property observer: `readiness` is computed, so
+    /// setting this is reflected on the next read with nothing to keep in
+    /// step. Reset by `resolvePlan()` — an acknowledgement is an answer to
+    /// one specific round-trip attempt, not a standing waiver.
+    public var acknowledgedUnreadable = false
 
-    public private(set) var readiness: Readiness = .needsName
+    public private(set) var isResolving = false
 
     private let keyStore: SessionKeyStore
 
-    /// Whether `create()` has already discovered, for the `plan` currently
-    /// in hand, that this session's key could not be proven to be among its
-    /// recipients. Reset at the top of every `resolvePlan()` call, alongside
-    /// `acknowledgedUnreadable` (see that reset's own comment in
-    /// `resolvePlan()`) — a freshly resolved plan, even one that resolves to
-    /// the exact same rule again, has not itself been tried yet, so nothing
-    /// has actually been discovered about *it*, and nothing about it has
-    /// been acknowledged either. See this type's doc comment for why this
-    /// can only be learned by attempting `create()`, never predicted ahead
-    /// of time.
-    private var discoveredUnreadable = false
+    // MARK: - Learned facts
 
-    /// The `relativeName` that `plan` was actually resolved for. `create()`
-    /// compares this against the live `relativeName` and refuses on a
-    /// mismatch, rather than trusting the caller: `resolvePlan()` can be
-    /// mid-flight (`isResolving`) or simply not yet re-invoked after the
-    /// view's own debounce (see this type's doc comment, "No debounce
-    /// here") when `relativeName` changes, and without this check `create()`
-    /// would happily write to the *new* name using a `plan` — recipients and
-    /// `encryptedRegex` both — that was resolved for a completely different
-    /// rule. Set alongside `plan`/`planError` at the end of every
-    /// `resolvePlan()` call, including the empty-name short circuit.
+    private var resolution: Resolution?
+
+    /// That a `create()` attempt discovered this session's key could not be
+    /// proven to be among a plan's recipients. Filed under the plan, not the
+    /// whole `AttemptSubject`: this is a fact about the recipient set, and
+    /// re-picking a source file must not discard it. Also cleared outright
+    /// by `resolvePlan()` — see that method — which is a stricter policy
+    /// than the subject check alone; the subject check is the floor.
+    private var unreadability: Learned<GovernedPlan, Bool>?
+
+    /// Why the most recent `create()` attempt refused, when the refusal was
+    /// anything other than an unacknowledged `wouldBeUnreadable`. Filed
+    /// under the whole `AttemptSubject`; see this type's doc comment for why
+    /// this one forgets on any change and `unreadability` does not.
+    private var lastCreateFailure: Learned<AttemptSubject, CreationFailureMessage>?
+
+    // MARK: - Derived views of the resolve
+
+    public var plan: CreationPlan? { resolution?.plan }
+
+    /// The `relativeName` that `plan` was actually resolved for, `nil` before
+    /// any resolve has happened at all.
     ///
-    /// `public private(set)` since Task 4: `NewSecretFileSheet` reads this
-    /// to guard its own debounced resolve — a resolve is skipped whenever
-    /// the name it would resolve for is already the one this reports,
-    /// which is exactly how it avoids reflexively discarding a fresh
-    /// `acknowledgedUnreadable` tick between it and a redundant resolve for
-    /// an unchanged name. See that view's own doc comment, "The debounce,
+    /// `NewSecretFileSheet` reads this to guard its own debounced resolve — a
+    /// resolve is skipped whenever the name it would resolve for is already
+    /// the one this reports, which is how it avoids reflexively discarding a
+    /// fresh `acknowledgedUnreadable` tick between it and a redundant resolve
+    /// for an unchanged name. See that view's own doc comment, "The debounce,
     /// and why it checks `resolvedName` before firing".
-    public private(set) var resolvedName: String?
+    public var resolvedName: String? { resolution?.name }
+
+    /// The reason the most recent `resolvePlan()` or `create()` call could
+    /// not proceed — a thrown `CreationPlanResolver.Error` in the first case,
+    /// a `SecretFileCreator.Failure` in the second, always worded by
+    /// `CreationFailurePresenter` and never composed here.
+    ///
+    /// `nil` whenever no such reason applies to what is being created *right
+    /// now*: a resolve or create that did not fail this way, a create that
+    /// refused with an unacknowledged `wouldBeUnreadable` (that refusal
+    /// rides in `readiness` as `.needsAcknowledgement`, deliberately not
+    /// here — nothing renders a failure sentence in that state), or a
+    /// refusal that has since stopped describing what would be created. A
+    /// `plan` resolving to `.noConfig`/`.noRuleMatched` is not this kind of
+    /// failure either; see `readiness`.
+    public var planError: CreationFailureMessage? {
+        if let error = resolution?.error { return error }
+        guard let subject = currentSubject() else { return nil }
+        return lastCreateFailure?.value(ifStillAbout: subject)
+    }
 
     /// `CreationPlan.noConfig` and `.noRuleMatched` are deliberately not
     /// failures from `CreationFailurePresenter`'s point of view — its own
@@ -205,29 +324,44 @@ public final class NewSecretFileModel {
         self.keyStore = keyStore
     }
 
-    /// Recomputes `plan` for `relativeName` under `projectRoot`, and
-    /// `readiness` from the result. Called by the view; see this type's doc
-    /// comment, "No debounce here".
+    /// Recomputes `plan` for `relativeName` under `projectRoot`. Called by
+    /// the view; see this type's doc comment, "No debounce here". `readiness`
+    /// needs no recompute of its own — it is derived.
     public func resolvePlan() async {
-        // A fresh resolve means nothing has been discovered — or
-        // acknowledged — yet about whatever plan comes back.
+        // A fresh resolve means nothing has been acknowledged yet about
+        // whatever plan comes back.
         //
-        // Resetting `acknowledgedUnreadable` here, not only
-        // `discoveredUnreadable`, closes a real hole: without it, ticking
-        // the box for one name (say `secret.yaml`, whose rule excludes this
-        // session's key) stayed `true` after the name changed to a second,
-        // differently-governed one (`other.yaml`, excluded by a *different*
-        // rule). `create()` passes `acknowledgedUnreadable` straight into
-        // `ResolvedEncryption`, and `SecretFileCreator.create` treats it as
-        // "skip the refusal *and* skip all content verification,
-        // unconditionally" — so the second file would have been written
-        // blind, for a plan the user was never actually warned about. See
-        // this type's doc comment, "Self-readability cannot be predicted,
-        // only discovered": an acknowledgement is an answer to one specific
-        // round-trip attempt, not a standing waiver, and it must not survive
-        // past the plan it was given for.
-        discoveredUnreadable = false
+        // Resetting `acknowledgedUnreadable` here closes a real hole:
+        // without it, ticking the box for one name (say `secret.yaml`, whose
+        // rule excludes this session's key) stayed `true` after the name
+        // changed to a second, differently-governed one (`other.yaml`,
+        // excluded by a *different* rule). `create()` passes
+        // `acknowledgedUnreadable` straight into `ResolvedEncryption`, and
+        // `SecretFileCreator.create` treats it as "skip the refusal *and*
+        // skip all content verification, unconditionally" — so the second
+        // file would have been written blind, for a plan the user was never
+        // actually warned about. See this type's doc comment,
+        // "Self-readability cannot be predicted, only discovered": an
+        // acknowledgement is an answer to one specific round-trip attempt,
+        // not a standing waiver, and it must not survive past the plan it
+        // was given for.
+        //
+        // `unreadability` is cleared alongside it, and this is the stricter
+        // of the two policies available: filed under `GovernedPlan`, it
+        // would already be unreadable for any plan but the one it was
+        // learned about, so a resolve that lands on the *same* rule again
+        // could legitimately keep it. It is cleared anyway so that a resolve
+        // leaves this model in exactly the state a fresh one would be in for
+        // the same inputs — the acknowledgement is gone, so the discovery
+        // that demanded it must go too, or `readiness` would demand a tick
+        // the user has no memory of being asked for.
+        unreadability = nil
         acknowledgedUnreadable = false
+
+        // `lastCreateFailure` is deliberately *not* cleared here. It is
+        // filed under the whole `AttemptSubject`, so a resolve that changes
+        // the name or the plan already makes it unreadable, and a resolve
+        // that changes neither has not made a real refusal any less true.
 
         // `CreationPlanResolver.plan(forTarget:in:)` must never be asked
         // about `projectRoot` itself: an empty (or whitespace-only — a
@@ -238,10 +372,7 @@ public final class NewSecretFileModel {
         // Short-circuiting here means that call is never made with a name
         // the user has not actually typed anything meaningful into yet.
         guard !isBlank(relativeName) else {
-            plan = nil
-            planError = nil
-            resolvedName = relativeName
-            readiness = computeReadiness()
+            resolution = Resolution(name: relativeName, plan: nil, error: nil)
             return
         }
 
@@ -250,23 +381,20 @@ public final class NewSecretFileModel {
 
         let target = projectRoot.appendingPathComponent(relativeName)
         do {
-            plan = try CreationPlanResolver.plan(forTarget: target, in: projectRoot)
-            planError = nil
+            let plan = try CreationPlanResolver.plan(forTarget: target, in: projectRoot)
+            resolution = Resolution(name: relativeName, plan: plan, error: nil)
         } catch let error as CreationPlanResolver.Error {
-            plan = nil
-            planError = CreationFailurePresenter.message(for: error)
+            resolution = Resolution(
+                name: relativeName, plan: nil, error: CreationFailurePresenter.message(for: error))
         } catch {
             // `CreationPlanResolver.plan(forTarget:in:)` is documented to
             // throw only `Error` — not expected to be reachable in practice,
             // but a caller must never see this fail silently for a type it
             // did not anticipate.
-            plan = nil
-            planError = CreationFailureMessage(
-                title: .creationFailureTitle, detail: "\(error)", recovery: nil)
+            resolution = Resolution(
+                name: relativeName, plan: nil,
+                error: CreationFailureMessage(title: .creationFailureTitle, detail: "\(error)", recovery: nil))
         }
-
-        resolvedName = relativeName
-        readiness = computeReadiness()
     }
 
     /// Reads `url` and stores its verbatim text as `plainYAMLText`, or
@@ -276,10 +404,9 @@ public final class NewSecretFileModel {
     /// renders it) is exactly what gets encrypted, not whatever the file
     /// happens to contain the moment Create is pressed.
     ///
-    /// Recomputes `readiness` synchronously at the end — unlike
-    /// `resolvePlan()`, there is no bridge call here to justify a debounce,
-    /// so the view calls this directly from its file picker rather than
-    /// through `resolveDebounced()`.
+    /// Nothing needs recomputing afterwards: `readiness` and `planError` are
+    /// both derived, and replacing the text changes the `AttemptSubject`,
+    /// which is what drops any refusal recorded about the text it replaced.
     ///
     /// Known, deliberately deferred limitation: `Data(contentsOf:)` below
     /// runs synchronously on the main actor, with no size ceiling — a very
@@ -293,7 +420,6 @@ public final class NewSecretFileModel {
             guard let text = String(data: data, encoding: .utf8) else {
                 plainYAMLText = nil
                 plainYAMLLoadError = CreationFailurePresenter.message(forUnreadableSourceFile: ())
-                readiness = computeReadiness()
                 return
             }
             plainYAMLText = text
@@ -308,7 +434,6 @@ public final class NewSecretFileModel {
             plainYAMLText = nil
             plainYAMLLoadError = CreationFailurePresenter.message(forUnreadableSourceFile: ())
         }
-        readiness = computeReadiness()
     }
 
     /// Reads and parses `url` as a `.env` file, storing the result as
@@ -321,8 +446,8 @@ public final class NewSecretFileModel {
     /// `SecretFileCreator` — the same parse, never repeated, so the preview
     /// and the write can never disagree about what was in the file.
     ///
-    /// Recomputes `readiness` synchronously at the end, for the same reason
-    /// `loadPlainYAML(from:)` does.
+    /// Nothing needs recomputing afterwards, for the same reason
+    /// `loadPlainYAML(from:)` does not.
     ///
     /// Same known, deliberately deferred limitation as `loadPlainYAML(
     /// from:)`: the `Data(contentsOf:)` read below is synchronous, on the
@@ -345,40 +470,58 @@ public final class NewSecretFileModel {
             dotEnvParsed = nil
             dotEnvLoadError = CreationFailurePresenter.message(forUnreadableSourceFile: ())
         }
-        readiness = computeReadiness()
     }
 
-    /// Creates the file `relativeName` names under `projectRoot`, encrypted
-    /// for `plan`'s recipients. Returns the created file's URL, or `nil` on
-    /// any refusal — the reason is then in `planError`.
+    // MARK: - What would be created, right now
+
+    /// The whole description of what `create()` would do if it were called
+    /// this instant — `nil` when there is nothing complete enough to attempt,
+    /// which is every case `readiness` already explains (`.needsName`,
+    /// `.resolving`, `.needsSource`, or a `plan` that is not
+    /// `.governedByRule`).
     ///
-    /// Only meaningful when `plan` is `.governedByRule`: every other `plan`
-    /// value already means `readiness` is neither `.ready` nor
-    /// `.needsAcknowledgement`, so there is nothing a caller following
-    /// `readiness` would ever ask this to do. Still guarded explicitly
-    /// rather than trusted, because nothing stops a caller from invoking
-    /// this directly regardless of `readiness`.
-    public func create() async -> URL? {
-        // No `default` — a case added to `SourceChoice` later must fail this
-        // file's build rather than silently fall through to `.empty`'s
-        // behavior for a source nobody taught this switch about.
-        let source: SecretFileCreator.Source
+    /// See `AttemptSubject`'s own doc comment for why this being the single
+    /// description matters.
+    private func currentSubject() -> AttemptSubject? {
+        guard !isBlank(relativeName) else { return nil }
+        // `plan` was resolved for `resolution.name`, not necessarily for the
+        // `relativeName` sitting here right now: `resolvePlan()` can be
+        // mid-flight, or simply not yet re-invoked after the view's own
+        // debounce (see this type's doc comment, "No debounce here"). Without
+        // this check, `create()` would happily write to the *new* name using
+        // a plan — recipients and `encryptedRegex` both — resolved for a
+        // completely different rule.
+        guard let resolution, resolution.name == relativeName else { return nil }
+        guard case .governedByRule(let recipients, let encryptedRegex) = resolution.plan else { return nil }
+        guard let source = currentSource() else { return nil }
+        return AttemptSubject(
+            name: relativeName,
+            plan: GovernedPlan(recipients: recipients, encryptedRegex: encryptedRegex),
+            source: source)
+    }
+
+    /// The bytes `create()` would encrypt, or `nil` when the chosen source
+    /// has nothing usable to offer yet.
+    ///
+    /// No `default` — a case added to `SourceChoice` later must fail this
+    /// file's build rather than silently fall through to `.empty`'s behavior
+    /// for a source nobody taught this switch about. This is also the
+    /// compile-time half of the invalidation guarantee: a new source kind
+    /// cannot reach `create()` without passing through here, and therefore
+    /// cannot reach it without becoming part of the `AttemptSubject` that
+    /// drops stale verdicts.
+    private func currentSource() -> SecretFileCreator.Source? {
         switch sourceChoice {
         case .empty:
-            source = .empty
+            return .empty
         case .plainYAML:
-            // `readiness` already reports `.needsSource` whenever this is
-            // `nil` (see `computeReadiness()`), so a caller following
-            // `readiness` never reaches here without it — guarded anyway
-            // rather than trusted, same discipline every guard below keeps.
             guard let plainYAMLText else { return nil }
-            source = .verbatimYAML(plainYAMLText)
+            return .verbatimYAML(plainYAMLText)
         case .dotEnv:
             guard let dotEnvParsed else { return nil }
-            // Same guard `computeReadiness()` already applies — repeated
-            // here rather than trusted, same discipline every guard in this
-            // switch keeps. See `Self.hasNoUsableDotEnvContent(_:)`'s own
-            // doc comment for why this is not simply "entries is empty".
+            // Same condition `readiness` reports `.blocked` for — see
+            // `Self.hasNoUsableDotEnvContent(_:)`'s own doc comment for why
+            // this is not simply "entries is empty".
             guard !Self.hasNoUsableDotEnvContent(dotEnvParsed) else { return nil }
             // `.entries` only — `SecretFileCreator` never sees `.skipped`
             // or `.suspicions`, the same way `DotEnvPreviewTable` renders
@@ -386,25 +529,48 @@ public final class NewSecretFileModel {
             // (see that view's own doc comment). A skipped line is a line
             // this app could not read as an assignment at all; there is
             // nothing to encrypt it *as*.
-            source = .dotEnv(dotEnvParsed.entries)
+            return .dotEnv(dotEnvParsed.entries)
         case .encryptedYAML:
             // Task 6 owns unlocking and importing this source. `readiness`
-            // reports `.needsSource` for it unconditionally (see
-            // `computeReadiness()`), so a caller following `readiness`
-            // never reaches here either.
+            // reports `.needsSource` for it unconditionally.
             return nil
         }
+    }
 
-        guard !isBlank(relativeName) else { return nil }
-        // `plan` was resolved for `resolvedName`, not necessarily for the
-        // `relativeName` sitting here right now — see `resolvedName`'s own
-        // doc comment for the exact race this closes.
-        guard resolvedName == relativeName else { return nil }
-        guard case .governedByRule(let recipients, let encryptedRegex) = plan else { return nil }
+    // MARK: - Creating
 
-        let destination = projectRoot.appendingPathComponent(relativeName)
+    /// Creates the file `relativeName` names under `projectRoot`, encrypted
+    /// for the current plan's recipients. Returns the created file's URL, or
+    /// `nil` on any refusal.
+    ///
+    /// Where the reason for a refusal lives depends on the refusal, and the
+    /// three cases are deliberately different — an earlier version of this
+    /// doc comment claimed "the reason is then in `planError`" for all of
+    /// them, which is how a maintainer reconciling code to prose would
+    /// reintroduce a defect this task closed:
+    ///
+    /// - **Nothing was complete enough to attempt** (`currentSubject()` is
+    ///   `nil`: a blank name, a plan resolved for a different name, a plan
+    ///   that is not `.governedByRule`, a source with nothing loaded). No
+    ///   reason is recorded, because `readiness` already says which of those
+    ///   it is and a caller following `readiness` never gets here. Guarded
+    ///   rather than trusted all the same — nothing stops a caller from
+    ///   invoking this regardless of `readiness`.
+    /// - **`wouldBeUnreadable`, not yet acknowledged.** Recorded as
+    ///   `unreadability`; `readiness` becomes `.needsAcknowledgement` and
+    ///   `planError` stays `nil`. Nothing renders a failure sentence in that
+    ///   state, and a sentence left here would hide the checkbox behind a
+    ///   banner — the third of this task's four instances.
+    /// - **Every other refusal.** Recorded as `lastCreateFailure`, filed
+    ///   under the exact `AttemptSubject` it refused, and surfaced through
+    ///   both `planError` and `readiness` for exactly as long as that subject
+    ///   is still what would be created.
+    public func create() async -> URL? {
+        guard let subject = currentSubject() else { return nil }
+
+        let destination = projectRoot.appendingPathComponent(subject.name)
         let resolved = ResolvedEncryption(
-            recipients: recipients, encryptedRegex: encryptedRegex,
+            recipients: subject.plan.recipients, encryptedRegex: subject.plan.encryptedRegex,
             acknowledgedUnreadable: acknowledgedUnreadable)
 
         // `withKey` lends the identity for exactly this call; nothing here
@@ -414,7 +580,7 @@ public final class NewSecretFileModel {
             do {
                 return .success(
                     try SecretFileCreator.create(
-                        source, plan: resolved, at: destination, in: projectRoot, sessionKey: key))
+                        subject.source, plan: resolved, at: destination, in: projectRoot, sessionKey: key))
             } catch let failure as SecretFileCreator.Failure {
                 return .failure(failure)
             } catch {
@@ -437,46 +603,27 @@ public final class NewSecretFileModel {
             // force-unwrapping, so a future change to that contract cannot
             // crash this call.
             if let message = CreationFailurePresenter.message(forEmptyKeyStore: .empty) {
-                planError = message
-                readiness = .blocked(message)
+                lastCreateFailure = Learned(message, about: subject)
             }
             return nil
         }
 
         switch outcome {
         case .success(let receipt):
-            planError = nil
-            discoveredUnreadable = false
+            lastCreateFailure = nil
+            unreadability = nil
             return receipt.destination
         case .failure(let failure):
-            let message = CreationFailurePresenter.message(for: failure)
             if case .wouldBeUnreadable = failure, !acknowledgedUnreadable {
-                // Deliberately does *not* set `planError = message` here,
-                // unlike every other failure branch. `readiness` is
-                // `.needsAcknowledgement`, not `.blocked` — nothing renders
-                // `planError` in that state — and leaving it set was a real
-                // bug: `computeReadiness()`'s `if let planError { return
-                // .blocked(planError) }` runs *before* the
-                // `discoveredUnreadable`/`acknowledgedUnreadable` check
-                // below, so a later recompute from anywhere other than a
-                // direct tick — `loadPlainYAML(from:)`/`loadDotEnv(from:)`
-                // after the user re-picks a source instead of ticking is
-                // the reachable one — would see the stale `wouldBeUnreadable`
-                // message and short-circuit straight to `.blocked`,
-                // silently hiding the checkbox this type's own doc comment
-                // calls "the only way out of this state". See
-                // `computeReadiness()`'s own comment at the condition this
-                // depends on. Explicitly cleared, not just left unset by
-                // this branch — a *previous* failed attempt could have left
-                // `planError` non-nil, and that stale value would trip the
-                // identical short-circuit even though this failure never
-                // set it.
-                planError = nil
-                discoveredUnreadable = true
-                readiness = .needsAcknowledgement
+                // See this method's own doc comment for why no message is
+                // recorded on this branch. Filed under the plan rather than
+                // the whole subject: what was discovered is a fact about the
+                // recipient set, and re-picking a source file must not
+                // discard the checkbox it earns.
+                unreadability = Learned(true, about: subject.plan)
+                lastCreateFailure = nil
             } else {
-                planError = message
-                readiness = .blocked(message)
+                lastCreateFailure = Learned(CreationFailurePresenter.message(for: failure), about: subject)
             }
             return nil
         }
@@ -484,11 +631,17 @@ public final class NewSecretFileModel {
 
     // MARK: - Readiness
 
-    private func computeReadiness() -> Readiness {
+    /// Computed on every read — see this type's doc comment, "No verdict is
+    /// ever stored". Nothing assigns this, and nothing may: the whole point
+    /// is that there is no stored value to fall out of step with the inputs
+    /// below.
+    ///
+    /// No `default` in either switch — a case added to `SourceChoice` or
+    /// `CreationPlan` later must fail this file's build rather than silently
+    /// pass through.
+    public var readiness: Readiness {
         guard !isBlank(relativeName) else { return .needsName }
 
-        // No `default` — a case added to `SourceChoice` later must fail
-        // this file's build rather than silently pass through as `.empty`.
         switch sourceChoice {
         case .empty:
             break
@@ -512,51 +665,35 @@ public final class NewSecretFileModel {
         if let keyMessage = CreationFailurePresenter.message(forEmptyKeyStore: keyStore.state) {
             return .blocked(keyMessage)
         }
-        if let planError { return .blocked(planError) }
-        guard let plan else {
-            // Unreachable via `resolvePlan()`'s own flow: by the time this is
-            // called, either `planError` was just set above (handled by the
-            // branch above this one) or `plan` resolved successfully.
-            // Handled rather than force-unwrapped so a future caller of this
-            // private function cannot crash the app.
+
+        // Nothing in hand describes *this* name yet. Deliberately not the
+        // previous name's verdict; see `Readiness.resolving`.
+        guard let resolution, resolution.name == relativeName else { return .resolving }
+        if let error = resolution.error { return .blocked(error) }
+        guard let plan = resolution.plan else {
+            // Unreachable: a `Resolution` with neither a plan nor an error is
+            // only produced by the blank-name short circuit in
+            // `resolvePlan()`, and a blank name already returned `.needsName`
+            // above. Handled rather than force-unwrapped.
             return .needsName
         }
 
         switch plan {
-        case .governedByRule(let recipients, _):
-            // Not `discoveredUnreadable` alone. `acknowledgedUnreadable`'s
-            // own `didSet` already handles the *direct* path out of
-            // `.needsAcknowledgement` (tick the box while `readiness` is
-            // already `.needsAcknowledgement` → `.ready` immediately, no
-            // `computeReadiness()` call needed) — but it does not clear
-            // `discoveredUnreadable` itself, only `resolvePlan()` and a
-            // successful `create()` do that. So a *second* path into this
-            // function — `loadPlainYAML(from:)`/`loadDotEnv(from:)`
-            // recomputing `readiness` after the box is already ticked, e.g.
-            // from picking a different source file — would read
-            // `discoveredUnreadable` alone as still `true` and reintroduce
-            // `.needsAcknowledgement` with the checkbox still showing
-            // ticked (the view binds straight to `acknowledgedUnreadable`).
-            // Re-ticking an already-`true` checkbox is a no-op per the
-            // `didSet` guard above, so that would be the exact "loop with no
-            // visible exit" this type's doc comment describes elsewhere —
-            // arrived at through a different door. Checking
-            // `!acknowledgedUnreadable` here closes it for every caller of
-            // `computeReadiness()`, not just the one that exposed it.
-            //
-            // This line is only ever *reached* when `planError == nil` —
-            // the `if let planError { return .blocked(planError) }` guard a
-            // few lines up this function runs first. That is not incidental:
-            // `create()`'s `wouldBeUnreadable` branch deliberately leaves
-            // `planError` unset (see that branch's own comment) precisely
-            // so this condition gets evaluated at all, from any caller, not
-            // just the `didSet` path that bypasses `computeReadiness()`
-            // entirely. If a future change ever let `planError` survive
-            // into `.needsAcknowledgement` again, this whole condition
-            // would go back to being dead code reached by nothing — the
-            // `planError` short-circuit would win every time, silently.
-            return discoveredUnreadable && !acknowledgedUnreadable
-                ? .needsAcknowledgement : .ready(recipients: recipients)
+        case .governedByRule(let recipients, let encryptedRegex):
+            let governed = GovernedPlan(recipients: recipients, encryptedRegex: encryptedRegex)
+            // A refusal from the last attempt, but only while that attempt is
+            // still the one that would happen. `currentSubject()` rebuilds
+            // what would be created right now; `value(ifStillAbout:)` returns
+            // nothing when it has changed.
+            if let subject = currentSubject(),
+                let failure = lastCreateFailure?.value(ifStillAbout: subject)
+            {
+                return .blocked(failure)
+            }
+            if unreadability?.value(ifStillAbout: governed) == true, !acknowledgedUnreadable {
+                return .needsAcknowledgement
+            }
+            return .ready(recipients: recipients)
         case .noConfig, .noRuleMatched:
             return .blocked(Self.noPickerYetMessage)
         case .unsupportedRule, .configUnreadable:
