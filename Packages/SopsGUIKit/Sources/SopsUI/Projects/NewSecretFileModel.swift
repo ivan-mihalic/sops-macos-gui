@@ -144,6 +144,16 @@ public final class NewSecretFileModel {
     /// a future field that forgets to clear itself cannot exist here,
     /// because nothing is cleared; facts simply stop being readable when
     /// what they describe is gone.
+    ///
+    /// Exactly how strong that is, stated so the next reader does not
+    /// over-trust it: `private` in Swift is **file**-scoped, and every call
+    /// site of this type lives in this file, so an extension written here —
+    /// `extension NewSecretFileModel.Learned { var raw: Value { value } }` —
+    /// would compile and hand back the value with no subject named. That
+    /// cannot happen by accident, which is where the value of this design
+    /// lies, but it is not a wall. Moving this type to its own file would
+    /// make `private` do the full job; it lives here because the subjects it
+    /// is instantiated with are this type's own nested types.
     struct Learned<Subject: Equatable, Value> {
         private let subject: Subject
         private let value: Value
@@ -170,7 +180,8 @@ public final class NewSecretFileModel {
 
     /// Exactly what `create()` would hand `SecretFileCreator` right now: the
     /// name it would write, the recipients and regex it would encrypt for,
-    /// and the bytes it would encrypt.
+    /// the bytes it would encrypt, and whether it would waive the round-trip
+    /// verification.
     ///
     /// This is the single description of "what is being created", and it is
     /// load-bearing twice over: `create()` takes every input it uses from
@@ -180,10 +191,19 @@ public final class NewSecretFileModel {
     /// alternative is a field `create()` never reads, which by definition
     /// changes nothing about the file — and adding it here is what makes a
     /// change to it invalidate the facts learned before it changed.
+    ///
+    /// That claim is exact, and `acknowledgedUnreadable` is here because of
+    /// it: an earlier version of this type read that flag straight off the
+    /// model inside `create()`, which made the sentence above have one
+    /// counter-example in its own file. It is a real input —
+    /// `SecretFileCreator` treats it as "skip the refusal *and* skip all
+    /// content verification" — so a refusal learned while it was unticked is
+    /// not a refusal about the same attempt once it is ticked.
     struct AttemptSubject: Equatable {
         let name: String
         let plan: GovernedPlan
         let source: SecretFileCreator.Source
+        let acknowledgedUnreadable: Bool
     }
 
     /// The outcome of the most recent `resolvePlan()` call: the name it ran
@@ -299,7 +319,17 @@ public final class NewSecretFileModel {
     /// `plan` resolving to `.noConfig`/`.noRuleMatched` is not this kind of
     /// failure either; see `readiness`.
     public var planError: CreationFailureMessage? {
-        if let error = resolution?.error { return error }
+        // The same `resolution.name == relativeName` gate `readiness` applies,
+        // and for the same reason: a resolve failure is a refusal about the
+        // name it ran for. Without this gate, typing a name with a `..`
+        // component (refused as `targetOutsideProjectRoot`) and then fixing it
+        // left this property still reporting the refusal about the name the
+        // user had already replaced — the last stale read that was still
+        // spellable after the redesign, and the one this file's own tests use
+        // as their probe that a verdict was dropped.
+        if let resolution, resolution.name == relativeName, let error = resolution.error {
+            return error
+        }
         guard let subject = currentSubject() else { return nil }
         return lastCreateFailure?.value(ifStillAbout: subject)
     }
@@ -424,6 +454,7 @@ public final class NewSecretFileModel {
             }
             plainYAMLText = text
             plainYAMLLoadError = nil
+            forgetLastCreateFailure()
         } catch {
             // `Data(contentsOf:)` failing — permissions changed, or the file
             // was moved or deleted between `NSOpenPanel` returning `url` and
@@ -457,6 +488,7 @@ public final class NewSecretFileModel {
             let data = try Data(contentsOf: url)
             dotEnvParsed = try DotEnvParser.parse(data)
             dotEnvLoadError = nil
+            forgetLastCreateFailure()
         } catch let failure as DotEnvParseFailure {
             dotEnvParsed = nil
             dotEnvLoadError = CreationFailurePresenter.message(for: failure)
@@ -470,6 +502,30 @@ public final class NewSecretFileModel {
             dotEnvParsed = nil
             dotEnvLoadError = CreationFailurePresenter.message(forUnreadableSourceFile: ())
         }
+    }
+
+    /// Drops the last create failure, called after a load has replaced the
+    /// source content.
+    ///
+    /// **Not a correctness clear**, and the distinction matters to anyone
+    /// reading this file for the invalidation rule: `lastCreateFailure` is
+    /// filed under the whole `AttemptSubject`, so new content already makes
+    /// it unreadable whether this runs or not. What this buys is memory
+    /// hygiene — an `AttemptSubject` retains a copy of the source bytes, and
+    /// those bytes are user plaintext. Without this, a `.env` or YAML file
+    /// the user picked, was refused for, and then replaced would sit in this
+    /// object's memory for the lifetime of the sheet, reachable by `Mirror`
+    /// or `dump`. Nothing logs or renders it (this repo's "no secret values
+    /// in logs, errors or crash reports" rule is not at stake either way),
+    /// but there is no reason to hold it.
+    ///
+    /// The one observable consequence: re-picking the *identical* file after
+    /// a refusal now clears the banner until Create is pressed again, where
+    /// before the subject compared equal and the banner stayed. That is the
+    /// same "err toward forgetting" this type's doc comment already argues
+    /// for, applied to one more case.
+    private func forgetLastCreateFailure() {
+        lastCreateFailure = nil
     }
 
     // MARK: - What would be created, right now
@@ -497,7 +553,8 @@ public final class NewSecretFileModel {
         return AttemptSubject(
             name: relativeName,
             plan: GovernedPlan(recipients: recipients, encryptedRegex: encryptedRegex),
-            source: source)
+            source: source,
+            acknowledgedUnreadable: acknowledgedUnreadable)
     }
 
     /// The bytes `create()` would encrypt, or `nil` when the chosen source
@@ -571,7 +628,7 @@ public final class NewSecretFileModel {
         let destination = projectRoot.appendingPathComponent(subject.name)
         let resolved = ResolvedEncryption(
             recipients: subject.plan.recipients, encryptedRegex: subject.plan.encryptedRegex,
-            acknowledgedUnreadable: acknowledgedUnreadable)
+            acknowledgedUnreadable: subject.acknowledgedUnreadable)
 
         // `withKey` lends the identity for exactly this call; nothing here
         // copies it out anywhere else — see `SessionKeyStore`'s own doc
@@ -614,7 +671,7 @@ public final class NewSecretFileModel {
             unreadability = nil
             return receipt.destination
         case .failure(let failure):
-            if case .wouldBeUnreadable = failure, !acknowledgedUnreadable {
+            if case .wouldBeUnreadable = failure, !subject.acknowledgedUnreadable {
                 // See this method's own doc comment for why no message is
                 // recorded on this branch. Filed under the plan rather than
                 // the whole subject: what was discovered is a fact about the

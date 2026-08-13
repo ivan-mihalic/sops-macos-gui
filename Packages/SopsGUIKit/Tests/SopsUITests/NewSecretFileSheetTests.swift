@@ -1244,6 +1244,40 @@ struct StaleVerdictTests {
         #expect(await model.create() == nil)
     }
 
+    // MARK: - The probe the other tests trust must itself be sound
+
+    /// `planError` is what three of the tests above assert `== nil` as their
+    /// proof that a verdict was dropped. That makes it the one surface that
+    /// must not itself be expressible-stale — a probe that can lie makes every
+    /// test using it worthless.
+    ///
+    /// Reachable by typing alone: a name with a `..` component throws
+    /// `CreationPlanResolver.Error.targetOutsideProjectRoot`, so the
+    /// resolution carries an error. Fixing the name must retire that error
+    /// with it, exactly as `readiness` already does — it is a refusal about
+    /// the name that was resolved, not about the one in the field now.
+    @Test("a resolve failure about one name is not reported for a different one")
+    func resolveFailureIsNotReportedForALaterName() async throws {
+        let (root, _, keyStore) = try ownedProject()
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+
+        model.relativeName = "../escaped.yaml"
+        await model.resolvePlan()
+        try #require(model.planError != nil, "precondition: the escape was refused")
+        guard case .blocked = model.readiness else {
+            Issue.record("precondition: expected .blocked for a .. name, got \(model.readiness)")
+            return
+        }
+
+        // The user fixes the name. No resolve has run for it yet.
+        model.relativeName = "fine.yaml"
+
+        #expect(model.readiness == .resolving)
+        #expect(
+            model.planError == nil,
+            "the refusal named ../escaped.yaml and says nothing about fine.yaml")
+    }
+
     // MARK: - The mechanism itself
 
     @Test("a fact filed about one subject cannot be read back for another")
@@ -1251,29 +1285,39 @@ struct StaleVerdictTests {
         let message = CreationFailureMessage(title: .creationFailureTitle, detail: "refused", recovery: nil)
         let plan = NewSecretFileModel.GovernedPlan(recipients: ["age1aaa"], encryptedRegex: "")
         let subject = NewSecretFileModel.AttemptSubject(
-            name: "secret.yaml", plan: plan, source: .verbatimYAML("a: b\n"))
+            name: "secret.yaml", plan: plan, source: .verbatimYAML("a: b\n"),
+            acknowledgedUnreadable: false)
         let learned = NewSecretFileModel.Learned(message, about: subject)
 
         #expect(learned.value(ifStillAbout: subject) == message)
 
         // Every field of the subject, one at a time — this is the whole
-        // surface by which "what is being created" can differ.
+        // surface by which "what is being created" can differ, and the test
+        // has to be updated by anyone who widens that surface.
         let renamed = NewSecretFileModel.AttemptSubject(
-            name: "other.yaml", plan: plan, source: subject.source)
+            name: "other.yaml", plan: plan, source: subject.source,
+            acknowledgedUnreadable: subject.acknowledgedUnreadable)
         let reaimed = NewSecretFileModel.AttemptSubject(
             name: subject.name,
             plan: NewSecretFileModel.GovernedPlan(recipients: ["age1bbb"], encryptedRegex: ""),
-            source: subject.source)
+            source: subject.source, acknowledgedUnreadable: subject.acknowledgedUnreadable)
         let rescoped = NewSecretFileModel.AttemptSubject(
             name: subject.name,
             plan: NewSecretFileModel.GovernedPlan(recipients: ["age1aaa"], encryptedRegex: "^data$"),
-            source: subject.source)
+            source: subject.source, acknowledgedUnreadable: subject.acknowledgedUnreadable)
         let refilled = NewSecretFileModel.AttemptSubject(
-            name: subject.name, plan: plan, source: .verbatimYAML("c: d\n"))
+            name: subject.name, plan: plan, source: .verbatimYAML("c: d\n"),
+            acknowledgedUnreadable: subject.acknowledgedUnreadable)
         let resourced = NewSecretFileModel.AttemptSubject(
-            name: subject.name, plan: plan, source: .empty)
+            name: subject.name, plan: plan, source: .empty,
+            acknowledgedUnreadable: subject.acknowledgedUnreadable)
+        // The waiver that turns off `SecretFileCreator`'s round-trip
+        // verification entirely — a refusal learned without it is not a
+        // refusal about the same attempt.
+        let waived = NewSecretFileModel.AttemptSubject(
+            name: subject.name, plan: plan, source: subject.source, acknowledgedUnreadable: true)
 
-        for changed in [renamed, reaimed, rescoped, refilled, resourced] {
+        for changed in [renamed, reaimed, rescoped, refilled, resourced, waived] {
             #expect(learned.value(ifStillAbout: changed) == nil)
         }
     }
@@ -1318,51 +1362,106 @@ struct NoStoredVerdictTests {
         }
     }
 
-    /// Whether any line assigns to `name` — `name =` but not `name ==`.
+    /// Lines that assign to `name`: the identifier, any amount of whitespace,
+    /// then a single `=`.
+    ///
+    /// **What it catches:** `name = x`, `name=x`, `name   =  x`,
+    /// `self.name = x`. Not `name == x`, and not the compound operators
+    /// (`+=`, `??=`, …), whose character before the `=` is neither whitespace
+    /// nor part of the identifier. Not `nameSomething = x` or `_name = x`
+    /// either — the identifier has to stand on its own.
+    ///
+    /// **What it does not catch, stated rather than implied:** an assignment
+    /// split across two source lines (`name`, newline, `= x` — legal Swift,
+    /// never written here), and an assignment routed through a function
+    /// (`setReadiness(.needsName)`). `declarationsMentioning(_:)` covers the
+    /// other shape this could miss — a differently-named stored property
+    /// behind a computed passthrough — which is the case a name-based scan
+    /// cannot see on its own.
     private func assigns(_ name: String, in lines: [Substring]) -> [String] {
         lines.compactMap { line -> String? in
             var search = line.startIndex
-            while let found = line.range(of: name + " =", range: search..<line.endIndex) {
-                let after = line[found.upperBound...]
-                if !after.hasPrefix("=") { return String(line).trimmingCharacters(in: .whitespaces) }
+            while let found = line.range(of: name, range: search..<line.endIndex) {
                 search = found.upperBound
+                // The identifier must stand alone: `_readiness` and
+                // `readinessValue` are different properties.
+                if found.lowerBound > line.startIndex {
+                    let before = line[line.index(before: found.lowerBound)]
+                    if before.isLetter || before.isNumber || before == "_" { continue }
+                }
+                var cursor = found.upperBound
+                while cursor < line.endIndex, line[cursor] == " " || line[cursor] == "\t" {
+                    cursor = line.index(after: cursor)
+                }
+                guard cursor < line.endIndex, line[cursor] == "=" else { continue }
+                let afterEquals = line.index(after: cursor)
+                // `==` is a comparison, not an assignment.
+                if afterEquals < line.endIndex, line[afterEquals] == "=" { continue }
+                return String(line).trimmingCharacters(in: .whitespaces)
             }
             return nil
         }
     }
 
-    @Test("readiness is computed, never assigned")
+    /// Code lines declaring a `var` whose text mentions `name`, case
+    /// insensitively — the check that a computed property has not simply
+    /// become a passthrough in front of a stored `_name`/`storedName`, which
+    /// would leave both assignment scans above perfectly green while the
+    /// verdict went right back to being stored.
+    private func declarationsMentioning(_ name: String, in lines: [Substring]) -> [String] {
+        lines.filter { $0.contains("var ") && $0.lowercased().contains(name.lowercased()) }
+            .map { String($0).trimmingCharacters(in: .whitespaces) }
+    }
+
+    @Test("readiness is computed, never assigned, with nothing stored behind it")
     func readinessIsComputed() throws {
         let source = try modelSource()
+        let lines = codeLines(source)
         #expect(
             source.contains("public var readiness: Readiness {"),
             "readiness must stay a computed property — a stored one is what four fix rounds kept patching")
         #expect(
-            assigns("readiness", in: codeLines(source)).isEmpty,
+            assigns("readiness", in: lines).isEmpty,
             "nothing may assign readiness; it is derived from the model's inputs on every read")
+        #expect(
+            declarationsMentioning("readiness", in: lines) == ["public var readiness: Readiness {"],
+            "exactly one var may mention readiness — a second is a stored property behind a passthrough")
     }
 
-    @Test("planError is computed, never assigned")
+    @Test("planError is computed, never assigned, with nothing stored behind it")
     func planErrorIsComputed() throws {
         let source = try modelSource()
+        let lines = codeLines(source)
         #expect(source.contains("public var planError: CreationFailureMessage? {"))
         #expect(
-            assigns("planError", in: codeLines(source)).isEmpty,
+            assigns("planError", in: lines).isEmpty,
             "planError describes the attempt in hand, not one that was in hand when someone last set it")
+        #expect(
+            declarationsMentioning("planError", in: lines)
+                == ["public var planError: CreationFailureMessage? {"])
     }
 
-    /// The negative-space check: this guard is only worth anything if it can
-    /// actually fail. Proven against a line of the exact shape the guard
-    /// exists to reject, rather than trusted because it returned green.
-    @Test("the guard can fail — an assignment of the rejected shape is detected")
-    func theGuardDetectsAnAssignment() {
-        let planted = """
-            func recompute() {
-                readiness = computeReadiness()
-                if readiness == .needsName { return }
-            }
+    /// The negative-space check: these guards are only worth anything if they
+    /// can actually fail. Proven against lines of the exact shapes they exist
+    /// to reject — including the whitespace variants a narrower scan would
+    /// have let through — rather than trusted because they returned green.
+    @Test("the guards can fail — every rejected shape is detected, and no accepted one is")
+    func theGuardsDetectWhatTheyClaim() {
+        for planted in ["readiness = x", "readiness=x", "readiness   =   x", "self.readiness = x"] {
+            #expect(assigns("readiness", in: codeLines(planted)).count == 1, "missed: \(planted)")
+        }
+        for innocent in [
+            "if readiness == .needsName { return }", "// readiness = .needsName",
+            "_readiness = x", "readinessValue = x", "count += readiness",
+        ] {
+            #expect(assigns("readiness", in: codeLines(innocent)).isEmpty, "false positive: \(innocent)")
+        }
+
+        // The passthrough shape, which no assignment scan can see.
+        let passthrough = """
+            private var _readiness: Readiness = .needsName
+            public var readiness: Readiness { _readiness }
             """
-        #expect(assigns("readiness", in: codeLines(planted)).count == 1)
-        #expect(assigns("readiness", in: codeLines("// readiness = .needsName")).isEmpty)
+        #expect(declarationsMentioning("readiness", in: codeLines(passthrough)).count == 2)
     }
 }
