@@ -78,6 +78,15 @@ public struct CreationFailureMessage: Equatable, Sendable {
 /// key — does not get to claim the same exception; it earns a case or a
 /// method here instead.
 ///
+/// `message(forUnreadableSourceFile:)` is the case that paragraph predicted:
+/// a Plain YAML or `.env` file the user picked via `NSOpenPanel` whose
+/// `Data(contentsOf:)` read then fails (permissions changed, or the file was
+/// moved or deleted between picking and reading) is not `.noConfig`/
+/// `.noRuleMatched`'s kind of "equipped to handle later" gap — there is no
+/// task that resolves it out from under this case, the same way there is
+/// none for an empty key store. It earned a method here rather than a
+/// second `NewSecretFileModel`-local exception, exactly as instructed.
+///
 /// ## Every `switch` below has no `default`
 ///
 /// A `default` case would silently swallow a case added later to any of the
@@ -326,5 +335,32 @@ public enum CreationFailurePresenter {
                     + "a new file could be decrypted again once created.",
                 recovery: nil)
         }
+    }
+
+    /// A Plain YAML or `.env` source file the user picked via `NSOpenPanel`
+    /// that could not be turned into bytes this app can look at:
+    /// `Data(contentsOf:)` itself failing, after the panel already returned
+    /// a URL for it — permissions changed, or the file was moved or deleted
+    /// in the gap between picking and reading. Not one of
+    /// `CreationPlanResolver.Error`/`SecretFileCreator.Failure`/
+    /// `SopsConfigGenerator.Error`/`DotEnvParseFailure`: none of those four
+    /// types has a case for "the read itself failed", because none of them
+    /// is ever asked to *read* an arbitrary user-picked file — `SopsConfigGenerator`
+    /// and `SecretFileCreator` only ever *write*, and `CreationPlanResolver`
+    /// only ever reads `.sops.yaml`, never a source file. So this is a
+    /// dedicated method rather than a case squeezed into one of the four
+    /// switches above.
+    ///
+    /// Always called with a genuine failure already in hand — unlike
+    /// `message(forEmptyKeyStore:)`, there is no "fine" case to return `nil`
+    /// for, so this returns a `CreationFailureMessage` directly rather than
+    /// an `Optional`. See this type's own doc comment for why this earned a
+    /// method here instead of a `NewSecretFileModel`-local exception the way
+    /// `noPickerYetMessage` is.
+    public static func message(forUnreadableSourceFile: Void = ()) -> CreationFailureMessage {
+        CreationFailureMessage(
+            title: .creationFailureTitle,
+            detail: LocalizedKey.creationFailureSourceFileUnreadable.text,
+            recovery: nil)
     }
 }

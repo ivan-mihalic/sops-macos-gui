@@ -519,6 +519,17 @@
         }
       }
     },
+    "creation-failure.source-file-unreadable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That file could not be read."
+          }
+        }
+      }
+    },
     "creation-failure.recovery.check-unusual-characters": {
       "extractionState": "manual",
       "localizations": {
@@ -845,17 +856,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Selected: %@"
-          }
-        }
-      }
-    },
-    "new-file.file-unreadable": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "That file could not be read."
           }
         }
       }

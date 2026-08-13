@@ -509,6 +509,14 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // `CreationPlan.configUnreadable`'s recovery — added when
     // `message(forBlocking:)` joined the other four overloads.
     case creationRecoveryCheckSopsYamlSyntax = "creation-failure.recovery.check-sops-yaml-syntax"
+    // `CreationFailurePresenter.message(forUnreadableSourceFile:)`'s detail
+    // — added when Task 4's review found this was the third case that same
+    // presenter's own doc comment predicted, alongside `forBlocking(:)` and
+    // `forEmptyKeyStore(:)`. A Plain YAML/`.env` source file whose read
+    // failed after `NSOpenPanel` already returned a URL for it — see that
+    // method's own doc comment for why none of the four vocabularies this
+    // presenter unifies already has a case for it.
+    case creationFailureSourceFileUnreadable = "creation-failure.source-file-unreadable"
 
     // MARK: Phase 2 Task 3 — DotEnvPreviewTable
     //
@@ -587,11 +595,6 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // Formatted with the chosen file's name only — never its full path,
     // which is not a secret but also not needed to identify what was picked.
     case newFileFileChosen = "new-file.file-chosen"
-    // A generic, fixed sentence — not `CreationFailurePresenter`'s job,
-    // since `Data(contentsOf:)` failing on a user-picked file is not one of
-    // the four error vocabularies that type unifies. See
-    // `NewSecretFileSheet.chooseDotEnvFile()`.
-    case newFileFileUnreadable = "new-file.file-unreadable"
 
     case newFileEmptyPreviewNote = "new-file.empty-preview-note"
     case newFileCreateButton = "new-file.create-button"

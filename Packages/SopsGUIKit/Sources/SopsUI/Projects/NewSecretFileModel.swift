@@ -52,11 +52,12 @@ import SopsProjects
 @Observable
 public final class NewSecretFileModel {
 
-    /// Which kind of content a not-yet-created file would start from. Only
-    /// `.empty` is implemented by this task — `.plainYAML`, `.encryptedYAML`
-    /// and `.dotEnv` exist purely so Tasks 3, 5 and 6 have somewhere to hang
-    /// their own source-specific state. Choosing any of the other three
-    /// reports `.needsSource` until one of those tasks lands.
+    /// Which kind of content a not-yet-created file would start from.
+    /// `.empty`, `.plainYAML` and `.dotEnv` are fully implemented — see
+    /// `loadPlainYAML(from:)`/`loadDotEnv(from:)` and `create()`'s own
+    /// switch. `.encryptedYAML` alone still reports `.needsSource`
+    /// unconditionally: it needs unlocking the file and diffing who would
+    /// gain or lose access, which Task 6 adds.
     public enum SourceChoice: Equatable, Sendable, CaseIterable {
         case empty, plainYAML, encryptedYAML, dotEnv
     }
@@ -78,17 +79,43 @@ public final class NewSecretFileModel {
 
     public let projectRoot: URL
     /// No property observer here (unlike `acknowledgedUnreadable` below):
-    /// changing this does not refresh `readiness` on its own. Tasks 3, 5 and
-    /// 6 do not implement the other three choices yet, so nothing observes
-    /// this today — but whichever of them wires up `.plainYAML`/
-    /// `.encryptedYAML`/`.dotEnv` should either add an observer here or make
-    /// sure its own view calls `resolvePlan()` (or an equivalent recompute)
-    /// on every change, the same way `NewSecretFileSheet` (Task 4) is
-    /// expected to for `relativeName`. Until then, changing this only takes
-    /// effect the next time `resolvePlan()` runs.
+    /// changing this does not refresh `readiness` on its own —
+    /// `NewSecretFileSheet` calls `resolvePlan()` (an equivalent recompute)
+    /// on every change, the same way it does for `relativeName`. Until that
+    /// call happens, changing this only takes effect the next time
+    /// `readiness` is recomputed by any means (`resolvePlan()`,
+    /// `loadPlainYAML(from:)`, `loadDotEnv(from:)`).
     public var sourceChoice: SourceChoice = .empty
     public var relativeName: String = ""
     public private(set) var plan: CreationPlan?
+
+    /// The verbatim text of a `.plainYAML`-sourced file, once
+    /// `loadPlainYAML(from:)` has read it successfully. Handed to
+    /// `SecretFileCreator` as `.verbatimYAML(_:)` — unchanged, never
+    /// reserialised — so this is exactly what `create()` would encrypt, not
+    /// a path it would re-read later. `nil` until a file has been picked and
+    /// read, or after a read that failed (`plainYAMLLoadError` explains
+    /// that case instead).
+    public private(set) var plainYAMLText: String?
+    /// Why the most recent `loadPlainYAML(from:)` call could not produce
+    /// `plainYAMLText` — always through `CreationFailurePresenter`, never
+    /// composed here. `nil` once a read has succeeded.
+    public private(set) var plainYAMLLoadError: CreationFailureMessage?
+
+    /// A `.dotEnv`-sourced file, already parsed, once `loadDotEnv(from:)`
+    /// has read and parsed it successfully. The same value
+    /// `NewSecretFileSheet` renders through `DotEnvPreviewTable` and the one
+    /// `create()` hands to `SecretFileCreator` as `.dotEnv(_:.entries)` —
+    /// one parse, shared by the preview and the write, never re-parsed
+    /// between them. `nil` until a file has been picked and parsed, or
+    /// after a parse that failed (`dotEnvLoadError` explains that case
+    /// instead).
+    public private(set) var dotEnvParsed: ParsedDotEnv?
+    /// Why the most recent `loadDotEnv(from:)` call could not produce
+    /// `dotEnvParsed` — always through `CreationFailurePresenter`, never
+    /// composed here. `nil` once a read has succeeded.
+    public private(set) var dotEnvLoadError: CreationFailureMessage?
+
     /// The reason the most recent `resolvePlan()` or `create()` call could
     /// not proceed: a thrown `CreationPlanResolver.Error` in the first case,
     /// a thrown `SecretFileCreator.Failure` in the second — always turned
@@ -238,6 +265,74 @@ public final class NewSecretFileModel {
         readiness = computeReadiness()
     }
 
+    /// Reads `url` and stores its verbatim text as `plainYAMLText`, or
+    /// records why it could not. The one read this file ever does for a
+    /// `.plainYAML` source — `create()` uses `plainYAMLText`, never
+    /// re-reads `url`, so what the user previewed (once `NewSecretFileSheet`
+    /// renders it) is exactly what gets encrypted, not whatever the file
+    /// happens to contain the moment Create is pressed.
+    ///
+    /// Recomputes `readiness` synchronously at the end — unlike
+    /// `resolvePlan()`, there is no bridge call here to justify a debounce,
+    /// so the view calls this directly from its file picker rather than
+    /// through `resolveDebounced()`.
+    public func loadPlainYAML(from url: URL) {
+        do {
+            let data = try Data(contentsOf: url)
+            guard let text = String(data: data, encoding: .utf8) else {
+                plainYAMLText = nil
+                plainYAMLLoadError = CreationFailurePresenter.message(forUnreadableSourceFile: ())
+                readiness = computeReadiness()
+                return
+            }
+            plainYAMLText = text
+            plainYAMLLoadError = nil
+        } catch {
+            // `Data(contentsOf:)` failing — permissions changed, or the file
+            // was moved or deleted between `NSOpenPanel` returning `url` and
+            // this read. See `CreationFailurePresenter
+            // .message(forUnreadableSourceFile:)`'s own doc comment for why
+            // this is not one of the four vocabularies that type otherwise
+            // unifies.
+            plainYAMLText = nil
+            plainYAMLLoadError = CreationFailurePresenter.message(forUnreadableSourceFile: ())
+        }
+        readiness = computeReadiness()
+    }
+
+    /// Reads and parses `url` as a `.env` file, storing the result as
+    /// `dotEnvParsed`, or records why it could not. `DotEnvParser` owns the
+    /// UTF-8 decode — the raw bytes go straight in, never a
+    /// `String(contentsOf:)` read first (see that type's own doc comment,
+    /// "Why `Data`, not `String`"). The one parse this file ever does for a
+    /// `.dotEnv` source: `NewSecretFileSheet` renders `dotEnvParsed` through
+    /// `DotEnvPreviewTable`, and `create()` hands its `.entries` to
+    /// `SecretFileCreator` — the same parse, never repeated, so the preview
+    /// and the write can never disagree about what was in the file.
+    ///
+    /// Recomputes `readiness` synchronously at the end, for the same reason
+    /// `loadPlainYAML(from:)` does.
+    public func loadDotEnv(from url: URL) {
+        do {
+            let data = try Data(contentsOf: url)
+            dotEnvParsed = try DotEnvParser.parse(data)
+            dotEnvLoadError = nil
+        } catch let failure as DotEnvParseFailure {
+            dotEnvParsed = nil
+            dotEnvLoadError = CreationFailurePresenter.message(for: failure)
+        } catch {
+            // Either `Data(contentsOf:)` itself failed, or `DotEnvParser
+            // .parse` threw something other than `DotEnvParseFailure` — not
+            // expected to be reachable for the latter (that type is
+            // documented to throw only `DotEnvParseFailure`), but handled
+            // rather than assumed so a future change to that contract can't
+            // crash this call.
+            dotEnvParsed = nil
+            dotEnvLoadError = CreationFailurePresenter.message(forUnreadableSourceFile: ())
+        }
+        readiness = computeReadiness()
+    }
+
     /// Creates the file `relativeName` names under `projectRoot`, encrypted
     /// for `plan`'s recipients. Returns the created file's URL, or `nil` on
     /// any refusal — the reason is then in `planError`.
@@ -249,11 +344,37 @@ public final class NewSecretFileModel {
     /// rather than trusted, because nothing stops a caller from invoking
     /// this directly regardless of `readiness`.
     public func create() async -> URL? {
-        // Tasks 3, 5 and 6 add the actual source content for the other
-        // three choices; until one of them lands there is nothing to build
-        // a document from, and `readiness` already reports `.needsSource`
-        // for exactly this reason.
-        guard sourceChoice == .empty else { return nil }
+        // No `default` — a case added to `SourceChoice` later must fail this
+        // file's build rather than silently fall through to `.empty`'s
+        // behavior for a source nobody taught this switch about.
+        let source: SecretFileCreator.Source
+        switch sourceChoice {
+        case .empty:
+            source = .empty
+        case .plainYAML:
+            // `readiness` already reports `.needsSource` whenever this is
+            // `nil` (see `computeReadiness()`), so a caller following
+            // `readiness` never reaches here without it — guarded anyway
+            // rather than trusted, same discipline every guard below keeps.
+            guard let plainYAMLText else { return nil }
+            source = .verbatimYAML(plainYAMLText)
+        case .dotEnv:
+            guard let dotEnvParsed else { return nil }
+            // `.entries` only — `SecretFileCreator` never sees `.skipped`
+            // or `.suspicions`, the same way `DotEnvPreviewTable` renders
+            // them but never lets them change what actually gets written
+            // (see that view's own doc comment). A skipped line is a line
+            // this app could not read as an assignment at all; there is
+            // nothing to encrypt it *as*.
+            source = .dotEnv(dotEnvParsed.entries)
+        case .encryptedYAML:
+            // Task 6 owns unlocking and importing this source. `readiness`
+            // reports `.needsSource` for it unconditionally (see
+            // `computeReadiness()`), so a caller following `readiness`
+            // never reaches here either.
+            return nil
+        }
+
         guard !isBlank(relativeName) else { return nil }
         // `plan` was resolved for `resolvedName`, not necessarily for the
         // `relativeName` sitting here right now — see `resolvedName`'s own
@@ -273,7 +394,7 @@ public final class NewSecretFileModel {
             do {
                 return .success(
                     try SecretFileCreator.create(
-                        .empty, plan: resolved, at: destination, in: projectRoot, sessionKey: key))
+                        source, plan: resolved, at: destination, in: projectRoot, sessionKey: key))
             } catch let failure as SecretFileCreator.Failure {
                 return .failure(failure)
             } catch {
@@ -327,7 +448,23 @@ public final class NewSecretFileModel {
 
     private func computeReadiness() -> Readiness {
         guard !isBlank(relativeName) else { return .needsName }
-        guard sourceChoice == .empty else { return .needsSource }
+
+        // No `default` — a case added to `SourceChoice` later must fail
+        // this file's build rather than silently pass through as `.empty`.
+        switch sourceChoice {
+        case .empty:
+            break
+        case .plainYAML:
+            if let plainYAMLLoadError { return .blocked(plainYAMLLoadError) }
+            guard plainYAMLText != nil else { return .needsSource }
+        case .dotEnv:
+            if let dotEnvLoadError { return .blocked(dotEnvLoadError) }
+            guard dotEnvParsed != nil else { return .needsSource }
+        case .encryptedYAML:
+            // Task 6 owns unlocking and importing this source.
+            return .needsSource
+        }
+
         if let keyMessage = CreationFailurePresenter.message(forEmptyKeyStore: keyStore.state) {
             return .blocked(keyMessage)
         }

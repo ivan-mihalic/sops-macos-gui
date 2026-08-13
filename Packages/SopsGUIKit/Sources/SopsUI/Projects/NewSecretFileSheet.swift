@@ -16,13 +16,13 @@ import SwiftUI
 /// .acknowledgedUnreadable`; `.blocked(message)` renders `message.title`/
 /// `.detail`/`.recovery` verbatim through `failureBanner(_:)` — this view
 /// never composes a failure sentence of its own, matching
-/// `CreationFailurePresenter`'s own discipline. The one narrow exception is
-/// `newFileFileUnreadable`: `Data(contentsOf:)` failing on a file the user
-/// just picked via `NSOpenPanel` is not one of the four vocabularies
-/// `CreationFailurePresenter` unifies (`CreationPlanResolver.Error`,
-/// `SecretFileCreator.Failure`, `SopsConfigGenerator.Error`,
-/// `DotEnvParseFailure`), so it gets one fixed, non-interpolated sentence
-/// here rather than a new presenter overload for a single call site.
+/// `CreationFailurePresenter`'s own discipline. Even a Plain YAML/`.env`
+/// file that could not be read (`NSOpenPanel` returned a URL, but
+/// `Data(contentsOf:)` then failed) is worded by that presenter —
+/// `CreationFailurePresenter.message(forUnreadableSourceFile:)` — not by
+/// this file; this view only ever picks the URL and hands it to
+/// `model.loadPlainYAML(from:)`/`.loadDotEnv(from:)`, which do the actual
+/// read and own the resulting error text.
 ///
 /// ## The debounce, and why it checks `resolvedName` before firing
 ///
@@ -53,16 +53,18 @@ import SwiftUI
 /// `resolveNow()` calls `resolvePlan()` immediately, unguarded, whenever
 /// `sourceChoice` changes.
 ///
-/// ## Only "Empty" can actually be created here
+/// ## What Plain YAML and `.env` actually create
 ///
-/// `NewSecretFileModel.create()` only ever builds a document for
-/// `sourceChoice == .empty` — every other choice reports `.needsSource`
-/// regardless of what has been picked or previewed (see that type's own
-/// doc comment: "Only `.empty` is implemented by this task"). Plain YAML
-/// and `.env` are still fully offered and previewed here, honestly, with
-/// Create correctly disabled for them — nothing in this file works around
-/// that guard, and nothing pretends the preview means Create would
-/// succeed.
+/// `model.loadPlainYAML(from:)`/`.loadDotEnv(from:)` read the file the
+/// moment it is picked and store what they read on the model —
+/// `plainYAMLText`/`dotEnvParsed` — not the `URL`. `create()` then uses
+/// exactly that stored value, never re-reading the file: what the user
+/// previewed (this view renders `dotEnvParsed` through
+/// `DotEnvPreviewTable`) is what gets encrypted, even if the file on disk
+/// changes or disappears in between. Plain YAML goes through verbatim as
+/// `SecretFileCreator.Source.verbatimYAML(_:)` — no reserialisation; `.env`
+/// goes through as `.dotEnv(dotEnvParsed.entries)`, the identical entries
+/// the preview already showed.
 ///
 /// ## Encrypted YAML stays disabled in this task
 ///
@@ -82,9 +84,12 @@ public struct NewSecretFileSheet: View {
     @State private var resolveTask: Task<Void, Never>?
     @State private var isCreating = false
 
+    /// The picked file's display name only — cosmetic, never what gets
+    /// encrypted. `model.plainYAMLText` (set by `loadPlainYAML(from:)`) is
+    /// the actual content; this exists purely so the preview can say
+    /// "Selected: <name>" without the model needing to carry a filename
+    /// alongside the text it will encrypt.
     @State private var plainYAMLFileName: String?
-    @State private var dotEnvParsed: ParsedDotEnv?
-    @State private var dotEnvParseError: CreationFailureMessage?
 
     private static let debounceDuration: Duration = .milliseconds(200)
 
@@ -311,7 +316,9 @@ public struct NewSecretFileSheet: View {
     private var plainYAMLPreview: some View {
         VStack(alignment: .leading, spacing: 8) {
             Button(LocalizedKey.newFileChooseFileButton.text, action: choosePlainYAMLFile)
-            if let plainYAMLFileName {
+            if let plainYAMLLoadError = model.plainYAMLLoadError {
+                failureBanner(plainYAMLLoadError)
+            } else if let plainYAMLFileName, model.plainYAMLText != nil {
                 Text(String(format: LocalizedKey.newFileFileChosen.text, plainYAMLFileName))
                     .font(.callout)
             } else {
@@ -323,9 +330,9 @@ public struct NewSecretFileSheet: View {
     private var dotEnvPreviewArea: some View {
         VStack(alignment: .leading, spacing: 8) {
             Button(LocalizedKey.newFileChooseFileButton.text, action: chooseDotEnvFile)
-            if let dotEnvParseError {
-                failureBanner(dotEnvParseError)
-            } else if let dotEnvParsed {
+            if let dotEnvLoadError = model.dotEnvLoadError {
+                failureBanner(dotEnvLoadError)
+            } else if let dotEnvParsed = model.dotEnvParsed {
                 DotEnvPreviewTable(parsed: dotEnvParsed)
             } else {
                 Text(.newFileNoFileChosen).foregroundStyle(.secondary)
@@ -334,36 +341,23 @@ public struct NewSecretFileSheet: View {
     }
 
     // MARK: - File pickers (NSOpenPanel — established pattern, ProjectSidebar.swift)
+    //
+    // Both pickers only ever choose a `URL` and hand it straight to the
+    // model — `model.loadPlainYAML(from:)`/`.loadDotEnv(from:)` do the
+    // actual read, own the resulting content or error, and recompute
+    // `readiness` themselves (no bridge call there to justify routing
+    // through `resolveDebounced()`). See this file's own doc comment, "What
+    // Plain YAML and `.env` actually create".
 
     private func choosePlainYAMLFile() {
         guard let url = runOpenPanel() else { return }
         plainYAMLFileName = url.lastPathComponent
+        model.loadPlainYAML(from: url)
     }
 
     private func chooseDotEnvFile() {
         guard let url = runOpenPanel() else { return }
-        do {
-            // `DotEnvParser` owns the UTF-8 decode — the raw bytes go
-            // straight in, never a `String(contentsOf:)` read first. See
-            // that type's own doc comment, "Why `Data`, not `String`".
-            let data = try Data(contentsOf: url)
-            dotEnvParsed = try DotEnvParser.parse(data)
-            dotEnvParseError = nil
-        } catch let failure as DotEnvParseFailure {
-            dotEnvParsed = nil
-            dotEnvParseError = CreationFailurePresenter.message(for: failure)
-        } catch {
-            // `Data(contentsOf:)` itself failing (permissions, the file
-            // vanished between picking and reading) — not a
-            // `DotEnvParseFailure`, and not one of the four vocabularies
-            // `CreationFailurePresenter` unifies. See this file's own doc
-            // comment, "The view decides nothing", for why this is the one
-            // sentence composed directly here rather than through that type.
-            dotEnvParsed = nil
-            dotEnvParseError = CreationFailureMessage(
-                title: .creationFailureDotEnvTitle, detail: LocalizedKey.newFileFileUnreadable.text,
-                recovery: nil)
-        }
+        model.loadDotEnv(from: url)
     }
 
     private func runOpenPanel() -> URL? {

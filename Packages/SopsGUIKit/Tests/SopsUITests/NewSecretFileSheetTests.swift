@@ -460,3 +460,185 @@ struct CreateButtonWiringTests {
             "Create must stay wired to the pure gate function, not a re-derived condition")
     }
 }
+
+// MARK: - create() actually uses the chosen source, end to end
+//
+// Fix round: the coordinator's review found that no task in the plan ever
+// wired the source a user picked into `NewSecretFileModel.create()` —
+// `create()` unconditionally guarded `sourceChoice == .empty`. These tests
+// are the ones that would have caught that: a real `.env`/Plain YAML file on
+// disk, `loadDotEnv(from:)`/`loadPlainYAML(from:)`, `create()`, and
+// `SopsBridge.decryptToRows` reading back exactly what was in the source
+// file — matching how `NewSecretFileModelTests.createOnReadyPlanProducesReadableFile`
+// proves the `.empty` path end to end.
+
+@Suite("NewSecretFileModel.create() from a loaded source, through the real bridge")
+@MainActor
+struct CreateFromSourceTests {
+
+    private func sourceFile(named name: String, containing text: String) throws -> URL {
+        let dir = try scratchDirectory("new-secret-file-sheet-source")
+        let url = dir.appendingPathComponent(name)
+        try text.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    @Test("Plain YAML goes through create() verbatim and decrypts back")
+    func plainYAMLCreatesAReadableFile() async throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        try ageOnlyConfig(owner.public)
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let keyStore = try makeKeyStore(importing: owner.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+
+        let picked = try sourceFile(
+            named: "input.yaml", containing: "db:\n    password: correct-horse-battery-staple-EXAMPLE\n")
+        model.loadPlainYAML(from: picked)
+        try #require(model.plainYAMLText != nil, "precondition: the file was read")
+        try #require(model.plainYAMLLoadError == nil)
+
+        model.sourceChoice = .plainYAML
+        model.relativeName = "secret.yaml"
+        await model.resolvePlan()
+        guard case .ready = model.readiness else {
+            Issue.record("expected .ready once a Plain YAML source is loaded, got \(model.readiness)")
+            return
+        }
+
+        let created = await model.create()
+        let destination = try #require(created, "create() must succeed for a loaded Plain YAML source")
+        #expect(destination.path == root.appendingPathComponent("secret.yaml").path)
+
+        let encrypted = try String(contentsOf: destination, encoding: .utf8)
+        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        let password = try #require(rows.first { $0.path == ["db", "password"] })
+        #expect(password.value == "correct-horse-battery-staple-EXAMPLE")
+    }
+
+    /// `SecretFileCreator.create` never reserialises `.verbatimYAML` — the
+    /// bridge's own YAML loader is what turns invalid input into a refusal,
+    /// at the encrypt step (`Failure.engine`), matching
+    /// `SecretFileCreatorTests`' own account of that error text.
+    @Test("Plain YAML that is not valid YAML is refused, not silently emptied or written")
+    func invalidPlainYAMLIsRefused() async throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        try ageOnlyConfig(owner.public)
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let keyStore = try makeKeyStore(importing: owner.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+
+        // An unterminated flow sequence — not valid YAML.
+        let picked = try sourceFile(named: "input.yaml", containing: "db: [unterminated\n")
+        model.loadPlainYAML(from: picked)
+        try #require(model.plainYAMLText != nil, "precondition: the (invalid) text was still read")
+
+        model.sourceChoice = .plainYAML
+        model.relativeName = "secret.yaml"
+        await model.resolvePlan()
+
+        let created = await model.create()
+
+        #expect(created == nil)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("secret.yaml").path))
+        guard case .blocked(let message) = model.readiness else {
+            Issue.record("expected .blocked after an invalid-YAML create() failure, got \(model.readiness)")
+            return
+        }
+        #expect(!message.detail.isEmpty)
+    }
+
+    @Test(".env goes through create() as the exact parsed entries, and decrypts back")
+    func dotEnvCreatesAReadableFile() async throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        try ageOnlyConfig(owner.public)
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let keyStore = try makeKeyStore(importing: owner.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+
+        let picked = try sourceFile(
+            named: "input.env",
+            containing: "DB_PASSWORD=correct-horse-battery-staple-EXAMPLE\nAPI_KEY=sk_live_EXAMPLE\n")
+        model.loadDotEnv(from: picked)
+        try #require(model.dotEnvParsed?.entries.count == 2, "precondition: both entries parsed")
+        try #require(model.dotEnvLoadError == nil)
+
+        model.sourceChoice = .dotEnv
+        model.relativeName = "secret.yaml"
+        await model.resolvePlan()
+        guard case .ready = model.readiness else {
+            Issue.record("expected .ready once a .env source is loaded, got \(model.readiness)")
+            return
+        }
+
+        let created = await model.create()
+        let destination = try #require(created, "create() must succeed for a loaded .env source")
+
+        let encrypted = try String(contentsOf: destination, encoding: .utf8)
+        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        let dbPassword = try #require(rows.first { $0.path == ["DB_PASSWORD"] })
+        let apiKey = try #require(rows.first { $0.path == ["API_KEY"] })
+        #expect(dbPassword.value == "correct-horse-battery-staple-EXAMPLE")
+        #expect(apiKey.value == "sk_live_EXAMPLE")
+        // Exactly the two entries — nothing extra, nothing dropped.
+        #expect(rows.count == 2)
+    }
+
+    @Test("a .env file that is not valid UTF-8 is blocked with DotEnvParseFailure's own sentence")
+    func invalidDotEnvIsBlocked() async throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        try ageOnlyConfig(owner.public)
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let keyStore = try makeKeyStore(importing: owner.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+
+        let dir = try scratchDirectory("new-secret-file-sheet-source")
+        let picked = dir.appendingPathComponent("input.env")
+        // 0xFF is never valid UTF-8 on its own.
+        try Data([0xFF, 0xFE, 0x00]).write(to: picked)
+
+        model.loadDotEnv(from: picked)
+        #expect(model.dotEnvParsed == nil)
+        #expect(model.dotEnvLoadError == CreationFailurePresenter.message(for: DotEnvParseFailure.notUTF8))
+
+        model.sourceChoice = .dotEnv
+        model.relativeName = "secret.yaml"
+        await model.resolvePlan()
+
+        guard case .blocked(let message) = model.readiness else {
+            Issue.record("expected .blocked, got \(model.readiness)")
+            return
+        }
+        #expect(!message.detail.isEmpty)
+
+        let created = await model.create()
+        #expect(created == nil)
+    }
+
+    @Test("a source file that vanished after being picked is reported through message(forUnreadableSourceFile:)")
+    func unreadableSourceFileIsBlocked() async throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        try ageOnlyConfig(owner.public)
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let keyStore = try makeKeyStore(importing: owner.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+
+        let missing = try scratchDirectory("new-secret-file-sheet-missing-source")
+            .appendingPathComponent("does-not-exist.env")
+
+        model.loadDotEnv(from: missing)
+
+        #expect(model.dotEnvParsed == nil)
+        #expect(model.dotEnvLoadError == CreationFailurePresenter.message(forUnreadableSourceFile: ()))
+
+        // Same for Plain YAML — one read failure, one presenter method,
+        // both sources.
+        model.loadPlainYAML(from: missing)
+        #expect(model.plainYAMLText == nil)
+        #expect(model.plainYAMLLoadError == CreationFailurePresenter.message(forUnreadableSourceFile: ()))
+    }
+}
