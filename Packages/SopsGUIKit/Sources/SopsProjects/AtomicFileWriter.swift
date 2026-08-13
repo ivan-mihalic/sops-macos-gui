@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// What `AtomicFileWriter.write` actually did, so a caller can check it rather
@@ -114,18 +115,36 @@ public struct AtomicWriteReceipt: Equatable, Sendable {
 /// would delete it again while reporting success.
 ///
 /// `expecting:` closes that. A caller that knows what the file looked like
-/// when it read it passes that `FileFingerprint`; if the destination no longer
-/// matches, the write is refused with `.destinationChangedOnDisk` and nothing
-/// is touched. `nil` means the caller has no expectation — `ProjectStore`
-/// writes its own file that nothing else owns — and skips the check.
+/// when it read it passes `.matching(fingerprint)`; if the destination no
+/// longer matches, the write is refused with `.destinationChangedOnDisk` and
+/// nothing is touched. `.unchecked` means the caller has no expectation —
+/// `ProjectStore` writes its own file that nothing else owns — and skips the
+/// check.
 ///
 /// **This narrows the window; it does not remove it.** The comparison happens
 /// immediately before `replaceItemAt`, with nothing but the comparison itself
-/// between them, but macOS offers no compare-and-swap over a directory entry:
-/// a writer that lands inside those microseconds is still lost. Saying so is
-/// the point. The realistic cases — a human running `sops set`, a `git
-/// checkout`, another window of this app — are all many orders of magnitude
-/// slower than that window, and the check catches every one of them.
+/// between them, but macOS offers no compare-and-swap over a directory entry
+/// *for a fingerprint match* — a writer that lands inside those microseconds
+/// is still lost. Saying so is the point. The realistic cases — a human
+/// running `sops set`, a `git checkout`, another window of this app — are all
+/// many orders of magnitude slower than that window, and the check catches
+/// every one of them.
+///
+/// ## A third case: the destination must not exist at all
+///
+/// Creating a new secrets file is a different question from replacing one:
+/// there is no prior fingerprint to compare against, and "unchecked" would
+/// silently clobber whatever another writer had just created there.
+/// `.absent` asks for the one thing a fingerprint comparison cannot express —
+/// "nothing must be there yet" — and unlike the `.matching` case, macOS *does*
+/// offer a compare-and-swap for exactly this: `renamex_np`'s `RENAME_EXCL`
+/// flag makes the rename itself fail with `EEXIST` when the destination has
+/// appeared, atomically, with no comparison-then-replace gap at all. So
+/// `.absent` gets a strictly better guarantee than `.matching` can: the
+/// window above is narrowed for a fingerprint match, but *closed* for
+/// existence. See `write(_:to:expecting:)`'s implementation for where the
+/// manual pre-replace check is deliberately skipped in this case, in favor of
+/// leaning on that primitive alone.
 ///
 /// `AtomicWriteReceipt.fingerprint` is what the caller carries forward to the
 /// next write, and it deliberately comes from the staged file rather than from
@@ -150,6 +169,29 @@ public enum AtomicFileWriter {
     /// would make a new one world-readable, and nothing about the write would
     /// say so.
     private static let modeForNewFiles: Int = 0o600
+
+    /// What the caller believes about the destination before this write, and
+    /// therefore what must be true of it for the write to proceed. See the
+    /// "A second writer" section of this type's doc comment for the full
+    /// rationale of each case.
+    public enum Expectation: Equatable, Sendable {
+        /// No expectation — write regardless of what, if anything, is
+        /// already there. Right for a file only this app writes, such as
+        /// `ProjectStore`'s own project file.
+        case unchecked
+        /// The destination must currently match this fingerprint, or the
+        /// write is refused with `.destinationChangedOnDisk`. Right for a
+        /// document the user also edits with other tools, where this app is
+        /// replacing a version it already read.
+        case matching(FileFingerprint)
+        /// The destination must not exist — not as a regular file, not as a
+        /// dangling symlink, not as anything `lstat` can see there — or the
+        /// write is refused with `.destinationExists`. Right for creating a
+        /// brand-new secrets file, where "unchecked" would silently clobber
+        /// whatever another writer had just put there and "matching" has no
+        /// prior fingerprint to compare against.
+        case absent
+    }
 
     public enum Error: Swift.Error, Equatable, CustomStringConvertible {
         /// The file exists but this process may not write to it — a `chmod`ded
@@ -194,6 +236,15 @@ public enum AtomicFileWriter {
         /// can do correctly, and overwriting is the defect this case exists to
         /// prevent.
         case destinationChangedOnDisk(path: String)
+        /// The destination already existed when `expecting: .absent` asked
+        /// for it not to. The original — whatever it was — is untouched: the
+        /// temp file is discarded rather than promoted over it.
+        ///
+        /// Only ever produced when the caller passed `.absent`. Distinct
+        /// from `.destinationChangedOnDisk` because there is no "before" to
+        /// point the caller back at — a new save gets a new name, not a
+        /// reload.
+        case destinationExists(path: String)
 
         public var description: String {
             switch self {
@@ -212,6 +263,8 @@ public enum AtomicFileWriter {
             case .destinationChangedOnDisk(let path):
                 return "\(path) changed on disk after it was opened here, "
                     + "so it was left exactly as it is — reload it and make the change again"
+            case .destinationExists(let path):
+                return "\(path) already exists, so it was left exactly as it is"
             }
         }
     }
@@ -220,6 +273,14 @@ public enum AtomicFileWriter {
     @discardableResult
     public static func write(
         _ contents: String, to url: URL, expecting: FileFingerprint? = nil
+    ) throws -> AtomicWriteReceipt {
+        try write(Data(contents.utf8), to: url, expecting: expecting)
+    }
+
+    /// Writes `contents` as UTF-8. See `write(_:to:expecting:)`.
+    @discardableResult
+    public static func write(
+        _ contents: String, to url: URL, expecting: Expectation
     ) throws -> AtomicWriteReceipt {
         try write(Data(contents.utf8), to: url, expecting: expecting)
     }
@@ -236,8 +297,32 @@ public enum AtomicFileWriter {
     ///   written and `Error.destinationChangedOnDisk` is thrown. `nil` — the
     ///   default — means the caller has no expectation to check, which is
     ///   right for a file only this app writes and wrong for a document the
-    ///   user also edits with other tools. See the "A second writer" section
-    ///   of this type's doc comment for the guarantee and its limit.
+    ///   user also edits with other tools. Equivalent to
+    ///   `write(_:to:expecting:)` taking an `Expectation`, with `nil` mapped
+    ///   to `.unchecked` and a fingerprint mapped to `.matching`. See the "A
+    ///   second writer" section of this type's doc comment for the guarantee
+    ///   and its limit.
+    /// - Returns: What was written where, including the staging path and the
+    ///   fingerprint to pass as the *next* write's `expecting:`. See
+    ///   `AtomicWriteReceipt`.
+    @discardableResult
+    public static func write(
+        _ data: Data, to url: URL, expecting: FileFingerprint? = nil
+    ) throws -> AtomicWriteReceipt {
+        try write(data, to: url, expecting: expecting.map(Expectation.matching) ?? .unchecked)
+    }
+
+    /// Replaces the file at `url` with `data`, atomically.
+    ///
+    /// - Parameter url: The file to replace. May be a symlink, in which case
+    ///   the file it points at is what gets replaced and the link is left a
+    ///   link — see the symlink note below. The containing directory must
+    ///   already exist; this never creates one, because a save is always over
+    ///   a file the user already opened.
+    /// - Parameter expecting: What the caller believes about the destination
+    ///   before this write. See `Expectation` for the three cases and the "A
+    ///   second writer" section of this type's doc comment for the guarantee
+    ///   each one buys and its limit.
     /// - Returns: What was written where, including the staging path and the
     ///   fingerprint to pass as the *next* write's `expecting:`. See
     ///   `AtomicWriteReceipt`.
@@ -266,7 +351,7 @@ public enum AtomicFileWriter {
     /// symlink that crosses a volume is the common case for making one.
     @discardableResult
     public static func write(
-        _ data: Data, to url: URL, expecting: FileFingerprint? = nil
+        _ data: Data, to url: URL, expecting: Expectation
     ) throws -> AtomicWriteReceipt {
         let destination = url.resolvingSymlinksInPath()
         let directory = destination.deletingLastPathComponent()
@@ -280,7 +365,12 @@ public enum AtomicFileWriter {
         let finalMode = originalMode ?? modeForNewFiles
 
         // Before anything is staged. See `Error.destinationNotWritable`.
-        if originalMode != nil, access(destination.path, W_OK) != 0 {
+        // Skipped for `.absent`: whether an existing file is writable is
+        // irrelevant when this write was never going to touch it either way
+        // — `refuseIfChanged` below reports the fact that actually matters,
+        // `.destinationExists`, rather than a misleading one about
+        // permissions on a file this call has no intention of opening.
+        if expecting != .absent, originalMode != nil, access(destination.path, W_OK) != 0 {
             throw Error.destinationNotWritable(path: destination.path)
         }
 
@@ -336,15 +426,49 @@ public enum AtomicFileWriter {
         let staged = FileFingerprint.of(temporaryFile)
 
         // The check that actually matters, with nothing between it and the
-        // replace. See "A second writer" in this type's doc comment for why
-        // this narrows the window rather than closing it.
-        try refuseIfChanged(destination, from: expecting)
+        // replace — for `.matching` and `.unchecked`. See "A second writer"
+        // in this type's doc comment for why this narrows the window rather
+        // than closing it.
+        //
+        // `.absent` deliberately does *not* repeat the check here. Doing so
+        // would only narrow its window the same way, when `RENAME_EXCL`
+        // below can close it outright — a manual check immediately before
+        // the replace would just be a second, strictly weaker copy of what
+        // the replace itself already guarantees atomically. See "A third
+        // case" in this type's doc comment.
+        if expecting != .absent {
+            try refuseIfChanged(destination, from: expecting)
+        }
 
-        do {
-            _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporaryFile)
-        } catch {
-            throw Error.couldNotReplace(
-                path: destination.path, reason: (error as NSError).localizedDescription)
+        // Test-only, and a no-op in every build that does not set it. See
+        // `beforeReplaceHookForTesting`'s own doc comment for why this
+        // exists at all: it is what lets `AtomicFileWriterTests` land a
+        // destination created mid-staging deterministically, at exactly this
+        // point, instead of racing a second thread against the clock.
+        beforeReplaceHookForTesting?(destination)
+
+        switch expecting {
+        case .absent:
+            // `RENAME_EXCL` fails the rename itself, atomically, if
+            // `destination` has appeared since the checks above — no
+            // window between a check and the replace at all, which is the
+            // one guarantee `.matching` cannot make (see the "A third case"
+            // section of this type's doc comment). `renamex_np` renames in
+            // place like `rename(2)`; it does not consume `temporaryFile`
+            // on failure, so the `defer` above still cleans it up.
+            guard renamex_np(temporaryFile.path, destination.path, UInt32(RENAME_EXCL)) == 0 else {
+                if errno == EEXIST {
+                    throw Error.destinationExists(path: destination.path)
+                }
+                throw Error.couldNotReplace(path: destination.path, reason: describeErrno())
+            }
+        case .unchecked, .matching:
+            do {
+                _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporaryFile)
+            } catch {
+                throw Error.couldNotReplace(
+                    path: destination.path, reason: (error as NSError).localizedDescription)
+            }
         }
 
         syncDirectory(directory)
@@ -353,22 +477,99 @@ public enum AtomicFileWriter {
             destination: destination, temporaryFile: temporaryFile, fingerprint: staged)
     }
 
-    /// Throws `.destinationChangedOnDisk` when `expected` is non-nil and the
-    /// file at `destination` no longer matches it.
+    /// Throws when `destination` no longer looks like what `expected` says it
+    /// should: `.destinationChangedOnDisk` for a fingerprint mismatch,
+    /// `.destinationExists` for `.absent` with something already there.
+    /// `.unchecked` never throws.
     ///
-    /// A destination that has *vanished* counts as changed, not as "nothing to
-    /// compare against": the caller read a file there, and a save into the gap
-    /// left by `rm` or by a `git checkout` that removed it is not the write
-    /// they asked for. A caller with no expectation (`nil`) is unaffected —
-    /// creating a file that was never there is a normal use of this writer.
+    /// For `.matching`, a destination that has *vanished* counts as changed,
+    /// not as "nothing to compare against": the caller read a file there, and
+    /// a save into the gap left by `rm` or by a `git checkout` that removed
+    /// it is not the write they asked for.
     private static func refuseIfChanged(
-        _ destination: URL, from expected: FileFingerprint?
+        _ destination: URL, from expected: Expectation
     ) throws {
-        guard let expected else { return }
-        guard FileFingerprint.of(destination) == expected else {
-            throw Error.destinationChangedOnDisk(path: destination.path)
+        switch expected {
+        case .unchecked:
+            return
+        case .matching(let fingerprint):
+            guard FileFingerprint.of(destination) == fingerprint else {
+                throw Error.destinationChangedOnDisk(path: destination.path)
+            }
+        case .absent:
+            try refuseIfPresent(destination)
         }
     }
+
+    /// Throws `.destinationExists` if `lstat` finds anything at all at
+    /// `destination` — a regular file, a directory, or a dangling symlink.
+    ///
+    /// `lstat`, not `FileManager.fileExists`, for the same reason
+    /// `existingMode(of:)` below uses it: `fileExists` follows a symlink and
+    /// reports `false` for one whose target is missing, which would let this
+    /// writer's `RENAME_EXCL` land *on top of* a dangling link instead of
+    /// refusing it — silently detaching whatever else pointed at that link
+    /// name, the exact failure the symlink-preserving behavior in
+    /// `write(_:to:expecting:)` exists to avoid elsewhere in this type.
+    private static func refuseIfPresent(_ destination: URL) throws {
+        var info = stat()
+        if lstat(destination.path, &info) == 0 {
+            throw Error.destinationExists(path: destination.path)
+        }
+    }
+
+    // MARK: - Testing
+
+    /// A synchronization point for tests, invoked on the calling thread
+    /// immediately before the final replace step (see the call site above) —
+    /// after staging and every check that runs before it. `nil` in every
+    /// build that never sets it, which is every build except
+    /// `AtomicFileWriterTests`.
+    ///
+    /// Exists for exactly one property: `.absent`'s guarantee that a
+    /// destination which appears *during* staging — after the early check
+    /// already returned "nothing there" — is still refused by `RENAME_EXCL`
+    /// at replace time (see "A third case" in this type's doc comment). That
+    /// window is a handful of CPU instructions wide in production, far too
+    /// narrow to hit reliably by racing a second thread against the clock —
+    /// an earlier version of the covering test tried exactly that and landed
+    /// the race in only some fraction of runs, which is a real flake risk in
+    /// a slower or more contended environment (a CI runner, a VM) even
+    /// though it read comfortably margined on this machine. This hook lets
+    /// the test plant a file at `destination` from *inside* the write call,
+    /// at the exact instant in question, so the scenario happens on every
+    /// run rather than most of them.
+    ///
+    /// `internal`, not `public`: nothing outside this module's own test
+    /// target can see it (via `@testable import`), and nothing in the app
+    /// itself ever sets it. Guarded by `hookLock` because `swift test` runs
+    /// suites — including ones that call `write` for unrelated reasons, such
+    /// as `ProjectRecipientApplierTests` — in parallel, and the getter/setter
+    /// pair below is what keeps reading and writing the pointer itself
+    /// race-free. The lock does *not* by itself make a closure installed
+    /// here safe against a concurrent, unrelated `write` call also invoking
+    /// it: a test that sets this must check the `URL` it's handed and no-op
+    /// for anything it does not recognize, which `absentRefusesADestinationThatAppearsMidStaging`
+    /// does.
+    static var beforeReplaceHookForTesting: (@Sendable (URL) -> Void)? {
+        get {
+            hookLock.lock()
+            defer { hookLock.unlock() }
+            return unguardedBeforeReplaceHook
+        }
+        set {
+            hookLock.lock()
+            defer { hookLock.unlock() }
+            unguardedBeforeReplaceHook = newValue
+        }
+    }
+    private static let hookLock = NSLock()
+    /// Backing storage for `beforeReplaceHookForTesting`. Never touched
+    /// directly outside that property's own getter/setter, both of which
+    /// hold `hookLock` — `nonisolated(unsafe)` records that this type is
+    /// making its own thread-safety promise rather than asking the compiler
+    /// to infer one, which it cannot for a plain mutable `static var`.
+    private static nonisolated(unsafe) var unguardedBeforeReplaceHook: (@Sendable (URL) -> Void)?
 
     // MARK: - Steps
 

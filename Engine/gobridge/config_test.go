@@ -289,6 +289,122 @@ func TestLookupCreationRule_MixedAgeAndKMSRule(t *testing.T) {
 	}
 }
 
+// A creation rule that scopes encryption to specific keys via
+// encrypted_regex must report that regex — Task 5 uses it to refuse
+// creating files under rules this app cannot faithfully reproduce.
+func TestLookupCreationRule_EncryptedRegexIsReported(t *testing.T) {
+	dir := t.TempDir()
+	k1 := newAgeKeyPair(t)
+	confPath := writeConfig(t, dir, `creation_rules:
+  - path_regex: secrets/.*\.yaml$
+    age: `+k1.Public+`
+    encrypted_regex: '^(data|stringData)$'
+`)
+	target := filepath.Join(dir, "secrets", "prod.yaml")
+
+	got, err := LookupCreationRule(confPath, target)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.EncryptedRegex != "^(data|stringData)$" {
+		t.Errorf("EncryptedRegex = %q, want %q", got.EncryptedRegex, "^(data|stringData)$")
+	}
+	if got.UnencryptedRegex != "" {
+		t.Errorf("UnencryptedRegex = %q, want empty", got.UnencryptedRegex)
+	}
+	if got.UnencryptedSuffix != "" {
+		t.Errorf("UnencryptedSuffix = %q, want empty", got.UnencryptedSuffix)
+	}
+	if got.EncryptedSuffix != "" {
+		t.Errorf("EncryptedSuffix = %q, want empty", got.EncryptedSuffix)
+	}
+}
+
+// A rule that scopes encryption via unencrypted_suffix instead must report
+// that suffix, with the other three new fields left empty.
+func TestLookupCreationRule_UnencryptedSuffixIsReported(t *testing.T) {
+	dir := t.TempDir()
+	k1 := newAgeKeyPair(t)
+	confPath := writeConfig(t, dir, `creation_rules:
+  - path_regex: secrets/.*\.yaml$
+    age: `+k1.Public+`
+    unencrypted_suffix: "_plain"
+`)
+	target := filepath.Join(dir, "secrets", "prod.yaml")
+
+	got, err := LookupCreationRule(confPath, target)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.UnencryptedSuffix != "_plain" {
+		t.Errorf("UnencryptedSuffix = %q, want %q", got.UnencryptedSuffix, "_plain")
+	}
+	if got.EncryptedRegex != "" {
+		t.Errorf("EncryptedRegex = %q, want empty", got.EncryptedRegex)
+	}
+	if got.UnencryptedRegex != "" {
+		t.Errorf("UnencryptedRegex = %q, want empty", got.UnencryptedRegex)
+	}
+	if got.EncryptedSuffix != "" {
+		t.Errorf("EncryptedSuffix = %q, want empty", got.EncryptedSuffix)
+	}
+}
+
+// A rule that sets none of the four new fields must report all of them as
+// empty strings — the encoding for "this rule does not set this field".
+func TestLookupCreationRule_NoScopingFieldsAreEmptyStrings(t *testing.T) {
+	dir := t.TempDir()
+	k1 := newAgeKeyPair(t)
+	confPath := writeConfig(t, dir, `creation_rules:
+  - path_regex: secrets/.*\.yaml$
+    age: `+k1.Public+`
+`)
+	target := filepath.Join(dir, "secrets", "prod.yaml")
+
+	got, err := LookupCreationRule(confPath, target)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.EncryptedRegex != "" || got.UnencryptedRegex != "" || got.UnencryptedSuffix != "" || got.EncryptedSuffix != "" {
+		t.Errorf("expected all four scoping fields empty, got: EncryptedRegex=%q UnencryptedRegex=%q UnencryptedSuffix=%q EncryptedSuffix=%q",
+			got.EncryptedRegex, got.UnencryptedRegex, got.UnencryptedSuffix, got.EncryptedSuffix)
+	}
+}
+
+// The JSON that crosses the C boundary must carry the four new fields under
+// their camelCase keys so the Swift Decodable struct picks them up.
+func TestLookupCreationRuleJSON_ScopingFieldsArePresent(t *testing.T) {
+	dir := t.TempDir()
+	k1 := newAgeKeyPair(t)
+	confPath := writeConfig(t, dir, `creation_rules:
+  - path_regex: secrets/.*\.yaml$
+    age: `+k1.Public+`
+    encrypted_regex: '^(data|stringData)$'
+`)
+	target := filepath.Join(dir, "secrets", "prod.yaml")
+
+	raw, err := LookupCreationRuleJSON(confPath, target)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var decoded struct {
+		EncryptedRegex    string `json:"encryptedRegex"`
+		UnencryptedRegex  string `json:"unencryptedRegex"`
+		UnencryptedSuffix string `json:"unencryptedSuffix"`
+		EncryptedSuffix   string `json:"encryptedSuffix"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal: %v\nraw: %s", err, raw)
+	}
+	if decoded.EncryptedRegex != "^(data|stringData)$" {
+		t.Errorf("encryptedRegex = %q, want %q", decoded.EncryptedRegex, "^(data|stringData)$")
+	}
+	if decoded.UnencryptedRegex != "" || decoded.UnencryptedSuffix != "" || decoded.EncryptedSuffix != "" {
+		t.Errorf("expected the other three scoping fields empty, got: %+v", decoded)
+	}
+}
+
 func TestLookupCreationRule_KeyGroups(t *testing.T) {
 	dir := t.TempDir()
 	k1 := newAgeKeyPair(t)

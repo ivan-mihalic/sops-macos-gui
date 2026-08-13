@@ -69,6 +69,68 @@ struct CreationRuleLookupTests {
         #expect(lookup.nonAgeBackends == ["pgp"])
     }
 
+    @Test("a rule with encrypted_regex reports it and leaves the other scoping fields empty")
+    func encryptedRegexIsReported() throws {
+        let key = try AgeKeyPair.generate()
+        let dir = try TempFile(named: ".sops.yaml", contents: """
+        creation_rules:
+          - path_regex: secrets/.*\\.yaml$
+            age: \(key.public)
+            encrypted_regex: '^(data|stringData)$'
+        """)
+        let confPath = dir.path
+        let target = (confPath as NSString).deletingLastPathComponent + "/secrets/prod.yaml"
+
+        let lookup = try SopsBridge.lookupCreationRule(configPath: confPath, targetFilePath: target)
+
+        #expect(lookup.matched)
+        #expect(lookup.encryptedRegex == "^(data|stringData)$")
+        #expect(lookup.unencryptedRegex.isEmpty)
+        #expect(lookup.unencryptedSuffix.isEmpty)
+        #expect(lookup.encryptedSuffix.isEmpty)
+    }
+
+    @Test("a rule with unencrypted_suffix reports it and leaves the other scoping fields empty")
+    func unencryptedSuffixIsReported() throws {
+        let key = try AgeKeyPair.generate()
+        let dir = try TempFile(named: ".sops.yaml", contents: """
+        creation_rules:
+          - path_regex: secrets/.*\\.yaml$
+            age: \(key.public)
+            unencrypted_suffix: "_plain"
+        """)
+        let confPath = dir.path
+        let target = (confPath as NSString).deletingLastPathComponent + "/secrets/prod.yaml"
+
+        let lookup = try SopsBridge.lookupCreationRule(configPath: confPath, targetFilePath: target)
+
+        #expect(lookup.matched)
+        #expect(lookup.unencryptedSuffix == "_plain")
+        #expect(lookup.encryptedRegex.isEmpty)
+        #expect(lookup.unencryptedRegex.isEmpty)
+        #expect(lookup.encryptedSuffix.isEmpty)
+    }
+
+    @Test("a rule that sets none of the scoping fields reports all four as empty strings")
+    func noScopingFieldsAreEmptyStrings() throws {
+        let key = try AgeKeyPair.generate()
+        let dir = try TempFile(named: ".sops.yaml", contents: """
+        creation_rules:
+          - path_regex: secrets/.*\\.yaml$
+            age: \(key.public)
+        """)
+        let confPath = dir.path
+        let target = (confPath as NSString).deletingLastPathComponent + "/secrets/prod.yaml"
+
+        let lookup = try SopsBridge.lookupCreationRule(configPath: confPath, targetFilePath: target)
+
+        #expect(lookup.matched)
+        #expect(lookup.encryptedRegex.isEmpty)
+        #expect(lookup.unencryptedRegex.isEmpty)
+        #expect(lookup.unencryptedSuffix.isEmpty)
+        #expect(lookup.encryptedSuffix.isEmpty)
+    }
+
     @Test("a multi-line flow sequence age list parses correctly, end to end through the bridge")
     func multiLineFlowSequence() throws {
         let key1 = try AgeKeyPair.generate()
