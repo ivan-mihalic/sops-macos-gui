@@ -168,6 +168,38 @@ struct CreationPlanResolverTests {
         #expect(reason.contains("encrypted_suffix"))
     }
 
+    /// Determined empirically, not assumed — measured directly against the
+    /// real bridge (see `NewSecretFileModelTests
+    /// .governedByRuleWithNoRecipientsIsNotReady` and
+    /// `EncryptedImportModelTests
+    /// .ruleWithNoRecipientsReportsAwaitingPlanNotADiff` for why this
+    /// matters to the wizard downstream): sops's own config loader admits a
+    /// creation rule whose `path_regex` matches but that names no key group
+    /// at all — no `age:`, no `pgp:`, nothing. `lookup.nonAgeBackends` is
+    /// empty (there is no backend to name), `lookup.ageRecipients` is empty
+    /// (there are no age recipients), and neither of `plan(forTarget:in:)`'s
+    /// own refusal checks (non-age backend, unsupported scoping field) fires
+    /// for an *absence* of a key group — so this reaches `.governedByRule`
+    /// with an empty recipient list rather than `.unsupportedRule`. This is
+    /// pinned here specifically so the assumption is recorded rather than
+    /// remembered: `NewSecretFileModel` has to treat this recipient set as
+    /// "no real target" on its own, because `CreationPlanResolver` itself
+    /// does not refuse it.
+    @Test("a creation rule with a path_regex and no key group at all is .governedByRule with an empty recipient list, not a refusal")
+    func ruleWithNoKeyGroupIsGovernedByRuleWithNoRecipients() throws {
+        let root = try applierScratchDirectory("creation-plan")
+        try """
+            creation_rules:
+              - path_regex: secrets/.*\\.yaml$
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+
+        let target = root.appendingPathComponent("secrets/prod.yaml")
+
+        let plan = try CreationPlanResolver.plan(forTarget: target, in: root)
+
+        #expect(plan == .governedByRule(recipients: [], encryptedRegex: ""))
+    }
+
     @Test("encrypted_regex is not a refusal — governedByRule passes it through")
     func encryptedRegexPassesThrough() throws {
         let owner = try AgeKeyPair.generate()

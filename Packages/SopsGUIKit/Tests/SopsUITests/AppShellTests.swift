@@ -1,4 +1,5 @@
 import Foundation
+import SopsProjects
 import Testing
 @testable import SopsUI
 
@@ -119,5 +120,148 @@ struct AppShellProjectRootSourceTests {
                 "AppShell builds a project root URL from projects.groups \(derivations.count) times; there is one legitimate derivation and every panel reads it through fileListModel")
         #expect(derivations.first?.contains("fileListModel = FileListModel(projectRoot:") == true,
                 "the one project-root derivation no longer feeds fileListModel directly, so whatever reads it now may be a second source of truth: \(String(derivations.first ?? "")) — if this line was extracted deliberately and fileListModel still receives it, update this pin rather than working around it")
+    }
+}
+
+// MARK: - Task 7 (F2): reaching the new-file wizard from the app
+
+/// `AppShell.makeNewFileModel(projectRoot:keyStore:)` is the pure gate behind
+/// the toolbar "+" and ⌘N: both call it (see `NewFileRequestWiringTests`
+/// below), and it is the one place that decides whether there is a project
+/// to create a file in at all.
+///
+/// This is the behavioural half of Step 1's "⌘N bez vybraného projektu nic
+/// neotevře" — the structural half (that `FileListView`, and therefore its
+/// toolbar row, is never constructed without a project) is already true by
+/// construction in `ProjectWorkspaceView.fileListPane` and is not something a
+/// unit test can observe further; this pins the decision the wiring is built
+/// on so a future call site cannot construct a `NewSecretFileModel` for a
+/// `nil` root by mistake.
+@MainActor
+@Suite("The new-file request needs a project, exactly like the model it builds")
+struct NewFileModelGateTests {
+    @Test("no project selected means no model, so ⌘N/+ have nothing to open")
+    func noProjectMeansNoModel() {
+        let keyStore = SessionKeyStore()
+        #expect(AppShell.makeNewFileModel(projectRoot: nil, keyStore: keyStore) == nil)
+    }
+
+    @Test("a selected project produces a model rooted exactly there")
+    func projectSelectedProducesModel() {
+        let keyStore = SessionKeyStore()
+        let root = URL(fileURLWithPath: "/tmp/does-not-need-to-exist-for-this-check")
+        let model = AppShell.makeNewFileModel(projectRoot: root, keyStore: keyStore)
+        #expect(model?.projectRoot == root)
+    }
+}
+
+/// The wiring itself, read as source — the same technique
+/// `OuterSidebarWiringTests`/`AppShellProjectRootSourceTests` use for the
+/// same reason: `ProjectWorkspaceView` is a `private struct` with only
+/// `private @State`, so nothing here can render it or drive its bindings
+/// directly.
+///
+/// ## What this suite exists to catch
+/// `NewSecretFileSheet`'s `onCreated` callback is the one new door this task
+/// opens onto `selectedFileURL` — the property `requestFileSwitch(to:)` is
+/// documented to be the *only* writer of, precisely so a switch away from a
+/// dirty document is never silent. A completion handler that calls
+/// `activateFile(url)` directly (because "the file is new, there's nothing
+/// to lose by opening it") would be correct about the *new* file and wrong
+/// about the *currently open* one — that document's unsaved edits are
+/// exactly what `requestFileSwitch` exists to protect, and this task's brief
+/// calls this out by name as the regression it is most likely to cause.
+@Suite("Opening a newly created file goes through the same guard as every other file switch")
+struct NewFileSwitchWiringTests {
+    private static var appShellSource: String {
+        get throws {
+            try String(
+                contentsOfFile: URL(fileURLWithPath: #filePath)
+                    .deletingLastPathComponent()
+                    .deletingLastPathComponent()
+                    .deletingLastPathComponent()
+                    .appendingPathComponent("Sources/SopsUI/AppShell.swift").path,
+                encoding: .utf8)
+        }
+    }
+
+    private static var fileListViewSource: String {
+        get throws {
+            try String(
+                contentsOfFile: URL(fileURLWithPath: #filePath)
+                    .deletingLastPathComponent()
+                    .deletingLastPathComponent()
+                    .deletingLastPathComponent()
+                    .appendingPathComponent("Sources/SopsUI/Projects/FileListView.swift").path,
+                encoding: .utf8)
+        }
+    }
+
+    /// The text of `onCreated: { created in ... }`'s closure body, matched by
+    /// counting braces rather than searching for the next `}` — the closure
+    /// wraps a `Task { ... }`, and a naive search would stop at that nested
+    /// block's own closing brace and silently check nothing.
+    private static func onCreatedClosureBody(in source: String) -> String? {
+        guard let marker = source.range(of: "onCreated: { created in") else { return nil }
+        var depth = 0
+        var index = marker.upperBound
+        var body = ""
+        while index < source.endIndex {
+            let char = source[index]
+            if char == "{" { depth += 1 }
+            if char == "}" {
+                if depth == 0 { return body }
+                depth -= 1
+            }
+            body.append(char)
+            index = source.index(after: index)
+        }
+        return nil
+    }
+
+    @Test("the created file is opened through requestFileSwitch, never activateFile or a direct write")
+    func createdFileGoesThroughTheGuard() throws {
+        let source = try Self.appShellSource
+        let body = try #require(
+            Self.onCreatedClosureBody(in: source),
+            "AppShell no longer wires NewSecretFileSheet's onCreated as `{ created in ... }` — update this probe if the parameter was renamed")
+
+        #expect(
+            body.contains("requestFileSwitch(to: created)"),
+            "the created file's completion no longer calls requestFileSwitch(to: created) — a dirty open document would lose its guard")
+        #expect(
+            !body.contains("activateFile("),
+            "the created file's completion calls activateFile directly, bypassing WorkspaceSwitchDecision entirely — an open dirty document would be torn down with no prompt")
+        #expect(
+            !body.contains("selectedFileURL ="),
+            "the created file's completion writes selectedFileURL directly, bypassing requestFileSwitch — the one property it is documented to be the sole writer of")
+    }
+
+    @Test("the file list is refreshed on completion, so the new file is there to select")
+    func refreshesFileListOnCreate() throws {
+        let source = try Self.appShellSource
+        let body = try #require(Self.onCreatedClosureBody(in: source))
+        #expect(
+            body.contains("fileListModel?.refresh()") || body.contains("fileListModel.refresh()"),
+            "the file list model is never refreshed when a file is created — the new file would not appear to be selected")
+    }
+
+    @Test("the new-file request is built through the project gate, not constructed directly")
+    func newFileRequestGoesThroughTheGate() throws {
+        let source = try Self.appShellSource
+        #expect(
+            source.contains("AppShell.makeNewFileModel("),
+            "the new-file request handler no longer calls the pure project gate — a call site could build a NewSecretFileModel with no project selected")
+    }
+
+    @Test("FileListView presents its + / ⌘N through a caller-supplied action, not a decision of its own")
+    func fileListViewForwardsTheAction() throws {
+        let source = try Self.fileListViewSource
+        #expect(
+            source.contains("onNewFile"),
+            "FileListView no longer takes an onNewFile action — Task 7's toolbar button has nowhere to route its click")
+        #expect(
+            source.contains("keyboardShortcut(\"n\", modifiers: .command)"),
+            "FileListView no longer wires ⌘N onto the new-file action")
     }
 }

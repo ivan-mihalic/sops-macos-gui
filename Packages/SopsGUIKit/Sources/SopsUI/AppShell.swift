@@ -361,6 +361,31 @@ public struct AppShell: View {
             sectionSaveErrorMessage = message
         }
     }
+
+    // MARK: - Task 7: reaching the new-file wizard
+
+    /// The model a "New File" request would use right now, or `nil` when
+    /// there is no project to create one in. The toolbar "+" and ⌘N (both
+    /// live in `FileListView`, wired through `ProjectWorkspaceView
+    /// .requestNewFile()`) call this rather than constructing
+    /// `NewSecretFileModel` directly, so there is exactly one place that
+    /// decides whether a project is selected — the same reason
+    /// `sectionSwitchDecision`/`applying` exist as free functions rather
+    /// than inline logic.
+    ///
+    /// A `nil` project root is not a hypothetical this needs to guess about:
+    /// `FileListView`, and therefore its toolbar row, is never on screen
+    /// without one (`ProjectWorkspaceView.fileListPane`'s `else` branch shows
+    /// `.filesNoProjectSelected` instead) — so in practice this always
+    /// returns a model when it is actually reachable. It is still a real
+    /// `nil` case, tested directly, rather than an assumption folded into
+    /// the caller: a pure function that admits "no project" is a case a test
+    /// can drive without rendering a window, the same way `sectionSwitchDecision`
+    /// is checked without one.
+    static func makeNewFileModel(projectRoot: URL?, keyStore: SessionKeyStore) -> NewSecretFileModel? {
+        guard let projectRoot else { return nil }
+        return NewSecretFileModel(projectRoot: projectRoot, keyStore: keyStore)
+    }
 }
 
 /// Everything shown once "Projects" is selected: the project list (Task 5's
@@ -411,6 +436,7 @@ private struct ProjectWorkspaceView: View {
     @State private var pendingSwitch: PendingSwitch?
     @State private var switchSaveErrorMessage: String?
     @State private var projectAccessRequest: ProjectAccessRequest?
+    @State private var newFileRequest: NewFileRequest?
 
     init(projects: ProjectSidebarModel, keyStore: SessionKeyStore, unsavedChanges: UnsavedChangesTracker) {
         self.projects = projects
@@ -491,6 +517,16 @@ private struct ProjectWorkspaceView: View {
         let model: ProjectAccessModel
     }
 
+    /// The new-file wizard's subject: a fresh `NewSecretFileModel`, built the
+    /// moment the toolbar "+" or ⌘N fires. Same shape, and the same reason,
+    /// as `ProjectAccessRequest` right above — a model built once and reused
+    /// across sheet presentations could describe a `.sops.yaml`/key-store
+    /// state that no longer holds by the second time it is opened.
+    private struct NewFileRequest: Identifiable {
+        let id = UUID()
+        let model: NewSecretFileModel
+    }
+
     @ViewBuilder
     private var fileListPane: some View {
         if let fileListModel {
@@ -499,7 +535,8 @@ private struct ProjectWorkspaceView: View {
                     model: fileListModel,
                     selection: Binding(
                         get: { selectedFileURL },
-                        set: { requestFileSwitch(to: $0) })
+                        set: { requestFileSwitch(to: $0) }),
+                    onNewFile: { requestNewFile() }
                 )
                 projectAccessBar(projectRoot: fileListModel.projectRoot)
             }
@@ -521,9 +558,52 @@ private struct ProjectWorkspaceView: View {
                         Task { await fileListModel.refresh() }
                     })
             }
+            .sheet(item: $newFileRequest) { request in
+                NewSecretFileSheet(
+                    model: request.model,
+                    onCreated: { created in
+                        // Opening the file this wizard just created is a file
+                        // switch like any other — `requestFileSwitch(to:)` is
+                        // the one path that ever writes `selectedFileURL`
+                        // (see this type's own doc comment, "How the guard
+                        // works without fighting SwiftUI's selection
+                        // bindings"), precisely because the *currently* open
+                        // document may be dirty even though the file that
+                        // was just created obviously is not. Committing the
+                        // switch unconditionally here would be correct about
+                        // the new file and silently discard unsaved edits in
+                        // the old one — the exact hole this type exists to
+                        // close for the file list and the project sidebar.
+                        //
+                        // The list is refreshed first so the new file is
+                        // already in `fileListModel.files` by the time the
+                        // switch selects it — `List(selection:)` cannot
+                        // highlight a row that is not there yet.
+                        Task {
+                            await fileListModel.refresh()
+                            requestFileSwitch(to: created)
+                        }
+                    })
+            }
         } else {
             centeredPlaceholder(.filesNoProjectSelected)
         }
+    }
+
+    /// Builds the wizard's model through `AppShell.makeNewFileModel(
+    /// projectRoot:keyStore:)` and presents it — or does nothing at all when
+    /// there is no project, which is what makes ⌘N and the toolbar "+"
+    /// "inactive" without one. In practice this guard is never the reason
+    /// nothing happens: `fileListPane` never wires `onNewFile` (and
+    /// therefore ⌘N) without a `fileListModel` to read a `projectRoot` from
+    /// in the first place. It is kept anyway, rather than force-unwrapping,
+    /// for the same reason `activateFile`/`requestFileSwitch` handle `nil`
+    /// targets instead of assuming a caller never passes one.
+    private func requestNewFile() {
+        guard let model = AppShell.makeNewFileModel(
+            projectRoot: fileListModel?.projectRoot, keyStore: keyStore)
+        else { return }
+        newFileRequest = NewFileRequest(model: model)
     }
 
     private func projectAccessBar(projectRoot: URL) -> some View {

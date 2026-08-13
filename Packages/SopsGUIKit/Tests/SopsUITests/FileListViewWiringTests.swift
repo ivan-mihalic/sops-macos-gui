@@ -23,7 +23,7 @@ struct FileListViewWiringTests {
 
     private func text(of model: FileListModel) -> String {
         AXProbe.tree(size: Self.size) {
-            FileListView(model: model, selection: .constant(nil))
+            FileListView(model: model, selection: .constant(nil), onNewFile: {})
         }
         .map { $0.label + " " + $0.value + " " + $0.help }
         .joined(separator: "\n")

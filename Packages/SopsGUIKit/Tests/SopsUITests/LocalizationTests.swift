@@ -192,6 +192,13 @@ struct LocalizationTests {
         // non-comment line, so the count is 2 or greater by construction.
         "key.error.multiple-keys":
             "raised only when a keys.txt holds more than one key, so the count is never 1",
+        // Both of these format a 1-based line number, not a count of
+        // anything — its grammatical form never varies by value, so there is
+        // no singular/plural split to add.
+        "dotenv-preview.skipped-line-label":
+            "%d is a line number, not a count",
+        "dotenv-preview.suspicion.duplicate-key":
+            "%1$d is the winning entry's own line number, not a count",
     ]
 
     @Test("every string that formats a count pluralizes on it")
@@ -519,6 +526,75 @@ struct LocalizationTests {
                 "the sentence must say files already on disk keep their access: \(sentence)")
         #expect(sentence.lowercased().contains("apply to files"),
                 "the sentence must point at the control that does change access: \(sentence)")
+    }
+
+    /// Task 6, Important 2 from the review: importing an already-encrypted
+    /// file never modifies the source, only creates a new one — a recipient
+    /// named in `newFileEncryptedImportLoses` still reads the source exactly
+    /// as before, and only loses the ability to read the *new* copy. The
+    /// borrowed "gains"/"loses" vocabulary from `ProjectAccessView` came
+    /// without this clarification the first time; this pins that it is
+    /// there, the same shape `configUpdateRemovalSentenceDisclaimsRevocation`
+    /// already pins for the sibling sentence one screen over.
+    @Test("the encrypted-import loses sentence says the source file is untouched")
+    func encryptedImportLosesSentenceDisclaimsSourceModification() throws {
+        let sentence = try #require(
+            Self.englishForms(for: .newFileEncryptedImportLoses).first,
+            "missing catalog entry for the encrypted-import loses sentence")
+        #expect(sentence.lowercased().contains("new file"),
+                "the sentence must scope the loss to the new file, not the source: \(sentence)")
+        #expect(sentence.lowercased().contains("untouched"),
+                "the sentence must say the source file is untouched: \(sentence)")
+        #expect(sentence.lowercased().contains("still readable"),
+                "the sentence must say the source stays readable to them there: \(sentence)")
+    }
+
+    /// Final review, Important 2: the sentence that discloses
+    /// `encrypted_regex` has to say what the rule *does* — scope which
+    /// values get encrypted, leaving the rest as plaintext — and must not
+    /// promise which fields those are. This app never evaluates the
+    /// expression (sops does, at write time), so a sentence naming specific
+    /// keys would be a claim it cannot stand behind, and the review asked
+    /// for the weaker, true one on purpose.
+    @Test("the encrypted_regex disclosure names the field and plaintext, and predicts no specific keys")
+    func encryptedRegexDisclosureIsHonestAboutWhatItKnows() throws {
+        let sentence = try #require(
+            Self.englishForms(for: .newFileInfoEncryptedRegexScoping).first,
+            "missing catalog entry for the encrypted_regex disclosure")
+        #expect(sentence.contains("encrypted_regex"),
+                "the sentence must name the field so it can be found in .sops.yaml: \(sentence)")
+        #expect(sentence.lowercased().contains("plaintext"),
+                "the sentence must say the non-matching values are stored as plaintext: \(sentence)")
+        #expect(sentence.contains("%@"),
+                "the sentence must carry the rule's own expression, so the user can check it: \(sentence)")
+        #expect(sentence.lowercased().contains("check the rule"),
+                "the sentence must send the user to the rule rather than predicting its result: \(sentence)")
+        // The overclaim this must never become: naming which fields end up
+        // in plaintext is a matching decision only sops makes.
+        for overclaim in ["these fields", "the following", "will be plaintext:"] {
+            #expect(!sentence.lowercased().contains(overclaim),
+                    "the sentence claims to know sops's own matching result: \(sentence)")
+        }
+    }
+
+    /// Task 6, Important 1: a same-recipients import must not headline
+    /// itself as a change. The two titles have to actually read differently
+    /// — a catalog entry that pasted the same text under both keys would
+    /// satisfy `everyKeyHasCatalogEntry` while leaving the contradiction the
+    /// review found fully in place.
+    @Test("the encrypted-import diff title and its no-change counterpart read differently")
+    func encryptedImportDiffTitlesAreDistinct() throws {
+        let change = try #require(
+            Self.englishForms(for: .newFileEncryptedImportDiffTitle).first,
+            "missing catalog entry for the encrypted-import diff title")
+        let noChange = try #require(
+            Self.englishForms(for: .newFileEncryptedImportNoChangeTitle).first,
+            "missing catalog entry for the encrypted-import no-change title")
+        #expect(change != noChange, "the two titles must not read the same: \(change)")
+        #expect(change.lowercased().contains("different access"),
+                "the change title must say access differs: \(change)")
+        #expect(noChange.lowercased().contains("same access"),
+                "the no-change title must say access does not differ: \(noChange)")
     }
 
     /// Forgetting a registry label removes a nickname and no access at all. A

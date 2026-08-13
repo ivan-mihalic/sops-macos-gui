@@ -196,7 +196,13 @@ public struct ResolvedEncryption: Equatable, Sendable {
 /// .dotDotThroughASymlinkIsRefused` pins the measured scenario above.
 public enum SecretFileCreator {
 
-    public enum Source: Sendable {
+    /// `Equatable` so a caller can ask "is this still the same thing I was
+    /// about to create?" — `NewSecretFileModel` files what it learned from a
+    /// failed attempt under the exact `Source` it attempted, and can only
+    /// read that back while the value still compares equal. Equality here is
+    /// equality of what would be written, nothing more: `verbatimYAML` on its
+    /// text, `dotEnv` on its entries.
+    public enum Source: Equatable, Sendable {
         case empty
         case verbatimYAML(String)
         case dotEnv([DotEnvEntry])

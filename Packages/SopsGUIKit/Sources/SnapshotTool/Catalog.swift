@@ -23,6 +23,8 @@ enum Catalog {
         snapshots += try projectSidebar()
         snapshots += try await secretEditor()
         snapshots += try await fileList()
+        snapshots += dotEnvPreview()
+        snapshots += try await newSecretFileSheet()
         // The guide's images. In the same catalog so one run can produce
         // both sets, but `Scripts/guide-snapshots.sh` filters to `guide-`
         // and writes them somewhere committed — see `Guide.swift`.
@@ -415,7 +417,7 @@ enum Catalog {
         let size = CGSize(width: 320, height: 480)
         func list(_ name: String, _ model: FileListModel) -> Snapshot {
             Snapshot(name, size: size) {
-                FileListView(model: model, selection: .constant(nil))
+                FileListView(model: model, selection: .constant(nil), onNewFile: {})
             }
         }
 
@@ -425,6 +427,37 @@ enum Catalog {
             list("file-list-missing-root", missingRoot),
             list("file-list-incomplete-scan", incomplete),
             list("file-list-empty-partial-scan", emptyPartial),
+        ]
+    }
+
+    // MARK: - DotEnvPreviewTable, covering all five suspicion kinds
+
+    private static func dotEnvPreview() -> [Snapshot] {
+        [
+            Snapshot("dotenv-preview", size: CGSize(width: 640, height: 560)) {
+                DotEnvPreviewTable(parsed: Fixtures.dotEnvPreviewFixture())
+            },
+        ]
+    }
+
+    // MARK: - NewSecretFileSheet — three of `Readiness`'s states
+
+    private static func newSecretFileSheet() async throws -> [Snapshot] {
+        let ready = try await Fixtures.newSecretFileModelReady()
+        let needsAcknowledgement = try await Fixtures.newSecretFileModelNeedsAcknowledgement()
+        let blocked = try await Fixtures.newSecretFileModelBlocked()
+
+        let size = CGSize(width: 640, height: 560)
+        func sheet(_ name: String, _ model: NewSecretFileModel) -> Snapshot {
+            Snapshot(name, size: size) {
+                NewSecretFileSheet(model: model, onCreated: { _ in })
+            }
+        }
+
+        return [
+            sheet("new-file-sheet-ready", ready),
+            sheet("new-file-sheet-needs-acknowledgement", needsAcknowledgement),
+            sheet("new-file-sheet-blocked", blocked),
         ]
     }
 }

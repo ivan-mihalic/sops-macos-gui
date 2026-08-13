@@ -170,6 +170,16 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // JSON/INI — YAML-only for v1) — see `FileListModel.otherFormatCount`.
     case filesOtherFormatNote = "files.other-format.note"
 
+    // MARK: Task 7 (F2) — reaching the new-file wizard from the file list
+
+    // The toolbar "+" above the file list, and its ⌘N shortcut. Icon-only —
+    // this text is the accessibility label and the tooltip, never rendered
+    // as a title. Only reachable at all once a project is selected: the
+    // toolbar row lives inside `FileListView`, which `ProjectWorkspaceView`
+    // never constructs without one — see `AppShell.makeNewFileModel(
+    // projectRoot:keyStore:)`.
+    case filesNewFileButton = "files.new-file-button"
+
     // MARK: Task 9 — editor
 
     case editorNoFileSelected = "editor.no-file-selected"
@@ -474,6 +484,252 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case recipientEditorErrorChangedOnDisk = "recipient.editor.error.changed-on-disk"
     case recipientEditorErrorPathEscapesProject = "recipient.editor.error.path-escapes-project"
     case recipientEditorErrorCouldNotSave = "recipient.editor.error.could-not-save"
+
+    // MARK: Phase 2 Task 1 — CreationFailurePresenter
+    //
+    // One voice for `CreationPlanResolver.Error`, `SecretFileCreator.Failure`,
+    // `SopsConfigGenerator.Error` and `DotEnvParseFailure` — see
+    // `CreationFailurePresenter`'s own doc comment for why a single presenter
+    // owns all four rather than each call site wording its own sentence.
+    // `detail` itself is never a catalog key (it can carry a path or a
+    // bridge diagnostic, neither of which is translatable), so only the
+    // title and the recovery hint live here.
+
+    // A generic title for the file-creation half (`CreationPlanResolver
+    // .Error`, `SecretFileCreator.Failure`): both describe the same action —
+    // the file was not created — so one title, distinguished by `detail`,
+    // reads more honestly than inventing a different headline per case.
+    case creationFailureTitle = "creation-failure.title"
+    // `SopsConfigGenerator.Error` is about proposing a `.sops.yaml`, a
+    // different action from creating a file — sharing `creationFailureTitle`
+    // with it would claim a file creation attempt that never happened.
+    case creationFailureConfigTitle = "creation-failure.config-title"
+    // `DotEnvParseFailure` fires before any encryption is attempted at all.
+    case creationFailureDotEnvTitle = "creation-failure.dotenv-title"
+    // Phase 2 Task 6: an `.encryptedYAML` source that could not be unlocked.
+    // Distinct from `creationFailureTitle` — nothing was written or refused
+    // to be written here; the file being *imported* could not be opened at
+    // all, a different action from creating the new one.
+    case creationFailureEncryptedImportTitle = "creation-failure.encrypted-import-title"
+
+    case creationRecoveryPickLocationAgain = "creation-failure.recovery.pick-location-again"
+    case creationRecoveryCheckProjectConnected = "creation-failure.recovery.check-project-connected"
+    case creationRecoveryChooseLocationInsideProject = "creation-failure.recovery.choose-location-inside-project"
+    case creationRecoveryChooseAnotherName = "creation-failure.recovery.choose-another-name"
+    case creationRecoveryCheckUnusualCharacters = "creation-failure.recovery.check-unusual-characters"
+    case creationRecoveryAddYourKeyOrAcknowledge = "creation-failure.recovery.add-your-key-or-acknowledge"
+    case creationRecoveryCheckRecipients = "creation-failure.recovery.check-recipients"
+    case creationRecoveryCheckFolderPermissions = "creation-failure.recovery.check-folder-permissions"
+    case creationRecoveryReencodeAsUTF8 = "creation-failure.recovery.reencode-as-utf8"
+    // `CreationPlan.configUnreadable`'s recovery — added when
+    // `message(forBlocking:)` joined the other four overloads.
+    case creationRecoveryCheckSopsYamlSyntax = "creation-failure.recovery.check-sops-yaml-syntax"
+    // `CreationFailurePresenter.message(forUnreadableSourceFile:)`'s detail
+    // — added when Task 4's review found this was the third case that same
+    // presenter's own doc comment predicted, alongside `forBlocking(:)` and
+    // `forEmptyKeyStore(:)`. A Plain YAML/`.env` source file whose read
+    // failed after `NSOpenPanel` already returned a URL for it — see that
+    // method's own doc comment for why none of the four vocabularies this
+    // presenter unifies already has a case for it.
+    case creationFailureSourceFileUnreadable = "creation-failure.source-file-unreadable"
+    // `CreationFailurePresenter.message(forEncryptedImportUnlockFailure:)`'s
+    // recovery — this session's key exists but cannot open the chosen
+    // `.encryptedYAML` source. See that method's own doc comment for why
+    // there is no acknowledgement path out of this, unlike
+    // `creationRecoveryAddYourKeyOrAcknowledge`.
+    case creationRecoveryImportAKeyThatCanDecryptThisFile =
+        "creation-failure.recovery.import-a-key-that-can-decrypt-this-file"
+
+    // MARK: Phase 2 Task 3 — DotEnvPreviewTable
+    //
+    // What a `.env` import would actually produce, before anything is
+    // written. See `DotEnvPreviewTable`'s own doc comment for why every one
+    // of these exists: masking follows `SecretEditorView`'s own keys
+    // (`editorRevealValue`/`editorHideValue`, reused rather than duplicated
+    // below) and every `DotEnvSuspicion.Kind` gets a full sentence, not an
+    // icon alone.
+
+    case dotEnvPreviewEntriesTitle = "dotenv-preview.entries-title"
+    case dotEnvPreviewSkippedTitle = "dotenv-preview.skipped-title"
+    // Sits under the skipped section's title. There is deliberately no
+    // per-line reason here — `DotEnvSkippedLine`'s own doc comment explains
+    // why the parser does not (and should not) try to guess one — so this
+    // only says what the section as a whole means and what to do about it.
+    case dotEnvPreviewSkippedExplanation = "dotenv-preview.skipped-explanation"
+    // Formatted with a skipped line's 1-based line number. `%d` here is a
+    // line number, not a count — see the exemption this key has in
+    // `LocalizationTests.countedStringsWithNoSingularCase`.
+    case dotEnvPreviewSkippedLineLabel = "dotenv-preview.skipped-line-label"
+    // Shown when a `.env` file produced neither an entry nor a skipped
+    // line — blank lines and comments alone, or a genuinely empty file.
+    case dotEnvPreviewEmpty = "dotenv-preview.empty"
+
+    case dotEnvPreviewSuspicionStrayOpeningQuote = "dotenv-preview.suspicion.stray-opening-quote"
+    case dotEnvPreviewSuspicionNotAPosixName = "dotenv-preview.suspicion.not-a-posix-name"
+    case dotEnvPreviewSuspicionLooksInterpolated = "dotenv-preview.suspicion.looks-interpolated"
+    case dotEnvPreviewSuspicionEmptyValue = "dotenv-preview.suspicion.empty-value"
+    // Formatted with the winning entry's own line number (`%1$d`, matching
+    // `DotEnvEntry.line`) and the comma-joined superseded line numbers
+    // (`%2$@`, from `DotEnvSuspicion.Kind.duplicateKey(supersededLines:)`).
+    // `%1$d` is that entry's own line number, not a count — same exemption
+    // reasoning as `dotEnvPreviewSkippedLineLabel` above.
+    case dotEnvPreviewSuspicionDuplicateKey = "dotenv-preview.suspicion.duplicate-key"
+
+    // MARK: Phase 2 Task 4 — NewSecretFileSheet
+    //
+    // The wizard itself: source picker, name field, the live `ⓘ` line that
+    // teaches what `.sops.yaml` decides for the typed name, and the two
+    // states `NewSecretFileModel.Readiness` can put on screen —
+    // `.needsAcknowledgement`'s checkbox and `.blocked`'s failure banner
+    // (rendered from `CreationFailureMessage`, never worded again here).
+
+    case newFileTitle = "new-file.title"
+    case newFileSourceLabel = "new-file.source.label"
+    case newFileSourceEmpty = "new-file.source.empty"
+    case newFileSourcePlainYAML = "new-file.source.plain-yaml"
+    case newFileSourceEncryptedYAML = "new-file.source.encrypted-yaml"
+    case newFileSourceDotEnv = "new-file.source.dotenv"
+
+    case newFileNameLabel = "new-file.name.label"
+    // An example path, not a real default — the field starts empty.
+    case newFileNamePlaceholder = "new-file.name.placeholder"
+
+    // The `ⓘ` line's shapes: one per `CreationPlan` case, plus resolving.
+    // `.unsupportedRule`/`.configUnreadable` reuse `CreationFailurePresenter
+    // .message(forBlocking:)`'s own sentence rather than getting a key here —
+    // see `NewSecretFileSheet.infoLineText`.
+    case newFileInfoResolving = "new-file.info.resolving"
+    // Formatted with the comma-joined recipient names/keys this plan would
+    // encrypt for — see `NewSecretFileSheet.recipientNames(_:)`.
+    case newFileInfoGovernedByRule = "new-file.info.governed-by-rule"
+    case newFileInfoNoConfig = "new-file.info.no-config"
+    case newFileInfoNoRuleMatched = "new-file.info.no-rule-matched"
+    // Formatted with the matching rule's own `encrypted_regex`, shown
+    // whenever it is set — appended to the ⓘ line for *every* source, and
+    // repeated under the encrypted-import diff.
+    //
+    // `CreationPlanResolver` passes `encrypted_regex` through as supported
+    // while refusing the other three scoping fields (see its own doc
+    // comment, decision order step 5), so a file created under such a rule
+    // stores every non-matching value in **plaintext** — and until this
+    // sentence existed, the one screen whose entire purpose is disclosing
+    // how access changes said only who could read the file, never that most
+    // of it would not be encrypted at all. Spec §4.1 decision 4 is "do not
+    // change access silently"; a wizard that creates files is where that
+    // lands.
+    //
+    // Deliberately does **not** claim which fields will be plaintext: this
+    // app never evaluates the expression (sops does, at write time), so the
+    // sentence describes what the rule *does* and asks the user to check it,
+    // which is true without this app having to predict sops's own matching.
+    case newFileInfoEncryptedRegexScoping = "new-file.info.encrypted-regex-scoping"
+
+    case newFileAcknowledgeUnreadableCheckbox = "new-file.acknowledge-unreadable-checkbox"
+
+    case newFileChooseFileButton = "new-file.choose-file-button"
+    case newFileNoFileChosen = "new-file.no-file-chosen"
+    // Formatted with the chosen file's name only — never its full path,
+    // which is not a secret but also not needed to identify what was picked.
+    case newFileFileChosen = "new-file.file-chosen"
+    // A Plain YAML source loaded before this view existed (every
+    // `CreateFromSourceTests` fixture, and Task 6/7's presented sheets) has
+    // no filename to show — `NewSecretFileModel` deliberately never carries
+    // a path, only the content. Confirms a file is loaded without naming
+    // one it does not have.
+    case newFileFileChosenNoName = "new-file.file-chosen-no-name"
+
+    case newFileEmptyPreviewNote = "new-file.empty-preview-note"
+    case newFileCreateButton = "new-file.create-button"
+
+    // MARK: Phase 2 Task 5 — RecipientPicker
+
+    // Shown when `NewSecretFileModel.plan` is `.noConfig` or
+    // `.noRuleMatched` — neither is a failure, and this is the way out
+    // phase 1 deliberately left open rather than inventing recipients in
+    // the resolver. See `RecipientPicker`'s own doc comment.
+    case recipientPickerTitle = "recipient-picker.title"
+    case recipientPickerExplanationNoConfig = "recipient-picker.explanation.no-config"
+    case recipientPickerExplanationNoRuleMatched = "recipient-picker.explanation.no-rule-matched"
+    case recipientPickerNoneChosen = "recipient-picker.none-chosen"
+    // Heading over the registry's own recipients not yet chosen — a
+    // convenience for adding a known key with one tap, never a source of
+    // recipients the picker invents on its own.
+    case recipientPickerKnownRecipientsTitle = "recipient-picker.known-recipients-title"
+    // The add field's two shape refusals. Its own sentences rather than
+    // `recipientEditorError{PrivateIdentity,InvalidRecipient}`, which the
+    // *rule* is shared with (`RecipientRegistry.refusal(forAgeRecipient:)` —
+    // one check, no drift): those two are written for the label editor and
+    // say "nothing private-key-shaped is written to this file … Nothing was
+    // saved", which here names the wrong file (nothing is written to
+    // `.sops-gui/recipients.json` on this screen; the file at stake is
+    // `.sops.yaml`) and the wrong action (nothing was being saved). Sharing
+    // validation is right; sharing wording was not.
+    //
+    // Neither sentence ever quotes what was typed — see
+    // `RecipientPicker.refusalMessage(_:)`.
+    case recipientPickerErrorPrivateIdentity = "recipient-picker.error.private-identity"
+    case recipientPickerErrorInvalidRecipient = "recipient-picker.error.invalid-recipient"
+    case recipientPickerProposeButton = "recipient-picker.propose-button"
+    case recipientPickerWriteButton = "recipient-picker.write-button"
+    case recipientPickerProposalHeading = "recipient-picker.proposal-heading"
+    case recipientPickerWriteSuccess = "recipient-picker.write-success"
+
+    // MARK: Phase 2 Task 6 — EncryptedImportPreview
+    //
+    // Unlocking an `.encryptedYAML` source and disclosing exactly who gains
+    // and loses access by re-encrypting it for the target plan's recipients
+    // — spec §4.1, decision 4. See `EncryptedImportPreview`'s own doc
+    // comment: the language deliberately matches `ProjectAccessView`'s own
+    // "gains"/"loses" sentences (`projectAccessConfigGains`/`.Loses`), even
+    // though this is a different action (importing one file, not rewriting
+    // a creation rule) and so gets its own keys rather than reusing theirs.
+
+    case newFileEncryptedImportUnlockingLabel = "new-file.encrypted-import.unlocking"
+    // Shown for `.unlockedAwaitingPlan` — decrypted, but
+    // `currentGovernedPlan()` has no recipient set to diff against yet, so
+    // there is nothing honest to diff. See `NewSecretFileModel
+    // .encryptedImport`'s own doc comment, "The diff needs a known target,
+    // not just a decrypted file", for the review finding this state (and
+    // this sentence) exist to close. States the fact only, deliberately not
+    // an instruction — see `EncryptedImportPreview`'s own doc comment on its
+    // `.unlockedAwaitingPlan` branch for why a second review round removed
+    // "Choose a name…": that wording presumed a fix that does not apply to
+    // every cause this state merges, and `NewSecretFileSheet` already
+    // renders the real explanation for those directly above this sentence.
+    //
+    // Deliberately worded around *recipients*, not the *destination* — a
+    // third review round found "no destination decided yet" false for three
+    // of the six causes this state now merges (`.unsupportedRule`,
+    // `.configUnreadable`, a matched rule naming no recipients at all): the
+    // name is typed, the rule matched, the destination genuinely *is*
+    // decided in all three. What is actually missing, in every one of the
+    // six, is a usable recipient set — the one thing `currentGovernedPlan()`
+    // returning `nil` always and only means, by construction, so this
+    // phrasing is true for all six without `EncryptedImportPreview` ever
+    // needing to inspect *which* of them it is.
+    case newFileEncryptedImportAwaitingPlanLabel = "new-file.encrypted-import.awaiting-plan"
+    // The diff's title when `gaining`/`losing` are not both empty.
+    case newFileEncryptedImportDiffTitle = "new-file.encrypted-import.diff-title"
+    // The diff's title when `gaining` and `losing` are both empty — every
+    // source recipient survives into the target unchanged. Its own sentence
+    // rather than reusing `newFileEncryptedImportDiffTitle`: that one
+    // asserts a change, which is false here, and a headline contradicting
+    // the body underneath it is worse than no headline at all.
+    case newFileEncryptedImportNoChangeTitle = "new-file.encrypted-import.no-change-title"
+    // Each formatted with the comma-joined recipient names/keys this half of
+    // the diff names — the same `RecipientRegistry` lookup, falling back to
+    // `NewSecretFileSheet.shortenedKey(_:)`, that the ⓘ line and
+    // `RecipientPicker` already use. Never a count, so none of these needs a
+    // plural split — see `LocalizationTests.countedStringsPluralize`.
+    case newFileEncryptedImportGains = "new-file.encrypted-import.gains"
+    // Names both that the *new* file will not be readable by these
+    // recipients and that the *source* file is untouched — the same
+    // clarification `project-access.update-config-confirm.loses` makes for
+    // the identical shape of possible misreading. See
+    // `EncryptedImportPreview`'s own doc comment, "What 'this file' means,
+    // and why the filename stays on screen".
+    case newFileEncryptedImportLoses = "new-file.encrypted-import.loses"
+    case newFileEncryptedImportKeeps = "new-file.encrypted-import.keeps"
 
     /// The resolved English text. Used in views and asserted in tests.
     public var text: String {

@@ -442,6 +442,182 @@
         }
       }
     },
+    "creation-failure.config-title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't Propose a .sops.yaml"
+          }
+        }
+      }
+    },
+    "creation-failure.dotenv-title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't Read That File"
+          }
+        }
+      }
+    },
+    "creation-failure.encrypted-import-title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't Unlock This File"
+          }
+        }
+      }
+    },
+    "creation-failure.recovery.add-your-key-or-acknowledge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add a recipient you can decrypt with, or confirm you understand you won't be able to read this file back."
+          }
+        }
+      }
+    },
+    "creation-failure.recovery.check-folder-permissions": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check the folder's permissions, then try again."
+          }
+        }
+      }
+    },
+    "creation-failure.recovery.check-project-connected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Make sure the project's folder is connected, then try again."
+          }
+        }
+      }
+    },
+    "creation-failure.recovery.check-recipients": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check the recipients you chose, then try again."
+          }
+        }
+      }
+    },
+    "creation-failure.recovery.check-sops-yaml-syntax": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check .sops.yaml for a syntax error, then try again."
+          }
+        }
+      }
+    },
+    "creation-failure.source-file-unreadable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That file could not be read."
+          }
+        }
+      }
+    },
+    "creation-failure.recovery.import-a-key-that-can-decrypt-this-file": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Make sure this is really a SOPS-encrypted YAML file, and that this session has the key that can decrypt it, then choose it again."
+          }
+        }
+      }
+    },
+    "creation-failure.recovery.check-unusual-characters": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check the values for unusual characters, then try again."
+          }
+        }
+      }
+    },
+    "creation-failure.recovery.choose-another-name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose a different name."
+          }
+        }
+      }
+    },
+    "creation-failure.recovery.choose-location-inside-project": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose a location inside the project."
+          }
+        }
+      }
+    },
+    "creation-failure.recovery.pick-location-again": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pick the location again using the browse button."
+          }
+        }
+      }
+    },
+    "creation-failure.recovery.reencode-as-utf8": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Re-save the file as UTF-8, then try again."
+          }
+        }
+      }
+    },
+    "creation-failure.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't Create the File"
+          }
+        }
+      }
+    },
     "detail.no-selection": {
       "extractionState": "manual",
       "localizations": {
@@ -449,6 +625,534 @@
           "stringUnit": {
             "state": "translated",
             "value": "No project selected"
+          }
+        }
+      }
+    },
+    "dotenv-preview.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This file has nothing to import — no assignments, and no lines that couldn't be read."
+          }
+        }
+      }
+    },
+    "dotenv-preview.entries-title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "What will be imported"
+          }
+        }
+      }
+    },
+    "dotenv-preview.skipped-explanation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "These lines don't look like a KEY=value assignment, so nothing about them will be stored. Reveal one to check whether it holds a secret before deciding what to do with it."
+          }
+        }
+      }
+    },
+    "dotenv-preview.skipped-line-label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Line %d"
+          }
+        }
+      }
+    },
+    "dotenv-preview.skipped-title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lines that won't be imported"
+          }
+        }
+      }
+    },
+    "dotenv-preview.suspicion.duplicate-key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This key is assigned more than once. The value used is from line %1$d; it was also set on: %2$@."
+          }
+        }
+      }
+    },
+    "new-file.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New Secret File"
+          }
+        }
+      }
+    },
+    "new-file.source.label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Source:"
+          }
+        }
+      }
+    },
+    "new-file.source.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Empty"
+          }
+        }
+      }
+    },
+    "new-file.source.plain-yaml": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Plain YAML…"
+          }
+        }
+      }
+    },
+    "new-file.source.encrypted-yaml": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Encrypted YAML…"
+          }
+        }
+      }
+    },
+    "new-file.source.dotenv": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": ".env…"
+          }
+        }
+      }
+    },
+    "new-file.name.label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Name:"
+          }
+        }
+      }
+    },
+    "new-file.name.placeholder": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "secrets/production.secrets.yaml"
+          }
+        }
+      }
+    },
+    "new-file.info.resolving": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checking .sops.yaml…"
+          }
+        }
+      }
+    },
+    "new-file.info.governed-by-rule": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A rule in .sops.yaml governs this location → it will be encrypted for: %@"
+          }
+        }
+      }
+    },
+    "new-file.info.no-config": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This project has no .sops.yaml yet, so nothing decides who could read a new file here."
+          }
+        }
+      }
+    },
+    "new-file.info.no-rule-matched": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No rule in .sops.yaml matches this location yet."
+          }
+        }
+      }
+    },
+    "new-file.info.encrypted-regex-scoping": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This rule also sets encrypted_regex (%@): it decides which values are encrypted, and anything it does not cover is stored as plaintext. Check the rule in .sops.yaml before creating this file."
+          }
+        }
+      }
+    },
+    "new-file.acknowledge-unreadable-checkbox": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "I understand I may not be able to open this file again in this app."
+          }
+        }
+      }
+    },
+    "new-file.choose-file-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose File…"
+          }
+        }
+      }
+    },
+    "new-file.no-file-chosen": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No file chosen yet."
+          }
+        }
+      }
+    },
+    "new-file.file-chosen": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Selected: %@"
+          }
+        }
+      }
+    },
+    "new-file.file-chosen-no-name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A file is selected."
+          }
+        }
+      }
+    },
+    "new-file.empty-preview-note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This file starts empty — add values once it's created."
+          }
+        }
+      }
+    },
+    "new-file.create-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create"
+          }
+        }
+      }
+    },
+    "recipient-picker.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose recipients"
+          }
+        }
+      }
+    },
+    "recipient-picker.explanation.no-config": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This project has no .sops.yaml yet, so nothing decides who can read files here. Choose who should be able to read this one, or propose a .sops.yaml so this file — and any future one matching the same path — is covered automatically."
+          }
+        }
+      }
+    },
+    "recipient-picker.explanation.no-rule-matched": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This project's .sops.yaml has no rule covering this path. Choose who should be able to read this file — it will be created for exactly the recipients you choose here, without changing .sops.yaml."
+          }
+        }
+      }
+    },
+    "recipient-picker.none-chosen": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No recipients chosen yet."
+          }
+        }
+      }
+    },
+    "recipient-picker.known-recipients-title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Known recipients"
+          }
+        }
+      }
+    },
+    "recipient-picker.error.private-identity": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That is a private identity, not a public recipient. Nothing was added and nothing was written to .sops.yaml — paste the matching age1… public key instead."
+          }
+        }
+      }
+    },
+    "recipient-picker.error.invalid-recipient": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That is not a native age recipient. Those start with age1 and are 62 characters long. Nothing was added."
+          }
+        }
+      }
+    },
+    "recipient-picker.propose-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Propose .sops.yaml"
+          }
+        }
+      }
+    },
+    "recipient-picker.write-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create .sops.yaml"
+          }
+        }
+      }
+    },
+    "recipient-picker.proposal-heading": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Proposed .sops.yaml"
+          }
+        }
+      }
+    },
+    "recipient-picker.write-success": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": ".sops.yaml created."
+          }
+        }
+      }
+    },
+    "new-file.encrypted-import.unlocking": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unlocking…"
+          }
+        }
+      }
+    },
+    "new-file.encrypted-import.awaiting-plan": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This file has been unlocked, but there is no recipient set to compare it against yet."
+          }
+        }
+      }
+    },
+    "new-file.encrypted-import.diff-title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Importing this file will create a new file with different access:"
+          }
+        }
+      }
+    },
+    "new-file.encrypted-import.no-change-title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Importing this file will create a new file with the same access as the source:"
+          }
+        }
+      }
+    },
+    "new-file.encrypted-import.gains": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ will be able to read the new file this creates."
+          }
+        }
+      }
+    },
+    "new-file.encrypted-import.loses": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ won't be able to read the new file this creates. The file you're importing from is untouched, and still readable by them there."
+          }
+        }
+      }
+    },
+    "new-file.encrypted-import.keeps": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ will still be able to read the new file this creates."
+          }
+        }
+      }
+    },
+    "dotenv-preview.suspicion.empty-value": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This value is empty. sops doesn't encrypt an empty string, so it would stay readable in plain text inside the encrypted file."
+          }
+        }
+      }
+    },
+    "dotenv-preview.suspicion.looks-interpolated": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This value contains ${...}, but .env files never expand it — it will be imported exactly as written, ${...} included."
+          }
+        }
+      }
+    },
+    "dotenv-preview.suspicion.not-a-posix-name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This key isn't a name a shell can export — for example it may start with a digit, or contain a dot or a hyphen. It's still a valid entry and will be imported as written."
+          }
+        }
+      }
+    },
+    "dotenv-preview.suspicion.stray-opening-quote": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This value starts with a quote character that's never closed, so it was read as plain text, quote included, rather than as a quoted value."
           }
         }
       }
@@ -977,6 +1681,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Select a project to see its encrypted files."
+          }
+        }
+      }
+    },
+    "files.new-file-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New File"
           }
         }
       }

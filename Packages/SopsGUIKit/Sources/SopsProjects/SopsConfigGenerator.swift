@@ -320,6 +320,19 @@ public enum SopsConfigGenerator {
     /// native `age1…` key before `ageRecipients` is ever populated), so an
     /// unvalidated string reaching this function is defence-in-depth against
     /// a caller bug, not a live hole on its own.
+    ///
+    /// "Bounds the risk" is precise about *which* risk, and the distinction
+    /// cost a review round to learn: verification failing later does not
+    /// unwrite the probe file `verify` stages inside the project root a
+    /// moment earlier, so an unvalidated recipient reaches the user's own
+    /// working tree in plaintext before sops ever judges it. For a pasted
+    /// `AGE-SECRET-KEY-1…` identity that is a private key on disk, in a file
+    /// no `.gitignore` covers, surviving a crash between the write and
+    /// `verify`'s `defer`. The caller-side validation this paragraph assumes
+    /// was written in phase 1 for a caller that did not exist yet; it exists
+    /// now and does honour it — `RecipientPicker.canAdd(_:existing:)` gates
+    /// its free-text field on `RecipientRegistry.refusal(forAgeRecipient:)`,
+    /// so nothing of that shape reaches `propose` at all.
     private static func configText(pathRegex: String, recipients: [String]) -> String {
         """
         creation_rules:

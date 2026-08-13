@@ -176,6 +176,35 @@ public enum RecipientRegistry {
         project.appendingPathComponent(".sops-gui", isDirectory: true)
     }
 
+    /// Why `candidate` may not be used as an age recipient, or `nil` when
+    /// nothing refuses it — exactly the two checks `validate(_:)` applies to
+    /// `RecipientRecord.ageRecipient`, lifted out so a caller that is not
+    /// about to persist a record can ask the same question.
+    ///
+    /// Returns `.privateIdentityNotAllowed` for anything containing the
+    /// private-identity shape and `.invalidAgeRecipient` for anything that is
+    /// not a native `age1…` key; never any other case. It is a pure function
+    /// of `candidate` — no filesystem, no registry — which is what lets
+    /// `RecipientPicker.canAdd(_:existing:)` gate its own free-text field on
+    /// the identical rule this type enforces at the persistence boundary,
+    /// rather than growing a second, quietly divergent copy of it. That
+    /// divergence was a real finding, not a tidiness argument: the picker
+    /// checked only "empty" and "duplicate", so a pasted
+    /// `AGE-SECRET-KEY-1…` identity could be added, and
+    /// `SopsConfigGenerator.propose` then interpolated it into `.sops.yaml`
+    /// text and staged that text inside the project directory before sops's
+    /// own parser rejected it — a private key written to the user's working
+    /// tree, in a file no `.gitignore` covers.
+    ///
+    /// Refuses the private-identity shape *before* the `age1…` shape check,
+    /// so a pasted identity is always told what is actually wrong with it
+    /// rather than being called malformed.
+    public static func refusal(forAgeRecipient candidate: String) -> Error? {
+        if containsPrivateIdentityShape(candidate) { return .privateIdentityNotAllowed }
+        guard looksLikeNativeAgeRecipient(candidate) else { return .invalidAgeRecipient }
+        return nil
+    }
+
     private static func validate(_ records: [RecipientRecord]) throws {
         var recipientIDs = Set<String>()
         var recordIDs = Set<UUID>()
@@ -184,12 +213,15 @@ public enum RecipientRegistry {
                 throw Error.emptyLabel
             }
             guard !containsPrivateIdentityShape(record.label),
-                  !containsPrivateIdentityShape(record.note ?? ""),
-                  !containsPrivateIdentityShape(record.ageRecipient) else {
+                  !containsPrivateIdentityShape(record.note ?? "") else {
                 throw Error.privateIdentityNotAllowed
             }
-            guard looksLikeNativeAgeRecipient(record.ageRecipient) else {
-                throw Error.invalidAgeRecipient
+            // `ageRecipient`'s own two checks, in the identical order they
+            // used to be written inline here — see `refusal(forAgeRecipient:)`
+            // for why they now live in a function this type is no longer the
+            // only caller of.
+            if let refusal = refusal(forAgeRecipient: record.ageRecipient) {
+                throw refusal
             }
             guard recordIDs.insert(record.id).inserted else { throw Error.duplicateID(record.id) }
             guard recipientIDs.insert(record.ageRecipient).inserted else {
