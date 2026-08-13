@@ -545,6 +545,57 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // reasoning as `dotEnvPreviewSkippedLineLabel` above.
     case dotEnvPreviewSuspicionDuplicateKey = "dotenv-preview.suspicion.duplicate-key"
 
+    // MARK: Phase 2 Task 4 — NewSecretFileSheet
+    //
+    // The wizard itself: source picker, name field, the live `ⓘ` line that
+    // teaches what `.sops.yaml` decides for the typed name, and the two
+    // states `NewSecretFileModel.Readiness` can put on screen —
+    // `.needsAcknowledgement`'s checkbox and `.blocked`'s failure banner
+    // (rendered from `CreationFailureMessage`, never worded again here).
+
+    case newFileTitle = "new-file.title"
+    case newFileSourceLabel = "new-file.source.label"
+    case newFileSourceEmpty = "new-file.source.empty"
+    case newFileSourcePlainYAML = "new-file.source.plain-yaml"
+    case newFileSourceEncryptedYAML = "new-file.source.encrypted-yaml"
+    case newFileSourceDotEnv = "new-file.source.dotenv"
+    // Shown whenever the Encrypted YAML source is visible, selected or not —
+    // it is disabled and unreachable in this task, so the reason has to be
+    // readable without hovering it. See `NewSecretFileSheet`'s own doc
+    // comment for why this source waits for Task 6.
+    case newFileSourceEncryptedYAMLDisabledReason = "new-file.source.encrypted-yaml-disabled-reason"
+
+    case newFileNameLabel = "new-file.name.label"
+    // An example path, not a real default — the field starts empty.
+    case newFileNamePlaceholder = "new-file.name.placeholder"
+
+    // The `ⓘ` line's shapes: one per `CreationPlan` case, plus resolving.
+    // `.unsupportedRule`/`.configUnreadable` reuse `CreationFailurePresenter
+    // .message(forBlocking:)`'s own sentence rather than getting a key here —
+    // see `NewSecretFileSheet.infoLineText`.
+    case newFileInfoResolving = "new-file.info.resolving"
+    // Formatted with the comma-joined recipient names/keys this plan would
+    // encrypt for — see `NewSecretFileSheet.recipientNames(_:)`.
+    case newFileInfoGovernedByRule = "new-file.info.governed-by-rule"
+    case newFileInfoNoConfig = "new-file.info.no-config"
+    case newFileInfoNoRuleMatched = "new-file.info.no-rule-matched"
+
+    case newFileAcknowledgeUnreadableCheckbox = "new-file.acknowledge-unreadable-checkbox"
+
+    case newFileChooseFileButton = "new-file.choose-file-button"
+    case newFileNoFileChosen = "new-file.no-file-chosen"
+    // Formatted with the chosen file's name only — never its full path,
+    // which is not a secret but also not needed to identify what was picked.
+    case newFileFileChosen = "new-file.file-chosen"
+    // A generic, fixed sentence — not `CreationFailurePresenter`'s job,
+    // since `Data(contentsOf:)` failing on a user-picked file is not one of
+    // the four error vocabularies that type unifies. See
+    // `NewSecretFileSheet.chooseDotEnvFile()`.
+    case newFileFileUnreadable = "new-file.file-unreadable"
+
+    case newFileEmptyPreviewNote = "new-file.empty-preview-note"
+    case newFileCreateButton = "new-file.create-button"
+
     /// The resolved English text. Used in views and asserted in tests.
     public var text: String {
         String(localized: String.LocalizationValue(rawValue), bundle: .module)

@@ -823,6 +823,70 @@ enum Fixtures {
             ])
     }
 
+    // MARK: - NewSecretFileSheet
+
+    /// A ready-to-create wizard: a real temp project whose `.sops.yaml`
+    /// names this session's own key, and a name already resolved against
+    /// it. Real `age-keygen` and a real project root, matching every other
+    /// fixture here and `NewSecretFileModelTests`'s own shape — never a
+    /// mock model.
+    static func newSecretFileModelReady() async throws -> NewSecretFileModel {
+        let key = try SnapshotAgeKeyPair.generate()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("snapshot-new-file-ready-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try """
+            creation_rules:
+              - path_regex: .*\\.yaml$
+                age: \(key.public)
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: store)
+        model.relativeName = "secrets/production.secrets.yaml"
+        await model.resolvePlan()
+        return model
+    }
+
+    /// A plan whose recipients exclude this session's key, after `create()`
+    /// has already discovered that once — `readiness == .needsAcknowledgement`.
+    /// Same shape as `NewSecretFileModelTests
+    /// .selfReadabilityIsDiscoveredNotPredicted`'s first half.
+    static func newSecretFileModelNeedsAcknowledgement() async throws -> NewSecretFileModel {
+        let owner = try SnapshotAgeKeyPair.generate()
+        let stranger = try SnapshotAgeKeyPair.generate()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("snapshot-new-file-ack-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try """
+            creation_rules:
+              - path_regex: .*\\.yaml$
+                age: \(stranger.public)
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+
+        let store = SessionKeyStore()
+        try store.importKey(owner.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: store)
+        model.relativeName = "secrets/production.secrets.yaml"
+        await model.resolvePlan()
+        _ = await model.create()
+        return model
+    }
+
+    /// No `.sops.yaml` at all — `readiness == .blocked`, until Task 5 adds
+    /// the manual recipient picker.
+    static func newSecretFileModelBlocked() async throws -> NewSecretFileModel {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("snapshot-new-file-blocked-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let model = NewSecretFileModel(projectRoot: root, keyStore: SessionKeyStore())
+        model.relativeName = "secrets/production.secrets.yaml"
+        await model.resolvePlan()
+        return model
+    }
+
     private static func git(_ arguments: [String], in directory: URL) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")

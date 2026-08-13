@@ -24,6 +24,7 @@ enum Catalog {
         snapshots += try await secretEditor()
         snapshots += try await fileList()
         snapshots += dotEnvPreview()
+        snapshots += try await newSecretFileSheet()
         // The guide's images. In the same catalog so one run can produce
         // both sets, but `Scripts/guide-snapshots.sh` filters to `guide-`
         // and writes them somewhere committed — see `Guide.swift`.
@@ -436,6 +437,27 @@ enum Catalog {
             Snapshot("dotenv-preview", size: CGSize(width: 640, height: 560)) {
                 DotEnvPreviewTable(parsed: Fixtures.dotEnvPreviewFixture())
             },
+        ]
+    }
+
+    // MARK: - NewSecretFileSheet — three of `Readiness`'s states
+
+    private static func newSecretFileSheet() async throws -> [Snapshot] {
+        let ready = try await Fixtures.newSecretFileModelReady()
+        let needsAcknowledgement = try await Fixtures.newSecretFileModelNeedsAcknowledgement()
+        let blocked = try await Fixtures.newSecretFileModelBlocked()
+
+        let size = CGSize(width: 640, height: 560)
+        func sheet(_ name: String, _ model: NewSecretFileModel) -> Snapshot {
+            Snapshot(name, size: size) {
+                NewSecretFileSheet(model: model, onCreated: { _ in })
+            }
+        }
+
+        return [
+            sheet("new-file-sheet-ready", ready),
+            sheet("new-file-sheet-needs-acknowledgement", needsAcknowledgement),
+            sheet("new-file-sheet-blocked", blocked),
         ]
     }
 }

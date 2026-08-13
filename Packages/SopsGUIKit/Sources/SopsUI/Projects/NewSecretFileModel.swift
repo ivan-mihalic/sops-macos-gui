@@ -144,7 +144,15 @@ public final class NewSecretFileModel {
     /// `encryptedRegex` both — that was resolved for a completely different
     /// rule. Set alongside `plan`/`planError` at the end of every
     /// `resolvePlan()` call, including the empty-name short circuit.
-    private var resolvedName: String?
+    ///
+    /// `public private(set)` since Task 4: `NewSecretFileSheet` reads this
+    /// to guard its own debounced resolve — a resolve is skipped whenever
+    /// the name it would resolve for is already the one this reports,
+    /// which is exactly how it avoids reflexively discarding a fresh
+    /// `acknowledgedUnreadable` tick between it and a redundant resolve for
+    /// an unchanged name. See that view's own doc comment, "The debounce,
+    /// and why it checks `resolvedName` before firing".
+    public private(set) var resolvedName: String?
 
     /// `CreationPlan.noConfig` and `.noRuleMatched` are deliberately not
     /// failures from `CreationFailurePresenter`'s point of view — its own
