@@ -1652,6 +1652,17 @@
         }
       }
     },
+    "files.new-file-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New File"
+          }
+        }
+      }
+    },
     "files.other-format.note": {
       "extractionState": "manual",
       "localizations": {

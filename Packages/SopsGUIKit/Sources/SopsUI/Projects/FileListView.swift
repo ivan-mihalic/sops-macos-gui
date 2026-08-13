@@ -100,14 +100,27 @@ public final class FileListModel {
 public struct FileListView: View {
     @Bindable private var model: FileListModel
     @Binding private var selection: URL?
+    /// What the toolbar "+" (and its ⌘N shortcut) should do. A callback, not
+    /// a sheet this view presents itself — matching `NewSecretFileSheet`'s own
+    /// "the view decides nothing": building the model a new file would need
+    /// requires `SessionKeyStore` and the project root's current
+    /// `FileListModel`, both of which belong to `ProjectWorkspaceView`
+    /// (`AppShell.swift`), not to this one. This view only ever asks; the
+    /// caller decides whether there is a project to ask about at all — see
+    /// `AppShell.makeNewFileModel(projectRoot:keyStore:)`.
+    private let onNewFile: () -> Void
 
-    public init(model: FileListModel, selection: Binding<URL?>) {
+    public init(model: FileListModel, selection: Binding<URL?>, onNewFile: @escaping () -> Void) {
         self.model = model
         self._selection = selection
+        self.onNewFile = onNewFile
     }
 
     public var body: some View {
         VStack(spacing: 0) {
+            toolbar
+            Divider()
+
             if let reason = model.incompleteScanReason {
                 incompleteScanBanner(reason)
             }
@@ -117,6 +130,35 @@ public struct FileListView: View {
         .task(id: model.projectRoot) {
             await model.refresh()
         }
+    }
+
+    /// The "+" row above the list — this app's toolbar shape, matching
+    /// `SecretEditorView.toolbar` and `access.toolbar-button`'s own naming:
+    /// a hand-drawn header `HStack`, not `NavigationSplitView`'s own window
+    /// toolbar. Icon-only, so `.filesNewFileButton` is never rendered as a
+    /// title — it supplies the accessibility label and the tooltip instead.
+    ///
+    /// Always enabled when this view exists at all: `ProjectWorkspaceView`
+    /// never constructs `FileListView` without a project (the `else` branch
+    /// of its `fileListPane` renders `.filesNoProjectSelected` instead), so
+    /// "inactive without a selected project" holds by construction rather
+    /// than by a `.disabled()` this view would otherwise have to fake a
+    /// reason for. The row (and with it, ⌘N) is also disabled for free
+    /// whenever a save is in flight — `ProjectWorkspaceView` already applies
+    /// `.disabled(openDocumentIsSaving)` to the whole pane this view sits in,
+    /// the same guard the project sidebar and the file `List` selection get.
+    private var toolbar: some View {
+        HStack {
+            Spacer()
+            Button(action: onNewFile) {
+                Label(.filesNewFileButton, systemImage: "plus")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut("n", modifiers: .command)
+            .help(LocalizedKey.filesNewFileButton.text)
+        }
+        .padding(8)
     }
 
     /// The three states below are about the *root* — nothing ran, so there is

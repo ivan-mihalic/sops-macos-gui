@@ -170,6 +170,16 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // JSON/INI — YAML-only for v1) — see `FileListModel.otherFormatCount`.
     case filesOtherFormatNote = "files.other-format.note"
 
+    // MARK: Task 7 (F2) — reaching the new-file wizard from the file list
+
+    // The toolbar "+" above the file list, and its ⌘N shortcut. Icon-only —
+    // this text is the accessibility label and the tooltip, never rendered
+    // as a title. Only reachable at all once a project is selected: the
+    // toolbar row lives inside `FileListView`, which `ProjectWorkspaceView`
+    // never constructs without one — see `AppShell.makeNewFileModel(
+    // projectRoot:keyStore:)`.
+    case filesNewFileButton = "files.new-file-button"
+
     // MARK: Task 9 — editor
 
     case editorNoFileSelected = "editor.no-file-selected"

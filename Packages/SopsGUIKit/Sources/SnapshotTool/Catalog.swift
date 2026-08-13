@@ -417,7 +417,7 @@ enum Catalog {
         let size = CGSize(width: 320, height: 480)
         func list(_ name: String, _ model: FileListModel) -> Snapshot {
             Snapshot(name, size: size) {
-                FileListView(model: model, selection: .constant(nil))
+                FileListView(model: model, selection: .constant(nil), onNewFile: {})
             }
         }
 

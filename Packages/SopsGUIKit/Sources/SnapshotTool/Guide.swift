@@ -151,7 +151,7 @@ enum Guide {
                 ProjectSidebar(model: projects)
             },
             Snapshot("guide-09-files", size: CGSize(width: 320, height: 420)) {
-                FileListView(model: files, selection: .constant(nil))
+                FileListView(model: files, selection: .constant(nil), onNewFile: {})
             },
         ]
     }
