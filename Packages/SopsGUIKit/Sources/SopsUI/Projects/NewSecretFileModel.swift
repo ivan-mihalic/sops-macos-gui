@@ -228,6 +228,28 @@ public final class NewSecretFileModel {
         let acknowledgedUnreadable: Bool
     }
 
+    /// What a `.sops.yaml` proposal was actually built for — the name and
+    /// the exact recipient set at the moment `proposeConfig()` called
+    /// `SopsConfigGenerator.propose`.
+    ///
+    /// This is Task 5's own review finding, closed the same way every prior
+    /// round of this exact defect class was closed: `ProposedConfig` itself
+    /// carries `text`/`verified`/`reason` and nothing naming what it is
+    /// *about* — no subject at all — so a caller holding one has no way to
+    /// ask "is this still the proposal I would build right now?" without
+    /// this type. Before it existed, `RecipientPicker` answered that
+    /// question by hand, clearing its own `@State` at every mutation site it
+    /// remembered to — and a mutation site it forgot (the remove button) or
+    /// one added later (a fourth `manuallyChosenRecipients` writer this file
+    /// does not yet have) could write a verified-but-stale proposal, mismatched against what the
+    /// user's own on-screen selection said. See `writeProposedConfig()`'s
+    /// own doc comment for how this closes that door structurally, the same
+    /// way `AttemptSubject`/`GovernedPlan` already close it for `create()`.
+    struct ProposalSubject: Equatable {
+        let name: String
+        let recipients: [String]
+    }
+
     /// The outcome of the most recent `resolvePlan()` call: the name it ran
     /// for, and either the plan it produced or the reason it could not. One
     /// value rather than three properties, so `plan`, the resolve's failure
@@ -336,6 +358,14 @@ public final class NewSecretFileModel {
     /// this one forgets on any change and `unreadability` does not.
     private var lastCreateFailure: Learned<AttemptSubject, CreationFailureMessage>?
 
+    /// The most recent `proposeConfig()` result, filed under exactly what it
+    /// was proposed for. `writeProposedConfig()` reads this back through
+    /// `value(ifStillAbout:)` and nothing else — never a caller-supplied
+    /// `ProposedConfig` — so it can only write a proposal that is still
+    /// describing the name and recipient set on screen right now. See
+    /// `ProposalSubject`'s own doc comment for the finding this closes.
+    private var lastProposal: Learned<ProposalSubject, ProposedConfig>?
+
     // MARK: - Derived views of the resolve
 
     public var plan: CreationPlan? { resolution?.plan }
@@ -431,6 +461,17 @@ public final class NewSecretFileModel {
         // pinned by `NewSecretFileModelTests
         // .acknowledgementDoesNotCarryAcrossANameChange`.
         manuallyChosenRecipients = []
+
+        // `lastProposal` would already be unreadable the moment
+        // `manuallyChosenRecipients` above changes it to `[]` — no
+        // `ProposalSubject` matches empty recipients, since `proposeConfig()`
+        // never files one for an empty selection. Cleared explicitly anyway,
+        // for the same reason `unreadability`/`acknowledgedUnreadable` are
+        // cleared outright rather than left to the subject check alone: a
+        // resolve should leave this model in exactly the state a fresh one
+        // would be in for the same inputs, not merely in a state where the
+        // old value happens to be unreachable.
+        lastProposal = nil
 
         // `lastCreateFailure` is deliberately *not* cleared here. It is
         // filed under the whole `AttemptSubject`, so a resolve that changes
@@ -769,10 +810,19 @@ public final class NewSecretFileModel {
     /// produces `.sops.yaml` text, and it never writes it; see
     /// `SopsConfigGenerator`'s own doc comment, "Never writes the config".
     /// `RecipientPicker` shows the result to the user and, only on their
-    /// separate confirmation, calls `writeProposedConfig(_:)`.
+    /// separate confirmation, calls `writeProposedConfig()`.
+    ///
+    /// Files the result under `lastProposal`, keyed to exactly the name and
+    /// recipient set this call built it for — see `ProposalSubject`'s own
+    /// doc comment. `writeProposedConfig()` reads this back rather than
+    /// trusting whatever `ProposedConfig` a caller happens to be holding, so
+    /// a proposal can only be written while it is still the one this model
+    /// would build right now.
     ///
     /// `nil` when there is nothing meaningful to propose: a blank name, or
-    /// no recipient chosen yet. `SopsConfigGenerator.propose` already
+    /// no recipient chosen yet — and `lastProposal` is cleared in that case
+    /// too, so a stale proposal from before the selection was emptied
+    /// cannot be written either. `SopsConfigGenerator.propose` already
     /// refuses an empty recipient list on its own (`verified: false` — see
     /// that type's own doc comment, "Why `verified` is proven, not
     /// asserted", and the Important finding it closes), but that refusal is
@@ -783,10 +833,15 @@ public final class NewSecretFileModel {
     /// this guard is a way to *avoid* that refusal — `SopsConfigGeneratorTests
     /// .emptyRecipientsIsRefused` still exercises it directly, unconditionally.
     public func proposeConfig() async -> ProposedConfig? {
-        guard !isBlank(relativeName), !manuallyChosenRecipients.isEmpty else { return nil }
+        guard !isBlank(relativeName), !manuallyChosenRecipients.isEmpty else {
+            lastProposal = nil
+            return nil
+        }
+        let subject = ProposalSubject(name: relativeName, recipients: manuallyChosenRecipients)
         let target = projectRoot.appendingPathComponent(relativeName)
+        let proposed: ProposedConfig
         do {
-            return try SopsConfigGenerator.propose(
+            proposed = try SopsConfigGenerator.propose(
                 forTarget: target, in: projectRoot, recipients: manuallyChosenRecipients)
         } catch let error as SopsConfigGenerator.Error {
             // Not expected to be reachable through this call site:
@@ -800,18 +855,21 @@ public final class NewSecretFileModel {
             // Handled rather than assumed impossible: translated through the
             // one presenter every other failure in this file goes through,
             // as an unverified proposal — nothing here is silently dropped.
-            return ProposedConfig(text: "", verified: false, reason: CreationFailurePresenter.message(for: error).detail)
+            proposed = ProposedConfig(
+                text: "", verified: false, reason: CreationFailurePresenter.message(for: error).detail)
         } catch {
             // `propose` is documented to throw only `Error` — not expected
             // in practice, but a caller must never see this fail silently
             // for a type it did not anticipate. See the identical discipline
             // in `resolvePlan()`'s own catch-all.
-            return ProposedConfig(
+            proposed = ProposedConfig(
                 text: "", verified: false, reason: "The proposed .sops.yaml could not be built: \(error)")
         }
+        lastProposal = Learned(proposed, about: subject)
+        return proposed
     }
 
-    /// What `writeProposedConfig(_:)` actually did — a dedicated enum
+    /// What `writeProposedConfig()` actually did — a dedicated enum
     /// rather than `Result<Void, CreationFailureMessage>`, because
     /// `CreationFailureMessage` is a plain value type used all over this
     /// wizard for reasons that have nothing to do with `Swift.Error`, and
@@ -824,12 +882,42 @@ public final class NewSecretFileModel {
         case refused(CreationFailureMessage)
     }
 
-    /// Writes `proposal.text` as this project's `.sops.yaml` — the
-    /// confirmed half of the two-act split `SopsConfigGenerator.propose`'s
-    /// own doc comment describes ("deciding is not the same act as writing
-    /// it down"). Only ever reached after a caller has shown
-    /// `proposal.text` to the user and received explicit confirmation to
-    /// write it; `RecipientPicker` is that caller.
+    /// Writes the most recently proposed `.sops.yaml` — the confirmed half
+    /// of the two-act split `SopsConfigGenerator.propose`'s own doc comment
+    /// describes ("deciding is not the same act as writing it down"). Only
+    /// ever reached after a caller has shown the proposed text to the user
+    /// and received explicit confirmation to write it; `RecipientPicker` is
+    /// that caller.
+    ///
+    /// Takes **no parameter**. An earlier version took the `ProposedConfig`
+    /// straight from the caller — closed for two reasons the review that
+    /// found them named directly:
+    ///
+    /// 1. **Forgeability.** `ProposedConfig`'s public memberwise init lets
+    ///    any caller construct `verified: true` for text
+    ///    `SopsConfigGenerator` never actually produced or checked. Reading
+    ///    from `lastProposal` instead means the only `ProposedConfig` this
+    ///    method can ever write is one `proposeConfig()` itself built and
+    ///    `SopsConfigGenerator` itself verified.
+    /// 2. **Staleness.** A caller-supplied `ProposedConfig` carries no
+    ///    subject — nothing naming the recipients or target it was built
+    ///    for — so a UI holding one has no way to notice the user changed
+    ///    the selection or the name in between, short of remembering to
+    ///    clear its own state at every place that could invalidate it.
+    ///    `RecipientPicker` tried exactly that and missed one (its remove
+    ///    button). Reading `lastProposal?.value(ifStillAbout:)` against the
+    ///    *current* `relativeName`/`manuallyChosenRecipients` makes that
+    ///    class of miss structurally impossible rather than a discipline to
+    ///    maintain across however many mutation sites this view ends up
+    ///    with — the identical guarantee `Learned<Subject, Value>` already
+    ///    gives `unreadability`/`lastCreateFailure` for `create()`.
+    ///
+    /// `.refused` with a "propose again" sentence when there is no proposal
+    /// on file for the current name/selection, or when the one on file is
+    /// for a different one — this is not `SopsConfigGenerator`'s vocabulary
+    /// (there is no bridge call to blame it on), so it is worded here rather
+    /// than added to `CreationFailurePresenter` as a fifth vocabulary for a
+    /// situation that is purely about this model's own bookkeeping.
     ///
     /// `.absent`: a project with no `.sops.yaml` at all is exactly the
     /// precondition this whole flow exists for (`RecipientPicker`'s write
@@ -840,24 +928,34 @@ public final class NewSecretFileModel {
     /// `AtomicFileWriter`'s own doc comment, "A third case: the destination
     /// must not exist at all".
     ///
-    /// Refuses `proposal.verified == false` here too, not only at the call
-    /// site — `RecipientPicker`'s write control is disabled for that case,
-    /// but a caller that ignores `readiness`/`verified` and calls this
-    /// directly must not still be able to write text `SopsConfigGenerator`
-    /// itself refused to stand behind. Never calls `resolvePlan()` on
-    /// success: a fresh resolve is what actually notices the new
-    /// `.sops.yaml` governs `relativeName` now, but deciding when to ask
-    /// for that is `RecipientPicker`'s job, not this method's — the same
-    /// split `ProjectAccessModel.applyConfig()`'s own doc comment draws
-    /// between writing and re-planning.
+    /// Never calls `resolvePlan()` on success: a fresh resolve is what
+    /// actually notices the new `.sops.yaml` governs `relativeName` now, but
+    /// deciding when to ask for that is `RecipientPicker`'s job, not this
+    /// method's — the same split `ProjectAccessModel.applyConfig()`'s own
+    /// doc comment draws between writing and re-planning. `lastProposal` is
+    /// cleared on a successful write either way — the proposal has been
+    /// consumed, and holding onto it would let a *second* call write the
+    /// identical text again for an `.absent` check that would now correctly
+    /// refuse, which is not a state worth preserving.
     @discardableResult
-    public func writeProposedConfig(_ proposal: ProposedConfig) -> ConfigWriteOutcome {
+    public func writeProposedConfig() -> ConfigWriteOutcome {
+        let subject = ProposalSubject(name: relativeName, recipients: manuallyChosenRecipients)
+        guard let proposal = lastProposal?.value(ifStillAbout: subject) else {
+            return .refused(
+                CreationFailureMessage(
+                    title: .creationFailureConfigTitle,
+                    detail:
+                        "This proposal is no longer for the name or recipients currently chosen. "
+                        + "Propose again before writing.",
+                    recovery: nil))
+        }
         guard proposal.verified else {
             return .refused(CreationFailureMessage(title: .creationFailureConfigTitle, detail: proposal.reason, recovery: nil))
         }
         let configURL = projectRoot.appendingPathComponent(".sops.yaml")
         do {
             _ = try AtomicFileWriter.write(proposal.text, to: configURL, expecting: .absent)
+            lastProposal = nil
             return .written
         } catch let error as AtomicFileWriter.Error {
             return .refused(CreationFailurePresenter.message(forConfigWriteFailure: error))
@@ -955,10 +1053,7 @@ public final class NewSecretFileModel {
             // only, and both are handled above now that `RecipientPicker`
             // exists.
             guard let message = CreationFailurePresenter.message(forBlocking: plan) else {
-                return .blocked(
-                    CreationFailureMessage(
-                        title: .creationFailureTitle,
-                        detail: "This app could not describe why creation is blocked here.", recovery: nil))
+                return .blocked(CreationFailurePresenter.messageForUnexpectedlyUnblockedPlan())
             }
             return .blocked(message)
         }

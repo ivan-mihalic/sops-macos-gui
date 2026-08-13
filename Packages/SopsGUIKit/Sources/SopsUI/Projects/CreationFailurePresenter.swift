@@ -300,12 +300,12 @@ public enum CreationFailurePresenter {
     /// here — they are not blocking. `.noRuleMatched` in particular is a
     /// legitimate state, established in phase 1: a project can have a
     /// `.sops.yaml` whose rules simply don't cover a location yet, and
-    /// Task 5's manual recipient picker is where both of these are
-    /// resolved. Returning a failure sentence for either would be actively
-    /// wrong, not merely unhelpful — it would tell a user this app refuses
-    /// something it is in fact equipped to handle by falling back to the
-    /// picker. `.governedByRule` returns `nil` for the simpler reason that
-    /// nothing is blocked.
+    /// `RecipientPicker` (Task 5) is where both of these are resolved.
+    /// Returning a failure sentence for either would be actively wrong, not
+    /// merely unhelpful — it would tell a user this app refuses something it
+    /// is in fact equipped to handle by falling back to the picker.
+    /// `.governedByRule` returns `nil` for the simpler reason that nothing
+    /// is blocked.
     public static func message(forBlocking plan: CreationPlan) -> CreationFailureMessage? {
         switch plan {
         case .noConfig, .noRuleMatched, .governedByRule:
@@ -330,6 +330,25 @@ public enum CreationFailurePresenter {
         }
     }
 
+    /// The fallback `NewSecretFileModel.readiness` shows if
+    /// `message(forBlocking:)` is ever called with a `CreationPlan` it is
+    /// documented to answer for (`.unsupportedRule`/`.configUnreadable`) and
+    /// somehow returns `nil` anyway — unreachable today, kept only so that
+    /// contract breaking in the future fails as a wrong sentence rather than
+    /// a crash. A model-local sentence used to live at the call site instead
+    /// (`NewSecretFileModel.swift`, before this task's review); moved here
+    /// because this type's own doc comment is exactly "every sentence the
+    /// new-file wizard shows a user belongs here" — an unreachable fallback
+    /// is not an exemption from that, and least of all in the file that had
+    /// just finished removing the *previous* accepted exception
+    /// (`noPickerYetMessage`).
+    public static func messageForUnexpectedlyUnblockedPlan() -> CreationFailureMessage {
+        CreationFailureMessage(
+            title: .creationFailureTitle,
+            detail: "This app could not describe why creation is blocked here.",
+            recovery: nil)
+    }
+
     /// Whether `SessionKeyStore.state` currently prevents the wizard from
     /// proceeding at all. `nil` for `.configured` — nothing is blocked.
     ///
@@ -337,9 +356,9 @@ public enum CreationFailurePresenter {
     /// this situation is permanent: `SecretFileCreator.create`'s round-trip
     /// verification (see that type's own doc comment, "Self-readability is
     /// the default") needs a session identity to attempt a decrypt at all,
-    /// so no future task removes this refusal the way Task 5's picker will
-    /// remove `.noConfig`/`.noRuleMatched`'s. See this type's own doc
-    /// comment, "Why one type, not a `catch` at each call site", for why
+    /// so no future task removes this refusal the way `RecipientPicker`
+    /// (Task 5) removed `.noConfig`/`.noRuleMatched`'s. See this type's own
+    /// doc comment, "Why one type, not a `catch` at each call site", for why
     /// that permanence is exactly what earns this a method here rather than
     /// a locally composed sentence in `NewSecretFileModel`.
     public static func message(forEmptyKeyStore state: KeyStoreState) -> CreationFailureMessage? {

@@ -25,7 +25,7 @@ import SwiftUI
 /// `.noConfig` gets one thing more: a project with *no* config at all has
 /// nothing to lose by gaining one, so this view also offers to propose and
 /// write a brand-new `.sops.yaml` whose sole rule governs the target —
-/// `NewSecretFileModel.proposeConfig()`/`.writeProposedConfig(_:)`, which
+/// `NewSecretFileModel.proposeConfig()`/`.writeProposedConfig()`, which
 /// wrap `SopsConfigGenerator`/`AtomicFileWriter` exactly the way `create()`
 /// already wraps `SecretFileCreator`. Writing it is a fully separate,
 /// explicitly confirmed action from choosing recipients for the file
@@ -33,6 +33,21 @@ import SwiftUI
 /// config" — and once it succeeds, `NewSecretFileModel.resolvePlan()` is
 /// what actually notices the new file: this view calls it, but only after
 /// the write has already happened, never before.
+///
+/// ## A stale proposal cannot be written, even if this view forgets to say so
+///
+/// `proposedConfig`/`writeOutcome` below are this view's own *display*
+/// state — what to render, nothing more. They are cleared at every mutation
+/// site this file knows about (adding, removing, or picking a known
+/// recipient), so the screen does not go on showing a proposal for a
+/// selection that no longer matches. But the real guarantee is not this
+/// view remembering to do that everywhere: `NewSecretFileModel
+/// .writeProposedConfig()` independently refuses to write anything but the
+/// proposal it most recently built for the name and recipients currently in
+/// place (`NewSecretFileModel.ProposalSubject`), so a mutation site this
+/// view's own clearing missed — or one a later change adds — cannot make a
+/// stale proposal writable. See that method's own doc comment for the
+/// finding this closes.
 ///
 /// ## The view decides nothing about who to trust
 ///
@@ -51,7 +66,6 @@ public struct RecipientPicker: View {
 
     @State private var isProposing = false
     @State private var proposedConfig: ProposedConfig?
-    @State private var isWriting = false
     @State private var writeOutcome: NewSecretFileModel.ConfigWriteOutcome?
 
     public init(model: NewSecretFileModel) {
@@ -120,6 +134,16 @@ public struct RecipientPicker: View {
             Spacer()
             Button {
                 model.manuallyChosenRecipients.removeAll { $0 == recipient }
+                // The mutation site the review found missing: every other
+                // writer of `manuallyChosenRecipients` already clears these
+                // two. See this type's own doc comment, "A stale proposal
+                // cannot be written, even if this view forgets to say so" —
+                // clearing here is good hygiene (the screen should not keep
+                // showing a proposal for a set that no longer matches), not
+                // the thing that makes a stale write impossible; that is
+                // `writeProposedConfig()`'s own job now.
+                proposedConfig = nil
+                writeOutcome = nil
             } label: {
                 Image(systemName: "minus.circle")
             }
@@ -203,7 +227,8 @@ public struct RecipientPicker: View {
                         Text(record.label).font(.callout)
                         Spacer()
                         Button(LocalizedKey.actionAdd.text) {
-                            model.manuallyChosenRecipients.append(record.ageRecipient)
+                            model.manuallyChosenRecipients = Self.addingKnownRecipient(
+                                record.ageRecipient, to: model.manuallyChosenRecipients)
                             proposedConfig = nil
                             writeOutcome = nil
                         }
@@ -212,6 +237,22 @@ public struct RecipientPicker: View {
                 }
             }
         }
+    }
+
+    /// What tapping "Add" on a known-recipient row produces: `ageRecipient`
+    /// appended to `existing`, unless it is already there. Free and pure —
+    /// like `canAdd`/`canPropose`/`canWrite` — so this mutation site (the
+    /// second of two the review named directly, alongside the remove
+    /// button) is checkable on its own, without rendering anything or
+    /// simulating a tap through the accessibility tree.
+    ///
+    /// The duplicate guard is defensive rather than reachable through this
+    /// view's own UI — `knownRecipients` already filters out anything in
+    /// `existing` before a row is ever drawn — but a caller that reaches
+    /// this function some other way should not get a doubled entry either.
+    static func addingKnownRecipient(_ ageRecipient: String, to existing: [String]) -> [String] {
+        guard !existing.contains(ageRecipient) else { return existing }
+        return existing + [ageRecipient]
     }
 
     // MARK: - .sops.yaml, .noConfig only
@@ -246,7 +287,7 @@ public struct RecipientPicker: View {
                             .padding(6)
                             .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
                         Button(LocalizedKey.recipientPickerWriteButton.text, action: write)
-                            .disabled(!Self.canWrite(proposedConfig) || isWriting)
+                            .disabled(!Self.canWrite(proposedConfig) || isProposing)
                     } else {
                         Text(proposedConfig.reason)
                             .font(.caption)
@@ -284,11 +325,22 @@ public struct RecipientPicker: View {
     /// Whether the write control may be pressed. `verified == false` means
     /// `SopsConfigGenerator.propose` itself would not stand behind `text` —
     /// see `ProposedConfig`'s own doc comment — so there is nothing here to
-    /// write, ever, regardless of anything else about `isWriting`.
+    /// write. This is purely a display-layer gate, checked against this
+    /// view's own `proposedConfig`; the write itself is gated a second,
+    /// structural way regardless of what this returns — see
+    /// `NewSecretFileModel.writeProposedConfig()`'s own doc comment.
     static func canWrite(_ proposal: ProposedConfig?) -> Bool { proposal?.verified == true }
 
     private func propose() {
         isProposing = true
+        // Both cleared up front, not just `writeOutcome` — a re-propose
+        // (the user pressing the button again after changing the
+        // selection) must not leave the *previous* proposal's text and
+        // enabled write button on screen for the couple of hundred
+        // milliseconds this call takes to cross the bridge. `isProposing`
+        // disabling the write button (above) covers the same window a
+        // second way.
+        proposedConfig = nil
         writeOutcome = nil
         Task {
             proposedConfig = await model.proposeConfig()
@@ -297,15 +349,17 @@ public struct RecipientPicker: View {
     }
 
     private func write() {
-        guard let proposedConfig, Self.canWrite(proposedConfig) else { return }
-        isWriting = true
-        let outcome = model.writeProposedConfig(proposedConfig)
+        // No parameter: `model.writeProposedConfig()` reads back what it
+        // itself most recently proposed, for the name and recipients
+        // currently in place, and refuses anything else — including this
+        // view's own `proposedConfig` if it is stale. See that method's own
+        // doc comment.
+        let outcome = model.writeProposedConfig()
         writeOutcome = outcome
-        isWriting = false
         if case .written = outcome {
             // The write just happened; nothing about `readiness` reflects it
             // until a fresh resolve actually looks at the new `.sops.yaml`
-            // again. See `NewSecretFileModel.writeProposedConfig(_:)`'s own
+            // again. See `NewSecretFileModel.writeProposedConfig()`'s own
             // doc comment for why that call is this view's job, not that
             // method's.
             Task { await model.resolvePlan() }

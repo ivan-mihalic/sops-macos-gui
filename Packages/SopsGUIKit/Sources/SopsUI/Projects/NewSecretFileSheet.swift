@@ -223,6 +223,17 @@ public struct NewSecretFileSheet: View {
             // visible once a recipient has been chosen and `readiness`
             // moves on to `.ready`/`.needsAcknowledgement`/`.blocked`, not
             // only while `readiness == .needsRecipients`.
+            //
+            // One consequence worth stating rather than fixing: gating on
+            // `model.plan` alone means the picker's propose/write controls
+            // render *alongside* a `.blocked` failure banner above — an
+            // empty key store, say. That is deliberate, not an oversight:
+            // proposing and writing a `.sops.yaml` needs no session
+            // identity at all (`SopsConfigGenerator`/`AtomicFileWriter`
+            // don't touch `keyStore`), only *creating the file itself*
+            // does, which is exactly what the banner above is about. A
+            // user with no key configured genuinely can set up a project's
+            // config in advance of importing one.
             if model.plan == .noConfig || model.plan == .noRuleMatched {
                 RecipientPicker(model: model)
             }

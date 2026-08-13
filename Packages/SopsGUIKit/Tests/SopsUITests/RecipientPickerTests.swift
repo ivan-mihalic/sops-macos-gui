@@ -100,9 +100,9 @@ private func makeKeyStore(importing key: String? = nil) throws -> SessionKeyStor
     return store
 }
 
-// MARK: - .noConfig: propose, write, and an independent second opinion
+// MARK: - propose/write, an independent second opinion, and the subject that gates staleness
 
-@Suite("NewSecretFileModel.proposeConfig()/.writeProposedConfig(_:) — .noConfig")
+@Suite("NewSecretFileModel.proposeConfig()/.writeProposedConfig()")
 @MainActor
 struct ProposeAndWriteConfigTests {
 
@@ -136,7 +136,7 @@ struct ProposeAndWriteConfigTests {
         #expect(!proposed.text.isEmpty)
         #expect(proposed.reason.isEmpty)
 
-        let outcome = model.writeProposedConfig(proposed)
+        let outcome = model.writeProposedConfig()
         #expect(outcome == .written)
         #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(".sops.yaml").path))
 
@@ -179,9 +179,18 @@ struct ProposeAndWriteConfigTests {
     /// "existující .sops.yaml → .absent zápis odmítne": `writeProposedConfig`
     /// must not clobber a `.sops.yaml` that appeared after the proposal was
     /// built — `AtomicFileWriter.write(_:to:expecting: .absent)`'s own
-    /// contract, exercised here through the model rather than the writer
-    /// directly. The existing file's content is untouched, proving this is
+    /// contract. The existing file's content is untouched, proving this is
     /// a real refusal and not a silent partial write.
+    ///
+    /// Driven through the real model pipeline, not a hand-built
+    /// `ProposedConfig` — `writeProposedConfig()` no longer accepts one
+    /// (see that method's own doc comment, "Forgeability"), so there is no
+    /// other way to reach it any more. `proposeConfig()` itself does not
+    /// check whether a real `.sops.yaml` already exists — `SopsConfigGenerator
+    /// .propose` verifies against an independent staged probe file, entirely
+    /// unaware of the real path — so this comes back `verified: true` even
+    /// though writing it would clobber the real file; `writeProposedConfig()`
+    /// is the guard that actually has to catch this.
     @Test("writeProposedConfig refuses when .sops.yaml already exists, leaving it untouched")
     func writeRefusesWhenConfigAlreadyExists() async throws {
         let key = try AgeKeyPair.generate()
@@ -197,16 +206,17 @@ struct ProposeAndWriteConfigTests {
         await model.resolvePlan()
         #expect(model.plan == .noRuleMatched)
 
-        // Build a proposal by hand — `proposeConfig()` itself is not even
-        // offered by the view for `.noRuleMatched` (see `RecipientPicker`'s
-        // own doc comment, "Two different jobs behind one control"), but
-        // `writeProposedConfig(_:)` must still refuse to overwrite a real
-        // `.sops.yaml` regardless of how the proposal was produced.
-        let proposed = try SopsConfigGenerator.propose(
-            forTarget: root.appendingPathComponent("secret.yaml"), in: root, recipients: [key.public])
+        // `RecipientPicker` itself never offers propose/write for
+        // `.noRuleMatched` (see that type's own doc comment, "Two different
+        // jobs behind one control") — but the model API underneath it must
+        // still refuse to overwrite a real `.sops.yaml` regardless of which
+        // `CreationPlan` is current, since nothing about `writeProposedConfig()`
+        // reads `plan` at all.
+        model.manuallyChosenRecipients = [key.public]
+        let proposed = try #require(await model.proposeConfig())
         #expect(proposed.verified, "precondition: the proposal itself is fine, only the write should refuse")
 
-        let outcome = model.writeProposedConfig(proposed)
+        let outcome = model.writeProposedConfig()
         guard case .refused = outcome else {
             Issue.record("expected .refused, got \(outcome)")
             return
@@ -216,21 +226,167 @@ struct ProposeAndWriteConfigTests {
         #expect(onDisk == existingConfig, "the existing .sops.yaml must be untouched by the refused write")
     }
 
+    /// The forgery Minor 2 named directly: before this fix, any caller could
+    /// build `ProposedConfig(verified: true)` by hand and hand it to
+    /// `writeProposedConfig(_:)`. There is no longer a parameter to forge —
+    /// this test instead earns an unverified proposal honestly, the same
+    /// way `SopsConfigGeneratorTests.noProbeFileSurvivesBridgeFailure` does,
+    /// and proves the model refuses to write it.
     @Test("writeProposedConfig refuses an unverified proposal without ever touching the filesystem")
     func writeRefusesAnUnverifiedProposal() async throws {
         let root = try scratchDirectory()
         let keyStore = try makeKeyStore()
         let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+        model.relativeName = "secret.yaml"
+        await model.resolvePlan()
+        #expect(model.plan == .noConfig)
 
-        let unverified = ProposedConfig(text: "", verified: false, reason: "No recipients were given.")
-        let outcome = model.writeProposedConfig(unverified)
+        model.manuallyChosenRecipients = ["not-a-valid-age-recipient"]
+        let proposed = try #require(await model.proposeConfig())
+        #expect(!proposed.verified, "precondition: an invalid recipient must not verify")
 
+        let outcome = model.writeProposedConfig()
         guard case .refused(let message) = outcome else {
             Issue.record("expected .refused, got \(outcome)")
             return
         }
-        #expect(message.detail == "No recipients were given.")
+        #expect(message.detail == proposed.reason)
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".sops.yaml").path))
+    }
+
+    // MARK: - The Important finding: a stale proposal must not be writable
+
+    /// The review's "Scenario A", proven at the model layer rather than
+    /// through the view: propose for two recipients, then remove one — the
+    /// exact effect the remove button has on `manuallyChosenRecipients`, no
+    /// matter which mutation site a future change forgets to also clear
+    /// `@State` for. `writeProposedConfig()` must refuse regardless, because
+    /// it reads back `lastProposal` gated on the *current* selection, never
+    /// a caller-held value.
+    @Test("write refuses once a recipient has been removed since propose")
+    func writeRefusesAfterARecipientIsRemovedSincePropose() async throws {
+        let first = try AgeKeyPair.generate()
+        let second = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        let keyStore = try makeKeyStore(importing: first.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+        model.relativeName = "secret.yaml"
+        await model.resolvePlan()
+        #expect(model.plan == .noConfig)
+
+        model.manuallyChosenRecipients = [first.public, second.public]
+        let proposed = try #require(await model.proposeConfig())
+        #expect(proposed.verified)
+
+        // The user's on-screen selection now denies `second` — writing the
+        // proposal built a moment ago would grant them access anyway.
+        model.manuallyChosenRecipients.removeAll { $0 == second.public }
+
+        let outcome = model.writeProposedConfig()
+        guard case .refused = outcome else {
+            Issue.record(
+                "expected .refused — the proposal named a selection that no longer exists, got \(outcome)")
+            return
+        }
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".sops.yaml").path))
+    }
+
+    /// The other direction of the same finding — adding a recipient after
+    /// proposing, mirroring what the known-recipients "Add" button and the
+    /// free-text field both do. A genuinely *new* third recipient, not the
+    /// one just proposed for: appending back the exact set already on file
+    /// would reconstruct the identical `ProposalSubject` and legitimately
+    /// make the original proposal writable again — that is correct
+    /// behavior, not a bug, and a version of this test that did that instead
+    /// pinned nothing.
+    @Test("write refuses once a recipient has been added since propose")
+    func writeRefusesAfterARecipientIsAddedSincePropose() async throws {
+        let first = try AgeKeyPair.generate()
+        let second = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        let keyStore = try makeKeyStore(importing: first.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+        model.relativeName = "secret.yaml"
+        await model.resolvePlan()
+        #expect(model.plan == .noConfig)
+
+        model.manuallyChosenRecipients = [first.public]
+        let proposed = try #require(await model.proposeConfig())
+        #expect(proposed.verified)
+
+        model.manuallyChosenRecipients.append(second.public)
+
+        let outcome = model.writeProposedConfig()
+        guard case .refused = outcome else {
+            Issue.record(
+                "expected .refused — the proposal named a selection that has since grown, got \(outcome)")
+            return
+        }
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".sops.yaml").path))
+    }
+
+    /// The review's "Scenario B": the name changes after a propose while
+    /// `plan` is still `.noConfig` — the exact identity `RecipientPicker`'s
+    /// own gate (`model.plan == .noConfig`) keeps rendering, so a view keyed
+    /// only on that would show no visible change at all. `resolvePlan()`'s
+    /// own reset of `manuallyChosenRecipients` already makes the
+    /// `ProposalSubject` mismatch (empty recipients cannot match a proposal
+    /// built for a non-empty set) — this test is what proves that actually
+    /// reaches `writeProposedConfig()`'s refusal, not just the property
+    /// being empty in isolation.
+    @Test("write refuses after the name changes since propose, even though plan is still .noConfig")
+    func writeRefusesAfterNameChangesSincePropose() async throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        let keyStore = try makeKeyStore(importing: owner.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+        model.relativeName = "a.yaml"
+        await model.resolvePlan()
+        #expect(model.plan == .noConfig)
+
+        model.manuallyChosenRecipients = [owner.public]
+        let proposed = try #require(await model.proposeConfig())
+        #expect(proposed.verified)
+
+        model.relativeName = "b.yaml"
+        await model.resolvePlan()
+        #expect(model.plan == .noConfig, "precondition: the view's own gate sees no change here")
+        #expect(model.manuallyChosenRecipients.isEmpty)
+
+        let outcome = model.writeProposedConfig()
+        guard case .refused = outcome else {
+            Issue.record("expected .refused — the proposal was built for a.yaml, not b.yaml, got \(outcome)")
+            return
+        }
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".sops.yaml").path))
+    }
+
+    /// The same finding, one layer further out: a fresh, in-flight
+    /// `proposeConfig()` call for a *changed* selection must not leave the
+    /// *previous* selection's proposal writable while it is still running.
+    /// `RecipientPicker.propose()` clears its own `@State` up front for
+    /// exactly this window; this test pins the model-level guarantee that
+    /// holds regardless of whether that clearing happens.
+    @Test("the previous proposal is not writable once a new one is in flight for a different selection")
+    func previousProposalNotWritableWhileANewOneIsInFlight() async throws {
+        let first = try AgeKeyPair.generate()
+        let second = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        let keyStore = try makeKeyStore(importing: first.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+        model.relativeName = "secret.yaml"
+        await model.resolvePlan()
+
+        model.manuallyChosenRecipients = [first.public]
+        _ = try #require(await model.proposeConfig())
+
+        // Selection changes before a second propose is even started —
+        // `writeProposedConfig()` must already refuse the first proposal.
+        model.manuallyChosenRecipients = [second.public]
+        guard case .refused = model.writeProposedConfig() else {
+            Issue.record("the first proposal must not be writable once the selection has moved on")
+            return
+        }
     }
 }
 
@@ -383,6 +539,32 @@ struct CanAddTests {
     }
 }
 
+/// The second of the two mutation sites the review named directly (the
+/// remove button, `CanAddTests` above's sibling for the free-text field, and
+/// this one). Extracted to a pure function specifically so it has a test
+/// distinct from "the structural fix makes staleness impossible regardless
+/// of provenance" — this pins that the known-recipients row's own effect on
+/// the selection is correct, not only that a wrong effect couldn't have been
+/// written anyway.
+@Suite("RecipientPicker.addingKnownRecipient — the known-recipients row's own effect")
+struct AddingKnownRecipientTests {
+
+    @Test("appends to an empty selection")
+    func appendsToEmpty() {
+        #expect(RecipientPicker.addingKnownRecipient("age1abc", to: []) == ["age1abc"])
+    }
+
+    @Test("appends after existing recipients, preserving their order")
+    func appendsAfterExisting() {
+        #expect(RecipientPicker.addingKnownRecipient("age1abc", to: ["age1xyz"]) == ["age1xyz", "age1abc"])
+    }
+
+    @Test("does not duplicate a recipient already present")
+    func doesNotDuplicate() {
+        #expect(RecipientPicker.addingKnownRecipient("age1abc", to: ["age1abc"]) == ["age1abc"])
+    }
+}
+
 @Suite("RecipientPicker.canPropose/.canWrite — the config controls' gates")
 struct CanProposeAndWriteTests {
 
@@ -458,5 +640,47 @@ struct RecipientPickerRenderedTests {
         await host.settle(until: { model.readiness == .ready(recipients: [owner.public]) })
 
         #expect(NewSecretFileSheet.canCreate(readiness: model.readiness, isCreating: false))
+    }
+
+    /// Pins the render side of the second mutation site the review named:
+    /// a real registry entry shows up under "Known recipients" by its real
+    /// label, and stops showing once it has been chosen — proving the
+    /// section actually reads `RecipientRegistry`, not a placeholder that
+    /// happens to compile. `AddingKnownRecipientTests` covers the row's own
+    /// effect on the selection; this covers that the row is real to begin
+    /// with.
+    @Test("a registry entry appears under Known Recipients by its real label, and drops off once chosen")
+    func knownRecipientsSectionShowsRegistryLabels() async throws {
+        let recipient = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        try RecipientRegistry.save(
+            [RecipientRecord(label: "Ops Laptop", kind: .device, ageRecipient: recipient.public)], in: root)
+        let keyStore = try makeKeyStore()
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+        model.relativeName = "secret.yaml"
+        await model.resolvePlan()
+        #expect(model.plan == .noConfig)
+
+        let host = GatingHost(size: Self.sheetSize) {
+            AnyView(NewSecretFileSheet(model: model, onCreated: { _ in }))
+        }
+        defer { host.finish() }
+        await host.settleAfterLoad()
+
+        let values = Set(host.nodes().map(\.value))
+        #expect(values.contains("Ops Laptop"), "the registry label must render under Known Recipients")
+
+        // Chosen through the model, mirroring what tapping the row's own
+        // "Add" button does (`RecipientPicker.addingKnownRecipient(_:to:)`).
+        // The label is still shown once afterward — as the chosen
+        // recipient's own row, via `displayName(for:)` — but no longer
+        // twice: it must have left the "Known Recipients" section it was in
+        // before. `settle(until:)` waits for exactly that final count,
+        // rather than for the label to vanish entirely, which it never does.
+        model.manuallyChosenRecipients = [recipient.public]
+        await host.settle(until: { host.nodes().map(\.value).filter { $0 == "Ops Laptop" }.count == 1 })
+
+        let labelCountAfter = host.nodes().map(\.value).filter { $0 == "Ops Laptop" }.count
+        #expect(labelCountAfter == 1, "the recipient must appear as chosen, not still offered as \"known\" too")
     }
 }
