@@ -731,3 +731,139 @@ struct EncryptedImportPreviewTests {
         }
     }
 }
+
+// MARK: - Important 2: the diff must not describe access without describing scope
+
+/// A `.sops.yaml` whose rule also sets `encrypted_regex` — the one scoping
+/// field `CreationPlanResolver` passes through as supported rather than
+/// refusing (`CreationPlanResolverTests.encryptedRegexPassesThrough`), and
+/// therefore the one that makes a created file store every non-matching
+/// value in plaintext.
+private func scopedAgeConfig(_ recipients: [String], encryptedRegex: String) -> String {
+    """
+    creation_rules:
+      - path_regex: .*\\.yaml$
+        age: \(recipients.joined(separator: ","))
+        encrypted_regex: '\(encryptedRegex)'
+    """ + "\n"
+}
+
+@Suite("encrypted_regex scoping, disclosed beside the access diff")
+@MainActor
+struct EncryptedRegexScopingDisclosureTests {
+
+    private static let regex = "^(data|stringData)$"
+
+    /// The model half: what a create would actually run under, derived from
+    /// the live plan like every other verdict here — never stored, so it
+    /// cannot describe a plan that has since changed.
+    @Test("encryptedRegexInEffect reports the resolved rule's own regex, and nothing when there is none")
+    func encryptedRegexInEffectFollowsThePlan() async throws {
+        let a = try AgeKeyPair.generate()
+        let root = try scratchDirectory("encrypted-regex-scoping")
+        try scopedAgeConfig([a.public], encryptedRegex: Self.regex)
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: try makeKeyStore(importing: a.private))
+
+        // No name resolved yet — no plan, so nothing to disclose.
+        #expect(model.encryptedRegexInEffect == nil)
+
+        model.relativeName = "imported.yaml"
+        await model.resolvePlan()
+        #expect(model.encryptedRegexInEffect == Self.regex)
+
+        // A name the rule does not govern: the regex belongs to the rule,
+        // not to the project, and must not follow the user to a file it says
+        // nothing about.
+        model.relativeName = "notes.txt"
+        await model.resolvePlan()
+        #expect(model.encryptedRegexInEffect == nil)
+    }
+
+    @Test("a rule that sets no encrypted_regex reports none")
+    func unscopedRuleReportsNoRegex() async throws {
+        let a = try AgeKeyPair.generate()
+        let root = try scratchDirectory("encrypted-regex-scoping")
+        try ageConfig([a.public])
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: try makeKeyStore(importing: a.private))
+        model.relativeName = "imported.yaml"
+        await model.resolvePlan()
+        #expect(model.encryptedRegexInEffect == nil)
+    }
+
+    /// The finding itself: a source file in which *every* value was
+    /// encrypted, imported into a project whose matching rule scopes
+    /// encryption, produced a screen saying only "Alice will still be able
+    /// to read the new file this creates" — while the file it creates stores
+    /// every non-matching value in plaintext, readable by anyone with the
+    /// repository. The diff is not wrong; it is incomplete in the one
+    /// direction spec §4.1 decision 4 exists to prevent.
+    @Test("the access diff also discloses that the rule leaves non-matching values in plaintext")
+    func unlockedDiffDisclosesScoping() async throws {
+        let a = try AgeKeyPair.generate()
+        let root = try scratchDirectory("encrypted-regex-scoping")
+        try scopedAgeConfig([a.public], encryptedRegex: Self.regex)
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: try makeKeyStore(importing: a.private))
+        model.relativeName = "imported.yaml"
+        await model.resolvePlan()
+
+        let source = root.appendingPathComponent("source.yaml")
+        try writeEncryptedFixture(plaintext: "data: secret\n", recipients: [a.public], to: source)
+        model.sourceChoice = .encryptedYAML
+        model.chooseEncryptedFile(at: source)
+        await model.unlockChosenEncryptedFile()
+        try #require(model.encryptedImport == .unlocked(gaining: [], losing: [], keeping: [a.public]))
+
+        let nodes = AXProbe.tree(size: CGSize(width: 640, height: 400)) {
+            EncryptedImportPreview(model: model)
+        }
+        let rendered = nodes.map(\.value) + nodes.map(\.label)
+        let scopingSentence = String(format: LocalizedKey.newFileInfoEncryptedRegexScoping.text, Self.regex)
+
+        // Canary first: the diff itself must have rendered, or this proves
+        // nothing about what stands beside it.
+        #expect(
+            rendered.contains(LocalizedKey.newFileEncryptedImportNoChangeTitle.text),
+            "the diff did not render — this test would be vacuous")
+        #expect(
+            rendered.contains(where: { $0.contains(scopingSentence) }),
+            "the diff described who can read the new file and not that most of it will be plaintext")
+    }
+
+    @Test("an unscoped rule's diff says nothing about scoping")
+    func unscopedDiffSaysNothingAboutScoping() async throws {
+        let a = try AgeKeyPair.generate()
+        let root = try scratchDirectory("encrypted-regex-scoping")
+        try ageConfig([a.public])
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: try makeKeyStore(importing: a.private))
+        model.relativeName = "imported.yaml"
+        await model.resolvePlan()
+
+        let source = root.appendingPathComponent("source.yaml")
+        try writeEncryptedFixture(plaintext: "data: secret\n", recipients: [a.public], to: source)
+        model.sourceChoice = .encryptedYAML
+        model.chooseEncryptedFile(at: source)
+        await model.unlockChosenEncryptedFile()
+        try #require(model.encryptedImport == .unlocked(gaining: [], losing: [], keeping: [a.public]))
+
+        let nodes = AXProbe.tree(size: CGSize(width: 640, height: 400)) {
+            EncryptedImportPreview(model: model)
+        }
+        let rendered = nodes.map(\.value) + nodes.map(\.label)
+        #expect(
+            rendered.contains(LocalizedKey.newFileEncryptedImportNoChangeTitle.text),
+            "the diff did not render — this test would be vacuous")
+        // Both spellings, so this holds under either compiler: the compiled
+        // catalog's English names `encrypted_regex`, and `swift test`'s
+        // uncompiled one renders the raw key instead.
+        #expect(
+            !rendered.contains(where: {
+                $0.contains("encrypted_regex")
+                    || $0.contains(LocalizedKey.newFileInfoEncryptedRegexScoping.text)
+            }),
+            "a rule that scopes nothing must not warn about scoping")
+    }
+}

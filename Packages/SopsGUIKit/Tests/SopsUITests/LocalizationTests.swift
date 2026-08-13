@@ -549,6 +549,34 @@ struct LocalizationTests {
                 "the sentence must say the source stays readable to them there: \(sentence)")
     }
 
+    /// Final review, Important 2: the sentence that discloses
+    /// `encrypted_regex` has to say what the rule *does* — scope which
+    /// values get encrypted, leaving the rest as plaintext — and must not
+    /// promise which fields those are. This app never evaluates the
+    /// expression (sops does, at write time), so a sentence naming specific
+    /// keys would be a claim it cannot stand behind, and the review asked
+    /// for the weaker, true one on purpose.
+    @Test("the encrypted_regex disclosure names the field and plaintext, and predicts no specific keys")
+    func encryptedRegexDisclosureIsHonestAboutWhatItKnows() throws {
+        let sentence = try #require(
+            Self.englishForms(for: .newFileInfoEncryptedRegexScoping).first,
+            "missing catalog entry for the encrypted_regex disclosure")
+        #expect(sentence.contains("encrypted_regex"),
+                "the sentence must name the field so it can be found in .sops.yaml: \(sentence)")
+        #expect(sentence.lowercased().contains("plaintext"),
+                "the sentence must say the non-matching values are stored as plaintext: \(sentence)")
+        #expect(sentence.contains("%@"),
+                "the sentence must carry the rule's own expression, so the user can check it: \(sentence)")
+        #expect(sentence.lowercased().contains("check the rule"),
+                "the sentence must send the user to the rule rather than predicting its result: \(sentence)")
+        // The overclaim this must never become: naming which fields end up
+        // in plaintext is a matching decision only sops makes.
+        for overclaim in ["these fields", "the following", "will be plaintext:"] {
+            #expect(!sentence.lowercased().contains(overclaim),
+                    "the sentence claims to know sops's own matching result: \(sentence)")
+        }
+    }
+
     /// Task 6, Important 1: a same-recipients import must not headline
     /// itself as a change. The two titles have to actually read differently
     /// — a catalog entry that pasted the same text under both keys would

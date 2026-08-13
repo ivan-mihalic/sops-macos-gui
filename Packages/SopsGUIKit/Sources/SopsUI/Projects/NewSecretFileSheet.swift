@@ -251,7 +251,11 @@ public struct NewSecretFileSheet: View {
     }
 
     /// The `ⓘ` line's text: five shapes matching `CreationPlan`'s cases, plus
-    /// a sixth for "still resolving". Pure and `static` — `isResolving` is a
+    /// a sixth for "still resolving" — and, for a `.governedByRule` whose
+    /// rule sets `encrypted_regex`, a second sentence appended to the first
+    /// disclosing that the rule scopes which values get encrypted at all.
+    /// See that branch's own comment for why that belongs on this line
+    /// rather than in any one source's preview. Pure and `static` — `isResolving` is a
     /// plain `Bool` argument here rather than read live off `model
     /// .isResolving`, precisely so a test can check every shape (including
     /// "still resolving") without racing a real async resolve: this app's
@@ -269,7 +273,7 @@ public struct NewSecretFileSheet: View {
         if isResolving { return LocalizedKey.newFileInfoResolving.text }
         guard let plan else { return nil }
         switch plan {
-        case .governedByRule(let recipients, _):
+        case .governedByRule(let recipients, let encryptedRegex):
             // An empty recipient list is not a governed target — see
             // `NewSecretFileModel.currentGovernedPlan()`'s own doc comment,
             // "An empty recipient list is not a target", for the review
@@ -294,7 +298,23 @@ public struct NewSecretFileSheet: View {
             guard !recipients.isEmpty else {
                 return CreationFailurePresenter.messageForRuleWithNoRecipients().detail
             }
-            return String(format: LocalizedKey.newFileInfoGovernedByRule.text, recipientNames(recipients))
+            let governed = String(format: LocalizedKey.newFileInfoGovernedByRule.text, recipientNames(recipients))
+            // `encrypted_regex` is the one scoping field `CreationPlanResolver`
+            // passes through as supported rather than refusing (see its own
+            // doc comment, decision order step 5), so a rule that sets it
+            // produces a file whose every *non*-matching value is written in
+            // plaintext. Naming only who can read the file, and saying
+            // nothing about how much of it is encrypted, is the silent half
+            // of an access change — spec §4.1 decision 4. Appended here
+            // rather than shown per source because this line is the one
+            // disclosure every source passes through: `nameSection` renders
+            // it for `.empty`, `.plainYAML`, `.dotEnv` and `.encryptedYAML`
+            // alike. `EncryptedImportPreview` repeats the identical sentence
+            // beside its access diff, which is the other screen making an
+            // access claim about the file this creates.
+            guard !encryptedRegex.isEmpty else { return governed }
+            return governed + " "
+                + String(format: LocalizedKey.newFileInfoEncryptedRegexScoping.text, encryptedRegex)
         case .noConfig:
             return LocalizedKey.newFileInfoNoConfig.text
         case .noRuleMatched:

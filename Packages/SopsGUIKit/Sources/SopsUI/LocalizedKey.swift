@@ -604,6 +604,25 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case newFileInfoGovernedByRule = "new-file.info.governed-by-rule"
     case newFileInfoNoConfig = "new-file.info.no-config"
     case newFileInfoNoRuleMatched = "new-file.info.no-rule-matched"
+    // Formatted with the matching rule's own `encrypted_regex`, shown
+    // whenever it is set — appended to the ⓘ line for *every* source, and
+    // repeated under the encrypted-import diff.
+    //
+    // `CreationPlanResolver` passes `encrypted_regex` through as supported
+    // while refusing the other three scoping fields (see its own doc
+    // comment, decision order step 5), so a file created under such a rule
+    // stores every non-matching value in **plaintext** — and until this
+    // sentence existed, the one screen whose entire purpose is disclosing
+    // how access changes said only who could read the file, never that most
+    // of it would not be encrypted at all. Spec §4.1 decision 4 is "do not
+    // change access silently"; a wizard that creates files is where that
+    // lands.
+    //
+    // Deliberately does **not** claim which fields will be plaintext: this
+    // app never evaluates the expression (sops does, at write time), so the
+    // sentence describes what the rule *does* and asks the user to check it,
+    // which is true without this app having to predict sops's own matching.
+    case newFileInfoEncryptedRegexScoping = "new-file.info.encrypted-regex-scoping"
 
     case newFileAcknowledgeUnreadableCheckbox = "new-file.acknowledge-unreadable-checkbox"
 

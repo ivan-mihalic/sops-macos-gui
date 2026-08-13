@@ -174,6 +174,11 @@ public struct EncryptedImportPreview: View {
     /// conditional-parts pattern `ProjectAccessView
     /// .configUpdateConfirmationMessage` uses for its own gains/loses.
     ///
+    /// One sentence below the three is not about *who* at all: a target rule
+    /// that sets `encrypted_regex` scopes *what* gets encrypted, and a diff
+    /// that names only recipients reads as the whole change when it is not.
+    /// See that branch's own comment.
+    ///
     /// The title itself is conditional too — `gaining`/`losing` both empty
     /// (every source recipient survives into the target unchanged) is the
     /// single most common case for an import into a project whose rule
@@ -200,6 +205,23 @@ public struct EncryptedImportPreview: View {
             }
             if !keeping.isEmpty {
                 Text(String(format: LocalizedKey.newFileEncryptedImportKeeps.text, names(keeping)))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            // Who can read the new file is only half of "how access
+            // changes" when the target rule sets `encrypted_regex`: the
+            // other half is that everything the expression does not match is
+            // written in plaintext, readable by anyone with the repository —
+            // and this diff, listing recipients gained and lost, reads as a
+            // complete account of the change without it. The identical
+            // sentence `NewSecretFileSheet`'s ⓘ line appends, repeated here
+            // because this is the second screen making an access claim about
+            // the file being created. Still no plan-reading judgment in this
+            // view: `NewSecretFileModel.encryptedRegexInEffect` is `nil`
+            // unless a plan is in hand and actually sets one.
+            if let encryptedRegex = model.encryptedRegexInEffect {
+                Text(String(format: LocalizedKey.newFileInfoEncryptedRegexScoping.text, encryptedRegex))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

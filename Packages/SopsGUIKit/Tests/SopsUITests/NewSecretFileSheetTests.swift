@@ -239,6 +239,46 @@ struct InfoLineTextTests {
         #expect(text != String(format: LocalizedKey.newFileInfoGovernedByRule.text, ""))
     }
 
+    // MARK: - Important 2: a rule that scopes encryption says so
+
+    /// `encrypted_regex` is the one scoping field `CreationPlanResolver`
+    /// passes through as *supported* (`CreationPlanResolverTests
+    /// .encryptedRegexPassesThrough` measures it against the real bridge), so
+    /// a file created under such a rule stores every non-matching value in
+    /// plaintext, readable by anyone with the repository. Until this
+    /// sentence existed, the ⓘ line — the wizard's whole account of what
+    /// `.sops.yaml` decides for this name — said only who could read the
+    /// file. Spec §4.1 decision 4 is "do not change access silently".
+    @Test(".governedByRule whose rule sets encrypted_regex discloses the plaintext scoping too")
+    func governedByRuleWithEncryptedRegex() throws {
+        let regex = "^(data|stringData)$"
+        let text = try #require(
+            NewSecretFileSheet.infoLineText(
+                isResolving: false, plan: .governedByRule(recipients: ["age1abc"], encryptedRegex: regex),
+                recipientNames: joinedNames))
+
+        let recipientsSentence = String(format: LocalizedKey.newFileInfoGovernedByRule.text, "age1abc")
+        let scopingSentence = String(format: LocalizedKey.newFileInfoEncryptedRegexScoping.text, regex)
+        #expect(text.hasPrefix(recipientsSentence), "the recipients sentence must still lead the line")
+        #expect(text.contains(scopingSentence), "the scoping sentence is missing: \(text)")
+        #expect(
+            text != recipientsSentence,
+            "naming only who can read a file most of which stays plaintext is a silent access change")
+    }
+
+    @Test("a rule that sets no encrypted_regex says nothing about scoping")
+    func governedByRuleWithoutEncryptedRegexSaysNothingExtra() throws {
+        let text = try #require(
+            NewSecretFileSheet.infoLineText(
+                isResolving: false, plan: .governedByRule(recipients: ["age1abc"], encryptedRegex: ""),
+                recipientNames: joinedNames))
+        #expect(text == String(format: LocalizedKey.newFileInfoGovernedByRule.text, "age1abc"))
+        // Under `swift test`'s uncompiled catalog both sides are raw keys,
+        // which is exactly why this compares against the key's own text
+        // rather than English: the sentence must be absent either way.
+        #expect(!text.contains(LocalizedKey.newFileInfoEncryptedRegexScoping.text))
+    }
+
     @Test(".noConfig")
     func noConfig() {
         let text = NewSecretFileSheet.infoLineText(isResolving: false, plan: .noConfig, recipientNames: joinedNames)
@@ -487,6 +527,50 @@ struct NewSecretFileSheetRenderedTests {
         let expected = String(
             format: LocalizedKey.newFileInfoGovernedByRule.text, NewSecretFileSheet.shortenedKey(owner.public))
         #expect(values.contains(expected), "the ⓘ line did not name the rule's recipient, shortened")
+    }
+
+    /// Important 2, at the rendering level and across **every** source: the
+    /// ⓘ line lives in `nameSection`, above the per-source preview area, so
+    /// one sentence there is the wizard's only disclosure that a rule scopes
+    /// which values get encrypted at all. This walks all four
+    /// `SourceChoice` cases against one rendered sheet and requires the
+    /// sentence in each — a future change that moved the line into any one
+    /// source's preview would leave the other three silent, and this is what
+    /// would catch it.
+    @Test("a rule with encrypted_regex discloses its plaintext scoping for every source")
+    func infoLineDisclosesEncryptedRegexForEverySource() async throws {
+        let owner = try AgeKeyPair.generate()
+        let regex = "^(data|stringData)$"
+        let root = try scratchDirectory()
+        try """
+            creation_rules:
+              - path_regex: .*\\.yaml$
+                age: \(owner.public)
+                encrypted_regex: '\(regex)'
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let keyStore = try makeKeyStore(importing: owner.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+        model.relativeName = "secret.yaml"
+        await model.resolvePlan()
+        try #require(
+            model.plan == .governedByRule(recipients: [owner.public], encryptedRegex: regex),
+            "precondition: sops itself must report the regex, or this test proves nothing")
+
+        let host = GatingHost(size: Self.sheetSize) {
+            AnyView(NewSecretFileSheet(model: model, onCreated: { _ in }))
+        }
+        defer { host.finish() }
+        await host.settleAfterLoad()
+
+        let scopingSentence = String(format: LocalizedKey.newFileInfoEncryptedRegexScoping.text, regex)
+        for source in NewSecretFileModel.SourceChoice.allCases {
+            model.sourceChoice = source
+            await host.settleAfterAModelChange()
+            let rendered = host.nodes().map(\.value) + host.nodes().map(\.label)
+            #expect(
+                rendered.contains(where: { $0.contains(scopingSentence) }),
+                "the \(source) source's screen never says the rule leaves non-matching values in plaintext")
+        }
     }
 
     @Test("no .sops.yaml renders the no-config ⓘ sentence, distinct from the failure banner")

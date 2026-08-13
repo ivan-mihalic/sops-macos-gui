@@ -827,6 +827,17 @@
         }
       }
     },
+    "new-file.info.encrypted-regex-scoping": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This rule also sets encrypted_regex (%@): only values whose field names match it will be encrypted, and every other value is stored as plaintext. Check the rule in .sops.yaml before creating this file."
+          }
+        }
+      }
+    },
     "new-file.acknowledge-unreadable-checkbox": {
       "extractionState": "manual",
       "localizations": {
