@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import SopsHealth
 import SopsProjects
 
 /// The new-file wizard's whole brain: what a not-yet-created secret file
@@ -76,6 +77,15 @@ public final class NewSecretFileModel {
     }
 
     public let projectRoot: URL
+    /// No property observer here (unlike `acknowledgedUnreadable` below):
+    /// changing this does not refresh `readiness` on its own. Tasks 3, 5 and
+    /// 6 do not implement the other three choices yet, so nothing observes
+    /// this today — but whichever of them wires up `.plainYAML`/
+    /// `.encryptedYAML`/`.dotEnv` should either add an observer here or make
+    /// sure its own view calls `resolvePlan()` (or an equivalent recompute)
+    /// on every change, the same way `NewSecretFileSheet` (Task 4) is
+    /// expected to for `relativeName`. Until then, changing this only takes
+    /// effect the next time `resolvePlan()` runs.
     public var sourceChoice: SourceChoice = .empty
     public var relativeName: String = ""
     public private(set) var plan: CreationPlan?
@@ -114,23 +124,27 @@ public final class NewSecretFileModel {
 
     /// Whether `create()` has already discovered, for the `plan` currently
     /// in hand, that this session's key could not be proven to be among its
-    /// recipients. Reset at the top of every `resolvePlan()` call — a freshly
-    /// resolved plan, even one that resolves to the exact same rule again,
-    /// has not itself been tried yet, so nothing has actually been
-    /// discovered about *it*. See this type's doc comment for why this can
-    /// only be learned by attempting `create()`, never predicted ahead of
-    /// time.
+    /// recipients. Reset at the top of every `resolvePlan()` call, alongside
+    /// `acknowledgedUnreadable` (see that reset's own comment in
+    /// `resolvePlan()`) — a freshly resolved plan, even one that resolves to
+    /// the exact same rule again, has not itself been tried yet, so nothing
+    /// has actually been discovered about *it*, and nothing about it has
+    /// been acknowledged either. See this type's doc comment for why this
+    /// can only be learned by attempting `create()`, never predicted ahead
+    /// of time.
     private var discoveredUnreadable = false
 
-    /// Note 1 from this task's own brief: without a session key nothing can
-    /// be created at all, and `SecretFileCreator.create`'s round-trip
-    /// verification stands on it — so an empty `SessionKeyStore` has to be a
-    /// stated `.blocked` reason, never a silent or empty state.
-    private static let noSessionKeyMessage = CreationFailureMessage(
-        title: .creationFailureTitle,
-        detail: "No key is unlocked for this session, so this app cannot verify that a new file could be "
-            + "decrypted again once created. Import a key to continue.",
-        recovery: nil)
+    /// The `relativeName` that `plan` was actually resolved for. `create()`
+    /// compares this against the live `relativeName` and refuses on a
+    /// mismatch, rather than trusting the caller: `resolvePlan()` can be
+    /// mid-flight (`isResolving`) or simply not yet re-invoked after the
+    /// view's own debounce (see this type's doc comment, "No debounce
+    /// here") when `relativeName` changes, and without this check `create()`
+    /// would happily write to the *new* name using a `plan` — recipients and
+    /// `encryptedRegex` both — that was resolved for a completely different
+    /// rule. Set alongside `plan`/`planError` at the end of every
+    /// `resolvePlan()` call, including the empty-name short circuit.
+    private var resolvedName: String?
 
     /// `CreationPlan.noConfig` and `.noRuleMatched` are deliberately not
     /// failures from `CreationFailurePresenter`'s point of view — its own
@@ -156,21 +170,38 @@ public final class NewSecretFileModel {
     /// `readiness` from the result. Called by the view; see this type's doc
     /// comment, "No debounce here".
     public func resolvePlan() async {
-        // A fresh resolve means nothing has been discovered yet about
-        // whatever plan comes back — see `discoveredUnreadable`'s own doc
-        // comment.
+        // A fresh resolve means nothing has been discovered — or
+        // acknowledged — yet about whatever plan comes back.
+        //
+        // Resetting `acknowledgedUnreadable` here, not only
+        // `discoveredUnreadable`, closes a real hole: without it, ticking
+        // the box for one name (say `secret.yaml`, whose rule excludes this
+        // session's key) stayed `true` after the name changed to a second,
+        // differently-governed one (`other.yaml`, excluded by a *different*
+        // rule). `create()` passes `acknowledgedUnreadable` straight into
+        // `ResolvedEncryption`, and `SecretFileCreator.create` treats it as
+        // "skip the refusal *and* skip all content verification,
+        // unconditionally" — so the second file would have been written
+        // blind, for a plan the user was never actually warned about. See
+        // this type's doc comment, "Self-readability cannot be predicted,
+        // only discovered": an acknowledgement is an answer to one specific
+        // round-trip attempt, not a standing waiver, and it must not survive
+        // past the plan it was given for.
         discoveredUnreadable = false
+        acknowledgedUnreadable = false
 
         // `CreationPlanResolver.plan(forTarget:in:)` must never be asked
-        // about `projectRoot` itself: an empty name would make `target` and
-        // `projectRoot` the identical URL, and every rule's `path_regex`
-        // would then be matched against the project root's own path rather
-        // than against nothing at all. Short-circuiting here means that call
-        // is never made with a name the user has not actually typed
-        // anything into yet.
-        guard !relativeName.isEmpty else {
+        // about `projectRoot` itself: an empty (or whitespace-only — a
+        // name of all spaces is not a name either) `relativeName` would
+        // make `target` and `projectRoot` the identical URL, and every
+        // rule's `path_regex` would then be matched against the project
+        // root's own path rather than against nothing at all.
+        // Short-circuiting here means that call is never made with a name
+        // the user has not actually typed anything meaningful into yet.
+        guard !isBlank(relativeName) else {
             plan = nil
             planError = nil
+            resolvedName = relativeName
             readiness = computeReadiness()
             return
         }
@@ -195,6 +226,7 @@ public final class NewSecretFileModel {
                 title: .creationFailureTitle, detail: "\(error)", recovery: nil)
         }
 
+        resolvedName = relativeName
         readiness = computeReadiness()
     }
 
@@ -214,8 +246,12 @@ public final class NewSecretFileModel {
         // a document from, and `readiness` already reports `.needsSource`
         // for exactly this reason.
         guard sourceChoice == .empty else { return nil }
+        guard !isBlank(relativeName) else { return nil }
+        // `plan` was resolved for `resolvedName`, not necessarily for the
+        // `relativeName` sitting here right now — see `resolvedName`'s own
+        // doc comment for the exact race this closes.
+        guard resolvedName == relativeName else { return nil }
         guard case .governedByRule(let recipients, let encryptedRegex) = plan else { return nil }
-        guard !relativeName.isEmpty else { return nil }
 
         let destination = projectRoot.appendingPathComponent(relativeName)
         let resolved = ResolvedEncryption(
@@ -243,9 +279,18 @@ public final class NewSecretFileModel {
         }
 
         guard let outcome else {
-            // See `noSessionKeyMessage`'s own doc comment.
-            planError = Self.noSessionKeyMessage
-            readiness = .blocked(Self.noSessionKeyMessage)
+            // `withKey` found no key to lend — `keyStore.state` is therefore
+            // not `.configured` at this exact moment (see `SessionKeyStore
+            // .state`), so `.empty` is the honest, structural fact here
+            // rather than a guess. `message(forEmptyKeyStore:)` is
+            // documented to return non-nil for every case but `.configured`;
+            // the `if let` still handles the `nil` branch rather than
+            // force-unwrapping, so a future change to that contract cannot
+            // crash this call.
+            if let message = CreationFailurePresenter.message(forEmptyKeyStore: .empty) {
+                planError = message
+                readiness = .blocked(message)
+            }
             return nil
         }
 
@@ -273,9 +318,11 @@ public final class NewSecretFileModel {
     // MARK: - Readiness
 
     private func computeReadiness() -> Readiness {
-        guard !relativeName.isEmpty else { return .needsName }
+        guard !isBlank(relativeName) else { return .needsName }
         guard sourceChoice == .empty else { return .needsSource }
-        guard keyStore.state == .configured else { return .blocked(Self.noSessionKeyMessage) }
+        if let keyMessage = CreationFailurePresenter.message(forEmptyKeyStore: keyStore.state) {
+            return .blocked(keyMessage)
+        }
         if let planError { return .blocked(planError) }
         guard let plan else {
             // Unreachable via `resolvePlan()`'s own flow: by the time this is
@@ -301,5 +348,13 @@ public final class NewSecretFileModel {
             // file's build, not fall through silently.
             return .blocked(CreationFailurePresenter.message(forBlocking: plan) ?? Self.noPickerYetMessage)
         }
+    }
+
+    /// Whether `name` is empty once surrounding whitespace is stripped.
+    /// Plain `isEmpty` alone let a name of all spaces (`"   "`) pass every
+    /// guard that used it and reach `CreationPlanResolver.plan` — a real
+    /// path component, just not a name anyone typed on purpose.
+    private func isBlank(_ name: String) -> Bool {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }

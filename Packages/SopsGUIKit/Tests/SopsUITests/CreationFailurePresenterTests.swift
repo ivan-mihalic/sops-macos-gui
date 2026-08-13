@@ -2,6 +2,7 @@ import Foundation
 import ScratchCleanup
 import Testing
 import SopsEngine
+import SopsHealth
 import SopsProjects
 @testable import SopsUI
 
@@ -295,6 +296,26 @@ struct CreationFailurePresenterTests {
         }
         let message = try #require(CreationFailurePresenter.message(forBlocking: plan), "expected a message")
         #expect(message.detail.contains("pgp"))
+    }
+
+    // MARK: - SessionKeyStore.state — a permanent refusal, not a thrown error
+
+    @Test("every KeyStoreState is covered, and only .configured produces no message")
+    func everyKeyStoreStateIsHandled() {
+        #expect(CreationFailurePresenter.message(forEmptyKeyStore: .configured) == nil)
+
+        let blocking: [KeyStoreState] = [.empty, .unavailable(reason: "Keychain key storage arrives in M3.")]
+        for state in blocking {
+            let message = CreationFailurePresenter.message(forEmptyKeyStore: state)
+            #expect(message != nil, "\(state) should block")
+        }
+    }
+
+    @Test(".unavailable's reason survives into the message, the same discipline .engine/.configUnreadable keep")
+    func unavailableReasonIsCarriedThrough() throws {
+        let message = try #require(
+            CreationFailurePresenter.message(forEmptyKeyStore: .unavailable(reason: "Keychain key storage arrives in M3.")))
+        #expect(message.detail.contains("Keychain key storage arrives in M3."))
     }
 
     // MARK: - No secret value ever reaches a message

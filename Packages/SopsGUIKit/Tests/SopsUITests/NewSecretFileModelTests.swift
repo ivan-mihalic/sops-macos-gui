@@ -192,12 +192,129 @@ struct NewSecretFileModelTests {
         let destination = try #require(secondAttempt)
 
         let encrypted = try String(contentsOf: destination, encoding: .utf8)
-        // `owner`'s key cannot read this back — that is the whole point of
-        // what was just acknowledged — but the real recipient, `stranger`,
-        // can, proving the file really was encrypted for the rule's actual
-        // recipient set and not silently for `owner` instead.
+        // The real recipient, `stranger`, can read it back — proving the
+        // file really was encrypted for the rule's actual recipient set and
+        // not silently for `owner` instead.
         let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: stranger.private)
         #expect(rows.isEmpty)
+        // And `owner`'s key genuinely cannot — not just "almost certainly
+        // can't" by construction of age recipients: this is the one
+        // assertion the whole acknowledgement path leans on, so it is
+        // proven directly rather than left to a comment.
+        #expect(throws: (any Error).self) {
+            try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        }
+    }
+
+    // MARK: - acknowledgedUnreadable does not survive a name change
+
+    /// Regression test for a real hole: `acknowledgedUnreadable` used to stay
+    /// `true` after `relativeName` changed to a second, differently-governed
+    /// path, so `create()` skipped `SecretFileCreator`'s round-trip
+    /// verification entirely for a plan the user was never actually warned
+    /// about — see `resolvePlan()`'s own comment on why it resets
+    /// `acknowledgedUnreadable`, not only `discoveredUnreadable`. This test
+    /// fails on the old behavior: without the reset, the second `create()`
+    /// call below would succeed silently instead of demanding a fresh
+    /// acknowledgement.
+    @Test("acknowledging unreadability for one name does not silently cover a second, differently-governed name")
+    func acknowledgementDoesNotCarryAcrossANameChange() async throws {
+        let owner = try AgeKeyPair.generate()
+        let strangerA = try AgeKeyPair.generate()
+        let strangerB = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        // Two rules, each excluding `owner` in favor of a different
+        // stranger, so the second plan is not just a different path but a
+        // genuinely different recipient set.
+        try """
+            creation_rules:
+              - path_regex: a\\.yaml$
+                age: \(strangerA.public)
+              - path_regex: b\\.yaml$
+                age: \(strangerB.public)
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let keyStore = try makeKeyStore(importing: owner.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+
+        model.relativeName = "a.yaml"
+        await model.resolvePlan()
+        _ = await model.create()  // discovers wouldBeUnreadable for a.yaml
+        #expect(model.readiness == .needsAcknowledgement)
+        model.acknowledgedUnreadable = true
+        #expect(model.readiness == .ready(recipients: [strangerA.public]))
+
+        // Switch to a second name, governed by a different rule that also
+        // excludes `owner`.
+        model.relativeName = "b.yaml"
+        await model.resolvePlan()
+
+        // The acknowledgement must not have carried over: `resolvePlan()`
+        // reset it, so this is the same optimistic `.ready` every fresh
+        // resolve produces, not a state that skips verification.
+        #expect(model.acknowledgedUnreadable == false)
+        #expect(model.readiness == .ready(recipients: [strangerB.public]))
+
+        let bAttempt = await model.create()
+
+        // If the acknowledgement had survived, this would have succeeded
+        // silently with no content verification at all. Instead, the
+        // round-trip runs again, discovers the same problem for the new
+        // plan, and refuses — exactly as if `b.yaml` had never been
+        // preceded by an acknowledged `a.yaml`.
+        #expect(bAttempt == nil)
+        #expect(model.readiness == .needsAcknowledgement)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("b.yaml").path))
+    }
+
+    // MARK: - whitespace-only name
+
+    @Test("a whitespace-only name is needsName, and never reaches the resolver")
+    func whitespaceOnlyNameIsNeedsName() async throws {
+        let root = try scratchDirectory()
+        // Same negative-space technique as `emptyNameIsNeedsName`: a project
+        // root that does not exist, so a failure to treat "   " as blank
+        // would surface as `.blocked` (from the thrown
+        // `.projectRootDoesNotExist`), not `.needsName`.
+        let missingRoot = root.appendingPathComponent("does-not-exist", isDirectory: true)
+        let keyStore = try makeKeyStore()
+        let model = NewSecretFileModel(projectRoot: missingRoot, keyStore: keyStore)
+        model.relativeName = "   "
+
+        await model.resolvePlan()
+
+        #expect(model.readiness == .needsName)
+        #expect(model.plan == nil)
+    }
+
+    // MARK: - create() refuses a plan resolved for a different name
+
+    @Test("create() refuses when relativeName has changed since plan was resolved for it")
+    func createRefusesAStalePlan() async throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        try ageOnlyConfig(owner.public)
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let keyStore = try makeKeyStore(importing: owner.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+        model.relativeName = "secret.yaml"
+
+        await model.resolvePlan()
+        guard case .ready = model.readiness else {
+            Issue.record("expected .ready, got \(model.readiness)")
+            return
+        }
+
+        // `relativeName` changes, but `resolvePlan()` is never called again
+        // — simulating the debounce window `NewSecretFileSheet` (Task 4)
+        // owns, where `readiness` can still say `.ready` for a name `plan`
+        // was not actually resolved for.
+        model.relativeName = "other.yaml"
+
+        let created = await model.create()
+
+        #expect(created == nil)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("other.yaml").path))
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("secret.yaml").path))
     }
 
     // MARK: - .blocked: no .sops.yaml (until Task 5 adds a manual picker)

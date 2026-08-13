@@ -1,3 +1,4 @@
+import SopsHealth
 import SopsProjects
 
 /// A whole sentence for a user, built from one caller mistake or refusal
@@ -58,6 +59,24 @@ public struct CreationFailureMessage: Equatable, Sendable {
 /// precisely the scattering this type exists to prevent. `CreationPlan` is
 /// an answer, not a thrown error, hence the different method name and the
 /// `Optional` return — see that method's own doc comment.
+///
+/// `message(forEmptyKeyStore:)` is the same amendment again, one layer
+/// further out: `SessionKeyStore.state` is neither a thrown error nor a
+/// `CreationPlan` answer, just a fact the wizard has to have an opinion
+/// about before it can do anything — and that opinion is exactly this
+/// type's job, not Task 2's `NewSecretFileModel`'s. The rule this type
+/// exists to enforce was never "every thrown error", it is "every sentence
+/// the new-file wizard shows a user" — a *state* that permanently (not just
+/// until some future task lands) prevents the wizard from proceeding
+/// belongs here on the same terms a thrown error does. `NewSecretFileModel
+/// .noPickerYetMessage` is the one accepted, dated exception: it exists only
+/// because `.noConfig`/`.noRuleMatched` are deliberately *not* failures from
+/// this type's point of view (see `message(forBlocking:)`'s own doc comment)
+/// until Task 5's manual recipient picker ships, at which point that
+/// constant is deleted, not promoted. A future state that will *never* stop
+/// being a refusal — the way an empty key store never stops needing a
+/// key — does not get to claim the same exception; it earns a case or a
+/// method here instead.
 ///
 /// ## Every `switch` below has no `default`
 ///
@@ -268,6 +287,44 @@ public enum CreationFailurePresenter {
                 title: .creationFailureTitle,
                 detail: "This project's .sops.yaml could not be read: \(reason)",
                 recovery: .creationRecoveryCheckSopsYamlSyntax)
+        }
+    }
+
+    /// Whether `SessionKeyStore.state` currently prevents the wizard from
+    /// proceeding at all. `nil` for `.configured` — nothing is blocked.
+    ///
+    /// Unlike `message(forBlocking:)`'s two blocking `CreationPlan` cases,
+    /// this situation is permanent: `SecretFileCreator.create`'s round-trip
+    /// verification (see that type's own doc comment, "Self-readability is
+    /// the default") needs a session identity to attempt a decrypt at all,
+    /// so no future task removes this refusal the way Task 5's picker will
+    /// remove `.noConfig`/`.noRuleMatched`'s. See this type's own doc
+    /// comment, "Why one type, not a `catch` at each call site", for why
+    /// that permanence is exactly what earns this a method here rather than
+    /// a locally composed sentence in `NewSecretFileModel`.
+    public static func message(forEmptyKeyStore state: KeyStoreState) -> CreationFailureMessage? {
+        switch state {
+        case .configured:
+            return nil
+        case .empty:
+            return CreationFailureMessage(
+                title: .creationFailureTitle,
+                detail: "No key is unlocked for this session, so this app cannot verify that a new file "
+                    + "could be decrypted again once created. Import a key to continue.",
+                recovery: nil)
+        case .unavailable(let reason):
+            // Not reachable through `SessionKeyStore` today — its `state` is
+            // only ever `.configured` or `.empty` (M2; Keychain storage is
+            // M3) — but `KeyStoreState` is a shared `SopsHealth` type this
+            // presenter does not own, so this switch has no `default` for
+            // the same reason none of the switches above do: a case this
+            // presenter has not been taught to word must fail the build,
+            // not fall through to a stale sentence.
+            return CreationFailureMessage(
+                title: .creationFailureTitle,
+                detail: "No key is available for this session (\(reason)), so this app cannot verify that "
+                    + "a new file could be decrypted again once created.",
+                recovery: nil)
         }
     }
 }
