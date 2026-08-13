@@ -69,14 +69,17 @@ public struct CreationFailureMessage: Equatable, Sendable {
 /// the new-file wizard shows a user" — a *state* that permanently (not just
 /// until some future task lands) prevents the wizard from proceeding
 /// belongs here on the same terms a thrown error does. `NewSecretFileModel
-/// .noPickerYetMessage` is the one accepted, dated exception: it exists only
-/// because `.noConfig`/`.noRuleMatched` are deliberately *not* failures from
-/// this type's point of view (see `message(forBlocking:)`'s own doc comment)
-/// until Task 5's manual recipient picker ships, at which point that
-/// constant is deleted, not promoted. A future state that will *never* stop
-/// being a refusal — the way an empty key store never stops needing a
-/// key — does not get to claim the same exception; it earns a case or a
-/// method here instead.
+/// .noPickerYetMessage` used to be the one accepted, dated exception: it
+/// existed only because `.noConfig`/`.noRuleMatched` are deliberately *not*
+/// failures from this type's point of view (see `message(forBlocking:)`'s
+/// own doc comment) until Task 5's manual recipient picker shipped. It has —
+/// `RecipientPicker` and `NewSecretFileModel.currentGovernedPlan()` now
+/// handle both cases directly, and that constant is gone, not promoted, per
+/// the plan this paragraph already committed to. A future state that will
+/// *never* stop being a refusal — the way an empty key store never stops
+/// needing a key — does not get to claim the same exception; it earns a
+/// case or a method here instead, the same way `message(forConfigWriteFailure:)`
+/// below does for a `.sops.yaml` write's own failure.
 ///
 /// `message(forUnreadableSourceFile:)` is the case that paragraph predicted:
 /// a Plain YAML or `.env` file the user picked via `NSOpenPanel` whose
@@ -254,6 +257,29 @@ public enum CreationFailurePresenter {
         }
     }
 
+    /// A `.sops.yaml` write that failed after `SopsConfigGenerator.propose`
+    /// had already verified the text against sops's own parser —
+    /// `AtomicFileWriter.write(_:to:expecting: .absent)` itself refusing:
+    /// the destination appeared between the proposal and the write
+    /// (`.destinationExists`), a permissions problem, a full volume, or any
+    /// other `AtomicFileWriter.Error` case. Not one of the four
+    /// vocabularies this presenter otherwise unifies — `SopsConfigGenerator`
+    /// itself never writes, by design (see its own doc comment, "Never
+    /// writes the config") — so this is the one place a `.sops.yaml`
+    /// write's own failure becomes a sentence, the identical shape
+    /// `message(forUnreadableSourceFile:)` already earned for the read side
+    /// of an equally permanent gap in the other four types' vocabularies.
+    /// Shares `.creationFailureConfigTitle` with `message(for:
+    /// SopsConfigGenerator.Error)`: both are about proposing/writing
+    /// `.sops.yaml`, a different action from creating the secret file
+    /// itself.
+    public static func message(forConfigWriteFailure error: AtomicFileWriter.Error) -> CreationFailureMessage {
+        CreationFailureMessage(
+            title: .creationFailureConfigTitle,
+            detail: "The .sops.yaml could not be saved: \(error.description)",
+            recovery: nil)
+    }
+
     public static func message(for failure: DotEnvParseFailure) -> CreationFailureMessage {
         switch failure {
         case .notUTF8:
@@ -361,7 +387,7 @@ public enum CreationFailurePresenter {
     /// for, so this returns a `CreationFailureMessage` directly rather than
     /// an `Optional`. See this type's own doc comment for why this earned a
     /// method here instead of a `NewSecretFileModel`-local exception the way
-    /// `noPickerYetMessage` is.
+    /// `noPickerYetMessage` — since removed — used to be.
     public static func message(forUnreadableSourceFile: Void = ()) -> CreationFailureMessage {
         CreationFailureMessage(
             title: .creationFailureTitle,

@@ -130,6 +130,16 @@ public final class NewSecretFileModel {
         /// of this state; see this type's doc comment, "Self-readability
         /// cannot be predicted, only discovered".
         case needsAcknowledgement
+        /// `plan` is `.noConfig` or `.noRuleMatched` and nothing has been
+        /// chosen yet in `manuallyChosenRecipients`. Neither underlying
+        /// state is a failure — see `CreationPlanResolver.plan`'s own doc
+        /// comment — so this is not `.blocked`: `RecipientPicker` is the way
+        /// out, and the moment at least one recipient has been chosen this
+        /// model treats the manually-chosen set exactly like a resolved
+        /// rule's own recipients, including the same round-trip discovery
+        /// (`.needsAcknowledgement`) and the same `create()` failures
+        /// (`.blocked`). See `currentGovernedPlan()`.
+        case needsRecipients
         case ready(recipients: [String])
     }
 
@@ -199,6 +209,18 @@ public final class NewSecretFileModel {
     /// `SecretFileCreator` treats it as "skip the refusal *and* skip all
     /// content verification" — so a refusal learned while it was unticked is
     /// not a refusal about the same attempt once it is ticked.
+    ///
+    /// `manuallyChosenRecipients` (Task 5) is the other real input this
+    /// invariant had to answer for, and it joins by a different route than
+    /// `acknowledgedUnreadable` did: rather than a field of its own here, it
+    /// is folded into `plan` by `currentGovernedPlan()` whenever the
+    /// resolver itself had nothing to offer. `plan` was always part of this
+    /// subject, so nothing new had to be added — a change to the
+    /// manually-chosen set already produces a different `GovernedPlan`, and
+    /// therefore a different `AttemptSubject`, exactly as a change to a
+    /// resolved rule's own recipients always has. A second field carrying
+    /// the same information would only create a way for the two to
+    /// disagree.
     struct AttemptSubject: Equatable {
         let name: String
         let plan: GovernedPlan
@@ -233,6 +255,30 @@ public final class NewSecretFileModel {
     /// harmful.
     public var sourceChoice: SourceChoice = .empty
     public var relativeName: String = ""
+
+    /// Recipients the user has chosen by hand, for a `plan`
+    /// `CreationPlanResolver` could not resolve on its own — `.noConfig` or
+    /// `.noRuleMatched`. `RecipientPicker` is the only writer.
+    ///
+    /// This is a genuine new input to what would be created, and it does
+    /// join `AttemptSubject` — but not as a field of its own.
+    /// `currentGovernedPlan()` folds it into a `GovernedPlan` exactly the
+    /// way a resolved rule's recipients already are, and `GovernedPlan` is
+    /// what `AttemptSubject.plan` actually holds. So a change here already
+    /// produces a different `AttemptSubject` — through `plan`, not through a
+    /// second field that would have to be kept in step with it — and
+    /// `lastCreateFailure`/`unreadability`, both filed under one of those
+    /// two types, drop exactly the same way they would for a resolved
+    /// rule's recipients changing. Adding a second, separate field here
+    /// would let the two disagree; this cannot.
+    ///
+    /// A plain property with no observer, for the same reason `sourceChoice`
+    /// has none: `readiness` is computed on every read. `resolvePlan()`
+    /// resets this to `[]` on every call — see that method's own comment —
+    /// so a set chosen for one name cannot silently carry over to a
+    /// different one, the identical discipline it already applies to
+    /// `acknowledgedUnreadable`/`unreadability`.
+    public var manuallyChosenRecipients: [String] = []
 
     /// The verbatim text of a `.plainYAML`-sourced file, once
     /// `loadPlainYAML(from:)` has read it successfully. Handed to
@@ -334,21 +380,6 @@ public final class NewSecretFileModel {
         return lastCreateFailure?.value(ifStillAbout: subject)
     }
 
-    /// `CreationPlan.noConfig` and `.noRuleMatched` are deliberately not
-    /// failures from `CreationFailurePresenter`'s point of view — its own
-    /// doc comment says a project in either state is one this app is
-    /// "equipped to handle by falling back to the picker" Task 5 adds. That
-    /// picker does not exist yet in this task, so until it does this model
-    /// treats both the same way `.unsupportedRule` already is: refused, and
-    /// named honestly, closing with the same "this app cannot do this yet,
-    /// sops still can" sentence `CreationPlanResolver.nonAgeBackendsReason`/
-    /// `.scopingFieldReason` already use.
-    private static let noPickerYetMessage = CreationFailureMessage(
-        title: .creationFailureTitle,
-        detail: "This app cannot yet choose who should be able to read a new file here without a matching "
-            + "creation rule in .sops.yaml. Create the file with sops and it will appear here.",
-        recovery: nil)
-
     public init(projectRoot: URL, keyStore: SessionKeyStore) {
         self.projectRoot = projectRoot
         self.keyStore = keyStore
@@ -387,6 +418,19 @@ public final class NewSecretFileModel {
         // the user has no memory of being asked for.
         unreadability = nil
         acknowledgedUnreadable = false
+
+        // `manuallyChosenRecipients` is cleared for the identical reason:
+        // it is this model's equivalent of `acknowledgedUnreadable` for the
+        // `.noConfig`/`.noRuleMatched` branch — an answer given about *this*
+        // name, not a standing default to carry into whatever name comes
+        // next. Without this, picking recipients by hand for `a.yaml`
+        // (unmatched by any rule) and then renaming to `b.yaml` (also
+        // unmatched) would silently apply `a.yaml`'s chosen set to `b.yaml`
+        // without the user ever being asked about the second file — the
+        // same shape of leak `acknowledgedUnreadable`'s own reset closes,
+        // pinned by `NewSecretFileModelTests
+        // .acknowledgementDoesNotCarryAcrossANameChange`.
+        manuallyChosenRecipients = []
 
         // `lastCreateFailure` is deliberately *not* cleared here. It is
         // filed under the whole `AttemptSubject`, so a resolve that changes
@@ -530,11 +574,44 @@ public final class NewSecretFileModel {
 
     // MARK: - What would be created, right now
 
+    /// The `GovernedPlan` a create attempt would actually use right now —
+    /// either a resolved rule's own recipients, or, when the resolver had
+    /// nothing to offer (`.noConfig`/`.noRuleMatched`), the recipients the
+    /// user has chosen by hand in `manuallyChosenRecipients`. `nil` for
+    /// every other case: `plan` not yet resolved for `relativeName` (see
+    /// `currentSubject()`'s own comment on why that check matters), no
+    /// `plan` at all, `.noConfig`/`.noRuleMatched` with nothing chosen yet,
+    /// or one of the two blocking cases (`.unsupportedRule`,
+    /// `.configUnreadable`).
+    ///
+    /// This is the one place `manuallyChosenRecipients` is read for anything
+    /// that matters to `create()` — see that property's own doc comment for
+    /// why folding it in here, rather than adding it as a field on
+    /// `AttemptSubject`, is what makes it join the invalidation guarantee
+    /// automatically instead of by a second, separately-maintained rule.
+    /// `encryptedRegex` is `""` for the manually-chosen case — "encrypt
+    /// everything", the same default `SopsConfigGenerator.propose` builds
+    /// (it never sets `encrypted_regex` either), so a file created before
+    /// any `.sops.yaml` write and one created after `RecipientPicker`
+    /// writes the proposed config are encrypted identically.
+    private func currentGovernedPlan() -> GovernedPlan? {
+        guard let resolution, resolution.name == relativeName, let plan = resolution.plan else { return nil }
+        switch plan {
+        case .governedByRule(let recipients, let encryptedRegex):
+            return GovernedPlan(recipients: recipients, encryptedRegex: encryptedRegex)
+        case .noConfig, .noRuleMatched:
+            guard !manuallyChosenRecipients.isEmpty else { return nil }
+            return GovernedPlan(recipients: manuallyChosenRecipients, encryptedRegex: "")
+        case .unsupportedRule, .configUnreadable:
+            return nil
+        }
+    }
+
     /// The whole description of what `create()` would do if it were called
     /// this instant — `nil` when there is nothing complete enough to attempt,
     /// which is every case `readiness` already explains (`.needsName`,
-    /// `.resolving`, `.needsSource`, or a `plan` that is not
-    /// `.governedByRule`).
+    /// `.resolving`, `.needsSource`, `.needsRecipients`, or a `plan` that is
+    /// neither `.governedByRule` nor a manually-chosen stand-in for one).
     ///
     /// See `AttemptSubject`'s own doc comment for why this being the single
     /// description matters.
@@ -546,15 +623,14 @@ public final class NewSecretFileModel {
         // debounce (see this type's doc comment, "No debounce here"). Without
         // this check, `create()` would happily write to the *new* name using
         // a plan — recipients and `encryptedRegex` both — resolved for a
-        // completely different rule.
-        guard let resolution, resolution.name == relativeName else { return nil }
-        guard case .governedByRule(let recipients, let encryptedRegex) = resolution.plan else { return nil }
+        // completely different rule. `currentGovernedPlan()` repeats this
+        // same check internally; it is not skipped here as an optimization,
+        // because `currentGovernedPlan()` is also called on its own
+        // (`readiness`) where this guard has to hold independently.
+        guard let governed = currentGovernedPlan() else { return nil }
         guard let source = currentSource() else { return nil }
         return AttemptSubject(
-            name: relativeName,
-            plan: GovernedPlan(recipients: recipients, encryptedRegex: encryptedRegex),
-            source: source,
-            acknowledgedUnreadable: acknowledgedUnreadable)
+            name: relativeName, plan: governed, source: source, acknowledgedUnreadable: acknowledgedUnreadable)
     }
 
     /// The bytes `create()` would encrypt, or `nil` when the chosen source
@@ -686,6 +762,114 @@ public final class NewSecretFileModel {
         }
     }
 
+    // MARK: - A .sops.yaml for a project that has none yet
+
+    /// Builds a `.sops.yaml` proposal that would govern `relativeName`, for
+    /// exactly `manuallyChosenRecipients` — the one way this model ever
+    /// produces `.sops.yaml` text, and it never writes it; see
+    /// `SopsConfigGenerator`'s own doc comment, "Never writes the config".
+    /// `RecipientPicker` shows the result to the user and, only on their
+    /// separate confirmation, calls `writeProposedConfig(_:)`.
+    ///
+    /// `nil` when there is nothing meaningful to propose: a blank name, or
+    /// no recipient chosen yet. `SopsConfigGenerator.propose` already
+    /// refuses an empty recipient list on its own (`verified: false` — see
+    /// that type's own doc comment, "Why `verified` is proven, not
+    /// asserted", and the Important finding it closes), but that refusal is
+    /// the *last* line of defense, not the only one: this guard is this
+    /// model's own, so `RecipientPicker`'s propose control can simply stay
+    /// disabled for an empty selection rather than firing a real bridge
+    /// round trip for an answer already known without asking. Nothing about
+    /// this guard is a way to *avoid* that refusal — `SopsConfigGeneratorTests
+    /// .emptyRecipientsIsRefused` still exercises it directly, unconditionally.
+    public func proposeConfig() async -> ProposedConfig? {
+        guard !isBlank(relativeName), !manuallyChosenRecipients.isEmpty else { return nil }
+        let target = projectRoot.appendingPathComponent(relativeName)
+        do {
+            return try SopsConfigGenerator.propose(
+                forTarget: target, in: projectRoot, recipients: manuallyChosenRecipients)
+        } catch let error as SopsConfigGenerator.Error {
+            // Not expected to be reachable through this call site:
+            // `relativeName` already resolved to `.noConfig`/`.noRuleMatched`
+            // through `CreationPlanResolver.plan(forTarget:in:)`, whose own
+            // absolute-path and containment checks are the identical ones
+            // `SopsConfigGenerator.propose` would throw on here — see
+            // `SopsConfigGenerator`'s own doc comment, "Containment is
+            // enforced here, independently of `SecretFileCreator`", whose
+            // closing paragraph names this exact mirroring on purpose.
+            // Handled rather than assumed impossible: translated through the
+            // one presenter every other failure in this file goes through,
+            // as an unverified proposal — nothing here is silently dropped.
+            return ProposedConfig(text: "", verified: false, reason: CreationFailurePresenter.message(for: error).detail)
+        } catch {
+            // `propose` is documented to throw only `Error` — not expected
+            // in practice, but a caller must never see this fail silently
+            // for a type it did not anticipate. See the identical discipline
+            // in `resolvePlan()`'s own catch-all.
+            return ProposedConfig(
+                text: "", verified: false, reason: "The proposed .sops.yaml could not be built: \(error)")
+        }
+    }
+
+    /// What `writeProposedConfig(_:)` actually did — a dedicated enum
+    /// rather than `Result<Void, CreationFailureMessage>`, because
+    /// `CreationFailureMessage` is a plain value type used all over this
+    /// wizard for reasons that have nothing to do with `Swift.Error`, and
+    /// giving it that conformance just to satisfy `Result` would be a
+    /// second, wider-reaching change for one call site. Mirrors
+    /// `ProjectAccessModel.ConfigApplyOutcome`'s own shape for the identical
+    /// reason.
+    public enum ConfigWriteOutcome: Equatable, Sendable {
+        case written
+        case refused(CreationFailureMessage)
+    }
+
+    /// Writes `proposal.text` as this project's `.sops.yaml` — the
+    /// confirmed half of the two-act split `SopsConfigGenerator.propose`'s
+    /// own doc comment describes ("deciding is not the same act as writing
+    /// it down"). Only ever reached after a caller has shown
+    /// `proposal.text` to the user and received explicit confirmation to
+    /// write it; `RecipientPicker` is that caller.
+    ///
+    /// `.absent`: a project with no `.sops.yaml` at all is exactly the
+    /// precondition this whole flow exists for (`RecipientPicker`'s write
+    /// control is offered only for `.noConfig`) — `.matching` would need a
+    /// fingerprint this model never read, since it never read a
+    /// `.sops.yaml` that did not exist, and `.unchecked` would silently
+    /// clobber whatever another writer had just created there. See
+    /// `AtomicFileWriter`'s own doc comment, "A third case: the destination
+    /// must not exist at all".
+    ///
+    /// Refuses `proposal.verified == false` here too, not only at the call
+    /// site — `RecipientPicker`'s write control is disabled for that case,
+    /// but a caller that ignores `readiness`/`verified` and calls this
+    /// directly must not still be able to write text `SopsConfigGenerator`
+    /// itself refused to stand behind. Never calls `resolvePlan()` on
+    /// success: a fresh resolve is what actually notices the new
+    /// `.sops.yaml` governs `relativeName` now, but deciding when to ask
+    /// for that is `RecipientPicker`'s job, not this method's — the same
+    /// split `ProjectAccessModel.applyConfig()`'s own doc comment draws
+    /// between writing and re-planning.
+    @discardableResult
+    public func writeProposedConfig(_ proposal: ProposedConfig) -> ConfigWriteOutcome {
+        guard proposal.verified else {
+            return .refused(CreationFailureMessage(title: .creationFailureConfigTitle, detail: proposal.reason, recovery: nil))
+        }
+        let configURL = projectRoot.appendingPathComponent(".sops.yaml")
+        do {
+            _ = try AtomicFileWriter.write(proposal.text, to: configURL, expecting: .absent)
+            return .written
+        } catch let error as AtomicFileWriter.Error {
+            return .refused(CreationFailurePresenter.message(forConfigWriteFailure: error))
+        } catch {
+            // `AtomicFileWriter.write` is documented to throw only `Error` —
+            // not expected in practice, but handled rather than assumed
+            // unreachable, the same discipline every catch-all in this file
+            // follows.
+            return .refused(CreationFailureMessage(title: .creationFailureConfigTitle, detail: "\(error)", recovery: nil))
+        }
+    }
+
     // MARK: - Readiness
 
     /// Computed on every read — see this type's doc comment, "No verdict is
@@ -736,33 +920,72 @@ public final class NewSecretFileModel {
         }
 
         switch plan {
-        case .governedByRule(let recipients, let encryptedRegex):
-            let governed = GovernedPlan(recipients: recipients, encryptedRegex: encryptedRegex)
-            // A refusal from the last attempt, but only while that attempt is
-            // still the one that would happen. `currentSubject()` rebuilds
-            // what would be created right now; `value(ifStillAbout:)` returns
-            // nothing when it has changed.
-            if let subject = currentSubject(),
-                let failure = lastCreateFailure?.value(ifStillAbout: subject)
-            {
-                return .blocked(failure)
-            }
-            if unreadability?.value(ifStillAbout: governed) == true, !acknowledgedUnreadable {
-                return .needsAcknowledgement
-            }
-            return .ready(recipients: recipients)
+        case .governedByRule:
+            // `currentGovernedPlan()` re-derives the identical
+            // `GovernedPlan` from `resolution` — see that method's own doc
+            // comment. Never `nil` here: this branch already established
+            // `resolution.plan` is `.governedByRule` for `resolution.name
+            // == relativeName` (the `guard` above this switch), which is
+            // exactly what `currentGovernedPlan()` itself checks first.
+            // Handled rather than force-unwrapped all the same, so a future
+            // change to either method's guard cannot crash this call.
+            guard let governed = currentGovernedPlan() else { return .needsName }
+            return readiness(for: governed)
         case .noConfig, .noRuleMatched:
-            return .blocked(Self.noPickerYetMessage)
+            // Neither is a failure — see `CreationPlanResolver.plan`'s own
+            // doc comment. `RecipientPicker` is what a user facing either
+            // one actually sees; `.needsRecipients` is what puts it on
+            // screen. The moment `manuallyChosenRecipients` is non-empty,
+            // `currentGovernedPlan()` starts returning a real value and this
+            // falls through to the identical path `.governedByRule` takes —
+            // same round-trip discovery, same `create()` failures.
+            guard let governed = currentGovernedPlan() else { return .needsRecipients }
+            return readiness(for: governed)
         case .unsupportedRule, .configUnreadable:
             // `CreationFailurePresenter.message(forBlocking:)` is documented
-            // to return non-nil for exactly these two cases, so the `??` is
-            // unreachable — kept only so this switch needs no `default`. See
+            // to return non-nil for exactly these two cases — unreachable,
+            // handled rather than force-unwrapped so a future change to
+            // that contract fails loudly instead of crashing this call. See
             // `CreationFailurePresenter`'s own doc comment, "Every switch
-            // below has no default", for why that discipline matters here
-            // too: a case added later to `CreationPlan` must fail this
-            // file's build, not fall through silently.
-            return .blocked(CreationFailurePresenter.message(forBlocking: plan) ?? Self.noPickerYetMessage)
+            // below has no default", for why this switch needs no
+            // `default` either: a case added later to `CreationPlan` must
+            // fail this file's build, not fall through silently. There is
+            // no more dated local fallback to reuse here — Task 4's
+            // `noPickerYetMessage` covered `.noConfig`/`.noRuleMatched`
+            // only, and both are handled above now that `RecipientPicker`
+            // exists.
+            guard let message = CreationFailurePresenter.message(forBlocking: plan) else {
+                return .blocked(
+                    CreationFailureMessage(
+                        title: .creationFailureTitle,
+                        detail: "This app could not describe why creation is blocked here.", recovery: nil))
+            }
+            return .blocked(message)
         }
+    }
+
+    /// The shared verdict for a `GovernedPlan` in hand right now — whichever
+    /// of the two sources produced it, a resolved rule or the
+    /// manually-chosen recipients `currentGovernedPlan()` stands in with.
+    /// Read `readiness`'s own two call sites for why both reach this through
+    /// the same `GovernedPlan` value rather than two copies of this logic:
+    /// `unreadability`/`lastCreateFailure` are filed under `GovernedPlan`/
+    /// `AttemptSubject`, not under which of the two sources produced
+    /// `governed`, so a manually-chosen set earns the identical discovery
+    /// and refusal handling a resolved rule already has, with nothing here
+    /// caring which one it was.
+    private func readiness(for governed: GovernedPlan) -> Readiness {
+        // A refusal from the last attempt, but only while that attempt is
+        // still the one that would happen. `currentSubject()` rebuilds
+        // what would be created right now; `value(ifStillAbout:)` returns
+        // nothing when it has changed.
+        if let subject = currentSubject(), let failure = lastCreateFailure?.value(ifStillAbout: subject) {
+            return .blocked(failure)
+        }
+        if unreadability?.value(ifStillAbout: governed) == true, !acknowledgedUnreadable {
+            return .needsAcknowledgement
+        }
+        return .ready(recipients: governed.recipients)
     }
 
     /// Whether `name` is empty once surrounding whitespace is stripped.

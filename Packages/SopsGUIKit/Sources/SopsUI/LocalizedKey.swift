@@ -605,6 +605,25 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case newFileEmptyPreviewNote = "new-file.empty-preview-note"
     case newFileCreateButton = "new-file.create-button"
 
+    // MARK: Phase 2 Task 5 — RecipientPicker
+
+    // Shown when `NewSecretFileModel.plan` is `.noConfig` or
+    // `.noRuleMatched` — neither is a failure, and this is the way out
+    // phase 1 deliberately left open rather than inventing recipients in
+    // the resolver. See `RecipientPicker`'s own doc comment.
+    case recipientPickerTitle = "recipient-picker.title"
+    case recipientPickerExplanationNoConfig = "recipient-picker.explanation.no-config"
+    case recipientPickerExplanationNoRuleMatched = "recipient-picker.explanation.no-rule-matched"
+    case recipientPickerNoneChosen = "recipient-picker.none-chosen"
+    // Heading over the registry's own recipients not yet chosen — a
+    // convenience for adding a known key with one tap, never a source of
+    // recipients the picker invents on its own.
+    case recipientPickerKnownRecipientsTitle = "recipient-picker.known-recipients-title"
+    case recipientPickerProposeButton = "recipient-picker.propose-button"
+    case recipientPickerWriteButton = "recipient-picker.write-button"
+    case recipientPickerProposalHeading = "recipient-picker.proposal-heading"
+    case recipientPickerWriteSuccess = "recipient-picker.write-success"
+
     /// The resolved English text. Used in views and asserted in tests.
     public var text: String {
         String(localized: String.LocalizationValue(rawValue), bundle: .module)

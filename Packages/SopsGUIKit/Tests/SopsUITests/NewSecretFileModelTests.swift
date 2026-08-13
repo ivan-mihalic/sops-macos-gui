@@ -327,10 +327,18 @@ struct NewSecretFileModelTests {
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("secret.yaml").path))
     }
 
-    // MARK: - .blocked: no .sops.yaml (until Task 5 adds a manual picker)
+    // MARK: - .needsRecipients: no .sops.yaml (Task 5's manual picker)
 
-    @Test("no .sops.yaml is blocked, until Task 5 adds a manual recipient picker")
-    func noConfigIsBlocked() async throws {
+    /// Superseded by Task 5: `.noConfig` used to be `.blocked` with a fixed
+    /// "this app cannot do this yet" sentence — see `NewSecretFileModel
+    /// .noPickerYetMessage`'s own doc comment before it was removed. Now
+    /// that `RecipientPicker` exists, it is `.needsRecipients`, not a
+    /// failure — `RecipientPickerTests.swift` (Task 5's own test file)
+    /// covers the manually-chosen path this state opens onto in full;
+    /// this test only pins that `.noConfig` itself no longer reads as
+    /// `.blocked`.
+    @Test("no .sops.yaml is .needsRecipients, not .blocked — Task 5's manual recipient picker")
+    func noConfigIsNeedsRecipients() async throws {
         let owner = try AgeKeyPair.generate()
         let root = try scratchDirectory()
         let keyStore = try makeKeyStore(importing: owner.private)
@@ -340,11 +348,8 @@ struct NewSecretFileModelTests {
         await model.resolvePlan()
 
         #expect(model.plan == .noConfig)
-        guard case .blocked(let message) = model.readiness else {
-            Issue.record("expected .blocked, got \(model.readiness)")
-            return
-        }
-        #expect(!message.detail.isEmpty)
+        #expect(model.readiness == .needsRecipients)
+        #expect(model.planError == nil)
     }
 
     // MARK: - .blocked: unsupported backend, sentence names it

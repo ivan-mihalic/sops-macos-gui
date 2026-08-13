@@ -214,6 +214,18 @@ public struct NewSecretFileSheet: View {
             if case .blocked(let message) = model.readiness {
                 failureBanner(message)
             }
+
+            // `.noConfig`/`.noRuleMatched` are not failures — see
+            // `CreationFailurePresenter.message(forBlocking:)`'s own doc
+            // comment — so nothing above renders a banner for them.
+            // `RecipientPicker` is what this view shows instead, gated on
+            // `model.plan` directly rather than on `readiness`: it must stay
+            // visible once a recipient has been chosen and `readiness`
+            // moves on to `.ready`/`.needsAcknowledgement`/`.blocked`, not
+            // only while `readiness == .needsRecipients`.
+            if model.plan == .noConfig || model.plan == .noRuleMatched {
+                RecipientPicker(model: model)
+            }
         }
     }
 

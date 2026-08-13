@@ -893,6 +893,105 @@
         }
       }
     },
+    "recipient-picker.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose recipients"
+          }
+        }
+      }
+    },
+    "recipient-picker.explanation.no-config": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This project has no .sops.yaml yet, so nothing decides who can read files here. Choose who should be able to read this one, or propose a .sops.yaml so this file — and any future one matching the same path — is covered automatically."
+          }
+        }
+      }
+    },
+    "recipient-picker.explanation.no-rule-matched": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This project's .sops.yaml has no rule covering this path. Choose who should be able to read this file — it will be created for exactly the recipients you choose here, without changing .sops.yaml."
+          }
+        }
+      }
+    },
+    "recipient-picker.none-chosen": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No recipients chosen yet."
+          }
+        }
+      }
+    },
+    "recipient-picker.known-recipients-title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Known recipients"
+          }
+        }
+      }
+    },
+    "recipient-picker.propose-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Propose .sops.yaml"
+          }
+        }
+      }
+    },
+    "recipient-picker.write-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create .sops.yaml"
+          }
+        }
+      }
+    },
+    "recipient-picker.proposal-heading": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Proposed .sops.yaml"
+          }
+        }
+      }
+    },
+    "recipient-picker.write-success": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": ".sops.yaml created."
+          }
+        }
+      }
+    },
     "dotenv-preview.suspicion.empty-value": {
       "extractionState": "manual",
       "localizations": {
