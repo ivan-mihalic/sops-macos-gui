@@ -655,6 +655,20 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // convenience for adding a known key with one tap, never a source of
     // recipients the picker invents on its own.
     case recipientPickerKnownRecipientsTitle = "recipient-picker.known-recipients-title"
+    // The add field's two shape refusals. Its own sentences rather than
+    // `recipientEditorError{PrivateIdentity,InvalidRecipient}`, which the
+    // *rule* is shared with (`RecipientRegistry.refusal(forAgeRecipient:)` —
+    // one check, no drift): those two are written for the label editor and
+    // say "nothing private-key-shaped is written to this file … Nothing was
+    // saved", which here names the wrong file (nothing is written to
+    // `.sops-gui/recipients.json` on this screen; the file at stake is
+    // `.sops.yaml`) and the wrong action (nothing was being saved). Sharing
+    // validation is right; sharing wording was not.
+    //
+    // Neither sentence ever quotes what was typed — see
+    // `RecipientPicker.refusalMessage(_:)`.
+    case recipientPickerErrorPrivateIdentity = "recipient-picker.error.private-identity"
+    case recipientPickerErrorInvalidRecipient = "recipient-picker.error.invalid-recipient"
     case recipientPickerProposeButton = "recipient-picker.propose-button"
     case recipientPickerWriteButton = "recipient-picker.write-button"
     case recipientPickerProposalHeading = "recipient-picker.proposal-heading"

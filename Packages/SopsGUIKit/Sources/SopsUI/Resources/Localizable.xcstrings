@@ -970,6 +970,28 @@
         }
       }
     },
+    "recipient-picker.error.private-identity": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That is a private identity, not a public recipient. Nothing was added and nothing was written to .sops.yaml — paste the matching age1… public key instead."
+          }
+        }
+      }
+    },
+    "recipient-picker.error.invalid-recipient": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That is not a native age recipient. Those start with age1 and are 62 characters long. Nothing was added."
+          }
+        }
+      }
+    },
     "recipient-picker.propose-button": {
       "extractionState": "manual",
       "localizations": {

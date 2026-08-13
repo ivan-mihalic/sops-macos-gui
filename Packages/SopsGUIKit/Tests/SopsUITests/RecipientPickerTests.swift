@@ -570,7 +570,11 @@ struct CanAddTests {
     func refusalNeverEchoesTheInput() throws {
         let a = try AgeKeyPair.generate()
         let key = try #require(RecipientPicker.refusalMessage(.privateIdentity))
-        #expect(key == .recipientEditorErrorPrivateIdentity)
+        // This picker's own key, not the label editor's: the rule is shared,
+        // the wording is not — `recipientEditorErrorPrivateIdentity` names
+        // the registry file and says "Nothing was saved", and on this screen
+        // nothing was being saved and the file at stake is `.sops.yaml`.
+        #expect(key == .recipientPickerErrorPrivateIdentity)
         // The whole surface a refusal can reach: the sentence itself. It is
         // a catalog string, so it cannot contain the input — pinned anyway,
         // because "the message quotes the offending value" is exactly the
@@ -578,10 +582,25 @@ struct CanAddTests {
         // where the value is a private identity.
         #expect(!key.text.contains(a.private))
         #expect(!key.text.contains("AGE-SECRET-KEY-1"))
-        #expect(RecipientPicker.refusalMessage(.invalidRecipient) == .recipientEditorErrorInvalidRecipient)
+        #expect(RecipientPicker.refusalMessage(.invalidRecipient) == .recipientPickerErrorInvalidRecipient)
         #expect(RecipientPicker.refusalMessage(.duplicate) == .accessAddDuplicate)
         // An untouched field is not something to shout about.
         #expect(RecipientPicker.refusalMessage(.empty) == nil)
+    }
+
+    /// The label editor's sentences describe a different file and a
+    /// different action; borrowing them was right for the validation and
+    /// wrong for the wording. Pins that the two screens' strings are
+    /// genuinely distinct — a catalog entry that pasted the editor's text
+    /// under the picker's key would satisfy every other guard here.
+    @Test("the picker's refusals are its own sentences, not the label editor's")
+    func pickerRefusalsAreNotTheLabelEditorsWording() throws {
+        #expect(
+            LocalizedKey.recipientPickerErrorPrivateIdentity.text
+                != LocalizedKey.recipientEditorErrorPrivateIdentity.text)
+        #expect(
+            LocalizedKey.recipientPickerErrorInvalidRecipient.text
+                != LocalizedKey.recipientEditorErrorInvalidRecipient.text)
     }
 
     @Test("a typo'd key is refused here, not several steps later at the bridge")
@@ -863,5 +882,102 @@ struct PrivateIdentityNeverReachesTheProjectDirectoryTests {
         #expect(
             try await watcher.waitForWrite(),
             "the watcher never fired for a write it should have seen — the zero above proved nothing")
+    }
+}
+
+// MARK: - The refusal has to actually be on screen
+
+/// `canAdd`/`refusalMessage` being right is half of a security refusal; the
+/// user seeing it is the other half, and nothing pinned it. It did not work
+/// for mouse users at all: `Add` is disabled whenever `canAdd` refuses, a
+/// disabled button cannot invoke its action, and the refusal was only ever
+/// assigned inside that action — so pasting a private identity and clicking
+/// Add produced a greyed-out button and no explanation. These render the real
+/// view and read the real accessibility tree.
+///
+/// No Return is pressed anywhere here: the refusal is derived from the
+/// field's text on every render, so the text alone is the whole input. That
+/// is also why `RecipientPicker` takes `initialRecipientText` — this target
+/// can read a rendered view but cannot type into one.
+@Suite("The add field's refusal reaches the screen")
+@MainActor
+struct RecipientPickerRenderedRefusalTests {
+
+    private static let size = CGSize(width: 640, height: 480)
+
+    private func noConfigModel() async throws -> NewSecretFileModel {
+        let root = try scratchDirectory("recipient-picker-refusal")
+        let model = NewSecretFileModel(projectRoot: root, keyStore: try makeKeyStore())
+        model.relativeName = "secret.yaml"
+        await model.resolvePlan()
+        try #require(model.plan == .noConfig, "precondition: the picker is only offered for .noConfig")
+        return model
+    }
+
+    private func rendered(_ model: NewSecretFileModel, text: String) -> [String] {
+        let nodes = AXProbe.tree(size: Self.size) {
+            RecipientPicker(model: model, initialRecipientText: text)
+        }
+        return nodes.map(\.value) + nodes.map(\.label)
+    }
+
+    @Test("a pasted private identity shows its own refusal, with no Return pressed")
+    func privateIdentityRefusalRenders() async throws {
+        let a = try AgeKeyPair.generate()
+        let model = try await noConfigModel()
+
+        let shown = rendered(model, text: a.private)
+
+        #expect(
+            shown.contains(LocalizedKey.recipientPickerErrorPrivateIdentity.text),
+            "the private-identity refusal never reached the screen")
+        // Not the malformed-key sentence: the user is told what is actually
+        // wrong, not that they mistyped something.
+        #expect(!shown.contains(LocalizedKey.recipientPickerErrorInvalidRecipient.text))
+    }
+
+    @Test("a typo'd key shows the malformed-recipient refusal")
+    func invalidRecipientRefusalRenders() async throws {
+        let model = try await noConfigModel()
+
+        let shown = rendered(model, text: "age1abc")
+
+        #expect(
+            shown.contains(LocalizedKey.recipientPickerErrorInvalidRecipient.text),
+            "the malformed-recipient refusal never reached the screen")
+        #expect(!shown.contains(LocalizedKey.recipientPickerErrorPrivateIdentity.text))
+    }
+
+    /// The other face of the same defect: the refusal used to be stored and
+    /// never invalidated as the text changed, so a red private-identity
+    /// warning could sit under a *re-enabled* Add button after the user
+    /// pasted a good key over the bad one. Deriving it makes that
+    /// unwritable — this is the check that it stays that way.
+    @Test("a valid recipient in the field shows no refusal at all")
+    func acceptableInputShowsNothing() async throws {
+        let a = try AgeKeyPair.generate()
+        let model = try await noConfigModel()
+
+        let shown = rendered(model, text: a.public)
+
+        #expect(!shown.contains(LocalizedKey.recipientPickerErrorPrivateIdentity.text))
+        #expect(!shown.contains(LocalizedKey.recipientPickerErrorInvalidRecipient.text))
+        #expect(!shown.contains(LocalizedKey.accessAddDuplicate.text))
+        // Canary: the picker really did render, so the three absences above
+        // are absences and not an empty tree.
+        #expect(
+            shown.contains(LocalizedKey.recipientPickerTitle.text),
+            "the picker did not render — this test would be vacuous")
+    }
+
+    @Test("an untouched field says nothing")
+    func emptyFieldShowsNothing() async throws {
+        let model = try await noConfigModel()
+
+        let shown = rendered(model, text: "")
+
+        #expect(!shown.contains(LocalizedKey.recipientPickerErrorPrivateIdentity.text))
+        #expect(!shown.contains(LocalizedKey.recipientPickerErrorInvalidRecipient.text))
+        #expect(shown.contains(LocalizedKey.recipientPickerTitle.text))
     }
 }

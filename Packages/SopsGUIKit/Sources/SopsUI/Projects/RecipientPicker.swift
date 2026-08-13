@@ -70,15 +70,25 @@ public struct RecipientPicker: View {
     @Bindable private var model: NewSecretFileModel
 
     @State private var registryRecords: [RecipientRecord] = []
-    @State private var newRecipientText = ""
-    @State private var addRefusal: AddRefusal?
+    @State private var newRecipientText: String
 
     @State private var isProposing = false
     @State private var proposedConfig: ProposedConfig?
     @State private var writeOutcome: NewSecretFileModel.ConfigWriteOutcome?
 
-    public init(model: NewSecretFileModel) {
+    /// `initialRecipientText` is the add field's starting contents, empty for
+    /// every real caller. It exists as a seam, and the reason is worth
+    /// stating: the refusal below is rendered from the field's own text, and
+    /// this repo has no way to *type* into a rendered view — `AXProbe`/
+    /// `GatingHost` read an offscreen `NSHostingView`'s accessibility tree,
+    /// they do not drive it, and launching the real app is forbidden here
+    /// (see CLAUDE.md, "Visual verification"). Without this parameter the one
+    /// thing that actually matters about a security refusal — that the user
+    /// sees it — could only be asserted on the pure function behind it.
+    /// `RecipientPickerRenderedRefusalTests` is what it buys.
+    public init(model: NewSecretFileModel, initialRecipientText: String = "") {
         self.model = model
+        _newRecipientText = State(initialValue: initialRecipientText)
     }
 
     public var body: some View {
@@ -240,19 +250,54 @@ public struct RecipientPicker: View {
     /// What the user is told about a refusal, or `nil` when there is nothing
     /// to say — `.empty` is the untouched field, which needs no red text.
     ///
-    /// The two shape refusals reuse `RecipientLabelEditor`'s own sentences
-    /// (`RecipientLabelEditor.explanation(for:)` maps the identical registry
-    /// errors to these same keys), so a private identity pasted into either
-    /// field in this app reads the same way. Fixed catalog strings, never the
-    /// input: a refusal that quotes what was pasted would print a private
-    /// identity on screen and into the accessibility tree.
+    /// Its own two sentences, not `RecipientLabelEditor`'s. Sharing the
+    /// *rule* with that screen is right — one `RecipientRegistry` check, no
+    /// drift — but sharing its *wording* was not: those strings say "nothing
+    /// private-key-shaped is written to this file … Nothing was saved", which
+    /// on this screen names the wrong file (`.sops-gui/recipients.json`,
+    /// where nothing is being written; the file at stake here is
+    /// `.sops.yaml`) and the wrong action (nothing was being saved — an entry
+    /// was being added to a selection). `recipientEditorError*` are left
+    /// exactly as they are for the editor that owns them.
+    ///
+    /// Fixed catalog strings, never the input: a refusal that quoted what was
+    /// pasted would print a private identity on screen and into the
+    /// accessibility tree.
     static func refusalMessage(_ refusal: AddRefusal) -> LocalizedKey? {
         switch refusal {
         case .empty: nil
         case .duplicate: .accessAddDuplicate
-        case .privateIdentity: .recipientEditorErrorPrivateIdentity
-        case .invalidRecipient: .recipientEditorErrorInvalidRecipient
+        case .privateIdentity: .recipientPickerErrorPrivateIdentity
+        case .invalidRecipient: .recipientPickerErrorInvalidRecipient
         }
+    }
+
+    /// Why the field's contents cannot be added right now — **derived from
+    /// the text on every render, never stored.**
+    ///
+    /// It used to be `@State`, assigned only inside `addRecipient()`, and
+    /// that made the refusal unreachable for exactly the users this fix is
+    /// for: `Add` is disabled whenever `canAdd` refuses, a disabled button
+    /// cannot invoke its action, so pasting a private identity and clicking
+    /// Add produced a greyed-out button and **no explanation at all**. The
+    /// sentence appeared only on Return. The same stored flag was never
+    /// invalidated when the text changed, so the opposite face existed too:
+    /// paste a valid key over the bad one and the red private-identity
+    /// warning sat under a now-enabled Add button.
+    ///
+    /// Deriving it is the same discipline `NewSecretFileModel`'s own doc
+    /// comment argues for at length ("No verdict is ever stored") — a verdict
+    /// about text that has since changed cannot be shown, because there is no
+    /// verdict kept to show. It also means the message and the button's
+    /// enabled state are computed from one call, so they cannot disagree.
+    ///
+    /// The cost, stated rather than discovered: `.invalidRecipient` now shows
+    /// while a key is *being* typed, since a half-typed `age1…` really is not
+    /// a recipient yet. That matches the Add button, which is disabled for
+    /// the same reason and for the same keystrokes; `.empty` renders nothing,
+    /// so an untouched field stays quiet.
+    private var addRefusal: AddRefusal? {
+        Self.canAdd(newRecipientText, existing: model.manuallyChosenRecipients)
     }
 
     private var addRecipientRow: some View {
@@ -262,7 +307,7 @@ public struct RecipientPicker: View {
                     .textFieldStyle(.roundedBorder)
                     .onSubmit(addRecipient)
                 Button(LocalizedKey.actionAdd.text, action: addRecipient)
-                    .disabled(Self.canAdd(newRecipientText, existing: model.manuallyChosenRecipients) != nil)
+                    .disabled(addRefusal != nil)
             }
             if let addRefusal, let message = Self.refusalMessage(addRefusal) {
                 Text(message).font(.caption).foregroundStyle(.red)
@@ -271,10 +316,10 @@ public struct RecipientPicker: View {
     }
 
     private func addRecipient() {
-        let refusal = Self.canAdd(newRecipientText, existing: model.manuallyChosenRecipients)
-        addRefusal = refusal
-        guard refusal == nil else { return }
+        guard addRefusal == nil else { return }
         model.manuallyChosenRecipients.append(newRecipientText.trimmingCharacters(in: .whitespacesAndNewlines))
+        // Clearing the field also clears the refusal, which is now `.empty`
+        // for it — nothing to reset, because nothing was stored.
         newRecipientText = ""
         proposedConfig = nil
         writeOutcome = nil
