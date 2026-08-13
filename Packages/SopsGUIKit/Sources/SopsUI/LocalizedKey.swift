@@ -642,18 +642,28 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // a creation rule) and so gets its own keys rather than reusing theirs.
 
     case newFileEncryptedImportUnlockingLabel = "new-file.encrypted-import.unlocking"
-    // Shown for `.unlockedAwaitingPlan` — decrypted, but no destination plan
-    // is known yet, so there is nothing honest to diff against. See
-    // `NewSecretFileModel.encryptedImport`'s own doc comment, "The diff
-    // needs a known target, not just a decrypted file", for the review
-    // finding this state (and this sentence) exist to close. States the
-    // fact only, deliberately not an instruction — see
-    // `EncryptedImportPreview`'s own doc comment on its `.unlockedAwaitingPlan`
-    // branch for why a second review round removed "Choose a name…": that
-    // wording presumed a fix that does not apply to every cause this state
-    // merges (a mid-debounce name, or an unparseable `.sops.yaml`), and
-    // `NewSecretFileSheet` already renders the real explanation for those
-    // directly above this sentence.
+    // Shown for `.unlockedAwaitingPlan` — decrypted, but
+    // `currentGovernedPlan()` has no recipient set to diff against yet, so
+    // there is nothing honest to diff. See `NewSecretFileModel
+    // .encryptedImport`'s own doc comment, "The diff needs a known target,
+    // not just a decrypted file", for the review finding this state (and
+    // this sentence) exist to close. States the fact only, deliberately not
+    // an instruction — see `EncryptedImportPreview`'s own doc comment on its
+    // `.unlockedAwaitingPlan` branch for why a second review round removed
+    // "Choose a name…": that wording presumed a fix that does not apply to
+    // every cause this state merges, and `NewSecretFileSheet` already
+    // renders the real explanation for those directly above this sentence.
+    //
+    // Deliberately worded around *recipients*, not the *destination* — a
+    // third review round found "no destination decided yet" false for three
+    // of the six causes this state now merges (`.unsupportedRule`,
+    // `.configUnreadable`, a matched rule naming no recipients at all): the
+    // name is typed, the rule matched, the destination genuinely *is*
+    // decided in all three. What is actually missing, in every one of the
+    // six, is a usable recipient set — the one thing `currentGovernedPlan()`
+    // returning `nil` always and only means, by construction, so this
+    // phrasing is true for all six without `EncryptedImportPreview` ever
+    // needing to inspect *which* of them it is.
     case newFileEncryptedImportAwaitingPlanLabel = "new-file.encrypted-import.awaiting-plan"
     // The diff's title when `gaining`/`losing` are not both empty.
     case newFileEncryptedImportDiffTitle = "new-file.encrypted-import.diff-title"

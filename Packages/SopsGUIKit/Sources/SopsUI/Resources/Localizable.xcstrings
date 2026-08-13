@@ -1020,7 +1020,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This file has been unlocked, but there is no destination decided yet, so there is nothing to compare it against."
+            "value": "This file has been unlocked, but there is no recipient set to compare it against yet."
           }
         }
       }

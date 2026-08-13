@@ -131,16 +131,15 @@ public struct EncryptedImportPreview: View {
             // comment, "The diff needs a known target, not just a decrypted
             // file", for the finding this state exists to close. Rendered
             // as a plain, neutral *fact*, deliberately not an instruction —
-            // a second review finding, closed by removing the instruction
-            // rather than trying to word one that fits every cause this
-            // state merges. An earlier version said "Choose a name (and, if
-            // needed, recipients)…", which presumes the fix is always
-            // choosing something — wrong for two of the causes
-            // `currentGovernedPlan()` can return `nil` for: a name still
-            // mid-debounce (already chosen, just not resolved yet) and
-            // `.configUnreadable` (no name or recipient choice fixes an
-            // unparseable `.sops.yaml`). `NewSecretFileSheet` already
-            // renders the real explanation for those — the resolving
+            // a second review round's finding, closed by removing the
+            // instruction rather than trying to word one that fits every
+            // cause this state merges. An earlier version said "Choose a
+            // name (and, if needed, recipients)…", presuming the fix is
+            // always choosing something — wrong for causes where the name
+            // is already typed and the rule already matched
+            // (`.unsupportedRule`, `.configUnreadable`, a matched rule
+            // naming no recipients at all). `NewSecretFileSheet` already
+            // renders the real explanation for every cause — the resolving
             // spinner, or the `.blocked` banner — directly above this view
             // (`nameSection` sits before `previewArea`), so the fix lives in
             // not duplicating that judgment here, not in trying to make one
@@ -150,6 +149,16 @@ public struct EncryptedImportPreview: View {
             // there is no target, which is exactly the plan-reading
             // judgment `EncryptedImportPreview`'s own doc comment ("The view
             // decides nothing") says belongs to the model, not here.
+            //
+            // A third review round caught the sentence itself still naming
+            // the wrong noun even after the instruction was removed: "no
+            // destination decided yet" is false whenever the name is typed
+            // and the rule matched, which is three of the six causes this
+            // state now merges. `currentGovernedPlan()` returning `nil`
+            // always and only means one thing, though, regardless of cause
+            // — no usable *recipient set* — so the catalog text now says
+            // that instead, true for all six without this view needing to
+            // know which one it is.
             Text(.newFileEncryptedImportAwaitingPlanLabel)
                 .font(.caption)
                 .foregroundStyle(.secondary)

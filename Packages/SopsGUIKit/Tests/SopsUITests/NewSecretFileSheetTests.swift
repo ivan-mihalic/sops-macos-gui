@@ -216,6 +216,29 @@ struct InfoLineTextTests {
         #expect(text == String(format: LocalizedKey.newFileInfoGovernedByRule.text, "age1abc, age1def"))
     }
 
+    /// The review's own finding: a `.governedByRule` whose own recipient
+    /// list is empty is real and sops-admitted (`CreationPlanResolverTests
+    /// .ruleWithNoKeyGroupIsGovernedByRuleWithNoRecipients`), and this was
+    /// the one `.governedByRule` reader that read `plan`'s recipients
+    /// directly rather than through `NewSecretFileModel
+    /// .currentGovernedPlan()`'s own empty-recipients guard. Before this
+    /// case was added, nothing here objected to `recipientNames([])`
+    /// rendering `""` and the ⓘ line claiming "it will be encrypted for: "
+    /// — asserting an encryption that will not happen, directly above
+    /// `readiness`'s own `.blocked` banner saying the opposite. Pins that
+    /// this arm now says the same thing the banner does, instead.
+    @Test(".governedByRule with no recipients at all does not claim encryption will happen")
+    func governedByRuleWithNoRecipients() {
+        let text = NewSecretFileSheet.infoLineText(
+            isResolving: false, plan: .governedByRule(recipients: [], encryptedRegex: ""),
+            recipientNames: joinedNames)
+        #expect(text == CreationFailurePresenter.messageForRuleWithNoRecipients().detail)
+        #expect(text?.localizedCaseInsensitiveContains("no recipients") == true)
+        // The specific false claim this case exists to prevent — this must
+        // never resolve to the encrypted-for sentence with an empty tail.
+        #expect(text != String(format: LocalizedKey.newFileInfoGovernedByRule.text, ""))
+    }
+
     @Test(".noConfig")
     func noConfig() {
         let text = NewSecretFileSheet.infoLineText(isResolving: false, plan: .noConfig, recipientNames: joinedNames)

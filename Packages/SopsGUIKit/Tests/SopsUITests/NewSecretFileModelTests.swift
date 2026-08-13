@@ -99,30 +99,11 @@ private func makeKeyStore(importing key: String? = nil) throws -> SessionKeyStor
     return store
 }
 
-/// Every `String` reachable from `value` by walking its storage with
-/// `Mirror` — including `private` stored properties, which `Mirror` does
-/// not respect access control for. Duplicated from
-/// `EncryptedImportPreviewTests.swift` rather than shared (this file's own
-/// helpers are `private` to it, and so are that file's — same convention as
-/// `AgeKeyPair`/`scratchDirectory` above). See that file's own copy for the
-/// full account of what this proves and why a behavioural test cannot prove
-/// it: clearing a `private` field that only ever influenced whether a fact
-/// is *readable*, never what gets rendered, is invisible to every test that
-/// only watches what the model reports.
-private func allStrings(reachableFrom value: Any, depth: Int = 0) -> [String] {
-    guard depth < 20 else { return [] }
-    var found: [String] = []
-    if let string = value as? String { found.append(string) }
-    let mirror = Mirror(reflecting: value)
-    for child in mirror.children {
-        found += allStrings(reachableFrom: child.value, depth: depth + 1)
-    }
-    return found
-}
-
-private func modelRetains(_ needle: String, _ model: NewSecretFileModel) -> Bool {
-    allStrings(reachableFrom: model).contains { $0.contains(needle) }
-}
+// `allStrings(reachableFrom:)`/`modelRetains(_:_:)` — the Mirror-sweep leak
+// proof both this file and `EncryptedImportPreviewTests.swift` need — live
+// in `MirrorSweepTestSupport.swift`, `internal` to this test target. A
+// review round found two byte-identical `private` copies and asked for the
+// third, shared one instead of a third copy.
 
 @Suite("NewSecretFileModel")
 @MainActor
@@ -569,6 +550,12 @@ struct NewSecretFileModelTests {
         try "other: value\n".write(to: fileB, atomically: true, encoding: .utf8)
         model.loadPlainYAML(from: fileB)
 
+        // Positive control: proves the sweep actually sees the model's live
+        // storage (`plainYAMLText`, now B's) before trusting it to prove
+        // anything about A's *absence* — a sweep that saw nothing would pass
+        // the leak assertion below for the wrong reason.
+        #expect(modelRetains("other: value", model),
+                "positive control failed — Mirror did not see B's own current content, so this test proves nothing")
         #expect(!modelRetains(sentinel, model),
                 "the model still retains A's content, reachable via Mirror, after B was loaded")
     }
@@ -600,10 +587,18 @@ struct NewSecretFileModelTests {
             return
         }
 
+        // A distinct-enough value that it cannot coincidentally already be
+        // present elsewhere in the model — `DotEnvParser` splits `KEY=value`
+        // into separate `key`/`value` strings, so "OTHER=…" itself would
+        // never appear as one contiguous string; the positive control below
+        // has to search for the *value* alone.
         let fileB = root.appendingPathComponent("b.env")
-        try "OTHER=value\n".write(to: fileB, atomically: true, encoding: .utf8)
+        try "OTHER=OTHERVALUE123\n".write(to: fileB, atomically: true, encoding: .utf8)
         model.loadDotEnv(from: fileB)
 
+        // Positive control — see the Plain YAML sibling test's own comment.
+        #expect(modelRetains("OTHERVALUE123", model),
+                "positive control failed — Mirror did not see B's own current content, so this test proves nothing")
         #expect(!modelRetains(sentinel, model),
                 "the model still retains A's content, reachable via Mirror, after B was loaded")
     }

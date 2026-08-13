@@ -270,6 +270,30 @@ public struct NewSecretFileSheet: View {
         guard let plan else { return nil }
         switch plan {
         case .governedByRule(let recipients, _):
+            // An empty recipient list is not a governed target — see
+            // `NewSecretFileModel.currentGovernedPlan()`'s own doc comment,
+            // "An empty recipient list is not a target", for the review
+            // finding this guard exists to close one screen over: sops
+            // itself admits a creation rule with a matching `path_regex`
+            // and no key group at all
+            // (`CreationPlanResolverTests
+            // .ruleWithNoKeyGroupIsGovernedByRuleWithNoRecipients`), and
+            // this was the one `.governedByRule` reader that never went
+            // through `currentGovernedPlan()`'s choke point — reading
+            // `plan`'s recipients straight from `model.plan` instead. Left
+            // alone, `recipientNames([])` renders `""`, and this line
+            // would claim "it will be encrypted for: " — asserting an
+            // encryption that will not happen, directly above
+            // `readiness`'s own `.blocked` banner saying so. Reusing
+            // `messageForRuleWithNoRecipients()`'s own `detail` here is the
+            // same duplication this file already accepts for
+            // `.unsupportedRule`/`.configUnreadable` below — both cases
+            // still hit `.blocked` and still render the same sentence a
+            // second time via the failure banner — not a new pattern
+            // invented for this one case.
+            guard !recipients.isEmpty else {
+                return CreationFailurePresenter.messageForRuleWithNoRecipients().detail
+            }
             return String(format: LocalizedKey.newFileInfoGovernedByRule.text, recipientNames(recipients))
         case .noConfig:
             return LocalizedKey.newFileInfoNoConfig.text

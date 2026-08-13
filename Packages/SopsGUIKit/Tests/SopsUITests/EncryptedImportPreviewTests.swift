@@ -109,31 +109,11 @@ private func writeEncryptedFixture(plaintext: String, recipients: [String], to u
     try encrypted.write(to: url, atomically: true, encoding: .utf8)
 }
 
-/// Every `String` reachable from `value` by walking its storage with
-/// `Mirror` — including `private` stored properties, which `Mirror` does
-/// not respect access control for. This is the actual threat model
-/// `NewSecretFileModel`'s own doc comments name for "not logged, but still
-/// reachable": `forgetLastCreateFailure()` exists specifically so a sweep
-/// like this one, run against the live model, finds nothing left over from
-/// a file the user has already moved on from.
-///
-/// Depth-capped as a backstop against a reference cycle this object graph
-/// is not expected to have (`NewSecretFileModel` holds no back-reference to
-/// anything that holds it), not because one is anticipated.
-private func allStrings(reachableFrom value: Any, depth: Int = 0) -> [String] {
-    guard depth < 20 else { return [] }
-    var found: [String] = []
-    if let string = value as? String { found.append(string) }
-    let mirror = Mirror(reflecting: value)
-    for child in mirror.children {
-        found += allStrings(reachableFrom: child.value, depth: depth + 1)
-    }
-    return found
-}
-
-private func modelRetains(_ needle: String, _ model: NewSecretFileModel) -> Bool {
-    allStrings(reachableFrom: model).contains { $0.contains(needle) }
-}
+// `allStrings(reachableFrom:)`/`modelRetains(_:_:)` — the Mirror-sweep leak
+// proof both this file and `NewSecretFileModelTests.swift` need — live in
+// `MirrorSweepTestSupport.swift`, `internal` to this test target. A review
+// round found two byte-identical `private` copies and asked for the third,
+// shared one instead of a third copy.
 
 // MARK: - Model-level: chooseEncryptedFile / unlockChosenEncryptedFile
 
@@ -538,7 +518,18 @@ struct EncryptedImportModelTests {
         let sourceB = root.appendingPathComponent("b.yaml")
         try writeEncryptedFixture(plaintext: "other: value\n", recipients: [a.public], to: sourceB)
         model.chooseEncryptedFile(at: sourceB)
+        // Unlocked for real, not just picked — B's own plaintext is the
+        // positive control below. A `Mirror` sweep that never actually saw
+        // the model's live storage would pass the leak assertion for the
+        // wrong reason (finding nothing because it is looking at nothing),
+        // exactly the silent-false-green shape a missing positive control
+        // leaves open. Proving the sweep finds B's own current, legitimate
+        // content is what proves it would have found A's, had A's survived.
+        await model.unlockChosenEncryptedFile()
+        try #require(model.encryptedImport == .unlocked(gaining: [], losing: [], keeping: [a.public]))
 
+        #expect(modelRetains("other: value", model),
+                "positive control failed — Mirror did not see B's own current plaintext, so this test proves nothing")
         #expect(!modelRetains(sentinel, model),
                 "the model still retains A's decrypted plaintext, reachable via Mirror, after B was picked")
     }
