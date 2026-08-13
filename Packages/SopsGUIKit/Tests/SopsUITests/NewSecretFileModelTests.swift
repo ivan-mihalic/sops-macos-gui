@@ -176,7 +176,17 @@ struct NewSecretFileModelTests {
 
         #expect(firstAttempt == nil)
         #expect(model.readiness == .needsAcknowledgement)
-        #expect(model.planError != nil)
+        // Deliberately `nil`, not the `wouldBeUnreadable` message — fixed
+        // after a second-review finding (Task 4's SDD ledger): nothing
+        // renders `planError` while `readiness == .needsAcknowledgement`,
+        // and leaving it set let `computeReadiness()`'s own `if let
+        // planError { return .blocked(planError) }` short-circuit ahead of
+        // the `discoveredUnreadable`/`acknowledgedUnreadable` check, so a
+        // later recompute from anywhere other than a direct tick (picking a
+        // different source file, in the wizard the checkbox actually ships
+        // in) silently swapped the checkbox for a stale failure banner
+        // about a create attempt the user had already moved on from.
+        #expect(model.planError == nil)
         // Nothing was written — the acknowledgement gate refuses before
         // `finishWriting` in `SecretFileCreator` ever runs.
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("secret.yaml").path))

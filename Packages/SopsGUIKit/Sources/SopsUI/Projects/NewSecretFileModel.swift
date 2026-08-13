@@ -136,10 +136,14 @@ public final class NewSecretFileModel {
             guard case .needsAcknowledgement = readiness,
                 case .governedByRule(let recipients, _) = plan
             else { return }
-            // The `.wouldBeUnreadable` message `create()` left in `planError`
-            // described exactly the state this acknowledgement just resolved
-            // — leaving it in place would show a failure banner next to a
-            // readiness that now says nothing is blocking.
+            // `planError` is already `nil` by construction whenever
+            // `readiness == .needsAcknowledgement` — `create()`'s
+            // `wouldBeUnreadable` branch deliberately never sets it (see
+            // that branch's own comment) precisely so nothing here has to
+            // clear a stale failure message next to a readiness that now
+            // says nothing is blocking. Set anyway, defensively, rather
+            // than trusted: this `didSet` cannot see whether that invariant
+            // still holds.
             planError = nil
             readiness = .ready(recipients: recipients)
         }
@@ -276,6 +280,13 @@ public final class NewSecretFileModel {
     /// `resolvePlan()`, there is no bridge call here to justify a debounce,
     /// so the view calls this directly from its file picker rather than
     /// through `resolveDebounced()`.
+    ///
+    /// Known, deliberately deferred limitation: `Data(contentsOf:)` below
+    /// runs synchronously on the main actor, with no size ceiling — a very
+    /// large or network-volume file freezes the sheet with no loading
+    /// indicator at all. Fixing this properly needs an async read path and
+    /// a loading affordance in `NewSecretFileSheet`, a real UI addition,
+    /// not a one-line change; left for a later task.
     public func loadPlainYAML(from url: URL) {
         do {
             let data = try Data(contentsOf: url)
@@ -312,6 +323,10 @@ public final class NewSecretFileModel {
     ///
     /// Recomputes `readiness` synchronously at the end, for the same reason
     /// `loadPlainYAML(from:)` does.
+    ///
+    /// Same known, deliberately deferred limitation as `loadPlainYAML(
+    /// from:)`: the `Data(contentsOf:)` read below is synchronous, on the
+    /// main actor, with no size ceiling.
     public func loadDotEnv(from url: URL) {
         do {
             let data = try Data(contentsOf: url)
@@ -435,14 +450,32 @@ public final class NewSecretFileModel {
             return receipt.destination
         case .failure(let failure):
             let message = CreationFailurePresenter.message(for: failure)
-            planError = message
             if case .wouldBeUnreadable = failure, !acknowledgedUnreadable {
-                // The one discovery this model is allowed to make about
-                // self-readability — see this type's doc comment,
-                // "Self-readability cannot be predicted, only discovered".
+                // Deliberately does *not* set `planError = message` here,
+                // unlike every other failure branch. `readiness` is
+                // `.needsAcknowledgement`, not `.blocked` — nothing renders
+                // `planError` in that state — and leaving it set was a real
+                // bug: `computeReadiness()`'s `if let planError { return
+                // .blocked(planError) }` runs *before* the
+                // `discoveredUnreadable`/`acknowledgedUnreadable` check
+                // below, so a later recompute from anywhere other than a
+                // direct tick — `loadPlainYAML(from:)`/`loadDotEnv(from:)`
+                // after the user re-picks a source instead of ticking is
+                // the reachable one — would see the stale `wouldBeUnreadable`
+                // message and short-circuit straight to `.blocked`,
+                // silently hiding the checkbox this type's own doc comment
+                // calls "the only way out of this state". See
+                // `computeReadiness()`'s own comment at the condition this
+                // depends on. Explicitly cleared, not just left unset by
+                // this branch — a *previous* failed attempt could have left
+                // `planError` non-nil, and that stale value would trip the
+                // identical short-circuit even though this failure never
+                // set it.
+                planError = nil
                 discoveredUnreadable = true
                 readiness = .needsAcknowledgement
             } else {
+                planError = message
                 readiness = .blocked(message)
             }
             return nil
@@ -510,6 +543,18 @@ public final class NewSecretFileModel {
             // arrived at through a different door. Checking
             // `!acknowledgedUnreadable` here closes it for every caller of
             // `computeReadiness()`, not just the one that exposed it.
+            //
+            // This line is only ever *reached* when `planError == nil` —
+            // the `if let planError { return .blocked(planError) }` guard a
+            // few lines up this function runs first. That is not incidental:
+            // `create()`'s `wouldBeUnreadable` branch deliberately leaves
+            // `planError` unset (see that branch's own comment) precisely
+            // so this condition gets evaluated at all, from any caller, not
+            // just the `didSet` path that bypasses `computeReadiness()`
+            // entirely. If a future change ever let `planError` survive
+            // into `.needsAcknowledgement` again, this whole condition
+            // would go back to being dead code reached by nothing — the
+            // `planError` short-circuit would win every time, silently.
             return discoveredUnreadable && !acknowledgedUnreadable
                 ? .needsAcknowledgement : .ready(recipients: recipients)
         case .noConfig, .noRuleMatched:

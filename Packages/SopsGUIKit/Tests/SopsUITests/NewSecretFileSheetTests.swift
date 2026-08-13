@@ -796,6 +796,82 @@ struct CreateFromSourceTests {
         #expect(model.readiness == .ready(recipients: [stranger.public]))
     }
 
+    // MARK: - Second review round: the un-acknowledged half of the same door
+    //
+    // The first fix guarded `.governedByRule`'s branch with
+    // `!acknowledgedUnreadable`, but `computeReadiness()` short-circuits one
+    // line earlier on `if let planError`. `create()`'s `wouldBeUnreadable`
+    // branch used to set `planError` unconditionally, even on the path into
+    // `.needsAcknowledgement` — so a user who does *not* tick and instead
+    // re-picks a source (the most natural response to "this file would be
+    // unreadable") hit that earlier short-circuit and silently lost the
+    // checkbox affordance, with no way back except changing the name or the
+    // source radio. Fixed by never setting `planError` on that branch.
+
+    @Test("re-picking a .env source after a failed create(), without ticking, still shows the checkbox")
+    func acknowledgementAffordanceSurvivesRePickingDotEnvWithoutTicking() async throws {
+        let owner = try AgeKeyPair.generate()
+        let stranger = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        try ageOnlyConfig(stranger.public)
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let keyStore = try makeKeyStore(importing: owner.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+
+        let picked = try sourceFile(named: "input.env", containing: "KEY=value\n")
+        model.loadDotEnv(from: picked)
+        model.sourceChoice = .dotEnv
+        model.relativeName = "secret.yaml"
+        await model.resolvePlan()
+
+        _ = await model.create()  // discovers wouldBeUnreadable
+        try #require(model.readiness == .needsAcknowledgement)
+        try #require(!model.acknowledgedUnreadable, "precondition: not ticked")
+
+        // Re-picking *without* ticking first — this used to hit the
+        // `planError` short-circuit before the `discoveredUnreadable`/
+        // `acknowledgedUnreadable` check ever ran.
+        let repicked = try sourceFile(named: "input2.env", containing: "OTHER=value\n")
+        model.loadDotEnv(from: repicked)
+
+        #expect(model.readiness == .needsAcknowledgement, "the checkbox affordance must still be reachable")
+        #expect(model.planError == nil, "no stale failure banner should show instead of the checkbox")
+
+        // The affordance is not just present but functional.
+        model.acknowledgedUnreadable = true
+        #expect(model.readiness == .ready(recipients: [stranger.public]))
+    }
+
+    @Test("re-picking a Plain YAML source after a failed create(), without ticking, still shows the checkbox")
+    func acknowledgementAffordanceSurvivesRePickingPlainYAMLWithoutTicking() async throws {
+        let owner = try AgeKeyPair.generate()
+        let stranger = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        try ageOnlyConfig(stranger.public)
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let keyStore = try makeKeyStore(importing: owner.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+
+        let picked = try sourceFile(named: "input.yaml", containing: "a: b\n")
+        model.loadPlainYAML(from: picked)
+        model.sourceChoice = .plainYAML
+        model.relativeName = "secret.yaml"
+        await model.resolvePlan()
+
+        _ = await model.create()  // discovers wouldBeUnreadable
+        try #require(model.readiness == .needsAcknowledgement)
+        try #require(!model.acknowledgedUnreadable, "precondition: not ticked")
+
+        let repicked = try sourceFile(named: "input2.yaml", containing: "c: d\n")
+        model.loadPlainYAML(from: repicked)
+
+        #expect(model.readiness == .needsAcknowledgement, "the checkbox affordance must still be reachable")
+        #expect(model.planError == nil, "no stale failure banner should show instead of the checkbox")
+
+        model.acknowledgedUnreadable = true
+        #expect(model.readiness == .ready(recipients: [stranger.public]))
+    }
+
     // MARK: - Minor A: the preview-then-create guarantee, pinned with a test
     //
     // Nothing currently re-reads the source file at `create()` time — but
