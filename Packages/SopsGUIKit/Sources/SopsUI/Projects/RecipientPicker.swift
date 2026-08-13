@@ -57,6 +57,15 @@ import SwiftUI
 /// back to `NewSecretFileSheet.shortenedKey(_:)`, the identical fallback
 /// that view's own `ⓘ` line uses, so an unlabeled recipient reads the same
 /// way everywhere in this wizard.
+///
+/// It does decide one thing, and it is not about trust: whether what was
+/// typed is an age *public* recipient at all. `canAdd(_:existing:)` asks
+/// `RecipientRegistry.refusal(forAgeRecipient:)` — the same rule every other
+/// recipient entry point in this app already enforces — so a pasted
+/// `AGE-SECRET-KEY-1…` identity is refused here rather than reaching
+/// `SopsConfigGenerator.propose`, which stages `.sops.yaml` text inside the
+/// project root before sops has judged it. See that function's own doc
+/// comment for the finding.
 public struct RecipientPicker: View {
     @Bindable private var model: NewSecretFileModel
 
@@ -167,16 +176,83 @@ public struct RecipientPicker: View {
     /// when it can't. A free, pure function — like `NewSecretFileSheet
     /// .canCreate`/`.shouldResolve` — so a test can drive every case
     /// directly, without rendering anything.
+    ///
+    /// `.privateIdentity`/`.invalidRecipient` are `RecipientRegistry
+    /// .refusal(forAgeRecipient:)`'s own two answers, not a second opinion
+    /// this view forms about key material — see `canAdd(_:existing:)` for
+    /// what an unchecked field cost.
     enum AddRefusal: Equatable {
         case empty
         case duplicate
+        /// The text contains an `AGE-SECRET-KEY-1…` private identity. The
+        /// refusal message names the shape, never the pasted string.
+        case privateIdentity
+        /// Not a native `age1…` public recipient at all.
+        case invalidRecipient
     }
 
+    /// The gate every free-text addition passes, and the reason it checks
+    /// more than "empty" and "duplicate".
+    ///
+    /// A recipient added here ends up in `NewSecretFileModel
+    /// .manuallyChosenRecipients`, which `proposeConfig()` interpolates
+    /// straight into `.sops.yaml` text — and `SopsConfigGenerator.propose`
+    /// **stages that text inside the project root** (`.sops.yaml.<uuid>.tmp`)
+    /// to have sops itself verify it. `SopsConfigGenerator.configText`'s own
+    /// doc comment states the contract that rests on: "the bridge's own
+    /// config parser rejects anything that does not parse as a native `age1…`
+    /// key before `ageRecipients` is ever populated" — a refusal that arrives
+    /// *after* the write. So a user pasting their private identity into this
+    /// field had it written unencrypted into their own working tree, in a
+    /// file no `.gitignore` covers, surviving a crash between the write and
+    /// the `defer` that removes it. This gate is where that string stops:
+    /// refused here, `manuallyChosenRecipients` never holds it, and
+    /// `propose` — the only writer of that probe file — is never called with
+    /// it at all.
+    ///
+    /// Every other recipient entry point in this app already refuses both
+    /// shapes (`RecipientRegistry.validate`, reached through
+    /// `RecipientLabelEditor`); this reuses that exact rule rather than
+    /// restating it, so the two cannot drift.
+    ///
+    /// Secondary, and worth naming because it is the case a user actually
+    /// hits: a typo'd public key used to reach `.ready` with Create enabled
+    /// and fail only at the bridge, several steps later.
+    ///
+    /// Order: blank first (nothing to judge yet), then the shape checks,
+    /// then duplicate — anything already in `existing` came through this same
+    /// gate, so it is well-formed by construction and a duplicate can only be
+    /// a duplicate.
     static func canAdd(_ text: String, existing: [String]) -> AddRefusal? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return .empty }
+        if let refusal = RecipientRegistry.refusal(forAgeRecipient: trimmed) {
+            // `refusal(forAgeRecipient:)` is documented to answer with
+            // exactly these two cases; anything else would still be a
+            // refusal, and "this is not a usable recipient" is the honest
+            // thing to say about one this view has not been taught to word.
+            return refusal == .privateIdentityNotAllowed ? .privateIdentity : .invalidRecipient
+        }
         if existing.contains(trimmed) { return .duplicate }
         return nil
+    }
+
+    /// What the user is told about a refusal, or `nil` when there is nothing
+    /// to say — `.empty` is the untouched field, which needs no red text.
+    ///
+    /// The two shape refusals reuse `RecipientLabelEditor`'s own sentences
+    /// (`RecipientLabelEditor.explanation(for:)` maps the identical registry
+    /// errors to these same keys), so a private identity pasted into either
+    /// field in this app reads the same way. Fixed catalog strings, never the
+    /// input: a refusal that quotes what was pasted would print a private
+    /// identity on screen and into the accessibility tree.
+    static func refusalMessage(_ refusal: AddRefusal) -> LocalizedKey? {
+        switch refusal {
+        case .empty: nil
+        case .duplicate: .accessAddDuplicate
+        case .privateIdentity: .recipientEditorErrorPrivateIdentity
+        case .invalidRecipient: .recipientEditorErrorInvalidRecipient
+        }
     }
 
     private var addRecipientRow: some View {
@@ -188,8 +264,8 @@ public struct RecipientPicker: View {
                 Button(LocalizedKey.actionAdd.text, action: addRecipient)
                     .disabled(Self.canAdd(newRecipientText, existing: model.manuallyChosenRecipients) != nil)
             }
-            if addRefusal == .duplicate {
-                Text(.accessAddDuplicate).font(.caption).foregroundStyle(.red)
+            if let addRefusal, let message = Self.refusalMessage(addRefusal) {
+                Text(message).font(.caption).foregroundStyle(.red)
             }
         }
     }

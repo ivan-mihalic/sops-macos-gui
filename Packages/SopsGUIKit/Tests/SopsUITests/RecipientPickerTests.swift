@@ -528,14 +528,73 @@ struct CanAddTests {
     }
 
     @Test("a recipient already chosen is refused as a duplicate")
-    func duplicateIsRefused() {
-        #expect(RecipientPicker.canAdd("age1abc", existing: ["age1abc"]) == .duplicate)
+    func duplicateIsRefused() throws {
+        // A real generated key, not `age1abc`: this gate now checks the
+        // shape too, so a placeholder string would be refused as malformed
+        // before the duplicate check was ever reached — and the test would
+        // pass for the wrong reason.
+        let a = try AgeKeyPair.generate()
+        #expect(RecipientPicker.canAdd(a.public, existing: [a.public]) == .duplicate)
     }
 
     @Test("a new, non-blank recipient is accepted")
-    func newRecipientIsAccepted() {
-        #expect(RecipientPicker.canAdd("age1abc", existing: []) == nil)
-        #expect(RecipientPicker.canAdd("  age1abc  ", existing: []) == nil)
+    func newRecipientIsAccepted() throws {
+        let a = try AgeKeyPair.generate()
+        #expect(RecipientPicker.canAdd(a.public, existing: []) == nil)
+        #expect(RecipientPicker.canAdd("  \(a.public)  ", existing: []) == nil)
+    }
+
+    // MARK: - The Important finding: a private identity must not get past here
+    //
+    // Before this gate checked anything but "empty" and "duplicate", pasting
+    // an `AGE-SECRET-KEY-1…` identity into the free-text field was accepted,
+    // and `SopsConfigGenerator.propose` then interpolated it into `.sops.yaml`
+    // text and staged that text inside the project root — a private key
+    // written unencrypted into the user's own working tree, in a file no
+    // `.gitignore` covers. `PrivateIdentityNeverReachesTheProjectDirectoryTests`
+    // below is the same finding proven at the filesystem.
+
+    @Test("a pasted private identity is refused, by its own case, whatever its casing or padding")
+    func privateIdentityIsRefused() throws {
+        let a = try AgeKeyPair.generate()
+        #expect(RecipientPicker.canAdd(a.private, existing: []) == .privateIdentity)
+        #expect(RecipientPicker.canAdd(a.private.lowercased(), existing: []) == .privateIdentity)
+        #expect(RecipientPicker.canAdd("  \(a.private)  ", existing: []) == .privateIdentity)
+        // Not merely "invalid": the user is told what is actually wrong,
+        // which is the difference between fixing a typo and understanding
+        // that a secret was pasted where a public key belongs.
+        #expect(RecipientPicker.canAdd(a.private, existing: []) != .invalidRecipient)
+    }
+
+    @Test("the refusal is a fixed catalog sentence and never echoes what was pasted")
+    func refusalNeverEchoesTheInput() throws {
+        let a = try AgeKeyPair.generate()
+        let key = try #require(RecipientPicker.refusalMessage(.privateIdentity))
+        #expect(key == .recipientEditorErrorPrivateIdentity)
+        // The whole surface a refusal can reach: the sentence itself. It is
+        // a catalog string, so it cannot contain the input — pinned anyway,
+        // because "the message quotes the offending value" is exactly the
+        // habit this app refuses everywhere else and this is the one field
+        // where the value is a private identity.
+        #expect(!key.text.contains(a.private))
+        #expect(!key.text.contains("AGE-SECRET-KEY-1"))
+        #expect(RecipientPicker.refusalMessage(.invalidRecipient) == .recipientEditorErrorInvalidRecipient)
+        #expect(RecipientPicker.refusalMessage(.duplicate) == .accessAddDuplicate)
+        // An untouched field is not something to shout about.
+        #expect(RecipientPicker.refusalMessage(.empty) == nil)
+    }
+
+    @Test("a typo'd key is refused here, not several steps later at the bridge")
+    func malformedRecipientIsRefused() throws {
+        let a = try AgeKeyPair.generate()
+        #expect(RecipientPicker.canAdd("age1abc", existing: []) == .invalidRecipient)
+        #expect(RecipientPicker.canAdd("not a key at all", existing: []) == .invalidRecipient)
+        // Right length, right prefix, one character off — the checksum is
+        // what catches this, which is why the rule lives in
+        // `RecipientRegistry` and is not restated here.
+        let last = try #require(a.public.last)
+        let typo = a.public.dropLast() + (last == "q" ? "p" : "q")
+        #expect(RecipientPicker.canAdd(String(typo), existing: []) == .invalidRecipient)
     }
 }
 
@@ -682,5 +741,127 @@ struct RecipientPickerRenderedTests {
 
         let labelCountAfter = host.nodes().map(\.value).filter { $0 == "Ops Laptop" }.count
         #expect(labelCountAfter == 1, "the recipient must appear as chosen, not still offered as \"known\" too")
+    }
+}
+
+// MARK: - The Important finding, at the filesystem
+
+/// Counts directory-level writes to one directory — a file created inside it,
+/// or removed from it — for as long as it lives.
+///
+/// The point of watching rather than listing: `SopsConfigGenerator.propose`
+/// stages `.sops.yaml.<uuid>.tmp` in the project root and removes it again in
+/// a `defer`, so a check that only lists the directory *afterwards* sees an
+/// empty directory and reports success no matter what was briefly written
+/// there. That transient file is the whole finding — a private identity in
+/// plaintext inside the user's own working tree — so the test has to be able
+/// to see it while it exists.
+private final class DirectoryWriteWatcher: @unchecked Sendable {
+    private let descriptor: Int32
+    private let source: DispatchSourceFileSystemObject
+    private let lock = NSLock()
+    private var count = 0
+
+    init(watching directory: URL) throws {
+        descriptor = open(directory.path, O_EVTONLY)
+        guard descriptor >= 0 else {
+            throw FixtureError("could not open \(directory.path) to watch it")
+        }
+        source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor, eventMask: .write, queue: .global())
+        let lock = self.lock
+        source.setEventHandler { [weak self] in
+            lock.lock()
+            defer { lock.unlock() }
+            self?.count += 1
+        }
+        let toClose = descriptor
+        source.setCancelHandler { close(toClose) }
+        source.resume()
+    }
+
+    var writeCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    /// Gives the queue time to deliver anything already pending, so a zero
+    /// afterwards means "nothing was written", not "the event has not
+    /// arrived yet". The positive control below is what proves this window
+    /// is actually long enough.
+    func drain() async throws {
+        try await Task.sleep(for: .milliseconds(250))
+    }
+
+    /// Waits until at least one write has been seen, up to `timeout` — used
+    /// only by the positive control, so a slow machine cannot turn "the
+    /// watcher works" into a failure.
+    func waitForWrite(timeout: Duration = .seconds(5)) async throws -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while ContinuousClock.now < deadline {
+            if writeCount > 0 { return true }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        return writeCount > 0
+    }
+
+    func cancel() { source.cancel() }
+}
+
+@Suite("A pasted private identity never reaches the project directory")
+@MainActor
+struct PrivateIdentityNeverReachesTheProjectDirectoryTests {
+
+    /// The Important finding end to end: paste an `AGE-SECRET-KEY-1…`
+    /// identity into the picker's free-text field, then do everything the
+    /// picker would do next — and prove that nothing at all is written into
+    /// the project root at any instant, not merely that nothing is left
+    /// behind.
+    @Test("a private identity is refused at the gate, and no .sops.yaml probe is ever staged for it")
+    func privateIdentityNeverStagesAConfigProbe() async throws {
+        let a = try AgeKeyPair.generate()
+        let root = try scratchDirectory("recipient-picker-no-leak")
+        let keyStore = try makeKeyStore(importing: a.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+        model.relativeName = "secret.yaml"
+        await model.resolvePlan()
+        try #require(model.plan == .noConfig, "precondition: propose/write is offered only for .noConfig")
+
+        let watcher = try DirectoryWriteWatcher(watching: root)
+        defer { watcher.cancel() }
+
+        // Exactly what `RecipientPicker.addRecipient()` does with the field's
+        // contents, driven through the same pure gate the Add button is
+        // disabled by.
+        let refusal = RecipientPicker.canAdd(a.private, existing: model.manuallyChosenRecipients)
+        #expect(refusal == .privateIdentity)
+        if refusal == nil {
+            model.manuallyChosenRecipients.append(a.private)
+        }
+        #expect(model.manuallyChosenRecipients.isEmpty, "a private identity reached the chosen recipient set")
+
+        // The Propose control's own gate, and then the call behind it —
+        // pressed anyway, so this proves the refusal holds structurally and
+        // not only because a button was disabled.
+        #expect(!RecipientPicker.canPropose(recipients: model.manuallyChosenRecipients))
+        let proposed = await model.proposeConfig()
+        #expect(proposed == nil, "propose ran for a selection that should not exist")
+
+        try await watcher.drain()
+        #expect(
+            watcher.writeCount == 0,
+            "something was created or removed inside the project root — the probe file this finding is about")
+        let entries = try FileManager.default.contentsOfDirectory(atPath: root.path)
+        #expect(entries.isEmpty, "the project root gained a file: \(entries)")
+
+        // Negative-space control: the assertion above is worth nothing
+        // unless this watcher can actually fire. Prove it can, with a write
+        // of our own, in the same directory, through the same mechanism.
+        try "canary\n".write(
+            to: root.appendingPathComponent("canary.txt"), atomically: false, encoding: .utf8)
+        #expect(
+            try await watcher.waitForWrite(),
+            "the watcher never fired for a write it should have seen — the zero above proved nothing")
     }
 }
