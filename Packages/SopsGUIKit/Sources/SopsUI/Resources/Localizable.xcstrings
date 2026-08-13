@@ -596,6 +596,116 @@
         }
       }
     },
+    "dotenv-preview.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This file has nothing to import — no assignments, and no lines that couldn't be read."
+          }
+        }
+      }
+    },
+    "dotenv-preview.entries-title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "What will be imported"
+          }
+        }
+      }
+    },
+    "dotenv-preview.skipped-explanation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "These lines don't look like a KEY=value assignment, so nothing about them will be stored. Reveal one to check whether it holds a secret before deciding what to do with it."
+          }
+        }
+      }
+    },
+    "dotenv-preview.skipped-line-label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Line %d"
+          }
+        }
+      }
+    },
+    "dotenv-preview.skipped-title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lines that won't be imported"
+          }
+        }
+      }
+    },
+    "dotenv-preview.suspicion.duplicate-key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This key is assigned more than once. The value used is from line %1$d; it was also set on: %2$@."
+          }
+        }
+      }
+    },
+    "dotenv-preview.suspicion.empty-value": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This value is empty. sops doesn't encrypt an empty string, so it would stay readable in plain text inside the encrypted file."
+          }
+        }
+      }
+    },
+    "dotenv-preview.suspicion.looks-interpolated": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This value contains ${...}, but .env files never expand it — it will be imported exactly as written, ${...} included."
+          }
+        }
+      }
+    },
+    "dotenv-preview.suspicion.not-a-posix-name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This key isn't a name a shell can export — for example it may start with a digit, or contain a dot or a hyphen. It's still a valid entry and will be imported as written."
+          }
+        }
+      }
+    },
+    "dotenv-preview.suspicion.stray-opening-quote": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This value starts with a quote character that's never closed, so it was read as plain text, quote included, rather than as a quoted value."
+          }
+        }
+      }
+    },
     "editor.add-row": {
       "extractionState": "manual",
       "localizations": {

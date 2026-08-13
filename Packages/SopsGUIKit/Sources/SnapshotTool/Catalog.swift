@@ -23,6 +23,7 @@ enum Catalog {
         snapshots += try projectSidebar()
         snapshots += try await secretEditor()
         snapshots += try await fileList()
+        snapshots += dotEnvPreview()
         // The guide's images. In the same catalog so one run can produce
         // both sets, but `Scripts/guide-snapshots.sh` filters to `guide-`
         // and writes them somewhere committed — see `Guide.swift`.
@@ -425,6 +426,16 @@ enum Catalog {
             list("file-list-missing-root", missingRoot),
             list("file-list-incomplete-scan", incomplete),
             list("file-list-empty-partial-scan", emptyPartial),
+        ]
+    }
+
+    // MARK: - DotEnvPreviewTable, covering all five suspicion kinds
+
+    private static func dotEnvPreview() -> [Snapshot] {
+        [
+            Snapshot("dotenv-preview", size: CGSize(width: 640, height: 560)) {
+                DotEnvPreviewTable(parsed: Fixtures.dotEnvPreviewFixture())
+            },
         ]
     }
 }

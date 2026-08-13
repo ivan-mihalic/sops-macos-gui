@@ -790,6 +790,39 @@ enum Fixtures {
         return model
     }
 
+    // MARK: - DotEnvPreviewTable
+
+    /// A short `.env` import preview covering all five `DotEnvSuspicion.Kind`
+    /// cases plus one skipped line — short on purpose, per this file's own
+    /// house rule (`snapshots.sh`'s `List` only shows its unscrolled top, so
+    /// a long fixture would make the snapshot legible only for whatever
+    /// happens to fit above the fold). Values are obviously-fake, `-EXAMPLE`
+    /// suffixed where a real secret's shape matters, matching every other
+    /// fixture in this file — never a real key, never `age-keygen` output.
+    static func dotEnvPreviewFixture() -> ParsedDotEnv {
+        ParsedDotEnv(
+            entries: [
+                DotEnvEntry(key: "DB_HOST", value: "db.internal.example", line: 1),
+                DotEnvEntry(
+                    key: "DB_PASSWORD", value: "correct-horse-battery-staple-EXAMPLE", line: 2),
+                DotEnvEntry(key: "API_KEY", value: "'sk_live_EXAMPLE_unterminated", line: 3),
+                DotEnvEntry(key: "9BAD_KEY", value: "still-imported-EXAMPLE", line: 4),
+                DotEnvEntry(key: "TEMPLATE_URL", value: "${HOME}/app-EXAMPLE", line: 5),
+                DotEnvEntry(key: "EMPTY_SECRET", value: "", line: 6),
+                DotEnvEntry(key: "SHARED_TOKEN", value: "final-value-EXAMPLE", line: 8),
+            ],
+            skipped: [
+                DotEnvSkippedLine(line: 9, text: "not a valid config line at all"),
+            ],
+            suspicions: [
+                DotEnvSuspicion(key: "API_KEY", kind: .strayOpeningQuote),
+                DotEnvSuspicion(key: "9BAD_KEY", kind: .notAPosixName),
+                DotEnvSuspicion(key: "TEMPLATE_URL", kind: .looksInterpolated),
+                DotEnvSuspicion(key: "EMPTY_SECRET", kind: .emptyValue),
+                DotEnvSuspicion(key: "SHARED_TOKEN", kind: .duplicateKey(supersededLines: [7])),
+            ])
+    }
+
     private static func git(_ arguments: [String], in directory: URL) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")

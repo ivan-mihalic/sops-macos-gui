@@ -510,6 +510,41 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // `message(forBlocking:)` joined the other four overloads.
     case creationRecoveryCheckSopsYamlSyntax = "creation-failure.recovery.check-sops-yaml-syntax"
 
+    // MARK: Phase 2 Task 3 — DotEnvPreviewTable
+    //
+    // What a `.env` import would actually produce, before anything is
+    // written. See `DotEnvPreviewTable`'s own doc comment for why every one
+    // of these exists: masking follows `SecretEditorView`'s own keys
+    // (`editorRevealValue`/`editorHideValue`, reused rather than duplicated
+    // below) and every `DotEnvSuspicion.Kind` gets a full sentence, not an
+    // icon alone.
+
+    case dotEnvPreviewEntriesTitle = "dotenv-preview.entries-title"
+    case dotEnvPreviewSkippedTitle = "dotenv-preview.skipped-title"
+    // Sits under the skipped section's title. There is deliberately no
+    // per-line reason here — `DotEnvSkippedLine`'s own doc comment explains
+    // why the parser does not (and should not) try to guess one — so this
+    // only says what the section as a whole means and what to do about it.
+    case dotEnvPreviewSkippedExplanation = "dotenv-preview.skipped-explanation"
+    // Formatted with a skipped line's 1-based line number. `%d` here is a
+    // line number, not a count — see the exemption this key has in
+    // `LocalizationTests.countedStringsWithNoSingularCase`.
+    case dotEnvPreviewSkippedLineLabel = "dotenv-preview.skipped-line-label"
+    // Shown when a `.env` file produced neither an entry nor a skipped
+    // line — blank lines and comments alone, or a genuinely empty file.
+    case dotEnvPreviewEmpty = "dotenv-preview.empty"
+
+    case dotEnvPreviewSuspicionStrayOpeningQuote = "dotenv-preview.suspicion.stray-opening-quote"
+    case dotEnvPreviewSuspicionNotAPosixName = "dotenv-preview.suspicion.not-a-posix-name"
+    case dotEnvPreviewSuspicionLooksInterpolated = "dotenv-preview.suspicion.looks-interpolated"
+    case dotEnvPreviewSuspicionEmptyValue = "dotenv-preview.suspicion.empty-value"
+    // Formatted with the winning entry's own line number (`%1$d`, matching
+    // `DotEnvEntry.line`) and the comma-joined superseded line numbers
+    // (`%2$@`, from `DotEnvSuspicion.Kind.duplicateKey(supersededLines:)`).
+    // `%1$d` is that entry's own line number, not a count — same exemption
+    // reasoning as `dotEnvPreviewSkippedLineLabel` above.
+    case dotEnvPreviewSuspicionDuplicateKey = "dotenv-preview.suspicion.duplicate-key"
+
     /// The resolved English text. Used in views and asserted in tests.
     public var text: String {
         String(localized: String.LocalizationValue(rawValue), bundle: .module)

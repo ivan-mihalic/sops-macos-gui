@@ -192,6 +192,13 @@ struct LocalizationTests {
         // non-comment line, so the count is 2 or greater by construction.
         "key.error.multiple-keys":
             "raised only when a keys.txt holds more than one key, so the count is never 1",
+        // Both of these format a 1-based line number, not a count of
+        // anything — its grammatical form never varies by value, so there is
+        // no singular/plural split to add.
+        "dotenv-preview.skipped-line-label":
+            "%d is a line number, not a count",
+        "dotenv-preview.suspicion.duplicate-key":
+            "%1$d is the winning entry's own line number, not a count",
     ]
 
     @Test("every string that formats a count pluralizes on it")
