@@ -395,6 +395,39 @@ public final class NewSecretFileModel {
     /// re-picking a source file must not discard it. Also cleared outright
     /// by `resolvePlan()` — see that method — which is a stricter policy
     /// than the subject check alone; the subject check is the floor.
+    ///
+    /// ## The known gap in this subject, and the rationale it does *not* rest on
+    ///
+    /// `GovernedPlan` names the recipients and the regex — not the session
+    /// identity the discovery actually depended on. `SessionKeyStore
+    /// .importKey(_:)` replaces that identity without touching the plan, so
+    /// a `wouldBeUnreadable` learned under key A stays readable, and keeps
+    /// demanding a tick, under key B — for which it may simply be untrue.
+    /// Reachable in ordinary use: Settings is a separate scene, so `⌘,` →
+    /// import the right key → back to the still-open sheet is a real
+    /// sequence, and hitting `wouldBeUnreadable` is exactly when a user goes
+    /// looking for the right key.
+    ///
+    /// This is still deferred — closing it needs `SessionKeyStore` to expose
+    /// something stable to key a `Learned` fact on, which is a change to
+    /// that type's contract and belongs with the deferred plan-scoping work
+    /// that must decide the same question for `acknowledgedUnreadable`.
+    ///
+    /// **But not for the reason first recorded.** That rationale held the
+    /// failure direction was safe — "it asks for one extra tick, not one
+    /// fewer" — and that half is wrong. Ticking the box is not a free click:
+    /// `acknowledgedUnreadable` flows into `ResolvedEncryption`, whose own
+    /// doc comment (`SecretFileCreator`) states it "trades away more than
+    /// that one thing: it also means the file is written with **no content
+    /// verification at all**". So a stale discovery can steer a user whose
+    /// newly imported key genuinely *is* a recipient into waiving the
+    /// round-trip check for a file that would have verified cleanly. That is
+    /// a deferred defect with a real cost, not a spare tick.
+    ///
+    /// The `forget()` direction *is* safe, and only that one: an emptied key
+    /// store makes `readiness` return `.blocked` at its own key-store guard
+    /// before the plan switch is ever reached, so the stale fact is
+    /// unreachable. `importKey` is the only door this leaves open.
     private var unreadability: Learned<GovernedPlan, Bool>?
 
     /// Why the most recent `create()` attempt refused, when the refusal was
@@ -480,7 +513,30 @@ public final class NewSecretFileModel {
     /// refusal that has since stopped describing what would be created. A
     /// `plan` resolving to `.noConfig`/`.noRuleMatched` is not this kind of
     /// failure either; see `readiness`.
-    public var planError: CreationFailureMessage? {
+    ///
+    /// ## What this is *for*, now that it is `internal`
+    ///
+    /// **Nothing renders this, and nothing should.** It is the tests'
+    /// staleness probe: the one property whose value is a bare
+    /// `CreationFailureMessage?` rather than a `Readiness` case, so a test
+    /// can ask "is a refusal about the previous name still readable?" in one
+    /// expression (`NewSecretFileSheetTests`'s `A stale verdict cannot
+    /// outlive what it describes` suite does exactly that throughout). It
+    /// was `public` with zero non-test readers, which invited the opposite
+    /// conclusion — that it is a second thing to show a user beside
+    /// `readiness`.
+    ///
+    /// It is not, and rendering it would be a defect rather than a
+    /// duplication: this property and `readiness` **disagree about
+    /// precedence**. `readiness` reports a source-load failure or an empty
+    /// key store *before* it looks at the resolve at all; this reports the
+    /// resolve error first. For a state that has both — a `..` name typed
+    /// while no key is unlocked — the two produce different sentences about
+    /// the same instant. Reconciling that is a real change to one of the two
+    /// orderings, and nothing today needs it, so the honest fix is to say
+    /// what this is instead of promoting it. `readiness`'s `.blocked(_:)` is
+    /// the only failure sentence this wizard shows.
+    var planError: CreationFailureMessage? {
         // The same `resolution.name == relativeName` gate `readiness` applies,
         // and for the same reason: a resolve failure is a refusal about the
         // name it ran for. Without this gate, typing a name with a `..`
@@ -692,8 +748,22 @@ public final class NewSecretFileModel {
 
         // `lastCreateFailure` is deliberately *not* cleared here. It is
         // filed under the whole `AttemptSubject`, so a resolve that changes
-        // the name or the plan already makes it unreadable, and a resolve
-        // that changes neither has not made a real refusal any less true.
+        // the name or the plan already makes it unreadable — and a refusal
+        // that survives is one nothing above has invalidated.
+        //
+        // "Survives" is narrower than it sounds, and the earlier wording
+        // here — "a resolve that changes neither has not made a real refusal
+        // any less true" — overstated it by ignoring its own two lines
+        // above: `acknowledgedUnreadable` and `manuallyChosenRecipients` are
+        // both reset unconditionally, and both are part of `AttemptSubject`
+        // (the second through `plan`, via `currentGovernedPlan()`). So a
+        // refusal learned with the box ticked, or for a manually-chosen
+        // recipient set, is already unreadable after any resolve at all,
+        // whatever the name and the resolved rule do. What actually survives
+        // is a refusal learned with neither of those in play — a
+        // `.governedByRule` plan, box unticked — for an unchanged name and
+        // rule. That is the ordinary case, which is why not clearing this is
+        // still worth doing.
 
         // `CreationPlanResolver.plan(forTarget:in:)` must never be asked
         // about `projectRoot` itself: an empty (or whitespace-only — a
@@ -1175,9 +1245,11 @@ public final class NewSecretFileModel {
     ///   state, and a sentence left here would hide the checkbox behind a
     ///   banner — the third of this task's four instances.
     /// - **Every other refusal.** Recorded as `lastCreateFailure`, filed
-    ///   under the exact `AttemptSubject` it refused, and surfaced through
-    ///   both `planError` and `readiness` for exactly as long as that subject
-    ///   is still what would be created.
+    ///   under the exact `AttemptSubject` it refused, and shown to the user
+    ///   through `readiness`'s `.blocked(_:)` for exactly as long as that
+    ///   subject is still what would be created. `planError` reads the same
+    ///   fact back for the tests that probe staleness directly; nothing
+    ///   renders it — see its own doc comment.
     public func create() async -> URL? {
         guard let subject = currentSubject() else { return nil }
 

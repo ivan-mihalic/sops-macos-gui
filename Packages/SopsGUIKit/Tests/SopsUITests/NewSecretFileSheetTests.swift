@@ -1551,13 +1551,49 @@ struct NoStoredVerdictTests {
     func planErrorIsComputed() throws {
         let source = try modelSource()
         let lines = codeLines(source)
-        #expect(source.contains("public var planError: CreationFailureMessage? {"))
+        // `internal`, not `public`: nothing outside this module reads it and
+        // nothing renders it — it is this suite's own staleness probe. See
+        // its doc comment for why promoting it would mean reconciling its
+        // precedence with `readiness`'s first.
+        #expect(source.contains("var planError: CreationFailureMessage? {"))
+        #expect(
+            !source.contains("public var planError"),
+            "planError is the tests' probe, not a second failure sentence for a view to render")
         #expect(
             assigns("planError", in: lines).isEmpty,
             "planError describes the attempt in hand, not one that was in hand when someone last set it")
         #expect(
-            declarationsMentioning("planError", in: lines)
-                == ["public var planError: CreationFailureMessage? {"])
+            declarationsMentioning("planError", in: lines) == ["var planError: CreationFailureMessage? {"])
+    }
+
+    /// The third computed verdict of exactly this class — and the one whose
+    /// staleness would be an **access disclosure** error rather than a UI
+    /// annoyance: `encryptedImport` names, by recipient, who gains and loses
+    /// access to a file that does not exist yet. A stored version of it would
+    /// go stale on every keystroke in the name field after an unlock, telling
+    /// a user "Alice gains access" for a plan that no longer names Alice —
+    /// which is exactly what spec §4.1 decision 4 exists to prevent. This
+    /// suite's stated purpose is that a further instance is caught before it
+    /// ships; leaving the highest-stakes verdict unguarded would defeat that.
+    @Test("encryptedImport is computed, never assigned, with only its learned fact stored")
+    func encryptedImportIsComputed() throws {
+        let source = try modelSource()
+        let lines = codeLines(source)
+        #expect(source.contains("public var encryptedImport: EncryptedImportState {"))
+        #expect(
+            assigns("encryptedImport", in: lines).isEmpty,
+            "nothing may assign encryptedImport; the diff is derived on every read against the live plan")
+        // Exactly two `var`s may mention it, in declaration order: the
+        // `Learned` fact keyed to the file path that was actually unlocked —
+        // the one thing that genuinely cannot change without another unlock
+        // — and the computed property that diffs it against the live plan. A
+        // third would be a stored diff, which is the defect.
+        #expect(
+            declarationsMentioning("encryptedImport", in: lines) == [
+                "private var encryptedImportOutcome: Learned<String, EncryptedImportOutcome>?",
+                "public var encryptedImport: EncryptedImportState {",
+            ],
+            "a third var mentioning encryptedImport is a stored diff waiting to go stale")
     }
 
     /// The negative-space check: these guards are only worth anything if they

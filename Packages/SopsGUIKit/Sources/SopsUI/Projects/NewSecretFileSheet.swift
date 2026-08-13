@@ -236,9 +236,16 @@ public struct NewSecretFileSheet: View {
     /// `nil` — nothing shown — before any name has produced a plan at all
     /// (`model.plan == nil` and not resolving), which covers both
     /// `.needsName` and a thrown `CreationPlanResolver.Error`; the latter
-    /// already has its own sentence in `model.planError`, rendered through
+    /// already has its own sentence in `model.readiness`, rendered through
     /// `failureBanner(_:)` above via `readiness == .blocked`, so this line
     /// has nothing useful to add for it.
+    ///
+    /// That used to name `model.planError` as the source of the rendered
+    /// sentence, which was false: the banner renders `readiness`'s message,
+    /// and the two only coincide for this one case — they disagree about
+    /// precedence in general (see `NewSecretFileModel.planError`'s own doc
+    /// comment). Nothing in this file reads `planError` at all, and nothing
+    /// may.
     private var infoLineText: String? {
         // `.resolving` counts as resolving here, not only `model.isResolving`:
         // between a keystroke and the debounce firing, `model.plan` is still
