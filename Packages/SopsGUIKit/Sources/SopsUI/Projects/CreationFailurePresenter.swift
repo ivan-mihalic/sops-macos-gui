@@ -475,6 +475,22 @@ public enum CreationFailurePresenter {
             recovery: nil)
     }
 
+    /// A chosen encrypted source file that reads fine as UTF-8 but carries a
+    /// raw NUL byte — valid UTF-8, so it survives the read, and then ends the
+    /// argument early at the Go bridge's C boundary
+    /// (`String.crossesCBoundaryIntact`'s own doc comment has the mechanism).
+    /// `SecretDocumentViewModel.load()`/`RecipientAccessModel.load()` refuse
+    /// the identical shape for a document already part of a project; this is
+    /// the same refusal at the point a file is *chosen to become* one,
+    /// closing ticket #17 claim 4's fourth crossing point.
+    public static func message(forNULByteInSourceFile filename: String) -> CreationFailureMessage {
+        CreationFailureMessage(
+            title: .creationFailureTitle,
+            detail: "This file contains a NUL byte, which this app cannot read without silently "
+                + "dropping everything after it: " + filename,
+            recovery: nil)
+    }
+
     /// A `.dotEnv` source that parsed without throwing but produced **no
     /// usable entries** while still holding lines `DotEnvParser` could not
     /// read as `KEY=value` at all (`ParsedDotEnv.skipped`, non-empty;
