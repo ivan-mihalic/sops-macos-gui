@@ -386,6 +386,20 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // away without a word. See `RecipientAccessModel.duplicatedRecipients`.
     case accessDuplicateRecipients = "access.duplicate-recipients"
 
+    // SOPS-33: the title on the banner both Access panels show when
+    // `registryQuarantineNotice` is set — `RecipientAccessModel
+    // .registryQuarantineNotice`/`ProjectAccessModel
+    // .registryQuarantineNotice`, set by `RecipientRegistry
+    // .loadOrQuarantine(in:)` exactly when `recipients.json` existed but
+    // could not be decoded and was moved aside. One key shared by both
+    // panels, the same way `accessNeedsKeyBody` already is — the sentence
+    // does not change meaning between the per-file and project-wide screen.
+    // The notice body itself is never a catalog string: it carries the
+    // registry's real path, composed at runtime by `RecipientRegistry` and
+    // shown verbatim, the same treatment `ProjectAccessView.explanation(_:_
+    // :tint:)` gives a config error.
+    case accessRegistryQuarantineTitle = "access.registry-quarantine.title"
+
     // Ticket #3: a recipient removal this panel already applied may have
     // left this file owing a rotation of its values — see
     // `RecipientAccessModel.rotationDebtEntries` and

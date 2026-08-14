@@ -3728,6 +3728,17 @@
         }
       }
     },
+    "access.registry-quarantine.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recipient names unavailable"
+          }
+        }
+      }
+    },
     "key.import.legacy-chmod-unavailable": {
       "extractionState": "manual",
       "localizations": {

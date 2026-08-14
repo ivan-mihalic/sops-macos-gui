@@ -14,8 +14,17 @@ import Testing
 /// mechanically is that no call site has drifted back to the silent idiom —
 /// which is the regression this exists to catch (SOPS-27 claim 5).
 ///
-/// ⚠️ This says nothing about the notice being *shown*. It is set at all six
-/// call sites and rendered at none; see SOPS-33.
+/// ⚠️ This says nothing about the notice being *shown* — it only pins that
+/// every call site *reads* it. SOPS-33 found it set at all six call sites and
+/// rendered at none, and closed that for the two dedicated access panels:
+/// `ProjectAccessView` (`ProjectAccessTests
+/// .thePanelRendersTheRegistryQuarantineBanner`) and `RecipientAccessView`
+/// (`RecipientAccessRegistryQuarantineTests.noticeIsRendered`), both through
+/// the shared `RegistryQuarantineBanner`. The three wizard `@State` call
+/// sites (`EncryptedImportPreview`, `RecipientPicker`, `NewSecretFileSheet`)
+/// remain store-only by deliberate choice — see `RegistryQuarantineBanner`'s
+/// own doc comment for why a transient file-creation flow is not the place
+/// for a banner about the project's registry housekeeping.
 @Suite("registry reads route through loadOrQuarantine")
 struct RegistryQuarantineWiringTests {
     private static let sources = [

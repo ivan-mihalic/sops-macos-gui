@@ -170,6 +170,10 @@ public struct RecipientAccessView: View {
 
     private var loadedContent: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if let notice = model.registryQuarantineNotice {
+                RegistryQuarantineBanner(notice: notice)
+            }
+
             List(model.entries) { entry in
                 RecipientAccessRow(
                     entry: entry, onToggle: { toggleRemoval(for: entry) },
@@ -347,6 +351,59 @@ enum RecipientRowContent {
                 .lineLimit(1)
                 .truncationMode(.tail)
         }
+    }
+}
+
+/// The banner both Access panels show when `registryQuarantineNotice` is
+/// set — `RecipientAccessModel`/`ProjectAccessModel`, set by `RecipientRegistry
+/// .loadOrQuarantine(in:)` exactly when `recipients.json` existed but could
+/// not be decoded and was moved aside (SOPS-33). Before this existed, both
+/// panels quarantined the corrupt file correctly but told the user nothing —
+/// `RegistryQuarantineWiringTests` pins that every screen at least reads the
+/// notice; this is what makes it visible.
+///
+/// `notice` is engine-authored diagnostic text carrying the registry's real
+/// path (see `RecipientRegistry.quarantine(in:)`), shown verbatim — the same
+/// treatment `ProjectAccessView.explanation(_:_:tint:)` gives a config
+/// error, and for the same reason: a path is not translatable, and resolved
+/// through the catalog it would vanish under whichever build system copies
+/// `.xcstrings` uncompiled (see `LocalizationTests`' own header). Only the
+/// title above it is a catalog string, and that string names no path, so
+/// `LocalizationTests.noCatalogStringNamesAKeyFilePath` has nothing to say
+/// about it.
+///
+/// Shared rather than duplicated in both files, the same way
+/// `RecipientKindBadge`/`RecipientRowContent` already are: the two panels'
+/// wording must not drift, and it already drifted once in this exact seam.
+///
+/// Deliberately **not** shown by the three wizard steps that also read
+/// `registryQuarantineNotice` (`EncryptedImportPreview`, `RecipientPicker`,
+/// `NewSecretFileSheet`): each is a single, transient flow for creating one
+/// new file, already carrying its own loading/proposal/failure states, and a
+/// registry that cannot supply *labels* does not block or even slow that
+/// flow — the picker falls back to showing raw public keys, which is a
+/// complete and correct (if less friendly) way to choose a recipient. A
+/// banner there would be about the project's backend housekeeping, not about
+/// anything the wizard is doing. The two dedicated access panels are where
+/// this is on-topic and actionable: a user can leave one, fix the file, and
+/// come back to labels again.
+struct RegistryQuarantineBanner: View {
+    let notice: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Label(.accessRegistryQuarantineTitle, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.orange)
+            Text(notice)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.orange.opacity(0.12))
     }
 }
 

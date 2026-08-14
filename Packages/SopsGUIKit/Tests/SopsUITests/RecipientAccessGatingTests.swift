@@ -411,3 +411,81 @@ struct RecipientAccessRowLabelTests {
             "the pending-removal row (owner) must offer to undo, not remove again")
     }
 }
+
+// MARK: - SOPS-33: the registry-quarantine notice, actually rendered
+
+/// `RegistryQuarantineWiringTests` (`RegistryQuarantineWiringTests.swift`)
+/// already pins that `RecipientAccessModel.load()` routes through
+/// `loadOrQuarantine(in:)` and stores whatever it returns in
+/// `registryQuarantineNotice`. This is the other half that suite's own
+/// doc comment says it cannot check: that the notice reaches the screen,
+/// through the real `RegistryQuarantineBanner` wired into
+/// `RecipientAccessView.loadedContent` — not just the model.
+@Suite("RecipientAccessView shows the registry-quarantine banner")
+@MainActor
+struct RecipientAccessRegistryQuarantineTests {
+
+    private func labels(in nodes: [GatingAXProbe.Node]) -> [String] {
+        nodes.flatMap { [$0.label, $0.value] }
+    }
+
+    @Test("a moved-aside registry's notice is shown, not just held on the model")
+    func noticeIsRendered() async throws {
+        let owner = try AgeKeyPairForTests.generate()
+        let encrypted = try SopsBridge.encryptYAML(
+            "db:\n    password: fixture-EXAMPLE\n", recipients: [owner.public])
+        let store = SessionKeyStore()
+        try store.importKey(owner.private)
+        let notice = "Your recipient names at /fixture/.sops-gui/recipients.json could not be read, " +
+            "so the file has been moved aside to /fixture/.sops-gui/recipients-corrupt-x.json."
+
+        let model = RecipientAccessModel(
+            fileURL: URL(fileURLWithPath: "/dev/null/access-registry-quarantine.yaml"),
+            projectURL: URL(fileURLWithPath: "/dev/null/never-read-project"), keyStore: store,
+            readFile: { _ in encrypted },
+            loadRegistry: { _ in ([], notice) })
+
+        let host = GatingHost(size: CGSize(width: 480, height: 360)) {
+            AnyView(RecipientAccessView(model: model, onClose: {}, onApplied: {}))
+        }
+        defer { host.finish() }
+        await host.settleAfterLoad()
+        try #require(model.loadState == .loaded, "precondition: the view's own task loaded the model")
+
+        let seen = labels(in: host.nodes())
+        #expect(seen.contains(LocalizedKey.accessRegistryQuarantineTitle.text),
+                "the panel must show the registry-quarantine banner's title")
+        #expect(seen.contains(notice),
+                "the panel must show the notice text itself, not just the title")
+    }
+
+    /// The negative case: a registry that loaded cleanly (`quarantineNotice
+    /// == nil`, the default seam over an empty project) must render no
+    /// banner at all — without this, an unconditionally-rendered banner
+    /// would still pass the positive test above.
+    @Test("an ordinary load shows no registry-quarantine banner")
+    func ordinaryLoadShowsNoRegistryQuarantineBanner() async throws {
+        let owner = try AgeKeyPairForTests.generate()
+        let encrypted = try SopsBridge.encryptYAML(
+            "db:\n    password: fixture-EXAMPLE\n", recipients: [owner.public])
+        let store = SessionKeyStore()
+        try store.importKey(owner.private)
+
+        let model = RecipientAccessModel(
+            fileURL: URL(fileURLWithPath: "/dev/null/access-registry-quarantine-clean.yaml"),
+            projectURL: URL(fileURLWithPath: "/dev/null/never-read-project"), keyStore: store,
+            readFile: { _ in encrypted },
+            loadRegistry: { _ in ([], nil) })
+
+        let host = GatingHost(size: CGSize(width: 480, height: 360)) {
+            AnyView(RecipientAccessView(model: model, onClose: {}, onApplied: {}))
+        }
+        defer { host.finish() }
+        await host.settleAfterLoad()
+        try #require(model.loadState == .loaded, "precondition: the view's own task loaded the model")
+
+        try #require(model.registryQuarantineNotice == nil, "precondition: nothing was quarantined")
+        #expect(!labels(in: host.nodes()).contains(LocalizedKey.accessRegistryQuarantineTitle.text),
+                "an ordinary load must not show the registry-quarantine banner")
+    }
+}
