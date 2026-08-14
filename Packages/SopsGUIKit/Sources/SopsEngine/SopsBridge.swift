@@ -105,6 +105,34 @@ public struct ConfigRecipientUpdate: Decodable, Equatable, Sendable {
     public let config: String
 }
 
+/// How many of a SOPS document's leaves are genuinely ciphertext on disk,
+/// versus how many the document actually has. See
+/// `SopsBridge.inspectLeafEncryption(in:)`.
+public struct LeafEncryptionSummary: Decodable, Equatable, Sendable {
+    /// How many non-comment scalar leaves the document has, across every
+    /// document in a multi-document file. Zero for a document with nothing
+    /// to encrypt — never the same shape as every leaf being unencrypted.
+    public let leafCount: Int
+    /// How many of those leaves are ciphertext on disk right now.
+    public let encryptedLeafCount: Int
+    /// Whether this file's own metadata names a rule that could
+    /// legitimately leave some values unencrypted — an `encrypted_regex`,
+    /// `unencrypted_regex`, `encrypted_suffix`, either `_comment_regex`
+    /// sibling, or a **non-default** `unencrypted_suffix`. See
+    /// `gobridge.LeafEncryptionSummary`'s doc comment for why the default
+    /// suffix specifically does not count: sops writes
+    /// `unencrypted_suffix: _unencrypted` into nearly every file that
+    /// declares no rule at all, so its bare presence is not evidence of a
+    /// choice — measured directly, not assumed.
+    public let narrowingDeclared: Bool
+    /// Whether a declared regex-shaped rule fails to compile under the
+    /// same engine sops itself compiles it with. True here is a certain
+    /// finding even when `narrowingDeclared` is also true — an
+    /// uncompilable pattern can never match anything, so sops's own
+    /// (reproduced, tested) fallback is to leave every value in cleartext.
+    public let uncompilableRuleDeclared: Bool
+}
+
 /// In-process SOPS engine. Every call crosses into the Go runtime linked from
 /// the static bridge; no `sops` binary is ever spawned.
 public enum SopsBridge {
@@ -316,6 +344,35 @@ public enum SopsBridge {
             // statically linked struct disagreeing about their own JSON.
             throw SopsBridgeError(
                 description: "the bridge's answer about this project's .sops.yaml could not be read")
+        }
+    }
+
+    /// Reports how many of `encrypted`'s leaves are genuinely ciphertext on
+    /// disk versus how many the document actually has — read straight off
+    /// the file's own shape, never by decrypting it, so this needs no age
+    /// identity. See `gobridge.LeafEncryptionSummary`'s doc comment (Go
+    /// side) for why this exists and what a caller may and may not
+    /// conclude from the answer: a document whose own metadata narrows
+    /// encryption to some keys (`encrypted_regex` and its siblings) can
+    /// legitimately have `encryptedLeafCount < leafCount`, so only a
+    /// caller that has independently confirmed no such narrowing applies
+    /// may read that as a problem.
+    ///
+    /// Throws when `encrypted` has no sops metadata at all, or is not
+    /// valid YAML — the same failure shape `recipients(in:)` has.
+    public static func inspectLeafEncryption(in encrypted: String) throws -> LeafEncryptionSummary {
+        let json = try call { out in
+            encrypted.withGoString { encryptedPtr in
+                sops_leaf_encryption_summary(encryptedPtr, out)
+            }
+        }
+        guard let data = json.data(using: .utf8) else {
+            throw SopsBridgeError(description: "bridge returned non-UTF8 JSON for the leaf encryption summary")
+        }
+        do {
+            return try JSONDecoder().decode(LeafEncryptionSummary.self, from: data)
+        } catch {
+            throw SopsBridgeError(description: "could not decode the leaf encryption summary")
         }
     }
 

@@ -279,6 +279,20 @@ func sops_apply_changes(encrypted *C.char, changesJSON *C.char, agePrivateKey *C
 	return result(out, payload, err)
 }
 
+// sops_leaf_encryption_summary reports how many of encrypted's leaves are
+// genuinely ciphertext on disk versus how many the document actually has —
+// see gobridge.LeafEncryptionSummary's doc comment for why this exists
+// (ticket #5) and what it does and does not conclude. Needs no age
+// identity: only the document's own on-disk shape is read, never decrypted.
+//
+//export sops_leaf_encryption_summary
+func sops_leaf_encryption_summary(encrypted *C.char, out **C.char) C.int {
+	payload, err := gobridge.Guard(gobridge.OpReading, func() ([]byte, error) {
+		return gobridge.InspectLeafEncryptionJSON([]byte(C.GoString(encrypted)))
+	})
+	return result(out, payload, err)
+}
+
 // sops_free releases a string one of the entry points above returned.
 //
 // # The guard here protects nothing, and saying so is the point
