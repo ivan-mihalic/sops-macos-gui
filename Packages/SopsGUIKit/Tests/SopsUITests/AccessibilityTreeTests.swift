@@ -84,15 +84,32 @@ enum AXProbe {
 
         // An empty tree is never a legitimate answer about a rendered view —
         // every view this probe is ever pointed at has at least one
-        // accessible element. It is always a measurement failure: most
-        // likely `AXEnhancedUserInterface` was off for this walk (see the
-        // comment above), the process-wide switch that a concurrent probe's
-        // own `defer` can clear out from under this one (swift-testing runs
-        // suites in parallel). Asserted here, once, so every caller gets the
-        // right diagnosis for free instead of a confusing "expected string
-        // missing" that reads like a defect in the view under test.
+        // accessible element, so zero means something went more totally
+        // wrong than a masking or labelling bug (the view never rendered,
+        // the host never attached to a window, etc.).
+        //
+        // This is *not* a lost-`AXEnhancedUserInterface`-flag detector, even
+        // though that was this assertion's original justification — measured
+        // and found wrong. Every probe entry point in this test target
+        // enables the flag synchronously on the main actor with no
+        // suspension before its walk, so a one-shot probe like this one
+        // never actually observes it cleared. And even where it genuinely is
+        // cleared out from under a live walk (`GatingHost`/`EditorHost`,
+        // which keep a host alive across multiple walks), that clearing
+        // costs nothing once the flag was on when the view was built: a
+        // control walk, a walk cleared-then-relaid-out, and a normal walk
+        // all returned the identical 92 nodes on a 12-row `List`. Only a
+        // walk built and laid out with the flag off from the very start
+        // undercounts — 68, not 0 — because SwiftUI still builds most
+        // accessibility elements eagerly regardless of the flag. So a
+        // non-empty tree is not evidence the flag was ever on, and this
+        // assertion cannot and does not diagnose that mechanism. It is
+        // narrower and still worth having: catching the rarer case of
+        // nothing at all, with its own clear message, rather than letting
+        // that case fall through to a confusing "expected string missing"
+        // further down that reads like a defect in the view under test.
         #expect(!nodes.isEmpty,
-                "AXProbe.tree saw an empty accessibility tree — that is always a probe failure, never a valid result. AXEnhancedUserInterface was likely off for this walk (possibly cleared by a concurrent probe); this is not evidence about the view under test.")
+                "AXProbe.tree saw a completely empty accessibility tree — that is never a valid result for a rendered view (even a walk built with AXEnhancedUserInterface off from the start still returns most of the tree; see this function's comment). Something more total than the usual bug is wrong here.")
         return nodes
     }
 

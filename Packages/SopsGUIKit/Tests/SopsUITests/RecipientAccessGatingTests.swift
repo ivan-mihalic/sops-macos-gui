@@ -137,13 +137,18 @@ enum GatingAXProbe {
         var seen: Set<ObjectIdentifier> = []
         walk(hosting, depth: 0, seen: &seen, into: &nodes)
 
-        // Same reasoning as `AXProbe.tree`: an empty tree is always a
-        // measurement failure (most likely AXEnhancedUserInterface was off
-        // for this walk), never a legitimate "this view renders nothing".
-        // Asserted here so it holds for every caller, not just the ones that
-        // remembered to write their own vacuity canary.
+        // Same reasoning as `AXProbe.tree` (`AccessibilityTreeTests.swift`),
+        // corrected the same way: an empty tree is never legitimate, but it
+        // is not evidence about `AXEnhancedUserInterface` being off. This is
+        // a one-shot probe — the flag is set synchronously right above with
+        // no suspension before the walk, so it is never actually observed
+        // cleared here — and even a walk built with it off from the start
+        // still returns most of the tree (measured: 68 of 92 nodes on a
+        // 12-row `List`, not 0). So non-empty proves nothing about the flag
+        // either way; this stays a minimal sanity check for a more total
+        // failure (the view never rendered, etc.), not a flag diagnostic.
         #expect(!nodes.isEmpty,
-                "GatingAXProbe.tree saw an empty accessibility tree — that is always a probe failure, never a valid result. AXEnhancedUserInterface was likely off for this walk (possibly cleared by a concurrent probe); this is not evidence about the view under test.")
+                "GatingAXProbe.tree saw a completely empty accessibility tree — that is never a valid result for a rendered view (even a walk built with AXEnhancedUserInterface off from the start still returns most of the tree). Something more total than the usual bug is wrong here.")
         return nodes
     }
 
@@ -278,14 +283,22 @@ final class GatingHost {
         var seen: Set<ObjectIdentifier> = []
         GatingAXProbe.walk(hosting, depth: 0, seen: &seen, into: &found)
 
-        // Same reasoning as `AXProbe.tree` and `GatingAXProbe.tree`: an
-        // empty tree is always a measurement failure, never a legitimate
-        // "this view renders nothing" — asserted here too since `GatingHost`
-        // walks independently of `GatingAXProbe.tree` (it keeps the host
-        // alive across multiple walks, for tests that mutate the model
-        // in between).
+        // Same reasoning as `AXProbe.tree` (`AccessibilityTreeTests.swift`),
+        // corrected the same way — but `GatingHost` is one of the two
+        // probes (with `RevealedRowTests.EditorHost`) where
+        // `AXEnhancedUserInterface` really *is* measured to get cleared out
+        // from under a live walk: ~90 times across a full suite run, because
+        // this host is kept alive and re-walked while a concurrent probe's
+        // own `defer` can flip the process-wide flag off in between. That
+        // clearing turned out to cost nothing: a control walk, a walk
+        // cleared then relaid out, and a fresh walk all returned the
+        // identical 92 nodes on a 12-row `List` — only a walk built with the
+        // flag off from the very start undercounts (68, not 0). So even
+        // here, a non-empty tree is not evidence the flag stayed on, and
+        // this assertion is not a diagnostic for that mechanism — it is a
+        // minimal sanity check that nothing more total went wrong.
         #expect(!found.isEmpty,
-                "GatingHost.nodes() saw an empty accessibility tree — that is always a probe failure, never a valid result. AXEnhancedUserInterface was likely off for this walk (possibly cleared by a concurrent probe); this is not evidence about the view under test.")
+                "GatingHost.nodes() saw a completely empty accessibility tree — that is never a valid result for a rendered view (even a walk built with AXEnhancedUserInterface off from the start still returns most of the tree; see this function's comment). Something more total than the usual bug is wrong here.")
         return found
     }
 
