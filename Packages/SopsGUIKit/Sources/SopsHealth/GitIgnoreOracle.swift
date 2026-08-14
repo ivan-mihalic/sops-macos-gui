@@ -94,6 +94,17 @@ enum GitIgnoreOracle {
         /// `tracked` are the subset of those already committed to the
         /// repository — for which adding a gitignore line changes nothing.
         case answered(exposed: [URL], tracked: Set<String>)
+        /// `root` is not inside a git repository at all — searched upward the
+        /// same way git itself does, and there is no `.git` anywhere above
+        /// it. This is a *definite fact* about the project, not a missing
+        /// answer: ticket #8, claim 2, found that the previous code
+        /// collapsed this into `.undetermined`, so a project with no git at
+        /// all could never reach a verdict about its plaintext secrets — only
+        /// ever "unknown", forever. Kept distinct from `.undetermined` so
+        /// `ProjectHealthCheck.gitignoreFinding` can say the more useful,
+        /// still-honest thing: nothing here can be committed to a repository
+        /// by accident, because there is no repository.
+        case noRepository
         /// git could not answer, and the reason is shown to the user verbatim.
         /// Never downgraded to a guess.
         case undetermined(reason: String)
@@ -105,13 +116,21 @@ enum GitIgnoreOracle {
 
     static func classify(candidates: [URL], root: URL, gitPath: String?) -> Verdict {
         guard let gitPath else {
+            // No git binary still leaves one honest question answerable
+            // without it: whether a `.git` exists at `root` or above at all.
+            // That is a plain filesystem check — see `hasGitDirectoryAtOrAbove`
+            // — and finding none is the same `.noRepository` fact the
+            // `.outside` branch below reaches through git itself. Only when a
+            // `.git` *does* exist (so answering further needs git) does the
+            // missing binary actually block a verdict.
+            guard Self.hasGitDirectoryAtOrAbove(root) else { return .noRepository }
             return .undetermined(reason: "git was not found on this machine, so this app could not ask it which files are ignored. It never guesses at gitignore rules itself.")
         }
         switch workTreeVerdict(root: root, gitPath: gitPath) {
         case .inside:
             break
         case .outside:
-            return .undetermined(reason: "This project is not inside a git repository, so there are no gitignore rules to check it against.")
+            return .noRepository
         case .unreadable:
             return .undetermined(reason: "git did not finish answering whether this project is inside a repository, so this app could not check its gitignore rules. It never guesses.")
         }

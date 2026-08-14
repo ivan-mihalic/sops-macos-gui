@@ -120,6 +120,17 @@ struct ProjectRemediationQuotingTests {
     /// The headline case. A repository with no `.gitignore` and a hostile
     /// filename: the finding is a real `.problem`, and whatever it offers to
     /// copy must not be a program.
+    ///
+    /// Ticket #8, claim 4: this branch used to offer no command at all —
+    /// `.gitignore`-line generation is still refused (see the
+    /// `gitignoreFinding` doc comment: a pattern needs a second escaping
+    /// layer this app will not attempt), but a `git check-ignore -v --`
+    /// verification command now is offered, built the same
+    /// `ShellQuoting`-safe way as the `.undetermined` branch always has. The
+    /// property this test exists to prove is unchanged: whatever the command
+    /// is, it must never execute anything when a user pastes it into a
+    /// shell — that is what a hostile filename in a cloned repository is
+    /// trying to make happen.
     @Test("a hostile filename never produces a command that runs anything")
     func hostileFilenameProducesNoExecutableCommand() async throws {
         let root = try ProjectFixture.makeDirectory()
@@ -132,40 +143,49 @@ struct ProjectRemediationQuotingTests {
         #expect(leak.status == .problem)
         #expect(leak.detail.contains(injectionName))
         #expect(!leak.detail.contains("sk_live_51H8xQ2abcdefg"))
+        #expect(leak.remediation?.explanation.contains(injectionName) == true)
 
-        // Decision: no shell command for this remediation at all. See the
-        // `gitignoreFinding` doc comment — a `.gitignore` line needs correct
-        // *pattern* escaping as well as correct shell escaping, and a
-        // generated string that satisfies both is unreadable, which defeats
-        // the point of handing the user something to audit before running it.
-        #expect(leak.remediation?.command == nil,
-                "offered a shell command built from a filename: \(leak.remediation?.command ?? "")")
-        #expect(leak.remediation?.explanation.contains(injectionName) == true,
-                "dropping the command must not drop the instruction")
+        // The command exists now (claim 4) and is the check-ignore
+        // verification, not a generated `.gitignore` line — so it must be
+        // present, safely quoted, and harmless to run.
+        let command = try #require(leak.remediation?.command)
+        #expect(command.hasPrefix("git check-ignore -v -- "), "\(command)")
+        #expect(!command.contains(".gitignore"), "a .gitignore-editing command was generated: \(command)")
 
-        // Belt and braces, and the assertion that would have failed before the
-        // fix regardless of which remediation shape was chosen.
-        if let command = leak.remediation?.command {
-            let harness = try ShellHarness.make()
-            try harness.run(command, in: root)
-            #expect(!harness.executedSomething, "the copyable command executed a program: \(command)")
-        }
+        // The assertion that would have failed before either fix, regardless
+        // of which remediation shape was chosen: pasted into a real shell,
+        // nothing runs.
+        let harness = try ShellHarness.make()
+        try harness.run(command, in: root)
+        #expect(!harness.executedSomething, "the copyable command executed a program: \(command)")
     }
 
-    /// The other branch. Outside a git repository the check cannot reach a
-    /// verdict, and it offers `git check-ignore` so the user can. That command
-    /// *is* worth keeping — it needs only shell escaping, with no second
-    /// pattern layer — so it must be escaped correctly rather than dropped.
+    /// The other branch. Ticket #8, claim 2: "not inside a git repository at
+    /// all" is now its own definite `.noRepository` verdict, not
+    /// `.undetermined` — so the fixture that still genuinely reaches
+    /// `.undetermined` (git found, but its answer about *this* repository
+    /// could not be trusted) is a damaged repository, not a missing one. It
+    /// offers `git check-ignore` so the user can find out for themselves.
+    /// That command *is* worth keeping — it needs only shell escaping, with
+    /// no second pattern layer — so it must be escaped correctly rather than
+    /// dropped.
     @Test("the check-ignore command is escaped, not merely wrapped in quotes")
     func checkIgnoreCommandIsProperlyEscaped() async throws {
-        let root = try ProjectFixture.makeDirectory()   // deliberately not a git repository
+        let root = try ProjectFixture.makeDirectory()
+        try ProjectFixture.gitInit(root)
+        // Damage the repository after `git init` so `git rev-parse
+        // --is-inside-work-tree` cannot answer — see
+        // `GitIgnoreOracleFailureTests` for the same shape used directly
+        // against the oracle.
+        try FileManager.default.removeItem(at: root.appendingPathComponent(".git/refs"))
+        try FileManager.default.removeItem(at: root.appendingPathComponent(".git/HEAD"))
         try ProjectFixture.write("creation_rules:\n  - age: \(try ProjectFixture.ageKeyPair().public)\n",
                                  to: root, at: ".sops.yaml")
         try ProjectFixture.write("STRIPE_KEY=sk_live_51H8xQ2abcdefg\n", to: root, at: injectionName)
 
         let leak = leakFinding(await run(root))
         guard case .unknown = leak.status else {
-            Issue.record("expected .unknown outside a git repository, got \(leak.status)")
+            Issue.record("expected .unknown for a damaged repository, got \(leak.status)")
             return
         }
         let command = try #require(leak.remediation?.command)
@@ -186,6 +206,7 @@ struct ProjectRemediationQuotingTests {
     @Test("a filename beginning with a dash is passed as a path, not an option")
     func leadingDashFilenameIsNotParsedAsAnOption() async throws {
         let root = try ProjectFixture.makeDirectory()
+        try ProjectFixture.gitInit(root)
         try ProjectFixture.write("creation_rules:\n  - age: \(try ProjectFixture.ageKeyPair().public)\n",
                                  to: root, at: ".sops.yaml")
         try ProjectFixture.write("DB_PASSWORD=hunter2\n", to: root, at: "-v.env")
@@ -228,6 +249,7 @@ struct ProjectRemediationQuotingTests {
     @Test("an apostrophe in a filename does not break the command")
     func apostropheFilenameIsQuotedCorrectly() async throws {
         let root = try ProjectFixture.makeDirectory()
+        try ProjectFixture.gitInit(root)
         try ProjectFixture.write("creation_rules:\n  - age: \(try ProjectFixture.ageKeyPair().public)\n",
                                  to: root, at: ".sops.yaml")
         try ProjectFixture.write("DB_PASSWORD=hunter2\n", to: root, at: "ivan's.env")
@@ -245,6 +267,7 @@ struct ProjectRemediationQuotingTests {
     @Test("a plain filename produces a plain command")
     func plainFilenameIsUnchanged() async throws {
         let root = try ProjectFixture.makeDirectory()
+        try ProjectFixture.gitInit(root)
         try ProjectFixture.write("creation_rules:\n  - age: \(try ProjectFixture.ageKeyPair().public)\n",
                                  to: root, at: ".sops.yaml")
         try ProjectFixture.write("DB_PASSWORD=hunter2\n", to: root, at: ".env")

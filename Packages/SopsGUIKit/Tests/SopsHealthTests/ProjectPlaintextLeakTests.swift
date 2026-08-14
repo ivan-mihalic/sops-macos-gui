@@ -142,22 +142,23 @@ struct ProjectPlaintextLeakTests {
         #expect(leakFinding(await run(root)).status == .ok)
     }
 
-    /// No git repository means the ignore rules cannot be evaluated at all.
-    /// Saying so is the only honest answer — the previous code guessed, and
-    /// guessed "OK".
-    @Test("outside a git repository the check says what it could not determine")
-    func nonRepositoryIsUnknownNotOK() async throws {
+    /// No git repository means the ignore rules cannot be evaluated — but,
+    /// per ticket #8 claim 2, "not inside a git repository" is a *definite*
+    /// fact `GitIgnoreOracle` can establish, not a missing answer. A project
+    /// with no git at all used to be stuck at `.unknown` on this finding
+    /// forever; it is now an honest `.warning` that says exactly that: none
+    /// of these files can be committed to a repository by accident, because
+    /// there is no repository, though they are still on disk unencrypted.
+    @Test("outside a git repository the check gives a definite warning, not unknown")
+    func nonRepositoryIsAWarningNotUnknown() async throws {
         let root = try ProjectFixture.makeDirectory()
         try ProjectFixture.write("creation_rules:\n  - age: \(try ProjectFixture.ageKeyPair().public)\n",
                                  to: root, at: ".sops.yaml")
         try ProjectFixture.write("STRIPE_KEY=sk_live_51H8xQ2abcdefg\n", to: root, at: ".env")
 
         let leak = leakFinding(await run(root))
-        guard case .unknown(let reason) = leak.status else {
-            Issue.record("expected .unknown outside a git repository, got \(leak.status)")
-            return
-        }
-        #expect(!reason.isEmpty)
+        #expect(leak.status == .warning)
+        #expect(leak.detail.contains("not inside a git repository"))
         // It still names the file it found, which is the useful half.
         #expect(leak.detail.contains(".env"))
         #expect(!leak.detail.contains("sk_live_51H8xQ2abcdefg"))
