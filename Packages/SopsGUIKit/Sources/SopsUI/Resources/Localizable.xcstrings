@@ -2626,6 +2626,17 @@
         }
       }
     },
+    "project-access.error.widened-scope-not-acknowledged": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check the box confirming you want to include files governed by a different creation rule, then try again."
+          }
+        }
+      }
+    },
     "project-access.error.empty-recipients": {
       "extractionState": "manual",
       "localizations": {
@@ -2802,6 +2813,17 @@
         }
       }
     },
+    "project-access.widened-scope.acknowledgement": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "I understand this also re-wraps files a different creation rule governs, for a key set that rule never named."
+          }
+        }
+      }
+    },
     "project-access.result.failed": {
       "extractionState": "manual",
       "localizations": {
@@ -2886,6 +2908,29 @@
           "stringUnit": {
             "state": "translated",
             "value": "This project was not fully searched"
+          }
+        }
+      }
+    },
+    "project-access.previous-run-incomplete": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "A previous run against this project did not finish: %d file was never re-wrapped for the current recipients. Apply again to finish."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "A previous run against this project did not finish: %d files were never re-wrapped for the current recipients. Apply again to finish."
+                }
+              }
+            }
           }
         }
       }
