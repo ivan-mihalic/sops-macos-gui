@@ -91,7 +91,7 @@ public enum FlatYAMLEmitter {
 
     /// Wraps `value` in double quotes, escaping every character a
     /// double-quoted YAML scalar requires escaping. Meant to be the complete
-    /// table, not "and similar" — but it is known to be short one entry:
+    /// table:
     ///
     /// | Character | Escape |
     /// |---|---|
@@ -100,22 +100,24 @@ public enum FlatYAMLEmitter {
     /// | LF | `\n` |
     /// | CR | `\r` |
     /// | TAB | `\t` |
-    /// | other C0 (`U+0000`–`U+001F`) and `U+007F` | `\xNN` |
+    /// | other C0 (`U+0000`–`U+001F`), `U+007F`, and `U+0085` (NEL) | `\xNN` |
     /// | everything else, including emoji | written literally |
     ///
-    /// **Known gap: `U+0085` (NEL) is not in this table.** It falls to the
-    /// `default:` arm below and is written literally, but sops's YAML layer
-    /// reads it back differently than written, so a value containing it does
-    /// not round-trip intact — measured directly in
-    /// `SecretFileCreatorTests.dotEnvNELValueIsCaughtAsRoundTripMismatch`.
-    /// `U+2028` (LS) and `U+2029` (PS) were probed too and round-trip fine;
-    /// this is specifically NEL, not "any unescaped line-break character".
-    /// Caught, not silent — `SecretFileCreator.verifyRoundTrip` refuses the
-    /// write rather than producing a corrupted file — but the honest fix is
-    /// to add `U+0085` to this table and this doc comment's claim to being
-    /// complete; tracked as a follow-up, not fixed here. The same table
-    /// governs `quotedKey` too (via `quotedValue` for any key that is not
-    /// plain-scalar-safe), so a key containing NEL is caught the same way a
+    /// `U+0085` (NEL) used to fall through to the `default:` arm below and be
+    /// written literally — but sops's YAML layer reads a literal NEL back
+    /// differently than it was written, so a value containing it did not
+    /// round-trip intact. It was caught, not silent —
+    /// `SecretFileCreator.verifyRoundTrip` refused the write rather than
+    /// producing a corrupted file — but a value containing NEL simply
+    /// couldn't be created at all. Fixed by adding `U+0085` to this table;
+    /// proved by `FlatYAMLEmitterTests.lineBreakLookalikesSurviveRoundTrip`.
+    ///
+    /// `U+2028` (LINE SEPARATOR) and `U+2029` (PARAGRAPH SEPARATOR) were
+    /// probed alongside NEL — same test — and round-trip fine unescaped, so
+    /// they are deliberately *not* in this table; the defect was specific to
+    /// NEL, not "any Unicode line-break character". The same table governs
+    /// `quotedKey` too (via `quotedValue` for any key that is not
+    /// plain-scalar-safe), so a key containing NEL is escaped the same way a
     /// value is.
     static func quotedValue(_ value: String) -> String {
         var result = "\""
@@ -132,7 +134,7 @@ public enum FlatYAMLEmitter {
                 result += "\\r"
             case "\u{09}":
                 result += "\\t"
-            case "\u{00}"..."\u{1F}", "\u{7F}":
+            case "\u{00}"..."\u{1F}", "\u{7F}", "\u{85}":
                 result += String(format: "\\x%02X", scalar.value)
             default:
                 result.unicodeScalars.append(scalar)

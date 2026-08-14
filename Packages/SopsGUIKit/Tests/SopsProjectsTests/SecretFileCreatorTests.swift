@@ -378,57 +378,48 @@ struct SecretFileCreatorTests {
         #expect(!FileManager.default.fileExists(atPath: ghostProject.path))
     }
 
-    /// Proves `verifyRoundTrip`'s `.dotEnv` arm actually fires — not a
-    /// synthetic call to a private function, a real corruption reaching it
-    /// through the public `create` API.
+    /// Until `FlatYAMLEmitter.quotedValue` learned to escape `U+0085` (NEL),
+    /// a `.dotEnv` value containing it reached this exact route: the
+    /// reviewer's first-suggested way to trigger `roundTripMismatch`
+    /// (`DotEnvParser` bypassed to hand `emit` two entries sharing one key)
+    /// was tried and measured, not assumed, and does not reach the check at
+    /// all — sops's own YAML loader rejects a document with a literal
+    /// duplicate mapping key outright, `.engine("the document is not valid
+    /// YAML (line 2)")`, before `decryptToRows` is ever called. A second
+    /// route (a `.dotEnv` key literally named `sops`, colliding with the
+    /// metadata block sops itself adds) was also tried and is separately
+    /// guarded — `.engine("file already encrypted: it has a top-level
+    /// \"sops\" entry")`. NEL was the one value shape that survived
+    /// `quotedValue` unescaped and came back different from what was
+    /// written, which is what made it reachable through the public `create`
+    /// API rather than only through a synthetic call to a private function.
     ///
-    /// The reviewer's first-suggested route (`DotEnvParser` bypassed to hand
-    /// `emit` two entries sharing one key) was tried and measured, not
-    /// assumed, and does not reach this check at all: sops's own YAML loader
-    /// rejects a document with a literal duplicate mapping key outright —
-    /// `.engine("the document is not valid YAML (line 2)")` — before
-    /// `decryptToRows` is ever called. A second route (a `.dotEnv` key
-    /// literally named `sops`, colliding with the metadata block sops itself
-    /// adds) was also tried and is separately guarded — `.engine("file
-    /// already encrypted: it has a top-level \"sops\" entry")`.
-    ///
-    /// This is the route that actually works, and it is a real gap, not a
-    /// contrived one: `FlatYAMLEmitter.quotedValue`'s escape table (see that
-    /// type's doc comment) covers every ASCII C0 control character and
-    /// `U+007F`, but not `U+0085` (NEL) — a legitimate Unicode line-break
-    /// character outside that range. A value containing it survives
-    /// `quotedValue` unescaped, and sops's own YAML layer reads the NEL back
-    /// differently than it was written, so `decryptToRows` returns something
-    /// that no longer equals `entry.value`. Measured directly: the identical
-    /// probe with `U+2028` (LINE SEPARATOR) or `U+2029` (PARAGRAPH
-    /// SEPARATOR) in place of NEL round-trips intact — this is not "any
-    /// unescaped line-break character", specifically NEL. `verifyRoundTrip`
-    /// catches the corruption and refuses the write rather than silently
-    /// producing a secret that decrypts to the wrong value — proving the
-    /// exact property `FlatYAMLEmitter`'s doc comment says this check exists
-    /// for.
-    ///
-    /// Fixing `FlatYAMLEmitter` to also escape `U+0085` is a real
-    /// improvement (a value containing it is refused today rather than
-    /// corrupted, which is safe but not the friendliest outcome) — flagged
-    /// for a follow-up rather than folded in here, since it is a distinct
-    /// change from what this test exists to prove: that the safety net
-    /// itself works.
-    @Test("a value containing U+0085 (NEL) is caught as a round-trip mismatch, not silently corrupted")
-    func dotEnvNELValueIsCaughtAsRoundTripMismatch() throws {
+    /// Now that the escape table covers `U+0085`, this test proves the fix
+    /// end to end — through `DotEnvParser`'s shape of input, `emit`,
+    /// `encryptYAML` and `decryptToRows`, not just `FlatYAMLEmitter` in
+    /// isolation (`FlatYAMLEmitterTests.lineBreakLookalikesSurviveRoundTrip`
+    /// covers the emitter directly) — and stands as the regression guard for
+    /// this specific route: if the escape table ever regressed, `create`
+    /// would start throwing `roundTripMismatch` for a legitimate `.dotEnv`
+    /// value again, and this test would catch it here, at the API boundary
+    /// a real caller uses.
+    @Test("a value containing U+0085 (NEL) round-trips intact and the file is created")
+    func dotEnvNELValueRoundTripsAndIsCreated() throws {
         let owner = try AgeKeyPair.generate()
-        let (root, project) = try makeProject()
+        let (_, project) = try makeProject()
         let destination = project.appendingPathComponent("secret.yaml")
 
         let entries = [DotEnvEntry(key: "KEY", value: "before\u{0085}after", line: 1)]
 
-        let before = fileTreeSnapshot(root)
-        #expect(throws: SecretFileCreator.Failure.roundTripMismatch) {
-            try SecretFileCreator.create(
-                .dotEnv(entries), plan: plan([owner.public]), at: destination, in: project,
-                sessionKey: owner.private)
-        }
-        #expect(fileTreeSnapshot(root) == before)
+        let receipt = try SecretFileCreator.create(
+            .dotEnv(entries), plan: plan([owner.public]), at: destination, in: project,
+            sessionKey: owner.private)
+
+        #expect(receipt.destination.path == destination.path)
+        let encrypted = try String(contentsOf: destination, encoding: .utf8)
+        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        #expect(rows.count == entries.count)
+        #expect(rows.first { $0.path == ["KEY"] }?.value == entries[0].value)
     }
 
     @Test("a recipient set without this session's identity is refused by default")

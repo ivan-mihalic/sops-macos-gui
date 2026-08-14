@@ -190,13 +190,15 @@ public enum CreationFailurePresenter {
                 detail: "\(path) is outside this project, so the file was not created there.",
                 recovery: .creationRecoveryChooseLocationInsideProject)
         case .roundTripMismatch:
-            // Not always evidence of corruption — see `Failure
-            // .roundTripMismatch`'s own doc comment: a `.dotEnv` value
-            // containing U+0085 (NEL) reaches this case today purely
-            // because `FlatYAMLEmitter.quotedValue` does not yet escape it,
-            // not because anything was tampered with. "Corrupted" or
-            // "damaged" would be a false claim about the user's own
-            // document, so neither word appears here — pinned directly by
+            // Not presented as evidence of corruption — see `Failure
+            // .roundTripMismatch`'s own doc comment: this case's exact cause
+            // is not carried in the enum, so "corrupted" or "damaged" would
+            // be a claim this code cannot back up. (It used to be reachable
+            // through no fault of the user's own — a `.dotEnv` value
+            // containing U+0085/NEL — but that gap in `FlatYAMLEmitter
+            // .quotedValue` is closed; the wording here stays cautious
+            // regardless, since the case can still fire for reasons this
+            // type does not enumerate.) Pinned directly by
             // `CreationFailurePresenterTests
             // .roundTripMismatchDoesNotClaimCorruption`.
             return CreationFailureMessage(
