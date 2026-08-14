@@ -129,7 +129,7 @@ public struct ResolvedEncryption: Equatable, Sendable {
 /// | Source | What is checked |
 /// |---|---|
 /// | `.dotEnv` | Every entry has exactly one row with `path == [key]` and a matching `value`; `rows.count == entries.count`. This is the one source with a hand-rolled serialiser (`FlatYAMLEmitter`) standing between the user's values and the bridge, and it is the reason this post-condition exists at all — see that type's own doc comment. |
-/// | `.verbatimYAML` | `decryptToRows` succeeds — nothing about the row *count* is checked. An empty result is a legitimate document, not corruption: a user pasting literally `{}` means to create the file and fill it in afterward, exactly as `.empty` already does deliberately. The bridge's own comment agrees — `Engine/gobridge/bridge.go:332-333`: "an empty file has nothing to encrypt, and that is not a broken rule." (A comments-only template is a *different* case, not this one: the bridge's YAML loader rejects a document with no actual node in it before this type's round-trip logic is ever reached — `.engine("the document is not valid YAML")` — see the comment on `verbatimYAMLEmptyDocumentIsCreated` in `SecretFileCreatorTests` for that measurement.) Reporting `{}` as `roundTripMismatch` would tell a user their file was corrupted when it was not. |
+/// | `.verbatimYAML` | `decryptToRows` succeeds, and (ticket #10, claim 4) non-trivial source text must not come back as *zero* rows. An empty result is only a legitimate document when the source itself was trivially empty — `{}` or blank — not corruption: a user pasting literally `{}` means to create the file and fill it in afterward, exactly as `.empty` already does deliberately. The bridge's own comment agrees — `Engine/gobridge/bridge.go:332-333`: "an empty file has nothing to encrypt, and that is not a broken rule." (A comments-only template is a *different* case, not this one: the bridge's YAML loader rejects a document with no actual node in it before this type's round-trip logic is ever reached — `.engine("the document is not valid YAML")` — see the comment on `verbatimYAMLEmptyDocumentIsCreated` in `SecretFileCreatorTests` for that measurement.) Reporting `{}` as `roundTripMismatch` would tell a user their file was corrupted when it was not — but real, non-trivial text coming back with nothing in it at all is exactly the total-data-loss shape `roundTripMismatch` exists to catch, and until now nothing here did: see `verifyRoundTrip`'s own doc comment for why this stops short of a full row-count comparison. |
 /// | `.empty` | Not compared — there is nothing to compare — but `decryptToRows` still has to succeed for the write to proceed; see step 3/6 above. |
 ///
 /// ## Why this never resolves its own plan
@@ -243,22 +243,33 @@ public enum SecretFileCreator {
         /// user did not do is the wrong default for a case whose exact cause
         /// is not carried in the enum.
         case roundTripMismatch
+        /// The `acknowledgedUnreadable` branch's own check (ticket #10, claim
+        /// 1): the recipient metadata sops actually wrote to `encrypted` does
+        /// not match `plan.recipients`. No associated value, for the same
+        /// reason `roundTripMismatch` has none — see
+        /// `verifyRecipientsStructurally`'s doc comment for what this catches
+        /// and why it exists only on the one path where nothing else does.
+        case recipientsMismatch
         /// Step 3 (see this type's doc comment for why its *check* runs
         /// where step 6 does): decrypting what step 5 just produced, with
-        /// `sessionKey`, failed, and the caller has not set
+        /// `sessionKey`, failed because this session's identity genuinely is
+        /// not among `plan.recipients`, and the caller has not set
         /// `ResolvedEncryption.acknowledgedUnreadable`.
         ///
-        /// `SopsBridgeError` carries only a `description` string with no
-        /// structured cause (`SopsBridge.swift`), so this type cannot
-        /// reliably tell "this identity genuinely is not among the
-        /// recipients" apart from some other decrypt-time engine fault
-        /// without pattern-matching the bridge's own error text — exactly
-        /// the kind of dependency on prose this codebase does not take
-        /// elsewhere (`Failure.engine`'s own doc comment states the
-        /// opposite discipline: names are checked structurally, never by
-        /// string content). So every decrypt failure at this point is
-        /// reported as `wouldBeUnreadable`, never `.engine` — see that
-        /// case's doc comment for the consequence this has for it.
+        /// Ticket #10, claim 2: this used to be thrown for *every* decrypt
+        /// failure at this point — `SopsBridgeError` used to be a bare
+        /// `description` string, so this type could not reliably tell "this
+        /// identity genuinely is not among the recipients" apart from some
+        /// other decrypt-time engine fault without pattern-matching the
+        /// bridge's own error text — exactly the kind of dependency on prose
+        /// this codebase does not take elsewhere (`Failure.engine`'s own
+        /// doc comment states the opposite discipline: names are checked
+        /// structurally, never by string content). `SopsBridgeError.kind`
+        /// now supplies exactly that structural check — set by the bridge
+        /// itself, never inferred from its prose — so a decrypt failure of
+        /// any *other* shape is `.engine` instead, whether or not the
+        /// caller acknowledged unreadability. See `create`'s own
+        /// `decryptFailureKind` handling for where that split happens.
         case wouldBeUnreadable
         /// Step 5: `plan.recipients`/`plan.encryptedRegex` could not be
         /// encrypted for — the bridge's own diagnostic. Fixed, value-free
@@ -347,41 +358,94 @@ public enum SecretFileCreator {
         // 3 can only be *answered* here, one decrypt call shared with step
         // 6's own verification.
         //
-        // Every failure here — wrong identity, a genuine engine fault, a
-        // malformed bridge response — becomes `wouldBeUnreadable` rather
-        // than `.engine`. `SopsBridgeError` is a bare `description` string
-        // with no structured cause to switch on, and this codebase does not
-        // infer behaviour from bridge error *text* anywhere else either. See
-        // `Failure.wouldBeUnreadable`'s doc comment for the full account and
-        // why this is the honest choice rather than a shortcut: a caller
-        // that has not acknowledged unreadability is refused either way, and
-        // one that has already accepts not being able to verify content at
-        // all — see the branch below.
+        // Ticket #10, claim 2: this used to report every failure here —
+        // wrong identity, a genuine engine fault, a malformed bridge
+        // response — as `wouldBeUnreadable`, because `SopsBridgeError` used
+        // to be a bare `description` string with no structured cause to
+        // switch on. It now carries `kind`, set by the bridge itself
+        // (`Engine/gobridge/document.go`'s `ErrKindNoMatchingIdentity`) for
+        // exactly the one case this branch needs to tell apart: "this
+        // identity genuinely is not among the recipients" versus everything
+        // else. Still never inferred from `description`'s own text — the
+        // discipline `Failure.engine`'s doc comment states stays intact,
+        // because `kind` is a value the bridge sets deliberately, not a
+        // pattern this app goes looking for in prose.
         let rows: [SecretRow]?
+        var decryptFailureKind: SopsBridgeError.Kind?
+        var decryptFailureDescription = "the encrypted document could not be decrypted for verification"
         do {
             rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: sessionKey)
+        } catch let error as SopsBridgeError {
+            rows = nil
+            decryptFailureKind = error.kind
+            decryptFailureDescription = error.description
         } catch {
             rows = nil
         }
 
         guard let rows else {
+            // A failure this app cannot class as "this session cannot read
+            // it" is a genuine engine-level surprise, and `acknowledgedUnreadable`
+            // was never meant to paper over one of those — the caller
+            // accepted a recipient set that excludes them, not an engine
+            // that might be broken. Reported the same way as step 5's own
+            // encrypt failures, and — unlike `wouldBeUnreadable` below —
+            // regardless of whether the caller acknowledged anything.
+            guard decryptFailureKind == .noMatchingIdentity else {
+                throw Failure.engine(decryptFailureDescription)
+            }
             guard plan.acknowledgedUnreadable else { throw Failure.wouldBeUnreadable }
-            // Acknowledged: the decrypt above failed for *some* reason —
-            // wrong identity or a genuine engine fault, indistinguishable
-            // from here (see the comment above) — and there is no identity
-            // in hand that can decrypt the result to compare against
-            // either way. So this file is written with **no content
+            // Acknowledged, and confirmed to be the honest case: this
+            // session's identity is not among the recipients, and there is
+            // no identity in hand that could decrypt the result to compare
+            // against either way. So this file is written with **no content
             // verification at all**, not "verification attempted and
             // ignored". That is the real, load-bearing consequence of
             // setting `acknowledgedUnreadable`, spelled out here because it
             // is easy to read the flag's name as being only about *who can
             // read the file later* rather than also about *what this call
             // itself can still promise*.
-            return try finishWriting(encrypted, to: destination)
+            try verifyRecipientsStructurally(encrypted, expected: plan.recipients)
+            let receipt = try finishWriting(encrypted, to: destination)
+            // Ticket #10, claim 3: record, durably, that this file was
+            // written unverified — see `AcknowledgedUnreadableMarker`'s own
+            // doc comment. After the write, not before: a marker on a file
+            // that never actually landed would be a lie, and `finishWriting`
+            // is the one step still capable of refusing.
+            AcknowledgedUnreadableMarker.mark(receipt.destination)
+            return receipt
         }
         try verifyRoundTrip(source, rows: rows)
 
         return try finishWriting(encrypted, to: destination)
+    }
+
+    // MARK: - The one check still possible without a readable identity
+
+    /// Ticket #10, claim 1: when `acknowledgedUnreadable` is set, decrypting
+    /// to compare content is impossible — there is no identity in hand that
+    /// could decrypt the result. But sops's own recipient metadata is public
+    /// and readable without any identity at all
+    /// (`SopsBridge.recipients(in:)`), so it is the one structural fact this
+    /// call can still check. Not full verification — it says nothing about
+    /// the encrypted values themselves — but it catches the same class of bug
+    /// the round trip exists for on every other path: the file just produced
+    /// does not actually declare the recipients this call meant to encrypt
+    /// for.
+    ///
+    /// `internal`, not `private`: `SecretFileCreatorTests` exercises this
+    /// directly with a hand-built mismatch, because there is no seam in
+    /// `create()` itself to make the bridge actually produce the wrong
+    /// recipient set — that would require a genuine engine bug, which this
+    /// suite has no way to manufacture on demand.
+    static func verifyRecipientsStructurally(_ encrypted: String, expected: [String]) throws {
+        let actual: [String]
+        do {
+            actual = try SopsBridge.recipients(in: encrypted)
+        } catch let error as SopsBridgeError {
+            throw Failure.engine(error.description)
+        }
+        guard Set(actual) == Set(expected) else { throw Failure.recipientsMismatch }
     }
 
     // MARK: - Step 4: source → plaintext
@@ -403,17 +467,37 @@ public enum SecretFileCreator {
     /// produce. See this type's doc comment, "The round trip is semantic,
     /// not byte-for-byte", for the table this implements and why a text
     /// comparison would be the wrong check.
-    private static func verifyRoundTrip(_ source: Source, rows: [SecretRow]) throws {
+    ///
+    /// `internal`, not `private`: ticket #10, claim 4's regression test
+    /// drives the `.verbatimYAML` branch directly with a hand-built,
+    /// impossible-through-the-real-bridge "rows came back empty" result —
+    /// see `SecretFileCreatorTests.verbatimYAMLThatLosesAllContentIsCaught`.
+    static func verifyRoundTrip(_ source: Source, rows: [SecretRow]) throws {
         switch source {
         case .empty:
             return
-        case .verbatimYAML:
+        case .verbatimYAML(let text):
             // Only reaching here already proves `decryptToRows` succeeded —
-            // that is the whole check for this source. `rows` being empty
+            // that is most of the check for this source. `rows` being empty
             // is not itself a defect: a comments-only or `{}` document is a
             // legitimate thing to paste in and fill out later. See the
-            // table above for the fuller account and why this must not
-            // throw `roundTripMismatch`.
+            // table above for the fuller account and why an empty result
+            // must not, by itself, throw `roundTripMismatch`.
+            //
+            // What it must not paper over is real content coming back as
+            // *nothing at all* — total data loss on the one source with no
+            // Swift-side emitter standing between the user's paste and the
+            // bridge, so any such loss can only be an engine-level bug, not
+            // a user mistake this app introduced. This is deliberately not
+            // a row *count* comparison: getting the expected count would
+            // mean parsing the user's YAML on the Swift side, which ADR
+            // 0002 forbids — sops's own parser is the only thing allowed to
+            // decide how many leaves a document has. So this checks the one
+            // shape of loss that needs no parsing at all: text that is not
+            // itself an empty document coming back with zero rows.
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let isDeliberatelyEmpty = trimmed.isEmpty || trimmed == "{}"
+            guard isDeliberatelyEmpty || !rows.isEmpty else { throw Failure.roundTripMismatch }
             return
         case .dotEnv(let entries):
             guard rows.count == entries.count else { throw Failure.roundTripMismatch }

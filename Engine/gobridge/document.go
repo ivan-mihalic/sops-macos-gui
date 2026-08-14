@@ -244,6 +244,32 @@ func loadEncryptedDocument(store common.Store, encrypted []byte) (*sops.Tree, er
 	return &tree, nil
 }
 
+// ErrKindNoMatchingIdentity classifies a decrypt failure sops itself reports
+// as "none of the supplied keys could retrieve the data key" — the
+// `codes.CouldNotRetrieveKey` case below. It is a stable, Go-owned string,
+// never sops's own prose: this package decides the value and the C boundary
+// (cshim/main.go's result()) carries it alongside the message, so a Swift
+// caller can tell "this identity genuinely is not among the file's
+// recipients" apart from every other decrypt-time failure without matching
+// on message text at all. See classifiedError below for how a value picks
+// this up, and SopsBridgeError.Kind (Swift) for the other side.
+const ErrKindNoMatchingIdentity = "no-matching-identity"
+
+// classifiedError pairs an ordinary error with the stable kind string above.
+// Only describeDecryptFailure's CouldNotRetrieveKey branch constructs one
+// today; every other error in this package is unclassified (kind ""), which
+// cshim/main.go's result() treats as "no special kind" rather than an error
+// in itself.
+type classifiedError struct {
+	kind string
+	error
+}
+
+// Kind is read reflectively by cshim/main.go's result() via the
+// interface{ Kind() string } it declares locally — see that function's own
+// comment for why the interface lives there rather than being imported.
+func (c classifiedError) Kind() string { return c.kind }
+
 // describeDecryptFailure turns a common.DecryptTree error into one this app is
 // willing to show, and is the only way a decrypt failure may leave this
 // package.
@@ -275,7 +301,10 @@ func describeDecryptFailure(tree *sops.Tree, err error) error {
 	}
 	switch coder.ExitCode() {
 	case codes.CouldNotRetrieveKey:
-		return fmt.Errorf("none of the keys available to this app can decrypt this file")
+		return classifiedError{
+			kind:  ErrKindNoMatchingIdentity,
+			error: fmt.Errorf("none of the keys available to this app can decrypt this file"),
+		}
 	case codes.MacMismatch, codes.ErrorDecryptingMac:
 		return fmt.Errorf("this file does not match its own message authentication code: " +
 			"it has been modified since it was encrypted, or it is damaged")

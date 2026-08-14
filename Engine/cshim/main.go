@@ -53,6 +53,7 @@ package main
 import "C"
 
 import (
+	"encoding/json"
 	"unsafe"
 
 	"github.com/ivan-mihalic/sops-macos-gui/engine/gobridge"
@@ -65,7 +66,28 @@ const (
 	statusFailure C.int = 1
 )
 
+// errorEnvelope is what *out carries on failure — see result() below. `Kind`
+// is empty for the overwhelming majority of errors this package produces,
+// which have no stable classification; SopsBridgeError.kind (Swift) treats an
+// empty or unrecognized string as "no kind", never as an error decoding the
+// envelope itself.
+type errorEnvelope struct {
+	Kind    string `json:"kind"`
+	Message string `json:"message"`
+}
+
 // result writes either the payload or the error into *out and returns the status.
+//
+// On failure, *out is JSON — an errorEnvelope, not err.Error() directly. This
+// is the one seam that lets a handful of errors carry a stable, Go-owned
+// classification (gobridge.ErrKindNoMatchingIdentity today) across the C
+// boundary without changing a single exported function's signature: every
+// //export function already funnels its error through this one call, so
+// teaching *it* to encode a kind teaches all of them at once. `err`'s own
+// classification is read through a local, structural `interface{ Kind()
+// string }` rather than importing gobridge.classifiedError, so this file
+// does not have to know which concrete type (if any) implements it — an
+// error with no such method simply gets kind "".
 //
 // Its own recover is the last link in the chain, and it is worth being exact
 // about what that link actually holds. An earlier version of this comment said
@@ -96,7 +118,20 @@ func result(out **C.char, payload []byte, err error) (status C.int) {
 	}()
 
 	if err != nil {
-		*out = C.CString(err.Error())
+		kind := ""
+		if classified, ok := err.(interface{ Kind() string }); ok {
+			kind = classified.Kind()
+		}
+		// Marshal failure is not reachable for a struct of two strings — no
+		// value here can fail to encode — but this still falls back to the
+		// plain message rather than risking *out staying nil on a failure
+		// path, which is exactly the state this function exists to avoid
+		// leaving Swift with unexplained.
+		encoded, marshalErr := json.Marshal(errorEnvelope{Kind: kind, Message: err.Error()})
+		if marshalErr != nil {
+			encoded = []byte(err.Error())
+		}
+		*out = C.CString(string(encoded))
 		return statusFailure
 	}
 	*out = C.CString(string(payload))
