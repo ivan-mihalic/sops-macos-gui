@@ -509,6 +509,42 @@ struct ProjectStartHereViewRenderTests {
         #expect(!shown.contains(labeled), "the labeled recipient's raw key must not also be shown: \(shown)")
     }
 
+    /// #27 tvrzení 5: `init` now reads through `RecipientRegistry
+    /// .loadOrQuarantine(in:)`, not the bare `(try? load) ?? []` idiom every
+    /// call site here used before — this proves that wiring end to end
+    /// through the view's real, non-injectable initializer, the same way
+    /// `ProjectAccessTests.corruptRegistrySurfacesAQuarantineNotice` proves it
+    /// for `ProjectAccessModel`'s default `loadRegistry`.
+    @Test("a corrupt registry surfaces a quarantine notice, and the recipient still shows unlabelled")
+    func corruptRegistrySurfacesAQuarantineNotice() throws {
+        let recipient = "age1qexampleexampleexampleexampleexampleexampleexampleexamplex"
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("start-here-corrupt-registry-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(root)
+        let registryDirectory = root.appendingPathComponent(".sops-gui", isDirectory: true)
+        try FileManager.default.createDirectory(at: registryDirectory, withIntermediateDirectories: true)
+        try Data(#"{"records": "not an array"}"#.utf8)
+            .write(to: registryDirectory.appendingPathComponent("recipients.json"))
+
+        let view = ProjectStartHereView(
+            configState: .governedByRule(recipients: [recipient], encryptedRegex: ""),
+            otherFormatCount: 0, projectRoot: root, onNewFile: {})
+
+        #expect(view.registryQuarantineNotice != nil)
+        // The corrupt file no longer sits at the path a future save would
+        // have to fight the fingerprint of — the same contract
+        // `RecipientRegistryCorruptionTests` pins for the backend.
+        #expect(!FileManager.default.fileExists(
+            atPath: registryDirectory.appendingPathComponent("recipients.json").path))
+
+        // Same degrade `governedByRuleShowsRegistryLabel` pins for a registry
+        // that was simply never created: labels are unavailable, but the
+        // recipient itself is never hidden.
+        let shown = text(.governedByRule(recipients: [recipient], encryptedRegex: ""), projectRoot: root)
+        #expect(shown.contains(NewSecretFileSheet.shortenedKey(recipient)),
+                "the recipient must still show, unlabelled, once the corrupt registry is quarantined: \(shown)")
+    }
+
     /// Review finding, Important 1: the plaintext-scoping disclosure must
     /// reach this screen too, not only the wizard's ⓘ line.
     @Test(".governedByRule with encrypted_regex discloses the plaintext scoping",

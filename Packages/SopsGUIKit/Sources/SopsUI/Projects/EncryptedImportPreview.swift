@@ -68,6 +68,17 @@ public struct EncryptedImportPreview: View {
     @Bindable private var model: NewSecretFileModel
 
     @State private var registryRecords: [RecipientRecord] = []
+    /// Set when the registry read below found `recipients.json` present but
+    /// undecodable and moved it aside — see `RecipientRegistry
+    /// .loadOrQuarantine(in:)`. `nil` on every ordinary path, including a
+    /// project that has simply never named a recipient. Not yet rendered
+    /// anywhere on this screen — exposed for the same reason
+    /// `ProjectAccessModel.registryQuarantineNotice` and
+    /// `RecipientAccessModel.registryQuarantineNotice` are: so a corrupt
+    /// registry degrades to "no labels" *with a signal a caller can act on*,
+    /// rather than the silent `(try? load) ?? []` this call site used before
+    /// (#27 tvrzení 5).
+    @State private var registryQuarantineNotice: String?
 
     public init(model: NewSecretFileModel) {
         self.model = model
@@ -83,8 +94,13 @@ public struct EncryptedImportPreview: View {
             // Deliberately non-throwing, degrading to "no labels" rather
             // than hiding a recipient the diff already knows about — the
             // same contract `NewSecretFileSheet`/`RecipientPicker` keep for
-            // their own registry loads.
-            registryRecords = (try? RecipientRegistry.load(in: model.projectRoot)) ?? []
+            // their own registry loads. `loadOrQuarantine`, not a bare
+            // `(try? load) ?? []`: a `recipients.json` that exists but
+            // cannot be decoded is moved aside rather than degrading
+            // silently and indistinguishably from "no registry yet".
+            let registry = RecipientRegistry.loadOrQuarantine(in: model.projectRoot)
+            registryRecords = registry.records
+            registryQuarantineNotice = registry.quarantineNotice
         }
     }
 

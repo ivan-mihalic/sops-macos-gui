@@ -881,3 +881,49 @@ struct EncryptedRegexScopingDisclosureTests {
             "a rule that scopes nothing must not warn about scoping")
     }
 }
+
+// MARK: - #27 tvrzení 5: the registry read goes through loadOrQuarantine
+
+/// `EncryptedImportPreview`'s registry read happens inside a `.task`
+/// populating `@State`, which SwiftUI re-runs against its own persistent view
+/// identity — a fresh value this test constructs and hands to `AXProbe`/
+/// `StartHereAXProbe`-style rendering is not the same instance whose `@State`
+/// mutated, so there is no way to read `registryQuarantineNotice` back after
+/// a render the way `ProjectStartHereViewTests
+/// .corruptRegistrySurfacesAQuarantineNotice` reads a plain `let` off a
+/// freshly constructed view. This is a source-text guard instead — the same
+/// shape `DeploymentTargetTests`/`ProcessSpawningChokepointTests` already use
+/// for "which specific call this source makes" — until this view either
+/// exposes something a test can drive live or grows a model like
+/// `ProjectAccessModel`'s to hold the same behavioural proof.
+@Suite("EncryptedImportPreview's registry read")
+struct EncryptedImportPreviewRegistryWiringTests {
+
+    private static let source: String = {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // SopsUITests
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // Packages/SopsGUIKit
+            .appendingPathComponent("Sources/SopsUI/Projects/EncryptedImportPreview.swift")
+        return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    }()
+
+    @Test("the .task registry read uses loadOrQuarantine, not the bare (try? load) ?? [] idiom")
+    func registryReadUsesLoadOrQuarantine() throws {
+        try #require(!Self.source.isEmpty, "could not read Sources/SopsUI/Projects/EncryptedImportPreview.swift")
+
+        let missingCallMessage = "expected the .task block to call RecipientRegistry.loadOrQuarantine(in:), "
+            + "which quarantines an undecodable recipients.json rather than silently degrading to no "
+            + "labels with no signal"
+        #expect(
+            Self.source.contains("RecipientRegistry.loadOrQuarantine(in: model.projectRoot)"),
+            "\(missingCallMessage)")
+
+        let staleIdiomMessage = "EncryptedImportPreview still reads the registry through the bare "
+            + "(try? load) ?? [] idiom #27 tvrzení 5 replaced everywhere else — a corrupt "
+            + "recipients.json would degrade silently here, with no quarantine and no notice"
+        #expect(
+            !Self.source.contains("(try? RecipientRegistry.load(in: model.projectRoot)) ?? []"),
+            "\(staleIdiomMessage)")
+    }
+}
