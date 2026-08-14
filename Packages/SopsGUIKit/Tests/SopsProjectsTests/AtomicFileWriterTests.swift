@@ -774,4 +774,76 @@ ScratchDirectoryRegistry.shared.register(targetDirectory)
         #expect(try String(contentsOf: destination, encoding: .utf8) == contents)
         #expect(try Data(contentsOf: destination) == Data(contents.utf8))
     }
+
+    // MARK: - A directory-sync shortfall is reported, never thrown (#19 item 3)
+
+    /// `syncDirectory`'s contract is that a save which already succeeded
+    /// never becomes a thrown error just because the *directory entry's* own
+    /// durability could not be confirmed afterward — see that function's doc
+    /// comment. This proves both halves at once: the save still succeeds
+    /// (the returned receipt and the file's contents are exactly what was
+    /// asked for), and the shortfall still reaches
+    /// `directorySyncFailureReporter` rather than vanishing silently.
+    ///
+    /// Forced deterministically, and without touching the shared,
+    /// process-wide `beforeReplaceHookForTesting` — every other test in this
+    /// suite that also uses that hook runs concurrently with this one
+    /// (`swift test` parallelizes within a suite, not just across suites;
+    /// measured directly: routing this same scenario through the hook
+    /// intermittently observed zero reports, because a *different* test's
+    /// hook closure — checking its own, different `destination` — had
+    /// overwritten this one's in the window between it being set and
+    /// `write` reaching the replace step). Stripping the directory's read
+    /// permission *before* calling `write` at all needs no shared state:
+    /// `lstat`, `open(O_CREAT|O_EXCL)` and `rename` on a directory entry
+    /// all need only write+execute, never read, so staging and the replace
+    /// still succeed exactly as they would with the directory's normal
+    /// mode. Only `syncDirectory`'s own `open(directory.path, O_RDONLY)`,
+    /// which specifically asks to read the directory, needs the bit that
+    /// is missing — reliably, on every run, with no race against anything
+    /// else in the suite.
+    @Test("a directory whose durability cannot be confirmed after the replace is reported, not thrown")
+    func directorySyncFailureIsReportedNotThrown() throws {
+        let directory = try makeScratchDirectory()
+        let destination = directory.appendingPathComponent("secrets.yaml")
+
+        let reports = ReportBox()
+        let originalReporter = AtomicFileWriter.directorySyncFailureReporter
+        defer {
+            AtomicFileWriter.directorySyncFailureReporter = originalReporter
+            // Restore read+write+execute so the suite's own teardown can
+            // still remove this directory.
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        }
+        AtomicFileWriter.directorySyncFailureReporter = { url, code in reports.record(url, code) }
+        try FileManager.default.setAttributes([.posixPermissions: 0o300], ofItemAtPath: directory.path)
+
+        let receipt = try AtomicFileWriter.write(Data("payload".utf8), to: destination, expecting: .absent)
+
+        #expect(receipt.destination == destination)
+        #expect(try Data(contentsOf: destination) == Data("payload".utf8), "the save itself must still have succeeded")
+
+        let seen = reports.snapshot()
+        #expect(seen.count == 1, "expected exactly one report, got \(seen.count)")
+        #expect(seen.first?.0 == directory)
+        #expect(seen.first?.1 == EACCES, "expected EACCES, got errno \(seen.first?.1 ?? -1)")
+    }
+
+    /// Thread-safe recorder for the test above — `AtomicFileWriter`'s own
+    /// static reporter can in principle be hit from more than one thread, and
+    /// `swift test` runs suites in parallel besides.
+    private final class ReportBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var entries: [(URL, Int32)] = []
+        func record(_ url: URL, _ code: Int32) {
+            lock.lock()
+            defer { lock.unlock() }
+            entries.append((url, code))
+        }
+        func snapshot() -> [(URL, Int32)] {
+            lock.lock()
+            defer { lock.unlock() }
+            return entries
+        }
+    }
 }
