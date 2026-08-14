@@ -1,4 +1,5 @@
 import CSopsBridge
+import Darwin
 import Foundation
 
 public struct SopsBridgeError: Error, CustomStringConvertible, Equatable {
@@ -343,13 +344,44 @@ public enum SopsBridge {
         }
         return message
     }
+
+    /// Ticket #4: the one buffer on this side of the cgo boundary that this
+    /// app actually owns and can zero on the way out — unlike the `String`
+    /// `withGoString` copies it from, which is copy-on-write, possibly
+    /// small-string-optimized into its own struct, and possibly retained by
+    /// other holders SwiftUI's own diffing made without this app's
+    /// involvement (see `SessionKeyStore`'s doc comment for the full
+    /// account of why a `String` itself cannot be reliably zeroed). `bytes`
+    /// here has none of that: it is a plain heap array this function
+    /// allocated, nothing else can hold a reference to it, and it is about
+    /// to be freed regardless — the only question is whether an age private
+    /// key's bytes are still sitting in that freed page in the meantime.
+    ///
+    /// `memset_s`, not a `for byte in bytes { byte = 0 }` loop: a store to
+    /// memory nothing reads afterward is a dead store, and the optimizer is
+    /// free to elide a dead store entirely once it can see nothing observes
+    /// it — which is exactly the case here, since `bytes` goes out of scope
+    /// immediately after. `memset_s` (ISO/IEC 9899:2011 Annex K) is defined
+    /// never to be optimized away for precisely this reason; a plain
+    /// `memset` carries no such guarantee and a future compiler is free to
+    /// remove it.
+    static func zeroCString(_ bytes: inout [CChar]) {
+        bytes.withUnsafeMutableBytes { raw in
+            guard let base = raw.baseAddress, raw.count > 0 else { return }
+            _ = memset_s(base, raw.count, 0, raw.count)
+        }
+    }
 }
 
 public extension String {
     /// The generated header takes non-const `char*`, so hand it a mutable copy.
-    /// The pointer is valid only for the duration of `body`.
+    /// The pointer is valid only for the duration of `body`. Zeroed in a
+    /// `defer` before the copy is freed — see `SopsBridge.zeroCString` for
+    /// why this is a real guarantee and not a nominal one, unlike the
+    /// `String` this copy was made from.
     func withGoString<R>(_ body: (UnsafeMutablePointer<CChar>) -> R) -> R {
         var bytes = Array(utf8CString)
+        defer { SopsBridge.zeroCString(&bytes) }
         return bytes.withUnsafeMutableBufferPointer { body($0.baseAddress!) }
     }
 

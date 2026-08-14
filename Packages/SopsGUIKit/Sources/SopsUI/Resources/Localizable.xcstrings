@@ -3594,6 +3594,17 @@
           }
         }
       }
+    },
+    "key.import.legacy-chmod-unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This app can't build a safe one-line command for this exact path — something in the name (most likely a line break) can't be folded into a shell command honestly. Open Terminal, navigate to the file by hand, and run chmod 600 on it yourself."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

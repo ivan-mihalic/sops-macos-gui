@@ -8,6 +8,7 @@ private struct FakeBiometry: BiometryStatusProviding { let state: BiometryState 
 private struct FakeUpdates: AppUpdateStatusProviding {
     let state: AppUpdateState
 }
+private struct FakeSessionTTL: SessionTTLStatusProviding { let state: SessionTTLState }
 
 private func finding(_ findings: [HealthFinding], _ id: String) -> HealthFinding {
     findings.first { $0.id == id }!
@@ -18,7 +19,8 @@ private func makeCheck(
     keyStore: KeyStoreState = .configured,
     biometry: BiometryState = .available,
     updates: AppUpdateState = .upToDate(version: "1.0.0"),
-    legacyKeyFilePaths: [String] = ["/nonexistent/keys.txt"]
+    legacyKeyFilePaths: [String] = ["/nonexistent/keys.txt"],
+    sessionTTL: SessionTTLState = .enforced(minutes: 15)
 ) -> SecurityPostureCheck {
     SecurityPostureCheck(
         osVersion: os,
@@ -26,7 +28,8 @@ private func makeCheck(
         keyStore: FakeKeyStore(state: keyStore),
         biometry: FakeBiometry(state: biometry),
         appUpdates: FakeUpdates(state: updates),
-        legacyKeyFilePaths: legacyKeyFilePaths)
+        legacyKeyFilePaths: legacyKeyFilePaths,
+        sessionTTL: FakeSessionTTL(state: sessionTTL))
 }
 
 @Suite("SecurityPostureCheck")
@@ -76,8 +79,13 @@ struct SecurityPostureCheckTests {
 
     // The whole point of the Keychain model is that the key is not sitting in a
     // plaintext file. Finding one is the single most valuable thing this check does.
-    @Test("a plaintext keys.txt still on disk is a warning that explains the risk")
-    func legacyKeyFileWarns() async throws {
+    //
+    // Ticket #7: mode set explicitly to 0644 rather than left at whatever this
+    // machine's umask produces — the point of this test is "world-readable
+    // key file", and that must not depend on an ambient default that varies
+    // by machine.
+    @Test("a world-readable plaintext keys.txt is a problem, not merely a warning")
+    func legacyKeyFileWorldReadableIsAProblem() async throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("posture-" + UUID().uuidString)
         ScratchDirectoryRegistry.shared.register(dir)
@@ -85,12 +93,99 @@ struct SecurityPostureCheckTests {
 ScratchDirectoryRegistry.shared.register(dir)
         let keyFile = dir.appendingPathComponent("keys.txt")
         try "# created by age-keygen\n".write(to: keyFile, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: keyFile.path)
+
+        let legacy = finding(await makeCheck(legacyKeyFilePaths: [keyFile.path]).run(),
+                             "security.legacy-key-file")
+        #expect(legacy.status == .problem)
+        #expect(legacy.detail.contains(keyFile.path))
+        #expect(legacy.detail.lowercased().contains("other account"),
+                "a world-readable file must say so specifically: \(legacy.detail)")
+        #expect(legacy.remediation?.command?.contains("chmod 600") == true)
+    }
+
+    /// The softer half of the same distinction: a `keys.txt` already
+    /// restricted to its owner is still a finding — it is still an
+    /// unencrypted key on disk — but it is not the same severity as one any
+    /// account on the Mac can read, and there is nothing left for a `chmod`
+    /// command to fix.
+    @Test("an owner-only plaintext keys.txt still warns, but is not elevated and offers no command")
+    func legacyKeyFileOwnerOnlyStaysAWarning() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("posture-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(dir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+ScratchDirectoryRegistry.shared.register(dir)
+        let keyFile = dir.appendingPathComponent("keys.txt")
+        try "# created by age-keygen\n".write(to: keyFile, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyFile.path)
 
         let legacy = finding(await makeCheck(legacyKeyFilePaths: [keyFile.path]).run(),
                              "security.legacy-key-file")
         #expect(legacy.status == .warning)
         #expect(legacy.detail.contains(keyFile.path))
-        #expect(legacy.remediation != nil)
+        #expect(legacy.remediation?.command == nil,
+                "chmod 600 on an already-0600 file fixes nothing and should not be offered")
+    }
+
+    /// Two files, opposite permissions: the worse one must win the overall
+    /// severity, and only the actually-exposed path gets a command.
+    @Test("a mix of world-readable and owner-only files is a problem, and only the exposed one gets a command")
+    func mixedPermissionsElevatesAndNamesOnlyTheExposedFile() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("posture-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(dir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let exposed = dir.appendingPathComponent("exposed-keys.txt")
+        let safe = dir.appendingPathComponent("safe-keys.txt")
+        try "a".write(to: exposed, atomically: true, encoding: .utf8)
+        try "b".write(to: safe, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: exposed.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: safe.path)
+
+        let legacy = finding(
+            await makeCheck(legacyKeyFilePaths: [exposed.path, safe.path]).run(),
+            "security.legacy-key-file")
+        #expect(legacy.status == .problem)
+        let command = try #require(legacy.remediation?.command)
+        #expect(command.contains(exposed.path))
+        #expect(!command.contains(safe.path),
+                "the command must not suggest chmod-ing a file that is already owner-only: \(command)")
+    }
+
+    /// `AgeKeyFileLocations.protectCommand` refuses a path it cannot quote
+    /// safely (a newline anywhere in it — `ShellQuoting.singleQuoted`) — this
+    /// check must still tell the user *something* rather than silently
+    /// dropping the command with no replacement, which is the defect ticket
+    /// #7 exists to close (`SecurityPostureCheckTests` I8's twin,
+    /// `AgeKeyFileLocationTests.protectCommandRefusesUnquotablePath`, proves
+    /// `protectCommand` itself returns nil; this proves the check does not
+    /// just drop the advice when that happens).
+    ///
+    /// A real file with a newline in its name — POSIX filenames may contain
+    /// any byte but `/` and NUL, so this is a real file, not a synthetic
+    /// path a `stat` would never actually see.
+    @Test("a path no command can safely name still gets a usable explanation, not silence")
+    func unquotablePathStillExplainsWhatToDo() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("posture-unquotable-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(dir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let keyFile = dir.appendingPathComponent("keys\n.txt")
+        try "a".write(to: keyFile, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: keyFile.path)
+
+        let legacy = finding(await makeCheck(legacyKeyFilePaths: [keyFile.path]).run(),
+                             "security.legacy-key-file")
+        #expect(legacy.remediation?.command == nil, "this path cannot be safely quoted")
+        let explanation = try #require(legacy.remediation?.explanation)
+        #expect(!explanation.isEmpty)
+        #expect(explanation.lowercased().contains("chmod"),
+                "the fallback must still tell the user which command to run by hand: \(explanation)")
+        #expect(explanation.lowercased().contains("terminal") || explanation.lowercased().contains("by hand"),
+                "the fallback must say the user has to run it themselves: \(explanation)")
     }
 
     @Test("no plaintext key file on disk is OK")
@@ -189,6 +284,34 @@ ScratchDirectoryRegistry.shared.register(dir)
             }
             #expect(!reason.isEmpty, "a skipped check must say why")
         }
+    }
+
+    // MARK: - Session TTL (ticket #4)
+
+    /// The provider states the policy in force; this check turns it into an
+    /// informational finding. `.enforced` is the only outcome
+    /// `SessionKeyStore.ttlHealthSource` can ever produce — the store has no
+    /// "no TTL" mode — but the provider is still a protocol, not a `let`, for
+    /// the same reason `KeyStoreStatusProviding` is: a fact a check depends on
+    /// belongs behind a seam a test can fake, not a concrete type reaching
+    /// into `SessionTTLPreference` itself.
+    @Test("an enforced TTL is reported OK, naming the number of minutes")
+    func enforcedTTLIsOK() async {
+        let found = finding(await makeCheck(sessionTTL: .enforced(minutes: 15)).run(), "security.session-ttl")
+        #expect(found.status == .ok)
+        #expect(found.detail.contains("15"), "the finding must name the configured minutes: \(found.detail)")
+    }
+
+    @Test("an unavailable TTL provider is skipped, never a false OK")
+    func unavailableTTLProviderIsSkipped() async {
+        let found = finding(
+            await makeCheck(sessionTTL: .unavailable(reason: "no session key store was wired in")).run(),
+            "security.session-ttl")
+        guard case .skipped(let reason) = found.status else {
+            Issue.record("expected skipped, got \(found.status)")
+            return
+        }
+        #expect(!reason.isEmpty)
     }
 
     @Test("no finding ever contains key material")

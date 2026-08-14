@@ -232,6 +232,15 @@ public struct KeyImportView: View {
                         copyFeedback.confirmCopy(of: Self.chmodCopyTarget)
                     }
                 }
+            } else {
+                // Ticket #7: before this branch existed, `command == nil`
+                // meant the whole block above simply vanished — the success
+                // message stood alone with no hint that there was still
+                // something to do. Same wording `SecurityPostureCheck`'s
+                // matching fallback uses, for the same reason the command
+                // itself is shared: one explanation for one problem.
+                Text(.keyImportLegacyChmodUnavailable)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .foregroundStyle(.secondary)

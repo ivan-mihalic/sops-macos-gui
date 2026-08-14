@@ -84,6 +84,37 @@ final class WindowCloseGuard: NSObject, NSWindowDelegate {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var unsavedChanges: UnsavedChangesTracker?
     var quitRequest: QuitRequest?
+    /// Set once, from `.onAppear`, alongside `unsavedChanges`/`quitRequest`
+    /// above. `didSet` installs the sleep observer the first time this
+    /// becomes non-nil rather than requiring a separate call, so there is
+    /// exactly one place that has to remember to wire this up.
+    var keyStore: SessionKeyStore? {
+        didSet { installSleepObserverIfNeeded() }
+    }
+    private var didInstallSleepObserver = false
+
+    /// Ticket #4's "lock on sleep": `SessionKeyStore`'s TTL is deliberately a
+    /// lazy, access-time check (see that type's doc comment for why) rather
+    /// than a timer, which means a key nobody touches again sits in memory
+    /// until the next access notices it has expired. An unattended Mac going
+    /// to sleep is exactly the moment that gap matters, so this closes it
+    /// immediately rather than waiting for the TTL or the next access —
+    /// selector-based, not a closure, for the same reason every other AppKit
+    /// callback in this file is a delegate method rather than a captured
+    /// closure: it is what this class already does everywhere else, and it
+    /// sidesteps having to reason about a closure's own actor isolation
+    /// separately from the class holding it.
+    private func installSleepObserverIfNeeded() {
+        guard !didInstallSleepObserver, keyStore != nil else { return }
+        didInstallSleepObserver = true
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(handleSystemWillSleep),
+            name: NSWorkspace.willSleepNotification, object: nil)
+    }
+
+    @objc private func handleSystemWillSleep() {
+        keyStore?.forget()
+    }
 
     /// Strong references, because `NSWindow.delegate` is weak — without this
     /// the proxy is deallocated the moment it is installed and the window
@@ -372,7 +403,12 @@ struct SopsGUIApp: App {
                       // `.skipped` — is gone from the app; it survives as the
                       // package's default so `SopsGUIKit` still builds without
                       // Sparkle.
-                      appUpdates: updates)
+                      appUpdates: updates,
+                      // `keys.ttlHealthSource`, not the `SystemSessionTTL()`
+                      // default: this names the TTL *this* running store
+                      // enforces, the same reasoning `keyStore: keys.healthSource`
+                      // already applies just above.
+                      sessionTTL: keys.ttlHealthSource)
         }))
     }
 
@@ -401,6 +437,7 @@ struct SopsGUIApp: App {
                     // be open before this window is.
                     appDelegate.unsavedChanges = unsavedChanges
                     appDelegate.quitRequest = quitRequest
+                    appDelegate.keyStore = keyStore
                     // SwiftUI owns the window, so guarding its close button
                     // means standing in front of the delegate it installed —
                     // never replacing it, which stops `onDisappear` firing.
