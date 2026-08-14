@@ -525,6 +525,15 @@ struct DocumentErrorHygieneTests {
             _ = try SopsBridge.decryptToRows(encrypted, agePrivateKey: stranger.private)
         } catch let error as SopsBridgeError {
             #expect(error.description.contains("none of the keys"), "\(error.description)")
+            // Ticket #10, claim 2: this is the one decrypt failure
+            // `SecretFileCreator` must be able to tell apart from every other
+            // one — "this identity genuinely is not among the recipients" —
+            // without pattern-matching `description`'s own prose. The
+            // classification crosses the C boundary as JSON
+            // (`Engine/cshim/main.go`'s `result()`); see
+            // `Engine/gobridge/document.go`'s `TestDecryptFailuresAreClassified`
+            // for the same three cases pinned on the Go side.
+            #expect(error.kind == .noMatchingIdentity, "\(String(describing: error.kind))")
         }
 
         let partial = try encryptWithCLI(
@@ -539,6 +548,7 @@ struct DocumentErrorHygieneTests {
             #expect(
                 error.description.contains("modified since it was encrypted"),
                 "\(error.description)")
+            #expect(error.kind == nil, "a MAC mismatch must not be classified as a wrong identity, got \(String(describing: error.kind))")
         }
 
         let mistyped = try retyped(encrypted, key: "api_key", to: "int")
@@ -547,6 +557,7 @@ struct DocumentErrorHygieneTests {
             Issue.record("a mistyped value was accepted")
         } catch let error as SopsBridgeError {
             #expect(error.description.contains("could not be read"), "\(error.description)")
+            #expect(error.kind == nil, "an unreadable value must not be classified as a wrong identity, got \(String(describing: error.kind))")
         }
     }
 

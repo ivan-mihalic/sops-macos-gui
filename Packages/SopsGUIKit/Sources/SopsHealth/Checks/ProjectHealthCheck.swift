@@ -210,6 +210,11 @@ public struct ProjectHealthCheck: HealthCheck {
         // the same way `leak`, `permissions` and `debt` do.
         let encryption = unencryptedLeavesFinding(
             for: project, idScope: idScope, root: root, tree: tree, scope: scope)
+        // Ticket #10, claim 3: same reasoning as `permissions` again — whether
+        // a file was ever created unverified is a fact about that file, not
+        // about whether this project's .sops.yaml can be parsed.
+        let unreadableByCreation = unreadableByCreationFinding(for: project, idScope: idScope, root: root,
+                                                                tree: tree, scope: scope)
 
         guard FileManager.default.fileExists(atPath: configURL.path) else {
             // The plaintext-leak finding is emitted even here. A project with
@@ -255,7 +260,7 @@ public struct ProjectHealthCheck: HealthCheck {
                     // from finding a claim this app could not actually back
                     // up yet, and the next one is worth holding to the same
                     // standard before it lands.
-                    explanation: "Add a .sops.yaml file at the project root with a creation_rules entry naming the age public keys new files should be encrypted to. This app can propose one now: select this project, click the toolbar's New File button (or press ⌘N), add at least one recipient, then click Propose .sops.yaml — it shows the file before writing it, and writes it only once you confirm. Writing the file by hand is just as valid; see sops's own documentation for the file format.")), leak, permissions, debt, encryption]
+                    explanation: "Add a .sops.yaml file at the project root with a creation_rules entry naming the age public keys new files should be encrypted to. This app can propose one now: select this project, click the toolbar's New File button (or press ⌘N), add at least one recipient, then click Propose .sops.yaml — it shows the file before writing it, and writes it only once you confirm. Writing the file by hand is just as valid; see sops's own documentation for the file format.")), leak, permissions, debt, encryption, unreadableByCreation]
         }
 
         // Probe that the config itself loads under sops's own parser,
@@ -285,7 +290,7 @@ public struct ProjectHealthCheck: HealthCheck {
                 status: .problem,
                 detail: "The .sops.yaml in \(project.rootPath) could not be parsed: \(error).",
                 remediation: Remediation(
-                    explanation: "Fix the YAML syntax, then re-run this check.")), leak, permissions, debt, encryption]
+                    explanation: "Fix the YAML syntax, then re-run this check.")), leak, permissions, debt, encryption, unreadableByCreation]
         }
 
         return [
@@ -299,6 +304,7 @@ public struct ProjectHealthCheck: HealthCheck {
             permissions,
             debt,
             encryption,
+            unreadableByCreation,
         ]
     }
 
@@ -1213,5 +1219,51 @@ public struct ProjectHealthCheck: HealthCheck {
             remediation: Remediation(
                 explanation: "Narrow the file's permissions so only you can read or write it.",
                 command: command))
+    }
+
+    /// Ticket #10, claim 3: reports every encrypted file `SecretFileCreator`
+    /// wrote with `acknowledgedUnreadable == true` — no content verification
+    /// at all, because the session that created it could not decrypt it back
+    /// to check. `AcknowledgedUnreadableMarker` is the durable record; this is
+    /// the health nález that reads it back, mirroring `filePermissionsFinding`
+    /// immediately above: a per-file property read straight off disk, over
+    /// the identical candidate list, for the identical reason — a file this
+    /// app cannot parse the recipients of (`tree.encryptedInOtherFormats`) was
+    /// exactly as capable of being created this way as one it can.
+    ///
+    /// Deliberately silent about *why* a file was created this way — the
+    /// marker carries no reason, and inventing one here would be a claim this
+    /// check cannot back up. It only says which files, and reminds the reader
+    /// what the flag means.
+    private func unreadableByCreationFinding(
+        for project: InspectedProject, idScope: String, root: URL,
+        tree: ScannedTree, scope: ProjectScopeAccountant
+    ) -> ScopedFinding {
+        let findingID = "project.\(idScope).acknowledged-unreadable"
+        let title = "\(project.name): files created unreadable"
+
+        let rootPrefix = Self.canonicalPath(root.path) + "/"
+        func relativeName(_ url: URL) -> String {
+            let path = CanonicalPath.ofLeaf(url.path)
+            return path.hasPrefix(rootPrefix) ? String(path.dropFirst(rootPrefix.count)) : path
+        }
+
+        let candidates = tree.encrypted.map(\.url) + tree.encryptedInOtherFormats
+        let marked = candidates
+            .filter { AcknowledgedUnreadableMarker.isMarked($0) }
+            .map(relativeName)
+            .sorted()
+
+        guard !marked.isEmpty else {
+            return scope.finding(
+                about: .theWholeTree, id: findingID, title: title, status: .ok,
+                detail: "No encrypted file under \(project.rootPath) was created without being verified readable by the session that created it.")
+        }
+
+        return scope.finding(
+            about: .theWholeTree, id: findingID, title: title, status: .warning,
+            detail: "These files under \(project.rootPath) were created without any content verification, because the session that created them could not read them back to check: \(marked.joined(separator: ", ")). This does not mean the file is wrong — only that nothing here has confirmed it is right.",
+            remediation: Remediation(
+                explanation: "If you can now decrypt one of these files, open and re-save it in this app to verify its contents for the first time."))
     }
 }

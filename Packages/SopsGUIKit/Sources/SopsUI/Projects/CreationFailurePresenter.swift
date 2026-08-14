@@ -208,6 +208,20 @@ public enum CreationFailurePresenter {
                     + "is wrong with your data — for example, a value containing an unusual "
                     + "line-break character.",
                 recovery: .creationRecoveryCheckUnusualCharacters)
+        case .recipientsMismatch:
+            // Ticket #10, claim 1: the one check still possible when
+            // `acknowledgedUnreadable` skipped the round trip — the
+            // recipient metadata sops actually wrote does not match what
+            // this call meant to encrypt for. Unlike `.roundTripMismatch`,
+            // this is never a shape a user's own input can cause; it is a
+            // genuine engine-level surprise, so the wording says so rather
+            // than hinting at unusual characters the way `.roundTripMismatch`
+            // does.
+            return CreationFailureMessage(
+                title: .creationFailureTitle,
+                detail: "This app could not confirm that the file it just produced was actually "
+                    + "encrypted for the recipients you chose, so it was not created.",
+                recovery: .creationRecoveryCheckRecipients)
         case .wouldBeUnreadable:
             return CreationFailureMessage(
                 title: .creationFailureTitle,

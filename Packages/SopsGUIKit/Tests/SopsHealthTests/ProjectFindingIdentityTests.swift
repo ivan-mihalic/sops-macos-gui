@@ -26,10 +26,11 @@ struct ProjectFindingIdentityTests {
 
     /// The exact list from the review, originally nine findings (three
     /// projects × sops-yaml/recipients/gitignore) before the fix produced
-    /// only six distinct ids. Now eighteen: three tickets landing in the
+    /// only six distinct ids. Now twenty-one: four tickets landing in the
     /// same week each added a finding per project — `file-permissions`
-    /// (#19 item 5), `rotation-debt` (#3), `encryption` (#5). None of them
-    /// changes what this test is about — id uniqueness — only the count.
+    /// (#19 item 5), `rotation-debt` (#3), `encryption` (#5) and
+    /// `acknowledged-unreadable` (#10 claim 3). None of them changes what
+    /// this test is about — id uniqueness — only the count.
     @Test("names that collide after disambiguation still produce unique ids")
     func disambiguationDoesNotCreateCollisions() async throws {
         let roots = try (0..<3).map { _ -> String in
@@ -45,7 +46,7 @@ struct ProjectFindingIdentityTests {
         let findings = await ProjectHealthCheck(source: Projects(
             projects: zip(names, roots).map { InspectedProject(name: $0, rootPath: $1) })).run()
 
-        #expect(findings.count == 18)
+        #expect(findings.count == 21)
         #expect(Set(findings.map(\.id)).count == findings.count,
                 "ids collide: \(findings.map(\.id).sorted())")
     }

@@ -1118,8 +1118,26 @@ func TestMACDecryptErrorsAreSanitised(t *testing.T) {
 	}
 }
 
+// kindOf reads the structural `Kind() string` interface classifiedError
+// implements, the same way cshim/main.go's result() does — an error with no
+// such method (every unclassified error in this package) reports "".
+func kindOf(err error) string {
+	if classified, ok := err.(interface{ Kind() string }); ok {
+		return classified.Kind()
+	}
+	return ""
+}
+
 // The three ways a decrypt fails are distinguishable, so the UI can say
 // something true about which one happened.
+//
+// Ticket #10, claim 2: this is also where the *only* stable, machine-readable
+// classification this package hands across the C boundary is pinned —
+// `ErrKindNoMatchingIdentity` on the wrong-identity failure, and explicitly
+// nothing (kind "") on the other three, so a Swift caller can tell "this
+// identity genuinely is not among the recipients" apart from a genuine
+// engine fault without pattern-matching prose. See classifiedError's own
+// comment in document.go for the full account.
 func TestDecryptFailuresAreClassified(t *testing.T) {
 	key := newAgeKeyPair(t)
 	stranger := newAgeKeyPair(t)
@@ -1129,6 +1147,8 @@ func TestDecryptFailuresAreClassified(t *testing.T) {
 		t.Fatal("an unrelated identity was accepted")
 	} else if !strings.Contains(err.Error(), "none of the keys") {
 		t.Errorf("a wrong-identity failure is not reported as one: %v", err)
+	} else if kind := kindOf(err); kind != ErrKindNoMatchingIdentity {
+		t.Errorf("a wrong-identity failure has kind %q, want %q", kind, ErrKindNoMatchingIdentity)
 	}
 
 	// A real MAC mismatch: change a value the rules leave in plaintext, so
@@ -1140,6 +1160,8 @@ func TestDecryptFailuresAreClassified(t *testing.T) {
 		t.Fatal("a tampered document was accepted")
 	} else if !strings.Contains(err.Error(), "modified since it was encrypted") {
 		t.Errorf("a tampered document is not reported as one: %v", err)
+	} else if kind := kindOf(err); kind != "" {
+		t.Errorf("a MAC mismatch must not be classified as a wrong identity, got kind %q", kind)
 	}
 
 	mistyped := retypeEncryptedValue(t, encrypted, "api_key", "int")
@@ -1147,6 +1169,8 @@ func TestDecryptFailuresAreClassified(t *testing.T) {
 		t.Fatal("a mistyped value was accepted")
 	} else if !strings.Contains(err.Error(), "could not be read") {
 		t.Errorf("an unreadable value is not reported as one: %v", err)
+	} else if kind := kindOf(err); kind != "" {
+		t.Errorf("an unreadable value must not be classified as a wrong identity, got kind %q", kind)
 	}
 
 	// Corrupted ciphertext is an unreadable value too, not a MAC mismatch:
@@ -1156,6 +1180,8 @@ func TestDecryptFailuresAreClassified(t *testing.T) {
 		t.Fatal("a garbled document was accepted")
 	} else if !strings.Contains(err.Error(), "could not be read") {
 		t.Errorf("garbled ciphertext is not reported as an unreadable value: %v", err)
+	} else if kind := kindOf(err); kind != "" {
+		t.Errorf("garbled ciphertext must not be classified as a wrong identity, got kind %q", kind)
 	}
 }
 

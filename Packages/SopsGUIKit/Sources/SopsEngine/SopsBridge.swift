@@ -2,8 +2,35 @@ import CSopsBridge
 import Darwin
 import Foundation
 
-public struct SopsBridgeError: Error, CustomStringConvertible, Equatable {
+public struct SopsBridgeError: Error, CustomStringConvertible, Equatable, Sendable {
     public let description: String
+    /// A stable, Go-owned classification for the handful of bridge errors
+    /// that have one — `nil` for every other error, which is most of them.
+    /// Ticket #10, claim 2: this is what lets `SecretFileCreator` tell "this
+    /// identity genuinely is not among the file's recipients" apart from a
+    /// genuine engine fault at decrypt time, without pattern-matching
+    /// `description`'s own prose — see `Engine/gobridge/document.go`'s
+    /// `classifiedError` for where a value originates, and `call(_:)` below
+    /// for how it crosses the C boundary.
+    public let kind: Kind?
+
+    /// `kind` defaults to `nil`: every construction site in this file for a
+    /// *Swift*-side failure (malformed JSON from the bridge, an encoding
+    /// failure before a call is even made) has no classification to give —
+    /// only `call(_:)`, decoding a real bridge failure, ever passes one
+    /// explicitly.
+    init(description: String, kind: Kind? = nil) {
+        self.description = description
+        self.kind = kind
+    }
+
+    public enum Kind: String, Sendable {
+        /// `Engine/gobridge/document.go`'s `ErrKindNoMatchingIdentity`,
+        /// verbatim — this is the one place that string is spelled twice,
+        /// once per language, and `SopsBridgeErrorKindTests` pins that they
+        /// still agree.
+        case noMatchingIdentity = "no-matching-identity"
+    }
 }
 
 /// Which creation rule in a `.sops.yaml` governs a specific target file,
@@ -395,11 +422,36 @@ public enum SopsBridge {
         }
         defer { sops_free(out) }
 
-        let message = String(cString: out)
+        let payload = String(cString: out)
         guard status == 0 else {
-            throw SopsBridgeError(description: message)
+            throw errorEnvelope(payload)
         }
-        return message
+        return payload
+    }
+
+    /// The shape `Engine/cshim/main.go`'s `result()` writes to `*out` on
+    /// every failure: `{"kind": "...", "message": "..."}`, `kind` empty for
+    /// the overwhelming majority of errors that have no classification.
+    private struct ErrorEnvelope: Decodable {
+        let kind: String
+        let message: String
+    }
+
+    /// Decodes `raw` as an `ErrorEnvelope` and builds the `SopsBridgeError`
+    /// it describes. Falls back to treating `raw` itself as the message,
+    /// with no `kind`, if it does not decode — defensive only: every failure
+    /// this bridge can produce today already crosses as this JSON shape, but
+    /// a caller reading a decode failure as "the bridge is broken" would be
+    /// strictly worse than one reading it as an unclassified error with a
+    /// slightly odd message.
+    private static func errorEnvelope(_ raw: String) -> SopsBridgeError {
+        guard let data = raw.data(using: .utf8),
+              let envelope = try? JSONDecoder().decode(ErrorEnvelope.self, from: data)
+        else {
+            return SopsBridgeError(description: raw)
+        }
+        return SopsBridgeError(
+            description: envelope.message, kind: SopsBridgeError.Kind(rawValue: envelope.kind))
     }
 
     /// Ticket #4: the one buffer on this side of the cgo boundary that this

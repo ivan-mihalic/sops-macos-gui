@@ -1,6 +1,7 @@
 import Foundation
 import ScratchCleanup
 import SopsEngine
+import SopsHealth
 import Testing
 
 @testable import SopsProjects
@@ -100,6 +101,28 @@ struct SecretFileCreatorTests {
     /// :332-333`). A comments-only template is a different case entirely —
     /// see the comment just below this test for the measurement showing why
     /// it does not reach this check at all.
+    /// Ticket #10, claim 4: `.verbatimYAML`'s round trip only ever checked
+    /// that `decryptToRows` succeeded, never anything about the row *count*
+    /// — deliberately, because `{}` and blank documents are legitimate (see
+    /// `verbatimYAMLEmptyDocumentIsCreated` just below). But that meant real
+    /// content coming back as *zero* rows — total data loss on the one source
+    /// with no Swift-side emitter standing between the user's paste and the
+    /// bridge — was indistinguishable from a deliberately empty document.
+    /// This is not a full count comparison (that would need parsing the
+    /// user's YAML on the Swift side, which ADR 0002 forbids) — it is the one
+    /// shape of loss cheap to catch without parsing: non-trivial text that
+    /// comes back with nothing in it at all. This test cannot occur through
+    /// the real bridge (a real encrypt/decrypt round trip of non-empty YAML
+    /// does not lose everything), so it drives `verifyRoundTrip` directly
+    /// with a hand-built "rows came back empty" result — the shape a genuine
+    /// engine regression would take.
+    @Test("non-trivial pasted YAML that comes back with zero rows is caught, not created")
+    func verbatimYAMLThatLosesAllContentIsCaught() throws {
+        #expect(throws: SecretFileCreator.Failure.roundTripMismatch) {
+            try SecretFileCreator.verifyRoundTrip(.verbatimYAML("database:\n    password: hunter2\n"), rows: [])
+        }
+    }
+
     @Test("pasted YAML that is legitimately empty is created, not reported as corrupted")
     func verbatimYAMLEmptyDocumentIsCreated() throws {
         let owner = try AgeKeyPair.generate()
@@ -458,6 +481,74 @@ struct SecretFileCreatorTests {
         #expect(try SopsBridge.recipients(in: encrypted) == [stranger.public])
     }
 
+    /// Ticket #10, claim 3: `create()` must record, durably, that this file
+    /// was written with no content verification — see
+    /// `AcknowledgedUnreadableMarker`'s own doc comment for the mechanism and
+    /// why it is an extended attribute rather than a project-level registry.
+    @Test("a file created via acknowledgedUnreadable is marked on disk")
+    func acknowledgedUnreadableFileIsMarked() throws {
+        let owner = try AgeKeyPair.generate()
+        let stranger = try AgeKeyPair.generate()
+        let (_, project) = try makeProject()
+        let destination = project.appendingPathComponent("secret.yaml")
+
+        let receipt = try SecretFileCreator.create(
+            .empty,
+            plan: plan([stranger.public], acknowledgedUnreadable: true),
+            at: destination, in: project, sessionKey: owner.private)
+
+        #expect(AcknowledgedUnreadableMarker.isMarked(receipt.destination))
+    }
+
+    /// The converse: a normal creation — this session's own key among the
+    /// recipients, round trip verified — must not be marked. The marker
+    /// means "written unverified", never "created via this code path".
+    @Test("an ordinary creation is not marked")
+    func ordinaryCreationIsNotMarked() throws {
+        let owner = try AgeKeyPair.generate()
+        let (_, project) = try makeProject()
+        let destination = project.appendingPathComponent("secret.yaml")
+
+        let receipt = try SecretFileCreator.create(
+            .empty, plan: plan([owner.public]), at: destination, in: project,
+            sessionKey: owner.private)
+
+        #expect(!AcknowledgedUnreadableMarker.isMarked(receipt.destination))
+    }
+
+    // MARK: - Distinguishing "not a recipient" from a genuine engine fault (ticket #10, claim 2)
+
+    /// `acknowledgedUnreadable` trades away content verification for a
+    /// recipient set that legitimately excludes this session — it was never
+    /// meant to paper over an actual bridge bug. An empty `sessionKey` fails
+    /// for a completely different reason than "wrong identity"
+    /// (`parseDecryptionIdentities` refuses before any decrypt is even
+    /// attempted — see `Engine/gobridge/bridge.go`), so `SopsBridgeError.kind`
+    /// is `nil` here, not `.noMatchingIdentity`, and this must surface as
+    /// `.engine`, never be silently absorbed into `.wouldBeUnreadable`'s
+    /// "write anyway" branch.
+    @Test("acknowledgedUnreadable does not swallow a genuine engine fault as wouldBeUnreadable")
+    func acknowledgedUnreadableSurfacesGenuineEngineFaults() throws {
+        let stranger = try AgeKeyPair.generate()
+        let (root, project) = try makeProject()
+        let destination = project.appendingPathComponent("secret.yaml")
+
+        let before = fileTreeSnapshot(root)
+        let result = Result(catching: {
+            try SecretFileCreator.create(
+                .empty, plan: plan([stranger.public], acknowledgedUnreadable: true),
+                at: destination, in: project, sessionKey: "")
+        })
+        guard case .failure(let error) = result, case SecretFileCreator.Failure.engine = error else {
+            Issue.record("expected .engine for an invalid session key even with acknowledgedUnreadable, got \(result)")
+            return
+        }
+        // Nothing was written for a failure this type cannot yet class as
+        // "this session cannot read it" — same "no delete-on-failure path"
+        // discipline every other refusal in this suite proves.
+        #expect(fileTreeSnapshot(root) == before)
+    }
+
     @Test("an age plugin recipient is refused by the bridge, propagated as .engine")
     func pluginRecipientIsRefused() throws {
         let owner = try AgeKeyPair.generate()
@@ -566,6 +657,44 @@ struct SecretFileCreatorTests {
         #expect(descriptions.count == 4)
         for description in descriptions {
             #expect(!description.contains(sentinelValue), "leaked in: \(description)")
+        }
+    }
+
+    // MARK: - Structural verification without a readable identity (ticket #10, claim 1)
+    //
+    // `acknowledgedUnreadable` skips the round trip entirely — there is no
+    // identity in hand to decrypt the result and compare. But sops's own
+    // recipient metadata is public and readable without any identity
+    // (`SopsBridge.recipients(in:)`), so it is the one structural fact this
+    // call can still check even when nothing can be decrypted:
+    // `verifyRecipientsStructurally` catches the class of bug the round trip
+    // exists for — the file just produced does not actually declare the
+    // recipients this call meant to encrypt for — for exactly the one path
+    // where nothing else checks anything at all.
+
+    @Test("matching recipients pass structural verification")
+    func matchingRecipientsPassStructuralVerification() throws {
+        let owner = try AgeKeyPair.generate()
+        let stranger = try AgeKeyPair.generate()
+        let encrypted = try SopsBridge.encryptYAML("{}\n", recipients: [owner.public, stranger.public])
+
+        // Must not throw.
+        try SecretFileCreator.verifyRecipientsStructurally(
+            encrypted, expected: [owner.public, stranger.public])
+    }
+
+    @Test("a recipient set that does not match what was actually written is caught")
+    func mismatchedRecipientsAreCaught() throws {
+        let owner = try AgeKeyPair.generate()
+        let stranger = try AgeKeyPair.generate()
+        // Encrypted for `owner` only, but this call claims it was meant for
+        // both — the shape a bridge bug producing the wrong recipient set
+        // would take.
+        let encrypted = try SopsBridge.encryptYAML("{}\n", recipients: [owner.public])
+
+        #expect(throws: SecretFileCreator.Failure.recipientsMismatch) {
+            try SecretFileCreator.verifyRecipientsStructurally(
+                encrypted, expected: [owner.public, stranger.public])
         }
     }
 

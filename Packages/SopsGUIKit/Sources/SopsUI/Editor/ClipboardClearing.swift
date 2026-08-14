@@ -2,28 +2,76 @@ import AppKit
 import CryptoKit
 import Foundation
 
+/// How long a copied secret stays on the pasteboard before `ClipboardClearing`
+/// wipes it — PROPOSAL.md §4's "configurable clipboard-clear delay" (ticket
+/// #6, claim 4).
+///
+/// Same shape as `SessionTTLPreference`
+/// (`SopsHealth/HealthReport+Standard.swift`, ticket #4): a
+/// `UserDefaults`-backed static, read fresh on every copy rather than cached,
+/// so a value changed mid-session is honoured by the very next copy, not just
+/// after a restart.
+///
+/// No Settings UI — the same call ticket #4 made for `SessionTTLPreference`,
+/// for the same reason: this app's `LocalizationTests` suite is strict about
+/// new UI strings (plural formats, no hardcoded paths), which makes a new
+/// control expensive to get right, and building a whole Settings tab for one
+/// number is out of proportion to this task. The preference itself is fully
+/// wired and usable without it — every call site already goes through
+/// `ClipboardClearing.defaultInterval` rather than hardcoding a duration, so
+/// a future Settings screen can read and write this type directly without
+/// any call site changing, the same seam `SessionKeyStore`'s doc comment
+/// describes for swapping its own storage.
+public enum ClipboardClearIntervalPreference {
+    public static let defaultsKey = "clipboard.clearIntervalSeconds"
+
+    /// PROPOSAL.md §2's "~30 s", taken literally — the same value
+    /// `defaultInterval` used to hardcode before this existed.
+    public static let defaultSeconds = 30
+
+    /// 5…300 (5 minutes). The floor exists because an interval near zero
+    /// clears a secret before any realistic paste can complete — not a short
+    /// window, a copy button that silently does nothing. The ceiling exists
+    /// because a multi-minute "clear delay" is functionally no delay at all:
+    /// the secret sits exposed for the length of an ordinary interruption.
+    public static let allowedRange = 5...300
+
+    public static func seconds(in defaults: UserDefaults = .standard) -> Int {
+        let stored = defaults.object(forKey: defaultsKey) as? Int
+        return clamp(stored ?? defaultSeconds)
+    }
+
+    /// Clamped on the way in, not merely on the way out — see
+    /// `SessionTTLPreference.setMinutes` for why: a `defaults read` of the
+    /// raw plist should show the value this type will actually honour.
+    public static func setSeconds(_ seconds: Int, in defaults: UserDefaults = .standard) {
+        defaults.set(clamp(seconds), forKey: defaultsKey)
+    }
+
+    public static func interval(in defaults: UserDefaults = .standard) -> Duration {
+        .seconds(seconds(in: defaults))
+    }
+
+    private static func clamp(_ seconds: Int) -> Int {
+        min(max(seconds, allowedRange.lowerBound), allowedRange.upperBound)
+    }
+}
+
 /// Copies a value to the general pasteboard and clears it again after a
 /// fixed delay — PROPOSAL.md §2: "clipboard auto-cleared after ~30 s",
 /// applied to the editor's per-row copy button (Task 9's brief) exactly as
 /// it already applies to the key-reveal flow M3 will build.
 ///
 /// ## Where the interval lives
-/// Task 9's brief says to reuse whatever Settings already exposes for this,
-/// or decide where it lives if nothing does. Settings today has no UI for
-/// it at all — `UpdateSettingsPanel` and `KeyImportView` are the only two
-/// tabs, and neither is about timing. Building a new Settings tab for a
-/// single number is out of proportion to this task, so `defaultInterval`
-/// below is a single named constant instead: every call site in this module
-/// already goes through it rather than hardcoding a duration, so a future
-/// Settings screen (session TTL and clipboard delay belong together per
-/// PROPOSAL.md §4, and session TTL doesn't exist until M3 either) can source
-/// it from `UserDefaults` without any call site changing — the same seam
-/// `SessionKeyStore`'s doc comment describes for swapping its own storage.
+/// `defaultInterval` reads `ClipboardClearIntervalPreference` on every call
+/// rather than freezing a literal — see that type's doc comment for why
+/// there is still no Settings UI for it.
 @MainActor
 public enum ClipboardClearing {
 
-    /// PROPOSAL.md §2's "~30 s", taken literally.
-    public static let defaultInterval: Duration = .seconds(30)
+    /// `ClipboardClearIntervalPreference`'s current value, read fresh so a
+    /// change made mid-session is honoured by the very next copy.
+    public static var defaultInterval: Duration { ClipboardClearIntervalPreference.interval() }
 
     /// nspasteboard.org's de-facto marker for "this is a secret". Raycast,
     /// Alfred, Maccy, Paste and 1Password's own copy path all read it; a
@@ -78,21 +126,7 @@ public enum ClipboardClearing {
     /// provided the pasteboard is still holding that same secret.
     public static func copy(_ value: String, clearingAfter interval: Duration = defaultInterval) {
         let pasteboard = NSPasteboard.general
-        // `.currentHostOnly` rather than a bare `clearContents()`: without it
-        // the pasteboard is eligible for Universal Clipboard, and a value the
-        // user copied to paste into a terminal on *this* machine is pushed to
-        // every other Mac, iPhone and iPad signed into the same Apple
-        // Account, where nothing in this process can ever clear it. There is
-        // no public API to read this option back, so no test here asserts it;
-        // it is stated as an implementation commitment, not as something
-        // proven from outside.
-        pasteboard.prepareForNewContents(with: .currentHostOnly)
-        pasteboard.addTypes([.string, concealedType, transientType], owner: nil)
-        pasteboard.setString(value, forType: .string)
-        // Empty payloads: for both markers it is the presence of the type
-        // that carries the meaning (nspasteboard.org).
-        pasteboard.setData(Data(), forType: concealedType)
-        pasteboard.setData(Data(), forType: transientType)
+        write(value, to: pasteboard)
 
         let record = PendingCopy(changeCount: pasteboard.changeCount, digest: digest(of: value))
         pending = record
@@ -101,6 +135,48 @@ public enum ClipboardClearing {
             try? await Task.sleep(for: interval)
             clearIfStillOurs(record)
         }
+    }
+
+    /// Puts `value` on the general pasteboard with the same markers and host
+    /// scoping `copy` uses, but never schedules a clear and never registers
+    /// with the `pending`/`clearOnTermination()` guard `copy` does.
+    ///
+    /// For remediation commands (`chmod 600 <path>`, shown next to a health
+    /// finding or after a key import): the command is text the user is
+    /// explicitly meant to keep and paste into a terminal on their own
+    /// schedule, so an auto-clear would take back something they asked for —
+    /// that part of `copy`'s bypass reasoning was right. What it missed is
+    /// that a `chmod 600` command names the absolute path to the user's
+    /// private age key file, which is exactly the kind of thing a clipboard
+    /// manager's on-disk history, or Universal Clipboard, should not retain
+    /// forever and unmarked just because the string itself is not key
+    /// material. This gives both properties: marked and host-scoped like
+    /// every other pasteboard write in this app, kept around like the "not a
+    /// secret" text it actually is.
+    public static func copyWithoutAutoClear(_ value: String) {
+        write(value, to: .general)
+    }
+
+    /// The pasteboard-writing steps both entry points share: mark as a
+    /// secret-shaped value, scope to this host, put the string on. Neither
+    /// scheduling a clear nor registering with `pending` is this function's
+    /// job — those are what distinguish `copy` from `copyWithoutAutoClear`.
+    private static func write(_ value: String, to pasteboard: NSPasteboard) {
+        // `.currentHostOnly` rather than a bare `clearContents()`: without it
+        // the pasteboard is eligible for Universal Clipboard, and a value the
+        // user copied to paste into a terminal on *this* machine is pushed to
+        // every other Mac, iPhone and iPad signed into the same Apple
+        // Account, where nothing in this process can ever clear it. There is
+        // no public API to read this option back, so no runtime test asserts
+        // it — `ClipboardRoutingTests.pasteboardWritesAreHostOnly` pins it as
+        // a source-text guard instead.
+        pasteboard.prepareForNewContents(with: .currentHostOnly)
+        pasteboard.addTypes([.string, concealedType, transientType], owner: nil)
+        pasteboard.setString(value, forType: .string)
+        // Empty payloads: for both markers it is the presence of the type
+        // that carries the meaning (nspasteboard.org).
+        pasteboard.setData(Data(), forType: concealedType)
+        pasteboard.setData(Data(), forType: transientType)
     }
 
     /// Clears the pasteboard right now, but only through the same
