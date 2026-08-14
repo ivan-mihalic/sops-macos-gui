@@ -602,4 +602,105 @@ struct NewSecretFileModelTests {
         #expect(!modelRetains(sentinel, model),
                 "the model still retains A's content, reachable via Mirror, after B was loaded")
     }
+
+    // MARK: - SOPS-30: loadPlainYAML/loadDotEnv crossed the C boundary unguarded
+    //
+    // Ticket #30. Same `withGoString` truncation mechanism
+    // `unlockChosenEncryptedFile()` was fixed for in merge `88e187c`: a raw
+    // NUL is valid UTF-8, so it survives `Data(contentsOf:)` and a
+    // `String(data:encoding:.utf8)` decode intact, then silently ends the
+    // argument at the Go bridge's C boundary. Here that means a *new* file
+    // is missing everything the user thought they imported after the NUL,
+    // rather than an existing document's second half being destroyed.
+
+    /// A raw NUL midway through a Plain YAML source. Before the fix,
+    /// `loadPlainYAML(from:)` stored the whole string (NUL and all) as
+    /// `plainYAMLText`, `create()` handed it straight to
+    /// `SopsBridge.encryptYAML`, which truncated at the NUL, and
+    /// `SecretFileCreator.verifyRoundTrip`'s `.verbatimYAML` branch does not
+    /// count rows — it only refuses a *non-empty* source coming back with
+    /// *zero* rows (see that method's own doc comment, "not a row count
+    /// comparison"). One surviving row is enough to pass, so `create()`
+    /// silently succeeded, and the written file was missing `beta` with no
+    /// error anywhere.
+    @Test("a Plain YAML source carrying a NUL byte is refused, not silently truncated on create")
+    func nulBearingPlainYAMLSourceIsRefused() async throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        try ageOnlyConfig(owner.public)
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let keyStore = try makeKeyStore(importing: owner.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+        model.relativeName = "secret.yaml"
+        await model.resolvePlan()
+
+        model.sourceChoice = .plainYAML
+        let source = root.appendingPathComponent("source.yaml")
+        try "alpha: one\n\u{0}beta: two\n".write(to: source, atomically: true, encoding: .utf8)
+        model.loadPlainYAML(from: source)
+
+        guard let error = model.plainYAMLLoadError else {
+            let retained = String(describing: model.plainYAMLText)
+            let message: String = "expected a NUL byte in the Plain YAML source to be refused at "
+                + "load time, but plainYAMLLoadError is nil — plainYAMLText was set to \(retained)"
+            Issue.record("\(message)")
+            return
+        }
+        #expect(error.detail.contains("NUL"), "the refusal does not say what is wrong: \(error.detail)")
+        #expect(model.plainYAMLText == nil, "a refused load must not retain a truncated document")
+
+        // The consequence the guard exists to prevent, proven end to end:
+        // without the guard above, `create()` would report success and the
+        // written file would silently be missing `beta`.
+        let created = await model.create()
+        #expect(created == nil, "create() must not proceed from a refused Plain YAML load")
+    }
+
+    /// The `.dotEnv` sibling of the test above — same ticket, same claimed
+    /// mechanism, but investigating it turned up a different reality than
+    /// `.plainYAML`'s: `loadDotEnv(from:)` never hands raw file text to the
+    /// bridge at all, only `DotEnvParser.parse`'s structured `entries`, and
+    /// `create()` re-serialises those through `FlatYAMLEmitter.emit`, whose
+    /// `quotedValue` escapes every C0 control character — including NUL —
+    /// as a literal `\x00` before anything reaches `SopsBridge.encryptYAML`
+    /// (see that method's own doc comment table). Measured directly, before
+    /// `loadDotEnv(from:)` had any guard at all: a `.env` value containing a
+    /// raw NUL parsed into two entries and round-tripped through `create()`
+    /// with both rows intact — the silent-truncation failure this ticket
+    /// describes for `.plainYAML` does not reach `.dotEnv` through this
+    /// path. That is the "reproduction failed to reproduce" outcome the
+    /// house rule anticipates as a legitimate result in its own right, not
+    /// a reason to skip the guard here — `loadDotEnv(from:)` now refuses a
+    /// NUL byte on the same raw bytes `.plainYAML` does, purely so this
+    /// boundary is checked consistently everywhere a source file is read,
+    /// not because this test found a live defect.
+    @Test("a .env source carrying a NUL byte is refused at load time, as defense-in-depth — FlatYAMLEmitter already escapes it before the C boundary")
+    func nulBearingDotEnvSourceIsRefused() async throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        try ageOnlyConfig(owner.public)
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let keyStore = try makeKeyStore(importing: owner.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+        model.relativeName = "secret.yaml"
+        await model.resolvePlan()
+
+        model.sourceChoice = .dotEnv
+        let source = root.appendingPathComponent("source.env")
+        try "ALPHA=one\u{0}two\nBETA=three\n".write(to: source, atomically: true, encoding: .utf8)
+        model.loadDotEnv(from: source)
+
+        guard let error = model.dotEnvLoadError else {
+            let retained = String(describing: model.dotEnvParsed)
+            let message: String = "expected a NUL byte in the .env source to be refused at load "
+                + "time, but dotEnvLoadError is nil — dotEnvParsed was set to \(retained)"
+            Issue.record("\(message)")
+            return
+        }
+        #expect(error.detail.contains("NUL"), "the refusal does not say what is wrong: \(error.detail)")
+        #expect(model.dotEnvParsed == nil, "a refused load must not retain a partially-parsed document")
+
+        let created = await model.create()
+        #expect(created == nil, "create() must not proceed from a refused .env load")
+    }
 }
