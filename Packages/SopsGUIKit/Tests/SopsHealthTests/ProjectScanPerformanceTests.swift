@@ -186,7 +186,9 @@ ScratchDirectoryRegistry.shared.register(src)
     ///
     /// `~/Development/invoi/invoi-app` (~272,802 files) was the repository
     /// used for Task 1's measurement and is used again here for continuity.
-    @Test("real repository scan wall clock", .enabled(if: ProcessInfo.processInfo.environment["SCAN_TIMING_ROOT"] != nil))
+    @Test("real repository scan wall clock",
+          .enabled(if: ProcessInfo.processInfo.environment["SCAN_TIMING_ROOT"] != nil,
+                   "opt-in benchmark: set SCAN_TIMING_ROOT to a large repository's path to run it"))
     func realRepositoryScanWallClock() async throws {
         let path = ProcessInfo.processInfo.environment["SCAN_TIMING_ROOT"]!
         let root = URL(fileURLWithPath: path)

@@ -325,7 +325,8 @@ ScratchDirectoryRegistry.shared.register(src)
     /// the moment it is supposed to earn its keep — it would report success
     /// over a scan that never happened.
     @Test("real repository findings",
-          .enabled(if: ProcessInfo.processInfo.environment["PROJECT_HEALTH_ROOT"] != nil),
+          .enabled(if: ProcessInfo.processInfo.environment["PROJECT_HEALTH_ROOT"] != nil,
+                   "opt-in check against a real tree: set PROJECT_HEALTH_ROOT to a repository's path to run it"),
           .timeLimit(.minutes(5)))
     func realRepositoryFindings() async throws {
         let path = ProcessInfo.processInfo.environment["PROJECT_HEALTH_ROOT"]!

@@ -20,7 +20,7 @@ the worktree outside the repo where it is easy to lose track of.
 | `docs/adr/` | Architecture decisions, numbered. Read before re-litigating anything. |
 | `docs/superpowers/plans/` | Implementation plans. |
 | `Engine/` | The Go SOPS bridge (cgo `c-archive` → xcframework). |
-| `Packages/SopsGUIKit/` | All app logic. `swift test` here is the fast loop. |
+| `Packages/SopsGUIKit/` | All app logic. `./Scripts/test.sh` is the fast loop. |
 | `App/` | Thin Xcode app target; exists for archiving and notarization. |
 
 ## Toolchains — this machine has three Swift compilers
@@ -34,17 +34,37 @@ restart changed which compiler `PATH` found first.
 So "the suite is green" is only meaningful with the compiler named. Run both before believing
 a build result, and say which one produced a number you are reporting.
 
-Related: SwiftPM's native build system **copies `Localizable.xcstrings` uncompiled** — it never
-produces `en.lproj/Localizable.strings`, so under `swift test` every `LocalizedKey` resolves to
-its own raw key. `xcodebuild` compiles it correctly and the shipped app is fine. The catalog
-guard therefore reads the `.xcstrings` JSON directly rather than the bundle; the bundle-based
-assertions are gated with `.enabled(if:)` and skip with a stated reason where they cannot pass.
+### Run the suite with `./Scripts/test.sh`, not with bare `swift test`
 
-`swift run` does **not** have this problem, checked directly: this toolchain's `swift build`/
-`swift run` now default to the newer Swift Build engine (`--build-system swiftbuild`, not the
-llbuild-based native one `swift test` still defaults to), and that engine compiles the string
-catalog correctly. Confirmed by reading the snapshot tool's own PNG output — real English text
-throughout, never a raw key like `sidebar.projects`.
+The disagreement that matters most here is not between the three compilers — it is between
+two **build systems**, and bare `swift test` picks the wrong one.
+
+SwiftPM's llbuild-based native build system, which `swift test` still defaults to, **copies
+`Localizable.xcstrings` uncompiled**. It never produces `en.lproj/Localizable.strings`, so
+every `LocalizedKey` resolves to its own raw key. The newer Swift Build engine
+(`--build-system swiftbuild`, already the default for `swift build`/`swift run`) compiles the
+catalog properly, and so does `xcodebuild`.
+
+Measured at `89795b0` on 2026-08-14, same filter, same machine, same compiler:
+
+| | llbuild (bare `swift test`) | swiftbuild |
+|---|---|---|
+| `catalogIsBundled`, `everyKeyResolves` | **skipped** — assert nothing | **307 cases, passed** |
+| `FirstRunWindowAndSummaryTests` "the Add Project control fills the sidebar footer" | **fails** | **passes** |
+
+So bare `swift test` silently disables both localization guards *and* fails one real test for
+a reason that has nothing to do with the code under test. That second row was carried as a
+"flake" for a while — ⚠️ **it is not a flake and never was.** A deterministically failing
+test filed as flaky is exactly how a real regression gets waved through next time.
+
+`./Scripts/test.sh` passes `--build-system swiftbuild`, builds the xcframework if it is
+missing, and prints any skipped tests in a block at the end — a skipped test asserted
+nothing, and that belongs where it cannot be scrolled past. Extra arguments go straight
+through: `./Scripts/test.sh --filter SomeSuite`.
+
+`xcrun swift test` (Xcode's toolchain) is equally correct and is what release verification
+uses. Either is a real answer; bare `swift test` is not. And "the suite is green" still
+means nothing without naming which of them produced it.
 
 ## Visual verification — headless snapshots
 
