@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 import SopsHealth
 import SopsProjects
@@ -225,10 +224,14 @@ public struct KeyImportView: View {
                         .padding(6)
                         .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
                     // The app shows the command; the user runs it — this app
-                    // never mutates the system (CLAUDE.md).
+                    // never mutates the system (CLAUDE.md). Same reasoning as
+                    // `HealthFindingRow`'s matching button: `copyWithoutAutoClear`
+                    // keeps the command around for the user to paste at their
+                    // own pace, while still marking it concealed/transient and
+                    // host-only — this command also names the absolute path
+                    // to a private key file.
                     Button(copyFeedback.label(for: Self.chmodCopyTarget).text) {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(command, forType: .string)
+                        ClipboardClearing.copyWithoutAutoClear(command)
                         copyFeedback.confirmCopy(of: Self.chmodCopyTarget)
                     }
                 }

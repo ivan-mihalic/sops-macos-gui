@@ -205,4 +205,55 @@ struct ClipboardClearingTests {
 
         #expect(NSPasteboard.general.string(forType: .string) == other)
     }
+
+    // MARK: - Remediation commands (ticket #6, claim 3)
+    //
+    // `HealthFindingRow` and `KeyImportView` copy shell remediation commands
+    // — `chmod 600 <path>` — that carry the absolute path to the user's
+    // private key file. That path is not a secret *value*, but it is exactly
+    // the kind of thing a clipboard manager's on-disk history or Universal
+    // Clipboard should not retain indefinitely, so it must not bypass the
+    // concealed/transient/host-only markers the way a raw
+    // `NSPasteboard.general.setString` does. It also must not be yanked back
+    // after 30 seconds — the user is meant to paste it into a terminal on
+    // their own schedule, and an auto-clear would take back something they
+    // explicitly asked for. `copyWithoutAutoClear` is the seam that gives
+    // both properties at once.
+
+    @Test("copyWithoutAutoClear puts the value on the pasteboard immediately")
+    func copyWithoutAutoClearPutsValueOnPasteboard() {
+        let command = "clipboard-remediation-\(UUID().uuidString)"
+        ClipboardClearing.copyWithoutAutoClear(command)
+        #expect(NSPasteboard.general.string(forType: .string) == command)
+    }
+
+    @Test("copyWithoutAutoClear marks the value concealed and transient, same as copy")
+    func copyWithoutAutoClearMarksConcealed() {
+        let command = "clipboard-remediation-\(UUID().uuidString)"
+        ClipboardClearing.copyWithoutAutoClear(command)
+
+        let types = NSPasteboard.general.types ?? []
+        #expect(types.contains(ClipboardClearing.concealedType),
+                "a remediation command went onto the pasteboard without org.nspasteboard.ConcealedType, so a clipboard manager just archived a path to the user's private key file permanently. Types present: \(types)")
+        #expect(types.contains(ClipboardClearing.transientType),
+                "no org.nspasteboard.TransientType either. Types present: \(types)")
+        #expect(NSPasteboard.general.string(forType: .string) == command)
+    }
+
+    /// The property that distinguishes this from `copy`: nothing schedules a
+    /// clear, and nothing registers the copy for `clearOnTermination()` to
+    /// act on either — calling it right afterwards must be a no-op against
+    /// this copy. If `copyWithoutAutoClear` reused `copy`'s `pending` guard by
+    /// mistake, this would catch it: the command would vanish the instant
+    /// termination ran, instead of staying until the user pastes it.
+    @Test("copyWithoutAutoClear does not register for clearOnTermination")
+    func copyWithoutAutoClearSurvivesTermination() {
+        let command = "clipboard-remediation-\(UUID().uuidString)"
+        ClipboardClearing.copyWithoutAutoClear(command)
+
+        ClipboardClearing.clearOnTermination()
+
+        #expect(NSPasteboard.general.string(forType: .string) == command,
+                "copyWithoutAutoClear registered with the same pending-clear guard copy() uses; a remediation command must survive termination, not be wiped like a timed secret")
+    }
 }

@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 import SopsHealth
 
@@ -70,14 +69,20 @@ public struct HealthFindingRow: View {
                             .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
                         // The app shows the command; the user runs it. PROPOSAL.md §6.
                         //
-                        // Straight to `NSPasteboard`, not through
-                        // `ClipboardClearing`: this is a shell command the
-                        // user is about to paste into a terminal, not a
-                        // secret, and wiping their clipboard 30 seconds later
-                        // would be taking away something they asked for.
+                        // `copyWithoutAutoClear`, not `copy`: this is a shell
+                        // command the user is about to paste into a
+                        // terminal, not a secret, and wiping their clipboard
+                        // 30 seconds later would be taking away something
+                        // they asked for. It still gets the concealed/
+                        // transient markers and host-only scoping every
+                        // other pasteboard write in this app gets — a
+                        // `chmod 600` command names the absolute path to the
+                        // user's private key file, and that should not sit
+                        // unmarked in a clipboard manager's history or reach
+                        // every other device via Universal Clipboard. See
+                        // `ClipboardClearing.copyWithoutAutoClear`.
                         Button(copyFeedback.label(for: finding.id).text) {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(command, forType: .string)
+                            ClipboardClearing.copyWithoutAutoClear(command)
                             copyFeedback.confirmCopy(of: finding.id)
                         }
                     }

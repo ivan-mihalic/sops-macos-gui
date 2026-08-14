@@ -44,18 +44,70 @@ struct ClipboardRoutingTests {
                 "the editor touches NSPasteboard directly; every secret copy must go through ClipboardClearing")
     }
 
-    /// The two views that legitimately use `NSPasteboard` directly copy a
-    /// *remediation command* — `brew upgrade age`, `chmod 600 …` — which is
-    /// public text the user is meant to paste into a terminal and keep. Pinned
-    /// so that a secret cannot quietly move into one of them.
-    @Test("only remediation commands bypass it", arguments: [
+    /// Ticket #6, claim 3: these two views used to bypass `ClipboardClearing`
+    /// entirely for a *remediation command* — `chmod 600 <path>` — on the
+    /// reasoning that it is "not a secret". That reasoning missed that the
+    /// command carries the absolute path to the user's private age key file,
+    /// which a clipboard manager's on-disk history or Universal Clipboard
+    /// should not retain forever, unmarked, just because the string itself
+    /// is not key material.
+    ///
+    /// The criterion is now explicit rather than "these two files may touch
+    /// NSPasteboard": a remediation command still gets the concealed/transient
+    /// markers and host-only scoping every other pasteboard write in this app
+    /// gets, via `ClipboardClearing.copyWithoutAutoClear` — it only skips the
+    /// *timer*, because the user pastes it into a terminal on their own
+    /// schedule and an auto-clear would take back something they asked for.
+    /// No file may reach `NSPasteboard` directly any more; that is the whole
+    /// point of the fix.
+    @Test("remediation commands route through ClipboardClearing too, just without the timer", arguments: [
         "Health/HealthFindingRow.swift", "Editor/KeyImportView.swift",
     ])
-    func onlyCommandsBypass(_ relativePath: String) throws {
+    func remediationCommandsRouteThroughClipboardClearing(_ relativePath: String) throws {
         let text = try source(relativePath)
-        guard text.contains("NSPasteboard") else { return }
-        #expect(text.contains("setString(command, forType: .string)"),
-                "\(relativePath) writes something other than a remediation command straight to the pasteboard")
+        #expect(!text.contains("NSPasteboard"),
+                "\(relativePath) writes to NSPasteboard directly — remediation commands carry paths (e.g. to the private key file) and must go through ClipboardClearing like everything else")
+        #expect(text.contains("ClipboardClearing.copyWithoutAutoClear(command)"),
+                "\(relativePath) no longer routes its remediation command through ClipboardClearing.copyWithoutAutoClear")
+    }
+
+    /// Ticket #6, claim 2's own doc comment says there is no public API to
+    /// read `.currentHostOnly` back, so no runtime test can assert it — a gap
+    /// this suite left completely open until now (none of the eight tests in
+    /// `ClipboardClearingTests` mention it). Without this, a regression here
+    /// pushes every secret copied through this app to every other Mac, iPhone
+    /// and iPad on the Apple Account via Universal Clipboard, and nothing
+    /// anywhere would go red. A source-text guard, same reasoning and same
+    /// technique as `editorCopyIsRouted` above.
+    @Test("copy and copyWithoutAutoClear both scope new contents to this host")
+    func pasteboardWritesAreHostOnly() throws {
+        let text = try source("Editor/ClipboardClearing.swift")
+        #expect(text.contains("prepareForNewContents(with: .currentHostOnly)"),
+                "no pasteboard write scopes new contents with .currentHostOnly any more — a secret copied through this app would be pushed to every device on the Apple Account via Universal Clipboard, where nothing in this process can ever clear it")
+        // Both entry points must route through the one function that applies
+        // that scoping, not duplicate their own pasteboard-writing logic —
+        // two copies of this is exactly how one of them silently drifted
+        // without the marker before.
+        #expect(text.contains("write(value, to: pasteboard)"),
+                "copy(_:clearingAfter:) no longer routes through the shared write(_:to:) helper that applies .currentHostOnly")
+        #expect(text.contains("write(value, to: .general)"),
+                "copyWithoutAutoClear(_:) no longer routes through the shared write(_:to:) helper that applies .currentHostOnly")
+    }
+
+    /// Ticket #6, claim 4: `defaultInterval` used to be a hardcoded
+    /// `static let .seconds(30)` with nothing anywhere reading `UserDefaults`.
+    /// A runtime test would have to touch `UserDefaults.standard` — the one
+    /// dictionary every parallel test in this suite shares — to observe this,
+    /// which is exactly the hazard `ClipboardClearIntervalPreferenceTests`
+    /// avoids by using a dedicated suite per test. A source-text guard, same
+    /// technique as this file's other checks, catches the same regression
+    /// (someone reverting `defaultInterval` back to a frozen literal) without
+    /// that risk.
+    @Test("defaultInterval reads the UserDefaults-backed preference, not a frozen literal")
+    func defaultIntervalReadsThePreference() throws {
+        let text = try source("Editor/ClipboardClearing.swift")
+        #expect(text.contains("ClipboardClearIntervalPreference.interval()"),
+                "defaultInterval no longer reads ClipboardClearIntervalPreference — the clear delay is frozen again and a value set in UserDefaults stops being honoured")
     }
 }
 
