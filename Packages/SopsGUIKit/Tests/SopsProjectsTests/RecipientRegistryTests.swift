@@ -199,7 +199,7 @@ struct RecipientRegistryTests {
         let file = RecipientRegistry.fileURL(in: project)
         let observed = try RecipientRegistry.expectedState(in: project)
 
-        try AtomicFileWriter.write(try JSONEncoder().encode([external]), to: file)
+        try AtomicFileWriter.write(try JSONEncoder().encode([external]), to: file, expecting: nil)
 
         #expect(throws: RecipientRegistry.Error.changedOnDisk) {
             try RecipientRegistry.upsert(ours, in: project, expecting: observed)

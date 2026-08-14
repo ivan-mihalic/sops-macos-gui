@@ -102,8 +102,8 @@ ScratchDirectoryRegistry.shared.register(url)
         Thread.sleep(forTimeInterval: 0.05)
 
         for _ in 0..<6 {
-            try AtomicFileWriter.write(newPayload, to: destination)
-            try AtomicFileWriter.write(oldPayload, to: destination)
+            try AtomicFileWriter.write(newPayload, to: destination, expecting: nil)
+            try AtomicFileWriter.write(oldPayload, to: destination, expecting: nil)
         }
 
         observations.stop()
@@ -205,7 +205,7 @@ ScratchDirectoryRegistry.shared.register(url)
             try FileManager.default.setAttributes(
                 [.posixPermissions: originalMode], ofItemAtPath: destination.path)
 
-            try AtomicFileWriter.write(Data("after".utf8), to: destination)
+            try AtomicFileWriter.write(Data("after".utf8), to: destination, expecting: nil)
 
             let resulting = try mode(of: destination)
             #expect(
@@ -224,7 +224,7 @@ ScratchDirectoryRegistry.shared.register(url)
         let directory = try makeScratchDirectory()
         let destination = directory.appendingPathComponent("brand-new.yaml")
 
-        try AtomicFileWriter.write(Data("fresh".utf8), to: destination)
+        try AtomicFileWriter.write(Data("fresh".utf8), to: destination, expecting: nil)
 
         #expect(try mode(of: destination) == 0o600)
         #expect(try Data(contentsOf: destination) == Data("fresh".utf8))
@@ -250,7 +250,7 @@ ScratchDirectoryRegistry.shared.register(url)
 
         var captured: (any Error)?
         #expect(throws: (any Error).self) {
-            do { try AtomicFileWriter.write(Data("nope".utf8), to: destination) }
+            do { try AtomicFileWriter.write(Data("nope".utf8), to: destination, expecting: nil) }
             catch { captured = error; throw error }
         }
 
@@ -290,7 +290,7 @@ ScratchDirectoryRegistry.shared.register(targetDirectory)
         let link = directory.appendingPathComponent("secrets.yaml")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
 
-        try AtomicFileWriter.write(Data("after".utf8), to: link)
+        try AtomicFileWriter.write(Data("after".utf8), to: link, expecting: nil)
 
         #expect(isSymbolicLink(link), "the symlink was replaced by a regular file")
         let linkDestination = try FileManager.default.destinationOfSymbolicLink(atPath: link.path)
@@ -331,7 +331,7 @@ ScratchDirectoryRegistry.shared.register(targetDirectory)
         }
 
         #expect(throws: (any Error).self) {
-            try AtomicFileWriter.write(Data("replacement that must never land".utf8), to: destination)
+            try AtomicFileWriter.write(Data("replacement that must never land".utf8), to: destination, expecting: nil)
         }
 
         #expect(try Data(contentsOf: destination) == original, "the original was modified")
@@ -361,7 +361,7 @@ ScratchDirectoryRegistry.shared.register(targetDirectory)
         let secret = "correct-horse-battery-staple"
         var captured: String?
         do {
-            try AtomicFileWriter.write(Data(secret.utf8), to: destination)
+            try AtomicFileWriter.write(Data(secret.utf8), to: destination, expecting: nil)
         } catch {
             captured = "\(error)  \((error as? any CustomStringConvertible)?.description ?? "")"
         }
@@ -391,7 +391,7 @@ ScratchDirectoryRegistry.shared.register(targetDirectory)
         let destination = directory.appendingPathComponent("secrets.yaml")
         try Data("before".utf8).write(to: destination)
 
-        let receipt = try AtomicFileWriter.write(Data("after".utf8), to: destination)
+        let receipt = try AtomicFileWriter.write(Data("after".utf8), to: destination, expecting: nil)
 
         #expect(receipt.destination == destination.resolvingSymlinksInPath())
         #expect(
@@ -430,7 +430,7 @@ ScratchDirectoryRegistry.shared.register(targetDirectory)
         let link = directory.appendingPathComponent("secrets.yaml")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
 
-        let receipt = try AtomicFileWriter.write(Data("after".utf8), to: link)
+        let receipt = try AtomicFileWriter.write(Data("after".utf8), to: link, expecting: nil)
 
         #expect(receipt.destination == target.resolvingSymlinksInPath())
         #expect(
@@ -457,7 +457,7 @@ ScratchDirectoryRegistry.shared.register(targetDirectory)
         // that is what a second instance of this app would use, and because it
         // replaces the inode rather than editing in place — the case a
         // size-and-mtime-only check could plausibly miss.
-        try AtomicFileWriter.write(Data("what the other writer put there".utf8), to: destination)
+        try AtomicFileWriter.write(Data("what the other writer put there".utf8), to: destination, expecting: nil)
 
         #expect(throws: AtomicFileWriter.Error.destinationChangedOnDisk(path: destination.path)) {
             try AtomicFileWriter.write(Data("the clobbering write".utf8), to: destination,
@@ -534,7 +534,7 @@ ScratchDirectoryRegistry.shared.register(targetDirectory)
         let destination = directory.appendingPathComponent("secrets.yaml")
         try Data("before".utf8).write(to: destination)
 
-        let receipt = try AtomicFileWriter.write(Data("after".utf8), to: destination)
+        let receipt = try AtomicFileWriter.write(Data("after".utf8), to: destination, expecting: nil)
 
         #expect(receipt.fingerprint != nil)
         #expect(receipt.fingerprint == FileFingerprint.of(destination))
@@ -567,12 +567,12 @@ ScratchDirectoryRegistry.shared.register(targetDirectory)
     func noExpectationSkipsTheCheck() throws {
         let directory = try makeScratchDirectory()
         let fresh = directory.appendingPathComponent("new.yaml")
-        try AtomicFileWriter.write(Data("created".utf8), to: fresh)
+        try AtomicFileWriter.write(Data("created".utf8), to: fresh, expecting: nil)
         #expect(try Data(contentsOf: fresh) == Data("created".utf8))
 
         // And over an existing file that something else just rewrote.
         try Data("changed by someone else".utf8).write(to: fresh)
-        try AtomicFileWriter.write(Data("overwritten anyway".utf8), to: fresh)
+        try AtomicFileWriter.write(Data("overwritten anyway".utf8), to: fresh, expecting: nil)
         #expect(try Data(contentsOf: fresh) == Data("overwritten anyway".utf8))
     }
 
@@ -769,7 +769,7 @@ ScratchDirectoryRegistry.shared.register(targetDirectory)
         let destination = directory.appendingPathComponent("secrets.yaml")
         let contents = "klíč: hodnota 🔐\nlist:\n  - a\n"
 
-        try AtomicFileWriter.write(contents, to: destination)
+        try AtomicFileWriter.write(contents, to: destination, expecting: nil)
 
         #expect(try String(contentsOf: destination, encoding: .utf8) == contents)
         #expect(try Data(contentsOf: destination) == Data(contents.utf8))

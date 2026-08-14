@@ -270,9 +270,12 @@ public enum AtomicFileWriter {
     }
 
     /// Writes `contents` as UTF-8. See `write(_:to:expecting:)`.
+    ///
+    /// `expecting:` has no default here on purpose — see the `Data` overload
+    /// just below for why.
     @discardableResult
     public static func write(
-        _ contents: String, to url: URL, expecting: FileFingerprint? = nil
+        _ contents: String, to url: URL, expecting: FileFingerprint?
     ) throws -> AtomicWriteReceipt {
         try write(Data(contents.utf8), to: url, expecting: expecting)
     }
@@ -294,20 +297,30 @@ public enum AtomicFileWriter {
     ///   a file the user already opened.
     /// - Parameter expecting: What the caller last saw at `url`. When
     ///   non-`nil` and the destination no longer matches it, nothing is
-    ///   written and `Error.destinationChangedOnDisk` is thrown. `nil` — the
-    ///   default — means the caller has no expectation to check, which is
-    ///   right for a file only this app writes and wrong for a document the
-    ///   user also edits with other tools. Equivalent to
-    ///   `write(_:to:expecting:)` taking an `Expectation`, with `nil` mapped
-    ///   to `.unchecked` and a fingerprint mapped to `.matching`. See the "A
-    ///   second writer" section of this type's doc comment for the guarantee
-    ///   and its limit.
+    ///   written and `Error.destinationChangedOnDisk` is thrown. `nil` means
+    ///   the caller has no expectation to check, which is right for a file
+    ///   only this app writes and wrong for a document the user also edits
+    ///   with other tools. Equivalent to `write(_:to:expecting:)` taking an
+    ///   `Expectation`, with `nil` mapped to `.unchecked` and a fingerprint
+    ///   mapped to `.matching`. See the "A second writer" section of this
+    ///   type's doc comment for the guarantee and its limit.
+    ///
+    ///   Deliberately **no default value**. A caller that wants `.unchecked`
+    ///   must write `expecting: nil` — visibly, at the call site — rather
+    ///   than getting it by omitting the parameter. This overload used to
+    ///   default to `nil`, which meant a brand new call site that forgot to
+    ///   think about a concurrent writer compiled exactly like one that
+    ///   considered the question and decided it did not apply: nothing
+    ///   distinguished "I checked, and unchecked is right here" from "I
+    ///   didn't think about it". Every call site in this codebase already
+    ///   passed `expecting:` explicitly before this changed — this closes
+    ///   the gap for the next one, not this one.
     /// - Returns: What was written where, including the staging path and the
     ///   fingerprint to pass as the *next* write's `expecting:`. See
     ///   `AtomicWriteReceipt`.
     @discardableResult
     public static func write(
-        _ data: Data, to url: URL, expecting: FileFingerprint? = nil
+        _ data: Data, to url: URL, expecting: FileFingerprint?
     ) throws -> AtomicWriteReceipt {
         try write(data, to: url, expecting: expecting.map(Expectation.matching) ?? .unchecked)
     }
