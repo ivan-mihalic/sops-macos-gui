@@ -85,6 +85,16 @@ public struct NewSecretFileSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var registryRecords: [RecipientRecord] = []
+    /// Set when the registry read below found `recipients.json` present but
+    /// undecodable and moved it aside — see `RecipientRegistry
+    /// .loadOrQuarantine(in:)`. `nil` on every ordinary path, including a
+    /// project that has simply never named a recipient.
+    ///
+    /// ⚠️ Not rendered on this screen, and neither is any of its four
+    /// siblings — see SOPS-33. Wired anyway so that the screen which does
+    /// eventually show it has the value at every call site rather than at
+    /// four of six.
+    @State private var registryQuarantineNotice: String?
     @State private var resolveTask: Task<Void, Never>?
     @State private var isCreating = false
 
@@ -135,7 +145,9 @@ public struct NewSecretFileSheet: View {
             // `SecretEditorView`'s own contract: a caller establishes a
             // model's state before handing it to a view; the view never
             // re-derives it on appearance.
-            registryRecords = (try? RecipientRegistry.load(in: model.projectRoot)) ?? []
+            let registry = RecipientRegistry.loadOrQuarantine(in: model.projectRoot)
+            registryRecords = registry.records
+            registryQuarantineNotice = registry.quarantineNotice
         }
         .onChange(of: model.relativeName) { _, _ in resolveDebounced() }
     }

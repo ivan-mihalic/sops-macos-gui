@@ -70,6 +70,16 @@ public struct RecipientPicker: View {
     @Bindable private var model: NewSecretFileModel
 
     @State private var registryRecords: [RecipientRecord] = []
+    /// Set when the registry read below found `recipients.json` present but
+    /// undecodable and moved it aside — see `RecipientRegistry
+    /// .loadOrQuarantine(in:)`. `nil` on every ordinary path, including a
+    /// project that has simply never named a recipient.
+    ///
+    /// ⚠️ Not rendered on this screen, and neither is any of its four
+    /// siblings — see SOPS-33. Wired anyway so that the screen which does
+    /// eventually show it has the value at every call site rather than at
+    /// four of six.
+    @State private var registryQuarantineNotice: String?
     @State private var newRecipientText: String
 
     @State private var isProposing = false
@@ -105,7 +115,9 @@ public struct RecipientPicker: View {
             // than hiding a recipient the user has already chosen — the
             // same contract `NewSecretFileSheet`'s own registry load and
             // `ProjectAccessModel.loadRegistry` both keep.
-            registryRecords = (try? RecipientRegistry.load(in: model.projectRoot)) ?? []
+            let registry = RecipientRegistry.loadOrQuarantine(in: model.projectRoot)
+            registryRecords = registry.records
+            registryQuarantineNotice = registry.quarantineNotice
         }
     }
 
