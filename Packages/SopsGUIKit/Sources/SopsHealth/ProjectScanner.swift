@@ -547,6 +547,20 @@ public struct ProjectScanner {
         let byName = Self.isPlaintextSecretCandidate(url.lastPathComponent)
             ? Classification.plaintextCandidate(url) : .none
 
+        // `.pem`/`.key` are candidates only when their *content* looks like a
+        // private key — see `mayBePrivateKeyByExtension`'s doc comment for
+        // why filename alone is not enough for those two extensions. This
+        // only ever upgrades `.none` to a candidate using a tail already read
+        // for the sops-metadata sniff below; it never triggers a read of its
+        // own, and it never downgrades a name that already matched
+        // `isPlaintextSecretCandidate`.
+        func withPrivateKeyContentCheck(_ tail: Data) -> Classification {
+            guard case .none = byName, Self.mayBePrivateKeyByExtension(url.lastPathComponent),
+                  Self.looksLikePrivateKeyPEM(Self.stripLeadingUTF8BOM(tail))
+            else { return byName }
+            return .plaintextCandidate(url)
+        }
+
         switch Self.tailBytes(of: url, maxBytes: maxBytes) {
         case .unreadable:
             // The name was seen; the contents were not. Both facts are kept —
@@ -562,19 +576,20 @@ public struct ProjectScanner {
             if let decided = Self.classify(tail: rawTail, url: url) {
                 return ClassifiedFile(classification: decided, limitation: nil)
             }
+            let refined = withPrivateKeyContentCheck(rawTail)
             // The first tail did not decide. Escalate only for a file that is
             // both larger than the first read *and* carries the signature of a
             // sops metadata block whose head lies further back than that read
             // reached — see `maxEscalatedSniffBytes`.
             guard truncated, Self.looksLikeTruncatedSopsBlock(Self.stripLeadingUTF8BOM(rawTail)) else {
-                return ClassifiedFile(classification: byName, limitation: nil)
+                return ClassifiedFile(classification: refined, limitation: nil)
             }
             switch Self.tailBytes(of: url, maxBytes: Self.maxEscalatedSniffBytes) {
             case .unreadable:
-                return ClassifiedFile(classification: byName,
+                return ClassifiedFile(classification: refined,
                                       limitation: .unreadableFile(path: url.path))
             case .empty:
-                return ClassifiedFile(classification: byName, limitation: nil)
+                return ClassifiedFile(classification: refined, limitation: nil)
             case .bytes(let wider, let stillTruncated):
                 if let decided = Self.classify(tail: wider, url: url) {
                     return ClassifiedFile(classification: decided, limitation: nil)
@@ -582,7 +597,7 @@ public struct ProjectScanner {
                 // Still nothing, and still not the whole file: this app cannot
                 // say what protects it, so it says that rather than counting
                 // the file as absent.
-                return ClassifiedFile(classification: byName,
+                return ClassifiedFile(classification: withPrivateKeyContentCheck(wider),
                                       limitation: stillTruncated
                                           ? .metadataBlockTooLarge(path: url.path) : nil)
             }
@@ -1157,20 +1172,47 @@ public struct ProjectScanner {
         data.starts(with: Self.utf8BOM) ? data.dropFirst(Self.utf8BOM.count) : data
     }
 
+    /// Names conventionally used for an SSH private key by `ssh-keygen`'s own
+    /// defaults (`man ssh-keygen`'s `-f` default, one entry per key type it
+    /// supports including the FIDO2/security-key `_sk` variants). Exact
+    /// matches only, never a `id_*` prefix glob — a glob would also catch
+    /// `id_rsa.pub`, the *public* half of the same pair and one routinely
+    /// committed on purpose (`authorized_keys` workflows, CI deploy keys).
+    /// `id_rsa.pub` is a different string from `id_rsa`, not a suffix of it,
+    /// so an exact-name set excludes it without a special case.
+    private static let sshPrivateKeyNames: Set<String> = [
+        "id_rsa", "id_dsa", "id_ecdsa", "id_ecdsa_sk", "id_ed25519", "id_ed25519_sk",
+    ]
+
     /// Whether a *filename* is one that conventionally holds plaintext
-    /// secrets. Names only — nothing here reads a file.
+    /// secrets. Names only — nothing here reads a file, with one exception
+    /// documented on `mayBePrivateKeyByExtension` below.
     ///
     /// The old list was three hardcoded strings (`.env`, `.env.local`,
     /// `.env.production`), so `.env.staging`, `.env.development` and
     /// `production.env` all went unreported. This covers the whole `.env`
-    /// family in both spellings instead.
+    /// family in both spellings, plus four more name-only-certain families:
     ///
-    /// Deliberately still narrow. Widening it to things like `credentials`,
-    /// `id_rsa` or `.npmrc` would produce false alarms on files that are
-    /// routinely committed on purpose, and a finding that cries wolf is one
-    /// the user stops reading — which costs more than the names it would
-    /// catch. The `.env` family is the case PROPOSAL.md §6 D names and the one
-    /// with an unambiguous convention behind it.
+    /// - `keys.txt` — `age-keygen`'s own default output filename (`age-keygen
+    ///   -o keys.txt`). This app's whole domain is sops + age, and
+    ///   PROPOSAL.md §6 C already treats `~/.config/sops/age/keys.txt` as a
+    ///   plaintext-key finding for the app's *own* key; this is the same
+    ///   convention, found inside a project instead.
+    /// - the SSH private key names above.
+    /// - `.p12`/`.pfx` — PKCS12/PFX exists specifically to bundle a private
+    ///   key together with its certificate. Unlike `.pem`/`.key` below, there
+    ///   is no "public certificate only" convention for this container
+    ///   format, so the extension alone is certain enough without reading
+    ///   the file — a public cert is never shipped as a `.p12`.
+    ///
+    /// Deliberately still narrow beyond that. `credentials`, `.npmrc` and
+    /// bare `*.key`/`*.pem` globs would produce false alarms on files that
+    /// are routinely committed on purpose — a Let's Encrypt directory alone
+    /// puts `cert.pem`, `chain.pem` and `fullchain.pem` (all public) next to
+    /// `privkey.pem` (the one secret) — and a finding that cries wolf is one
+    /// the user stops reading, which costs more than the names it would
+    /// catch. `.pem` and `.key` are handled by content instead of name; see
+    /// `mayBePrivateKeyByExtension`.
     static func isPlaintextSecretCandidate(_ name: String) -> Bool {
         let lower = name.lowercased()
         // Placeholders documenting which variables exist. Committing one is
@@ -1180,8 +1222,47 @@ public struct ProjectScanner {
         if lower == ".env" || lower.hasPrefix(".env.") { return true }
         // "production.env", "local.env" — the same convention written the
         // other way round. Excludes ".env" itself, already matched above.
-        return lower.hasSuffix(".env") && lower != ".env"
+        if lower.hasSuffix(".env") { return true }
+        if lower == "keys.txt" { return true }
+        if Self.sshPrivateKeyNames.contains(lower) { return true }
+        if lower.hasSuffix(".p12") || lower.hasSuffix(".pfx") { return true }
+        return false
     }
+
+    /// Whether `name`'s extension is one where filename alone cannot decide
+    /// plaintext-secret status — `.pem` and `.key` are used for both private
+    /// keys (a secret) and public certificates or parameters (routinely
+    /// committed on purpose: `cert.pem`, `fullchain.pem`, a CI trust bundle,
+    /// a Diffie-Hellman `dhparam.pem`). Paired with `looksLikePrivateKeyPEM`,
+    /// which reads the file's already-fetched tail — see `classify(url:
+    /// maxBytes:)`, the only caller, for why this costs no I/O of its own.
+    static func mayBePrivateKeyByExtension(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        return lower.hasSuffix(".pem") || lower.hasSuffix(".key")
+    }
+
+    /// Every PEM private-key format — RSA, EC, DSA, PKCS8 (`PRIVATE KEY`),
+    /// encrypted PKCS8 (`ENCRYPTED PRIVATE KEY`) and OpenSSH
+    /// (`OPENSSH PRIVATE KEY`) — writes a header line ending in the literal
+    /// bytes `PRIVATE KEY-----`. A certificate's ends `CERTIFICATE-----`
+    /// instead, and Diffie-Hellman parameters end `DH PARAMETERS-----`, so
+    /// this one substring separates the secret-bearing case from the two
+    /// common non-secret ones without needing to parse ASN.1.
+    ///
+    /// The header sits at the very *front* of a PEM file, unlike the sops
+    /// metadata block this scanner otherwise looks for at the tail — but
+    /// `tailBytes` reads from the end only when the file is larger than the
+    /// read budget, and a real private key is a few KB at most, so in
+    /// practice `tail` here is the whole file, header included. A `.pem`/
+    /// `.key` file large enough to truncate the header out of the tail reads
+    /// as `.none`, the same under-detection direction every other limit in
+    /// this scanner takes: missing a candidate is a false negative, not a
+    /// false accusation against a public certificate.
+    static func looksLikePrivateKeyPEM(_ tail: Data) -> Bool {
+        tail.range(of: Self.privateKeyPEMMarker) != nil
+    }
+
+    private static let privateKeyPEMMarker = Data("PRIVATE KEY-----".utf8)
 
     /// Reads at most the last `maxBytes` bytes of `url` via a direct
     /// `open`/`fstat`/`pread`/`close` sequence, as raw bytes — see
