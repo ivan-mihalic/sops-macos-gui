@@ -221,8 +221,10 @@ from `.sops.yaml`; plaintext secret files inside the repo that are not gitignore
 - Nothing blocks. A failed check never prevents using the app; it shows a badge and an explanation.
 - Every check is independently re-runnable, and the whole report re-runs on demand.
 - Results are categorised **OK / Warning / Problem / Skipped / Unknown**. The last two are
-  distinct and both always state why: **Skipped** means the subject does not exist yet (a
-  feature that ships in a later milestone); **Unknown** means the check ran but could not
+  distinct and both always state why: **Skipped** means the check's subject is not there to
+  examine — either a feature that ships in a later milestone, or something absent from this
+  machine, such as an optional external tool that was never installed; **Unknown** means the
+  check ran but could not
   reach a verdict (offline, no consent, or a configuration it cannot read). Neither may
   outrank a real Warning or Problem in the headline status, and neither may be shown as OK.
 
