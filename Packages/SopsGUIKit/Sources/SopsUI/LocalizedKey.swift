@@ -180,6 +180,41 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // projectRoot:keyStore:)`.
     case filesNewFileButton = "files.new-file-button"
 
+    // MARK: Phase 3 Task 2 — ProjectStartHereView
+    //
+    // What an *empty, completely scanned* project shows in place of
+    // `files.empty.title` — see `ProjectStartHereView`'s own doc comment for
+    // which of `CreationPlan`'s five values reaches which of these, and why
+    // `.configUnreadable`/`.unsupportedRule` get no key here at all: those
+    // two reuse `CreationFailurePresenter.message(forBlocking:)`'s own
+    // sentence rather than a second, competing one.
+
+    // Deliberately does not name ".sops.yaml" as a problem — a project with
+    // no config yet is a legitimate starting point (`CreationPlan.noConfig`'s
+    // own doc comment), not a defect to apologize for.
+    case startHereNoConfigTitle = "start-here.no-config.title"
+    // Formatted with the comma-joined recipient names/keys this plan would
+    // encrypt for — see `ProjectStartHereView.recipientNames(_:)`. Never
+    // shown for a rule that matches but names no recipients at all
+    // (`CreationPlanResolverTests
+    // .ruleWithNoKeyGroupIsGovernedByRuleWithNoRecipients` is the real,
+    // sops-admitted shape) — that falls through to
+    // `CreationFailurePresenter.messageForRuleWithNoRecipients()` instead,
+    // the same guard `NewSecretFileSheet.infoLineText` already holds one
+    // screen over.
+    case startHereGovernedTitle = "start-here.governed.title"
+    // The one case this screen must not collapse into "no config" —
+    // `.sops.yaml` exists and has rules, they simply do not reach this
+    // location. See `FileListModel.configState`'s own doc comment, the
+    // paragraph this key exists to honor.
+    case startHereNoRuleMatchedTitle = "start-here.no-rule-matched.title"
+    // The button `.noConfig`/`.governedByRule` show. Not "New File" (the
+    // toolbar "+"'s own tooltip, `files.new-file-button`) — this is a
+    // visible label on a real button, not an icon-only control's
+    // accessibility text, and this screen's whole point is that there is
+    // nothing to open yet.
+    case startHereCreateFirstFileButton = "start-here.create-first-file-button"
+
     // MARK: Task 9 — editor
 
     case editorNoFileSelected = "editor.no-file-selected"

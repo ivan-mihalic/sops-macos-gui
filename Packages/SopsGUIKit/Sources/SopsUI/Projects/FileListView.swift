@@ -220,6 +220,20 @@ public struct FileListView: View {
         .padding(8)
     }
 
+    /// Whether the walk found nothing to show *and* completed cleanly enough
+    /// that saying more than "nothing here" is honest — the exact branch
+    /// `ProjectStartHereView` (Task 2) owns. `rootMissing`, `rootUnreadable`
+    /// and a non-nil `incompleteScanReason` all fail this on purpose: none
+    /// of them is a real "this project is empty" — see `content`'s own doc
+    /// comment, "The three states below are about the *root*", and
+    /// `ProjectStartHereView`'s own doc comment for why collapsing
+    /// `.noRuleMatched` (or any of the other four `configState` values)
+    /// into that claim would be dishonest. `footnotes` reads this too, so
+    /// the two cannot disagree about which branch is showing.
+    private var showsStartHere: Bool {
+        model.files.isEmpty && model.incompleteScanReason == nil
+    }
+
     /// The three states below are about the *root* — nothing ran, so there is
     /// no list and no footnote to qualify. Everything after them is a real
     /// walk's result, and its footnotes belong to it whether or not it found
@@ -240,14 +254,23 @@ public struct FileListView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            if model.files.isEmpty {
-                // "No encrypted files found in this project." is a claim about
-                // the whole project. Over an incomplete walk it is not one this
-                // app is entitled to make, so the wording narrows to what was
-                // actually covered and the banner above says why.
-                statusPlaceholder(
-                    systemImage: "doc.text.magnifyingglass",
-                    title: model.incompleteScanReason == nil ? .filesEmptyTitle : .filesEmptyPartialTitle)
+            if showsStartHere {
+                // A complete scan that genuinely found nothing — the one
+                // case where this app can say more than "empty" and mean
+                // it. See `ProjectStartHereView`'s own doc comment for what
+                // each of `model.configState`'s five values shows here.
+                ProjectStartHereView(
+                    configState: model.configState, otherFormatCount: model.otherFormatCount,
+                    onNewFile: onNewFile)
+            } else if model.files.isEmpty {
+                // Reachable only over an incomplete walk now (`showsStartHere`
+                // above is false whenever `incompleteScanReason` is non-nil).
+                // "No encrypted files found in this project." is a claim
+                // about the whole project; over a walk that could not cover
+                // it, that claim is not one this app is entitled to make, so
+                // the wording narrows to what was actually covered and the
+                // banner above says why.
+                statusPlaceholder(systemImage: "doc.text.magnifyingglass", title: .filesEmptyPartialTitle)
             } else {
                 List(selection: $selection) {
                     ForEach(model.files, id: \.self) { url in
@@ -269,7 +292,13 @@ public struct FileListView: View {
     /// "something went wrong on this particular walk".
     @ViewBuilder
     private var footnotes: some View {
-        if model.otherFormatCount > 0 {
+        // `ProjectStartHereView` (Task 2) already carries this exact
+        // sentence itself when it is the one on screen — see its own
+        // `body`, the `otherFormatCount > 0` branch — so showing it again
+        // here would repeat the same note twice on one screen. Every other
+        // branch (the file `List`, and the incomplete-scan empty
+        // placeholder) still gets it from here, unchanged.
+        if model.otherFormatCount > 0 && !showsStartHere {
             footnote(String(format: LocalizedKey.filesOtherFormatNote.text, model.otherFormatCount))
         }
         // Previously rendered only inside the truncation banner, i.e. only on

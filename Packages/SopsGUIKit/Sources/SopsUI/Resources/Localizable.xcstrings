@@ -1696,6 +1696,50 @@
         }
       }
     },
+    "start-here.no-config.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This project has no .sops.yaml yet, so nothing decides who could read a file here."
+          }
+        }
+      }
+    },
+    "start-here.governed.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ready — a rule in this project's .sops.yaml already covers new files here. It will be encrypted for: %@"
+          }
+        }
+      }
+    },
+    "start-here.no-rule-matched.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This project's .sops.yaml already has rules, but none of them cover this location yet. That's not an error — a file created here would have its recipients chosen by hand instead of a rule."
+          }
+        }
+      }
+    },
+    "start-here.create-first-file-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create Your First File"
+          }
+        }
+      }
+    },
     "files.other-format.note": {
       "extractionState": "manual",
       "localizations": {

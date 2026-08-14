@@ -790,6 +790,29 @@ enum Fixtures {
         return model
     }
 
+    // MARK: - ProjectStartHereView
+    //
+    // In-memory `CreationPlan` values, not a real project root or `.sops.yaml`
+    // — unlike every `fileListModel*` fixture above, `ProjectStartHereView`
+    // never resolves a plan itself (see that type's own doc comment, "What
+    // this view never does"), it only renders one a caller already resolved.
+    // Fabricating one directly is the same discipline
+    // `NewSecretFileSheetTests.InfoLineTextTests` already holds
+    // `NewSecretFileSheet.infoLineText` to, for the identical reason: this is
+    // a pure rendering decision, not something a real bridge call needs to
+    // prove.
+
+    static let startHereNoConfig: CreationPlan = .noConfig
+
+    static let startHereGoverned: CreationPlan = .governedByRule(
+        recipients: [
+            "age1qexampleexampleexampleexampleexampleexampleexampleexampleexample",
+            "age1qanotherexampleanotherexampleanotherexampleanotherexampleanother",
+        ],
+        encryptedRegex: "")
+
+    static let startHereNoRuleMatched: CreationPlan = .noRuleMatched
+
     // MARK: - DotEnvPreviewTable
 
     /// A short `.env` import preview covering all five `DotEnvSuspicion.Kind`

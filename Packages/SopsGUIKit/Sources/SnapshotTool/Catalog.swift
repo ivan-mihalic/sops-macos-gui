@@ -23,6 +23,7 @@ enum Catalog {
         snapshots += try projectSidebar()
         snapshots += try await secretEditor()
         snapshots += try await fileList()
+        snapshots += projectStartHere()
         snapshots += dotEnvPreview()
         snapshots += try await newSecretFileSheet()
         // The guide's images. In the same catalog so one run can produce
@@ -427,6 +428,30 @@ enum Catalog {
             list("file-list-missing-root", missingRoot),
             list("file-list-incomplete-scan", incomplete),
             list("file-list-empty-partial-scan", emptyPartial),
+        ]
+    }
+
+    // MARK: - ProjectStartHereView, the three states an empty project can show
+    //
+    // `.configUnreadable`/`.unsupportedRule` get no snapshot here — Task 2's
+    // brief names three entries, and both of those already render through
+    // `CreationFailurePresenter.message(forBlocking:)`, the identical failure
+    // banner other screens already snapshot.
+    private static func projectStartHere() -> [Snapshot] {
+        let size = CGSize(width: 420, height: 320)
+        func startHere(_ name: String, _ configState: CreationPlan, otherFormatCount: Int = 0) -> Snapshot {
+            Snapshot(name, size: size) {
+                ProjectStartHereView(configState: configState, otherFormatCount: otherFormatCount, onNewFile: {})
+            }
+        }
+        return [
+            startHere("start-here-no-config", Fixtures.startHereNoConfig),
+            startHere("start-here-governed-by-rule", Fixtures.startHereGoverned),
+            startHere("start-here-no-rule-matched", Fixtures.startHereNoRuleMatched),
+            // Task 2's own review question: whether a project that already
+            // holds other-format sops files still reads clearly when the
+            // guidance and that note share one screen.
+            startHere("start-here-no-config-other-formats", Fixtures.startHereNoConfig, otherFormatCount: 3),
         ]
     }
 
