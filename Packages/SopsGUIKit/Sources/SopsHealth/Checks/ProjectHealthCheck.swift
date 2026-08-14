@@ -208,9 +208,13 @@ public struct ProjectHealthCheck: HealthCheck {
                     //    anything wrong, and this is the only place that
                     //    tells them the shape.
                     //
-                    // If a fourth state is ever needed, that is a signal to
-                    // check — there should not be one.
-                    explanation: "Add a .sops.yaml file at the project root with a creation_rules entry naming the age public keys new files should be encrypted to. This app can propose one now: select this project, click the toolbar's New File button (or press ⌘N), and add at least one recipient — it shows the file before writing it, and writes it only once you confirm. Writing the file by hand is just as valid; see sops's own documentation for the file format.")), leak]
+                    // If a fourth state is ever needed, that is worth
+                    // pausing over — not because a fourth revision is
+                    // forbidden, but because each of the first three came
+                    // from finding a claim this app could not actually back
+                    // up yet, and the next one is worth holding to the same
+                    // standard before it lands.
+                    explanation: "Add a .sops.yaml file at the project root with a creation_rules entry naming the age public keys new files should be encrypted to. This app can propose one now: select this project, click the toolbar's New File button (or press ⌘N), add at least one recipient, then click Propose .sops.yaml — it shows the file before writing it, and writes it only once you confirm. Writing the file by hand is just as valid; see sops's own documentation for the file format.")), leak]
         }
 
         // Probe that the config itself loads under sops's own parser,

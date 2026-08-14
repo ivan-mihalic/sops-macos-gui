@@ -79,15 +79,42 @@ struct ProjectStartHereViewPresentationTests {
     }
 
     /// Reuses `NewSecretFileSheet`'s own `new-file.info.governed-by-rule`,
-    /// for the identical reason `.noConfig` does above.
+    /// for the identical reason `.noConfig` does above — plus
+    /// `startHereProbeLocation` appended, per the Important review finding
+    /// below.
     @Test(".governedByRule names the recipients through the injected formatter and offers the button")
     func governedByRule() {
         let presentation = ProjectStartHereView.presentation(
             for: .governedByRule(recipients: ["age1abc", "age1def"], encryptedRegex: ""),
             recipientNames: joinedNames)
-        #expect(presentation == .headline(
-            String(format: LocalizedKey.newFileInfoGovernedByRule.text, "age1abc, age1def"),
-            offersCreateButton: true))
+        let expected = String(format: LocalizedKey.newFileInfoGovernedByRule.text, "age1abc, age1def")
+            + " " + LocalizedKey.startHereProbeLocation.text
+        #expect(presentation == .headline(expected, offersCreateButton: true))
+    }
+
+    /// Review finding, Important: `new-file.info.governed-by-rule` says "A
+    /// rule in .sops.yaml governs **this location**" — true, and fine one
+    /// screen over in `NewSecretFileSheet`, where the filename field just
+    /// above gives "this location" a referent. On this screen there is no
+    /// filename anywhere, and the sentence is the only headline on an
+    /// otherwise empty pane, so an unqualified "this location" generalizes
+    /// into a claim about the whole project. Failure scenario the review
+    /// gave: `path_regex: ^secrets/` for one recipient and a catch-all
+    /// `path_regex: .*` for another means the root probe resolves the
+    /// catch-all, and this screen would say "…it will be encrypted for:
+    /// <catch-all recipient>" — true of the probe, false of a file the user
+    /// then names `secrets/…`. `startHereProbeLocation` closes the gap by
+    /// naming the location instead of leaving it implicit.
+    @Test(".governedByRule names the location the probe answer is actually about")
+    func governedByRuleNamesTheLocation() {
+        let presentation = ProjectStartHereView.presentation(
+            for: .governedByRule(recipients: ["age1abc"], encryptedRegex: ""), recipientNames: joinedNames)
+        guard case .headline(let text, _) = presentation else {
+            Issue.record("expected .headline, got \(presentation)")
+            return
+        }
+        #expect(text.contains(LocalizedKey.startHereProbeLocation.text),
+                "the headline must name the location the probe answer is about: \(text)")
     }
 
     /// Review finding, Important 1: naming only who can read the file, and
@@ -112,6 +139,8 @@ struct ProjectStartHereViewPresentationTests {
         let scopingSentence = String(format: LocalizedKey.newFileInfoEncryptedRegexScoping.text, regex)
         #expect(text.hasPrefix(recipientsSentence), "the recipients sentence must still lead the line")
         #expect(text.contains(scopingSentence), "the scoping disclosure is missing: \(text)")
+        #expect(text.contains(LocalizedKey.startHereProbeLocation.text),
+                "the location anchor is missing: \(text)")
         #expect(offersCreateButton)
     }
 
@@ -119,8 +148,9 @@ struct ProjectStartHereViewPresentationTests {
     func governedByRuleWithoutEncryptedRegexSaysNothingExtra() {
         let presentation = ProjectStartHereView.presentation(
             for: .governedByRule(recipients: ["age1abc"], encryptedRegex: ""), recipientNames: joinedNames)
-        #expect(presentation == .headline(
-            String(format: LocalizedKey.newFileInfoGovernedByRule.text, "age1abc"), offersCreateButton: true))
+        let expected = String(format: LocalizedKey.newFileInfoGovernedByRule.text, "age1abc")
+            + " " + LocalizedKey.startHereProbeLocation.text
+        #expect(presentation == .headline(expected, offersCreateButton: true))
     }
 
     /// The real, sops-admitted shape `CreationPlanResolverTests
@@ -158,6 +188,7 @@ struct ProjectStartHereViewPresentationTests {
     func noRuleMatched() {
         let presentation = ProjectStartHereView.presentation(for: .noRuleMatched, recipientNames: joinedNames)
         let expected = LocalizedKey.newFileInfoNoRuleMatched.text + " "
+            + LocalizedKey.startHereProbeLocation.text + " "
             + LocalizedKey.startHereNoRuleMatchedReassurance.text
         #expect(presentation == .headline(expected, offersCreateButton: false))
 
@@ -169,6 +200,21 @@ struct ProjectStartHereViewPresentationTests {
                 "must not promise every file here needs hand-picked recipients: \(text)")
         #expect(!text.lowercased().contains("already has rules"),
                 "must not assert that rules exist — a .sops.yaml with no creation_rules key is .noRuleMatched too: \(text)")
+    }
+
+    /// Review finding, Important: `.noRuleMatched` was only partly protected
+    /// before this fix — its reassurance makes location salient ("files
+    /// created in a **different** location") without ever naming *this*
+    /// one. Same `startHereProbeLocation` anchor as `.governedByRule`.
+    @Test(".noRuleMatched names the location the probe answer is actually about")
+    func noRuleMatchedNamesTheLocation() {
+        let presentation = ProjectStartHereView.presentation(for: .noRuleMatched, recipientNames: joinedNames)
+        guard case .headline(let text, _) = presentation else {
+            Issue.record("expected .headline, got \(presentation)")
+            return
+        }
+        #expect(text.contains(LocalizedKey.startHereProbeLocation.text),
+                "the headline must name the location the probe answer is about: \(text)")
     }
 
     /// Reused verbatim from `CreationFailurePresenter`, not re-worded here —
@@ -384,6 +430,7 @@ struct ProjectStartHereViewRenderTests {
         let shown = text(nil)
         for key: LocalizedKey in [
             .newFileInfoNoConfig, .newFileInfoNoRuleMatched, .startHereCreateFirstFileButton,
+            .startHereProbeLocation,
         ] {
             #expect(!shown.contains(key.text), "rendered \(key.rawValue) before configState resolved: \(shown)")
         }
@@ -408,6 +455,8 @@ struct ProjectStartHereViewRenderTests {
         #expect(shown.contains(NewSecretFileSheet.shortenedKey(recipient)),
                 "the shortened recipient key is missing: \(shown)")
         #expect(shown.contains(LocalizedKey.startHereCreateFirstFileButton.text))
+        #expect(shown.contains(LocalizedKey.startHereProbeLocation.text),
+                "the location anchor is missing from the rendered screen: \(shown)")
     }
 
     /// Review finding, "Decision on your disclosed limitation": a labeled
@@ -474,6 +523,8 @@ struct ProjectStartHereViewRenderTests {
         #expect(shown.contains(LocalizedKey.newFileInfoNoRuleMatched.text),
                 "the tree did not populate — this test would be vacuous: \(shown)")
         #expect(shown.contains(LocalizedKey.startHereNoRuleMatchedReassurance.text))
+        #expect(shown.contains(LocalizedKey.startHereProbeLocation.text),
+                "the location anchor is missing from the rendered screen: \(shown)")
         #expect(!shown.lowercased().contains("by hand"),
                 "must not promise every file here needs hand-picked recipients: \(shown)")
         #expect(!shown.contains(LocalizedKey.startHereCreateFirstFileButton.text),

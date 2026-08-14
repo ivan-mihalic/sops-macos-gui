@@ -433,13 +433,17 @@ enum Catalog {
 
     // MARK: - ProjectStartHereView
     //
-    // `.configUnreadable`/`.unsupportedRule` get no snapshot here — Task 2's
-    // brief names three entries for the three states without one, and both
-    // of those already render through `CreationFailurePresenter
+    // `.configUnreadable`/`.unsupportedRule` get no snapshot here — those
+    // two states already render through `CreationFailurePresenter
     // .message(forBlocking:)`, the identical failure banner other screens
-    // already snapshot. `.governedByRule` gets two: with and without an
-    // `encrypted_regex` scoping the rule — see the `encryptedRegex`
-    // fixture's own comment below for why the second entry exists at all.
+    // already snapshot. Task 2's brief named three entries, one per state
+    // that does get a sentence of its own on this screen (`.noConfig`,
+    // `.governedByRule`, `.noRuleMatched`); this function actually returns
+    // five, because `.governedByRule` gets two entries — with and without
+    // an `encrypted_regex` scoping the rule, see the `encryptedRegex`
+    // fixture's own comment below for why the second exists at all — plus
+    // one more covering `otherFormatCount` sharing the screen with
+    // `.noConfig`.
     private static func projectStartHere() throws -> [Snapshot] {
         let size = CGSize(width: 420, height: 320)
         // A bare root for the two states with no recipients to label either

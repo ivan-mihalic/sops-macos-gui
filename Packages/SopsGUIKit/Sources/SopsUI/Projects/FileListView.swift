@@ -233,12 +233,17 @@ public struct FileListView: View {
     ///
     /// This condition says nothing about `model.configState` itself, on
     /// purpose: `showsStartHere == true` picks the branch, but
-    /// `ProjectStartHereView` can still render blank if `configState` is
-    /// `nil` — reachable even here via a real (if rare) TOCTOU race in
-    /// `FileListModel.resolveConfigState`. See that view's own doc comment,
-    /// "What each of the five configState values shows", the `nil`
-    /// paragraph, for the full account of why that is an accepted gap
-    /// rather than a regression.
+    /// `ProjectStartHereView` can still render its own `nil`-`configState`
+    /// paragraph blank. The ordinary way that happens: `FileListModel`
+    /// starts every instance with `configState = nil`, and this view's own
+    /// `.task(id:)` above (`FileListView.swift:189`) runs `refresh()` only
+    /// *after* the first body evaluation — so every project selection
+    /// renders `showsStartHere`'s branch over a `nil` `configState` for one
+    /// frame before `refresh()` resolves anything. Rarer, and separate: a
+    /// real (if rare) TOCTOU race in `FileListModel.resolveConfigState`.
+    /// See that view's own doc comment, "What each of the five configState
+    /// values shows", the `nil` paragraph, for the full account of why both
+    /// are an accepted gap rather than a regression.
     private var showsStartHere: Bool {
         model.files.isEmpty && model.incompleteScanReason == nil
     }

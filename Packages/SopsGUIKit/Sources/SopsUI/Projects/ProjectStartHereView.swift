@@ -35,6 +35,39 @@ import SwiftUI
 /// `presentation(for:recipientNames:)`'s `.noRuleMatched` arm now stays
 /// inside what the probe actually proves.
 ///
+/// ## The `.governedByRule` headline generalizes the probe answer
+///
+/// The mirror image of the finding above, caught one review round later:
+/// hardening `.noRuleMatched` alone left `.governedByRule` making the
+/// identical mistake in the other direction. `NewSecretFileSheet
+/// .governedByRuleSentence`'s sentence says "A rule in .sops.yaml governs
+/// **this location**" — true, and fine where that function's other caller
+/// shows it, directly under the filename field in `NewSecretFileSheet`
+/// itself, where "this location" has an obvious referent one field above.
+/// On this screen there is no filename anywhere, and the sentence is the
+/// only headline on an otherwise empty pane — rendered at
+/// `.title3.weight(.semibold)`, it reads as a statement about the project,
+/// not about one unlabeled probe path at its root.
+///
+/// Concretely: a `.sops.yaml` with `path_regex: ^secrets/` naming one key
+/// and a catch-all `path_regex: .*` naming another means an empty project
+/// shows "…it will be encrypted for: Alice" (the catch-all rule, the only
+/// one the root probe reaches) — and a file the user then names
+/// `secrets/db.yaml` is actually encrypted for Bob. The sentence was true
+/// of a path the user cannot see and false under the reading the screen
+/// invites. Not Critical, because the wizard's own ⓘ line re-resolves
+/// against the real filename before anything is written, so no
+/// wrongly-encrypted file results — but exactly the distinction
+/// `FileListModel.configState`'s own doc comment says anything rendering
+/// this value must keep.
+///
+/// `LocalizedKey.startHereProbeLocation` closes it: one additive sentence,
+/// appended to both the `.governedByRule` headline and the `.noRuleMatched`
+/// one (which had the same gap only partly covered — its reassurance makes
+/// location salient, "files created in a **different** location", without
+/// ever naming *this* one either), the same appended-not-merged technique
+/// `startHereNoRuleMatchedReassurance` already established for this screen.
+///
 /// ## What each of the five `configState` values shows
 ///
 /// - `.noConfig` — no `.sops.yaml` at all: `LocalizedKey.newFileInfoNoConfig`
@@ -67,12 +100,17 @@ import SwiftUI
 ///   .messageForRuleWithNoRecipients()` for it instead of calling
 ///   `governedByRuleSentence` at all, the identical guard
 ///   `NewSecretFileSheet.infoLineText` already holds one screen over.
+///   Appended after that sentence: `LocalizedKey.startHereProbeLocation`,
+///   naming the location "this location" refers to — see "The
+///   `.governedByRule` headline generalizes the probe answer" above for why
+///   this screen needs it and the wizard's own ⓘ line does not.
 /// - `.noRuleMatched` — `LocalizedKey.newFileInfoNoRuleMatched` ("No rule in
 ///   .sops.yaml matches this location yet.") — the wizard's own careful
 ///   wording for this exact `CreationPlan` case, reused rather than
-///   reworded — plus `LocalizedKey.startHereNoRuleMatchedReassurance`, a
-///   second sentence this screen alone needs: the wizard's ⓘ line sits
-///   directly above `RecipientPicker`'s own explanation and a working
+///   reworded — plus two sentences this screen alone needs, in order:
+///   `LocalizedKey.startHereProbeLocation` (see above), and
+///   `LocalizedKey.startHereNoRuleMatchedReassurance`: the wizard's ⓘ line
+///   sits directly above `RecipientPicker`'s own explanation and a working
 ///   manual-recipient flow, so nothing there has to say "this isn't an
 ///   error" out loud. This screen has no such context to lean on, so it
 ///   says so directly — carefully hedged ("may still cover", never "does")
@@ -93,13 +131,19 @@ import SwiftUI
 ///   dishonest to say yet, and nothing true to say either.
 ///
 ///   This is reachable even once `FileListView`'s `showsStartHere` (a
-///   complete scan that found nothing) is true: `FileListModel
-///   .resolveConfigState` can itself return `nil` on a setup failure that
-///   `ProjectScanner.scan(root:)`'s own `rootMissing` check does not
-///   independently catch — concretely, `projectRoot` being removed in the
-///   narrow window between the scan completing and the probe's own
-///   existence check, a real (if rare) TOCTOU race, not a hypothetical.
-///   When that happens this pane renders blank rather than any sentence.
+///   complete scan that found nothing) is true, and the common way it
+///   happens is entirely ordinary, not exotic: `FileListModel` starts every
+///   instance with `configState = nil`, and `FileListView.swift:189`'s own
+///   `.task(id:)` runs `refresh()` only *after* the first body evaluation —
+///   so every project selection renders this `nil` branch for one frame
+///   before `refresh()` has resolved anything at all. Separately from that,
+///   `FileListModel.resolveConfigState` can also return `nil` on a setup
+///   failure that `ProjectScanner.scan(root:)`'s own `rootMissing` check
+///   does not independently catch — concretely, `projectRoot` being removed
+///   in the narrow window between the scan completing and the probe's own
+///   existence check, a real (if rare) TOCTOU race, not a hypothetical, but
+///   the rarer of the two paths here, not the only one.
+///   When either happens this pane renders blank rather than any sentence.
 ///   That is an accepted, honest gap — there is genuinely nothing true this
 ///   view can say about a `configState` it does not have — not a silently
 ///   reintroduced version of the claim this whole file exists to avoid; see
@@ -179,37 +223,47 @@ public struct ProjectStartHereView: View {
 
     @ViewBuilder
     private var content: some View {
-        if let configState {
-            let presentation = Self.presentation(for: configState, recipientNames: recipientNames)
-            VStack(spacing: 12) {
+        VStack(spacing: 12) {
+            if let configState {
+                let presentation = Self.presentation(for: configState, recipientNames: recipientNames)
                 Image(systemName: Self.iconName(for: presentation))
                     .font(.largeTitle)
                     .foregroundStyle(.secondary)
 
                 presentationBody(presentation)
-
-                // `otherFormatCount`'s footnote (`FileListView.footnotes`)
-                // is suppressed for the branch that shows this view — see
-                // `FileListView.footnotes`'s own comment — so this is the
-                // one place that count is surfaced while this view is on
-                // screen. Reuses `files.other-format.note` rather than a
-                // second key with the same fact: the sentence is identical
-                // regardless of which screen shows it.
-                if otherFormatCount > 0 {
-                    Text(String(format: LocalizedKey.filesOtherFormatNote.text, otherFormatCount))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
             }
-            .padding()
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // `configState == nil`: nothing shown above. See this type's
+            // own doc comment, "What each of the five configState values
+            // shows" — the `nil` paragraph in particular for why this can
+            // still happen once `FileListView.showsStartHere` is already
+            // true.
+
+            // `otherFormatCount`'s footnote (`FileListView.footnotes`) is
+            // suppressed for the branch that shows this view — see
+            // `FileListView.footnotes`'s own comment — so this is the one
+            // place that count is surfaced while this view is on screen.
+            // Reuses `files.other-format.note` rather than a second key
+            // with the same fact: the sentence is identical regardless of
+            // which screen shows it.
+            //
+            // Deliberately *not* nested inside `if let configState` above
+            // (a review finding on this branch): `FileListView.footnotes`'s
+            // own guard is `otherFormatCount > 0 && !showsStartHere` —
+            // unconditional on `configState` — so nesting this block inside
+            // `if let configState` meant a `configState == nil` render (the
+            // `nil` paragraph above) made both guards false at once and the
+            // disclosure vanished with nothing showing it anywhere. Sibling
+            // to the `if let` now, so the two guards cannot disagree.
+            if otherFormatCount > 0 {
+                Text(String(format: LocalizedKey.filesOtherFormatNote.text, otherFormatCount))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
-        // `configState == nil`: nothing extra. See this type's own doc
-        // comment, "What each of the five configState values shows" — the
-        // `nil` paragraph in particular for why this can still happen once
-        // `FileListView.showsStartHere` is already true.
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - What to show, decided once
@@ -250,22 +304,37 @@ public struct ProjectStartHereView: View {
             // reimplemented. See that function's own doc comment for why
             // this is a function call rather than a second copy of its
             // guard-and-join.
-            let text = NewSecretFileSheet.governedByRuleSentence(
+            let sentence = NewSecretFileSheet.governedByRuleSentence(
                 recipients: recipients, encryptedRegex: encryptedRegex, recipientNames: recipientNames)
+            // `sentence` says "this location", the identical wording the
+            // wizard's own ⓘ line uses — fine there, sitting directly under
+            // the filename field the user just typed, but this screen has
+            // no filename anywhere for "this location" to refer back to.
+            // `startHereProbeLocation` names it, the same additive-key
+            // pattern `.noRuleMatched` below already uses. See this type's
+            // own doc comment, "the `.governedByRule` headline generalizes
+            // the probe answer", for the failure this closes.
+            let text = sentence + " " + LocalizedKey.startHereProbeLocation.text
             return .headline(text, offersCreateButton: true)
         case .noConfig:
             return .headline(LocalizedKey.newFileInfoNoConfig.text, offersCreateButton: true)
         case .noRuleMatched:
-            // Two whole catalog sentences, joined with a literal `" "` —
+            // Three whole catalog sentences, joined with a literal `" "` —
             // composition, not assembly from fragments, the same technique
             // (and the same reasoning) `NewSecretFileSheet
             // .governedByRuleSentence`'s own doc comment names for its own
             // join. See this type's own doc comment for why this state
-            // needs a second sentence the wizard's identical first one does
-            // not.
+            // needs the second and third sentences the wizard's identical
+            // first one does not: `matched` already says "this location"
+            // without saying what it is (fine one screen over, where the
+            // filename field gives it a referent; not fine here), and
+            // `reassurance` talks about "a different location" without
+            // ever naming *this* one either. `startHereProbeLocation`
+            // names it, once, for both.
             let matched = LocalizedKey.newFileInfoNoRuleMatched.text
+            let location = LocalizedKey.startHereProbeLocation.text
             let reassurance = LocalizedKey.startHereNoRuleMatchedReassurance.text
-            return .headline(matched + " " + reassurance, offersCreateButton: false)
+            return .headline(matched + " " + location + " " + reassurance, offersCreateButton: false)
         case .configUnreadable, .unsupportedRule:
             // `message(forBlocking:)` is documented to answer for exactly
             // these two cases; the fallback is unreachable today and exists

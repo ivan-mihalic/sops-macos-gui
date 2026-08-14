@@ -800,7 +800,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "A rule in .sops.yaml governs this location → it will be encrypted for: %@"
+            "value": "A rule in .sops.yaml governs this location → it will be encrypted for: %@."
           }
         }
       }
@@ -1681,6 +1681,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "New File"
+          }
+        }
+      }
+    },
+    "start-here.probe-location": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This is about a new file at the top level of this project, not the whole project."
           }
         }
       }

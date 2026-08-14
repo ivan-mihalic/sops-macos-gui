@@ -193,25 +193,39 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // `files.empty.title` — see `ProjectStartHereView`'s own doc comment for
     // which of `CreationPlan`'s five values reaches which sentence.
     //
-    // Only two cases get a key here at all. `.noConfig` and `.governedByRule`
-    // reuse `new-file.info.no-config`/`new-file.info.governed-by-rule`
-    // (`NewSecretFileSheet`'s own ⓘ-line keys) verbatim rather than a second,
-    // near-duplicate entry with the same fact worded slightly differently —
-    // an earlier draft of this file kept three separate "start-here.*.title"
-    // keys that said the same three facts `new-file.info.*` already say, and
-    // the `.no-rule-matched` one had already drifted into two false claims
-    // (see `ProjectStartHereView`'s own doc comment for the account) before
-    // this review caught it. `.configUnreadable`/`.unsupportedRule` get no
-    // key here either — those two reuse `CreationFailurePresenter
+    // `.noConfig` and `.governedByRule` reuse `new-file.info.no-config`/
+    // `new-file.info.governed-by-rule` (`NewSecretFileSheet`'s own ⓘ-line
+    // keys) verbatim rather than a second, near-duplicate entry with the
+    // same fact worded slightly differently — an earlier draft of this file
+    // kept three separate "start-here.*.title" keys that said the same
+    // three facts `new-file.info.*` already say, and the `.no-rule-matched`
+    // one had already drifted into two false claims (see
+    // `ProjectStartHereView`'s own doc comment for the account) before this
+    // review caught it. `.configUnreadable`/`.unsupportedRule` get no key
+    // here either — those two reuse `CreationFailurePresenter
     // .message(forBlocking:)`'s own sentence.
     //
-    // `.noRuleMatched` is the one case that genuinely needs a key of its own,
-    // and only a second, additive one: `new-file.info.no-rule-matched` is
-    // reused for the *fact* ("no rule matches"), and this key supplies the
-    // *reassurance* the wizard's own ⓘ line does not need to say out loud —
-    // it sits directly above a working `RecipientPicker`, so nothing there
-    // has to state "this isn't an error". This screen has no such context to
-    // lean on.
+    // `.noRuleMatched` and `.governedByRule` each need one further,
+    // additive key beyond their reused fact sentence — reviewed together
+    // below because a whole-branch review found the same defect in both:
+    // the reused sentence names "this location" (`new-file.info.governed-
+    // by-rule`) or leans on it implicitly (`new-file.info.no-rule-matched`,
+    // "this location yet"), which reads fine one screen over — in
+    // `NewSecretFileSheet` it sits directly under the filename field the
+    // user just typed, so the referent is on screen. Here there is no
+    // filename anywhere: `configState` answers for a probe at the project
+    // root (`FileListModel.configState`'s own doc comment), and this
+    // screen's only headline is otherwise the sole thing on an empty pane —
+    // exactly the shape that reads as a claim about the whole project
+    // rather than about one unlabeled spot in it. `startHereProbeLocation`
+    // names that spot for both arms, in the same reused-not-reworded
+    // fashion this file already holds every other line here to.
+    case startHereProbeLocation = "start-here.probe-location"
+    // The *reassurance* half of `.noRuleMatched`'s sentence — the wizard's
+    // own ⓘ line does not need to say this out loud, because it sits
+    // directly above a working `RecipientPicker`, so nothing there has to
+    // state "this isn't an error". This screen has no such context to lean
+    // on.
     //
     // Hedged with "may still" rather than "does" or "will" — this project
     // could have no `creation_rules` at all (`.noRuleMatched` covers that
