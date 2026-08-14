@@ -124,7 +124,7 @@ public enum RunRecordStore {
         // `AtomicFileWriter`'s own callers use exists for state a second
         // writer could meaningfully disagree with; nothing disagrees with
         // "here is what the run I just finished did".
-        try AtomicFileWriter.write(data, to: fileURL(in: project))
+        try AtomicFileWriter.write(data, to: fileURL(in: project), expecting: nil)
     }
 
     /// Reads this project's last-run record, or `nil` when there has never
