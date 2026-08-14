@@ -1,12 +1,22 @@
 import Foundation
 
 /// PROPOSAL.md §6 A. None of these tools are needed for the app to work — the
-/// SOPS engine is compiled into the app and runs in-process. They matter
-/// because the Help section gives the user snippets to run in their own
-/// terminal and in CI, against the same files this app writes. A missing
-/// tool is information, not an emergency — except `yq` below v4, which
-/// accepts the `-o=props` syntax our snippet uses but silently produces
-/// different output, which would generate a wrong `.env` file.
+/// SOPS engine is compiled into the app and runs in-process. They matter only
+/// if you use these same files yourself outside the app — in your own
+/// terminal, in CI, or in scripts — where a compatible version of the tool
+/// this app itself relies on keeps that usage correct.
+///
+/// PROPOSAL.md §5 describes an in-app Help section with copy-paste snippets
+/// built against these tools; that section does not exist yet (no menu item,
+/// no view — ticket #14), and `docs/GUIDE.md` on disk is not in the app
+/// bundle either. Until there is somewhere in the app to point a user with a
+/// missing tool, a missing tool is purely informational, never a warning —
+/// see `evaluate`, and `HealthReport.worstStatus`, which a `.warning` would
+/// otherwise be able to degrade. The one exception is `yq` below v4: its
+/// `-o=props` mode silently produces different output there, which would
+/// generate a wrong `.env` file for anyone piping decrypted output through
+/// it — a real, version-specific defect independent of whether this app ever
+/// ships that workflow in-app.
 public struct ExternalToolCheck: HealthCheck {
     public let id = "external-tools"
     public let category = HealthCategory.tools
@@ -22,10 +32,14 @@ public struct ExternalToolCheck: HealthCheck {
         ///
         /// PROPOSAL.md §6 A reserves this for exactly one tool, `yq` below v4.
         /// Everything else is a warning, however old. `git` used to carry a
-        /// hard floor of 2.30, which made an outdated git a `.problem` while a
-        /// git that was missing altogether was only a `.warning` — absence
-        /// ranked as less serious than staleness, and the spec says "warn
-        /// below 2.30" in any case.
+        /// hard floor of 2.30, which made an outdated git a `.problem`, and
+        /// the spec says "warn below 2.30" in any case.
+        ///
+        /// A *present but outdated* tool deliberately outranks an *absent*
+        /// one (see `evaluate`'s "not found" branch, and ticket #14): if you
+        /// actually run this tool against these files, an old version can
+        /// misbehave in ways this app can name, where "you don't have it at
+        /// all" is not, on its own, something the user can act on from here.
         let hardFloor: SemanticVersion?
         /// Extra sentence appended when `hardFloor` is breached, explaining
         /// *why* the old version is actively wrong rather than just stale.
@@ -40,8 +54,6 @@ public struct ExternalToolCheck: HealthCheck {
         /// comparison that never happened is indistinguishable from one that
         /// passed.
         let missingSoftFloorNote: String?
-        /// Absence is informational rather than a warning.
-        let optional: Bool
         let versionArguments: [String]
         /// Set when `versionArguments` carries a flag the tool only learned in
         /// a known release. A tool that *rejects* the flag is therefore
@@ -91,7 +103,6 @@ public struct ExternalToolCheck: HealthCheck {
                 // about anything, so a plain `--version` here made the app
                 // issue an unconsented network request while its own copy said
                 // the GitHub release lookup was the only one it ever makes.
-                optional: false,
                 versionArguments: ["--disable-version-check", "--version"],
                 versionArgumentsSupportedSince: SemanticVersion(3, 8, 0),
                 formula: "sops"),
@@ -101,7 +112,6 @@ public struct ExternalToolCheck: HealthCheck {
                 hardFloor: nil, hardFloorConsequence: nil,
                 softFloor: SemanticVersion(1, 3, 0), softFloorContext: nil,
                 missingSoftFloorNote: nil,
-                optional: false,
                 versionArguments: ["--version"], versionArgumentsSupportedSince: nil,
                 formula: "age"),
             Requirement(
@@ -110,7 +120,6 @@ public struct ExternalToolCheck: HealthCheck {
                 hardFloor: nil, hardFloorConsequence: nil,
                 softFloor: SemanticVersion(2, 30, 0), softFloorContext: nil,
                 missingSoftFloorNote: nil,
-                optional: false,
                 versionArguments: ["--version"], versionArgumentsSupportedSince: nil,
                 formula: "git"),
             Requirement(
@@ -120,16 +129,14 @@ public struct ExternalToolCheck: HealthCheck {
                 hardFloorConsequence: "Its -o=props syntax accepts versions below v4 silently but produces different output there, which would generate a wrong .env file.",
                 softFloor: nil, softFloorContext: nil,
                 missingSoftFloorNote: nil,
-                optional: false,
                 versionArguments: ["--version"], versionArgumentsSupportedSince: nil,
                 formula: "yq"),
             Requirement(
                 name: "docker", findingID: "tool.docker", title: "Docker",
-                purpose: "running the docker-compose snippets in Help",
+                purpose: "running docker-compose workflows against these files",
                 hardFloor: nil, hardFloorConsequence: nil,
                 softFloor: nil, softFloorContext: nil,
                 missingSoftFloorNote: nil,
-                optional: true,
                 versionArguments: ["--version"], versionArgumentsSupportedSince: nil,
                 formula: "docker"),
         ]
@@ -173,19 +180,18 @@ public struct ExternalToolCheck: HealthCheck {
             let install = Remediation(
                 explanation: "Install it with Homebrew, then re-run this check.",
                 command: "brew install \(requirement.formula)")
-            if requirement.optional {
-                // The row renders the skip reason and the detail one after the
-                // other, so these two must not say the same thing twice: the
-                // reason states the fact, the detail states what it costs.
-                return HealthFinding(
-                    id: requirement.findingID, title: requirement.title,
-                    status: .skipped(reason: "\(requirement.title) was not found on this machine."),
-                    detail: "It's only needed for \(requirement.purpose), so nothing here depends on it.",
-                    remediation: install)
-            }
+            // Always informational, never a `.warning`, for every one of the
+            // five tools this check knows about — see the header comment.
+            // There is nowhere in the app today (no Help section) to send a
+            // user who is missing one, so absence alone must never be able to
+            // degrade `HealthReport.worstStatus`. The row renders the skip
+            // reason and the detail one after the other, so these two must
+            // not say the same thing twice: the reason states the fact, the
+            // detail states what it costs.
             return HealthFinding(
-                id: requirement.findingID, title: requirement.title, status: .warning,
-                detail: "\(requirement.title) was not found on this machine. It's used for \(requirement.purpose).",
+                id: requirement.findingID, title: requirement.title,
+                status: .skipped(reason: "\(requirement.title) was not found on this machine."),
+                detail: "It's used for \(requirement.purpose). Nothing in this app depends on it.",
                 remediation: install)
         }
 
@@ -238,12 +244,12 @@ public struct ExternalToolCheck: HealthCheck {
             let consequence = requirement.hardFloorConsequence ?? "It's used for \(requirement.purpose)."
             // Not "the minimum this app supports": this file's own header says
             // none of these tools are needed for the app to work — the engine
-            // is compiled in. What breaks is the snippet the user copies out
-            // of Help and runs in their own terminal, and the copy now says
-            // that instead of contradicting the check's own premise.
+            // is compiled in. `hardFloorConsequence` says what actually breaks
+            // for whoever runs this tool themselves, instead of pointing at a
+            // Help section that does not exist.
             return HealthFinding(
                 id: requirement.findingID, title: requirement.title, status: .problem,
-                detail: "\(requirement.title) \(version) is older than \(floor), which the snippets in Help are written against. \(consequence)",
+                detail: "\(requirement.title) \(version) is older than \(floor). \(consequence)",
                 remediation: upgrade)
         }
         if let floor = requirement.softFloor, version < floor {

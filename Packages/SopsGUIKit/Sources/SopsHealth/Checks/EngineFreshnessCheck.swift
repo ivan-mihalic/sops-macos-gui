@@ -122,16 +122,19 @@ public struct EngineFreshnessCheck: HealthCheck {
             return HealthFinding(
                 id: component.findingID, title: component.title, status: .ok,
                 detail: "This app has \(component.title) \(embedded) built in. "
-                    + "The latest known release is \(latest.version).")
+                    + "The latest known release is \(latest.version). "
+                    + "This is a version comparison, not CVE matching.")
         }
 
         return HealthFinding(
             id: component.findingID, title: component.title, status: .warning,
             detail: "This app has \(component.title) \(embedded) built in, "
-                + "and \(latest.version) has since been released.",
+                + "and \(latest.version) has since been released. "
+                + "This is a version comparison, not CVE matching.",
             remediation: Remediation(
                 explanation: "The \(component.title) ships inside this app rather than as a separate install, "
-                    + "so updating the app is what brings in the newer version. Read the release notes "
+                    + "so updating the app is what brings in the newer version. Choose \"Check for Updates…\" "
+                    + "from the SopsGUI menu to look for it now, or read the release notes "
                     + "to see what changed and judge for yourself whether it matters to you.",
                 command: nil,
                 documentationURL: latest.releaseNotesURL))

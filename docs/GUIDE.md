@@ -114,12 +114,12 @@ still there later.
 
 Whether `sops` and `age` are on your `PATH`, and which versions.
 
-The app **does not need them** to work, and the step says so: *"Optional, but
-the Help snippets rely on them."* It carries its own sops engine, in process
-(`docs/adr/0001`). This step is about the *other* tools you use on the same
-files — the snippets in Help run in your terminal and in CI, against the same
-files, and a `sops` older than the one baked in here may not understand what
-this app writes.
+The app **does not need them** to work, and the step says so: *"Optional. Useful
+if you also work with these files outside this app."* It carries its own sops
+engine, in process (`docs/adr/0001`). This step is about the *other* tools you
+use on the same files — in your own terminal and in CI, against the same files
+this app writes — and a `sops` older than the one baked in here may not
+understand what it writes.
 
 **Check Again** re-runs the scan without restarting the wizard. That button
 exists because the natural move on seeing an orange row is to install the thing

@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import SopsHealth
 @testable import SopsUI
@@ -67,6 +68,41 @@ struct HealthViewModelTests {
         #expect(model.findings.isEmpty)
         await model.refresh()
         #expect(model.findings.map(\.id) == ["tool.sops"])
+    }
+
+    // Ticket #22: findings carried no timestamp, so a panel showing an old
+    // run looked identical to one showing the current state of the machine.
+    @Test("lastRefreshedAt is nil before any refresh, then set close to now")
+    func lastRefreshedAtIsSetOnRefresh() async throws {
+        let model = HealthViewModel(report: HealthReport(checks: [
+            StubCheck(id: "t", category: .tools, findings: [finding("tool.sops", .ok, .tools)])
+        ]))
+        #expect(model.lastRefreshedAt == nil)
+
+        let before = Date()
+        await model.refresh()
+        let after = Date()
+
+        let stamped = try #require(model.lastRefreshedAt)
+        #expect(stamped >= before)
+        #expect(stamped <= after)
+    }
+
+    @Test("re-running moves lastRefreshedAt forward, not just findings")
+    func lastRefreshedAtAdvancesOnEachRefresh() async throws {
+        let model = HealthViewModel(report: HealthReport(checks: [
+            StubCheck(id: "t", category: .tools, findings: [finding("tool.sops", .ok, .tools)])
+        ]))
+        await model.refresh()
+        let first = try #require(model.lastRefreshedAt)
+
+        // A real clock tick between the two refreshes so "later" is not a
+        // coincidence of two calls landing in the same instant.
+        try await Task.sleep(nanoseconds: 2_000_000)
+        await model.refresh()
+        let second = try #require(model.lastRefreshedAt)
+
+        #expect(second > first)
     }
 
     @Test("the headline status is the worst finding")

@@ -154,6 +154,12 @@ struct ProjectHealthCheckTests {
         #expect(stale.detail.contains("secrets/prod.yaml"))
         // Removing a recipient does not un-leak the old value.
         #expect(stale.remediation?.explanation.lowercased().contains("rotate") == true)
+        // Ticket #22, claim 4: the remediation used to send the user only to
+        // `sops updatekeys <file>` in a terminal, even though this app's own
+        // Project Access panel does the same thing in memory, without
+        // running the CLI (see `ProjectAccessModel`).
+        #expect(stale.remediation?.explanation.contains("Project Access") == true,
+                "\(stale.remediation?.explanation ?? "nil")")
     }
 
     @Test("a file missing a recipient its rule declares is a problem")
@@ -208,6 +214,66 @@ struct ProjectHealthCheckTests {
 
         let text = finding(await check.run(), suffix: "stale-recipients").detail.lowercased()
         #expect(!text.contains("can decrypt"))
+    }
+
+    // Ticket #22, claim 5. `wordingIsHonestAboutWhatWasVerified` above pins
+    // the rule for one scenario; the acceptance criterion ("Text obsahující
+    // 'can decrypt' shodí test") implies a blanket guarantee, not one
+    // fixture's worth. This sweeps every finding this check can produce
+    // across the scenarios already fixtured elsewhere in this file — OK,
+    // missing/malformed .sops.yaml, extra recipient, missing recipient,
+    // gitignore leak both ways — the same `forbidden`-list shape
+    // `EngineFreshnessCheckTests.makesNoSecurityClaims` uses for its own
+    // check. Scoped to `ProjectHealthCheck`'s own fixtures in this file, not
+    // every string in the app — the non-age-backend and scan-budget
+    // scenarios live in sibling test files and are not swept here.
+    @Test("no finding this check produces, across a representative sweep of scenarios, ever claims decryptability")
+    func wordingNeverClaimsDecryptabilityAcrossScenarios() async throws {
+        let removedColleague = "age1z7wqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+        let roots = try [
+            makeProject(
+                sopsYAML: """
+                creation_rules:
+                  - path_regex: secrets/.*\\.yaml$
+                    age: \(devKey),\(serverKey)
+                """,
+                files: ["secrets/prod.yaml": encryptedFile(recipients: [devKey, serverKey])]),
+            makeProject(
+                sopsYAML: """
+                creation_rules:
+                  - path_regex: secrets/.*\\.yaml$
+                    age: \(devKey)
+                """,
+                files: ["secrets/prod.yaml": encryptedFile(recipients: [devKey, removedColleague])]),
+            makeProject(
+                sopsYAML: """
+                creation_rules:
+                  - path_regex: secrets/.*\\.yaml$
+                    age: \(devKey),\(serverKey)
+                """,
+                files: ["secrets/prod.yaml": encryptedFile(recipients: [devKey])]),
+            makeProject(sopsYAML: nil),
+            makeProject(sopsYAML: "creation_rules:\n  - this: [is: not: valid\n"),
+            makeProject(
+                sopsYAML: "creation_rules:\n  - age: \(devKey)\n",
+                files: [".env": "API_KEY=sk-live-abc123\n"], gitignore: "node_modules/\n"),
+            makeProject(
+                sopsYAML: "creation_rules:\n  - age: \(devKey)\n",
+                files: [".env": "API_KEY=sk-live-abc123\n"], gitignore: ".env\n"),
+        ]
+
+        let forbidden = ["can decrypt", "cannot decrypt", "can't decrypt", "unable to decrypt", "can be decrypted"]
+        for root in roots {
+            let check = ProjectHealthCheck(source: FakeProjects(
+                projects: [InspectedProject(name: "demo", rootPath: root)]))
+            for finding in await check.run() {
+                let text = (finding.detail + (finding.remediation?.explanation ?? "")).lowercased()
+                for phrase in forbidden {
+                    #expect(!text.contains(phrase),
+                            "\(finding.id) claims decryptability (\"\(phrase)\"): \(text)")
+                }
+            }
+        }
     }
 
     // Review finding: a project whose directory disappeared after being

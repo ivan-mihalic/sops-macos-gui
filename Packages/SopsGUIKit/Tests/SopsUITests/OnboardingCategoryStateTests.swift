@@ -106,7 +106,11 @@ struct WizardFindingCoverageTests {
     /// nothing may vanish.
     @Test("every finding of the real report lands in exactly one bucket")
     func realReportPartitionsCleanly() async {
-        let health = HealthViewModel(report: .standard(updateChecksEnabled: { false }))
+        // This suite doesn't exercise key-store or app-update status, so it
+        // opts into the explicit stand-ins — see ticket #15's doc comment on
+        // `HealthReport.standard`.
+        let health = HealthViewModel(report: .standard(
+            updateChecksEnabled: { false }, keyStore: UnshippedKeyStore(), appUpdates: UnshippedAppUpdates()))
         await health.refresh()
 
         var bucketed: [String] = health.uncategorizedFindings.map(\.id)
@@ -154,7 +158,8 @@ struct UpdateCheckConsentTests {
         let suiteName = "update-consent-" + UUID().uuidString
         let defaults = UserDefaults(suiteName: suiteName)!
         let report = HealthReport.standard(
-            updateChecksEnabled: { UpdateCheckConsent.isEnabled(in: UserDefaults(suiteName: suiteName)!) })
+            updateChecksEnabled: { UpdateCheckConsent.isEnabled(in: UserDefaults(suiteName: suiteName)!) },
+            keyStore: UnshippedKeyStore(), appUpdates: UnshippedAppUpdates())
 
         func engineReasons() async -> [String] {
             await report.run().filter { $0.id.hasPrefix("engine.") }.compactMap {

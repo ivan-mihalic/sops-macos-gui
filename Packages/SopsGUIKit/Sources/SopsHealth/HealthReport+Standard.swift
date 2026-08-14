@@ -41,8 +41,21 @@ extension HealthReport {
 
     /// The report shown in the wizard and the Settings panel.
     ///
-    /// Subjects that have not shipped yet are injected as stubs that report
-    /// `.skipped` with a reason, so the check is real and tested from day one.
+    /// `keyStore` and `appUpdates` take no default. Ticket #15: they used to
+    /// default to `UnshippedKeyStore()` / `UnshippedAppUpdates()`, on the
+    /// premise that those subjects had not shipped yet — true for the key
+    /// store (M3 genuinely has not landed), false for app updates, which
+    /// Sparkle has supplied since 0.1.0 (`App/SopsGUIApp.swift`). A default
+    /// meant a caller that simply *forgot* one of these arguments got a
+    /// stand-in silently — wrong data, no compile error, no test failure, and
+    /// (for app updates) text describing a milestone that had already
+    /// happened. Requiring both here makes that omission a compile error
+    /// instead. A caller that genuinely wants the stand-in — most tests in
+    /// this package, which exercise the other checks — still can, by naming
+    /// `UnshippedKeyStore()` / `UnshippedAppUpdates()` explicitly; that
+    /// keeps `SopsGUIKit` buildable and testable without wiring in a real,
+    /// Sparkle-backed updater, which is what the removed defaults were
+    /// actually protecting, just implicitly instead of by name.
     ///
     /// `updateChecksEnabled` is a closure, not a `Bool`: the report is built
     /// once and re-run many times, so a captured value would freeze the user's
@@ -51,9 +64,9 @@ extension HealthReport {
     public static func standard(
         updateChecksEnabled: @escaping @Sendable () -> Bool,
         projects: any ProjectSourceProviding = NoProjects(),
-        keyStore: any KeyStoreStatusProviding = UnshippedKeyStore(),
+        keyStore: any KeyStoreStatusProviding,
         biometry: any BiometryStatusProviding = SystemBiometry(),
-        appUpdates: any AppUpdateStatusProviding = UnshippedAppUpdates()
+        appUpdates: any AppUpdateStatusProviding
     ) -> HealthReport {
         // Optional, never defaulted to a version number. An unreadable engine
         // version used to become 0.0.0, which loses every comparison — see
@@ -106,9 +119,16 @@ public struct UnshippedKeyStore: KeyStoreStatusProviding {
     public let state = KeyStoreState.unavailable(reason: "Keychain key storage arrives in M3.")
 }
 
+/// Despite the name, app-update checking has shipped — Sparkle has supplied
+/// it since 0.1.0 (`App/SopsGUIApp.swift`, `App/Updater.swift`). This type is
+/// not "the feature before it existed"; it is the explicit stand-in a caller
+/// passes to `HealthReport.standard` when it does not care about app-update
+/// status (most tests in this package). Its reason text says exactly that,
+/// rather than naming a milestone that already happened — see ticket #15.
 public struct UnshippedAppUpdates: AppUpdateStatusProviding {
     public init() {}
-    public let state = AppUpdateState.unavailable(reason: "Update checking arrives with Sparkle in M5.")
+    public let state = AppUpdateState.unavailable(
+        reason: "This report was not given a real app-update status provider.")
 }
 
 public struct SystemBiometry: BiometryStatusProviding {

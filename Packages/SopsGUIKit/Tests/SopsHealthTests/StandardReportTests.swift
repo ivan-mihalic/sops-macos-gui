@@ -1,12 +1,22 @@
 import Testing
 @testable import SopsHealth
 
+/// This suite exercises the tools/engine/security/projects checks, not the
+/// key-store or app-update status — so it deliberately opts into the stub
+/// providers `HealthReport.standard` no longer supplies by default (ticket
+/// #15: a caller that wants them has to name them, which is exactly the
+/// point).
+private func standardReport(updateChecksEnabled: @escaping @Sendable () -> Bool) -> HealthReport {
+    .standard(updateChecksEnabled: updateChecksEnabled,
+              keyStore: UnshippedKeyStore(), appUpdates: UnshippedAppUpdates())
+}
+
 @Suite("standard report")
 struct StandardReportTests {
 
     @Test("covers all four categories from PROPOSAL §6")
     func coversEveryCategory() async {
-        let findings = await HealthReport.standard(updateChecksEnabled: { false }).run()
+        let findings = await standardReport(updateChecksEnabled: { false }).run()
         let prefixes = Set(findings.map { $0.id.split(separator: ".").first.map(String.init) ?? "" })
         #expect(prefixes.isSuperset(of: ["tool", "engine", "security", "project"]))
     }
@@ -23,7 +33,7 @@ struct StandardReportTests {
     /// `.problem` anywhere may be blamed on the network.
     @Test("with update checks off, the engine findings say so and nothing blames the network")
     func worksOffline() async {
-        let findings = await HealthReport.standard(updateChecksEnabled: { false }).run()
+        let findings = await standardReport(updateChecksEnabled: { false }).run()
 
         let engine = findings.filter { $0.id.hasPrefix("engine.") }
         #expect(engine.count == 2, "expected one finding per embedded component, got \(engine.count)")
@@ -52,9 +62,9 @@ struct StandardReportTests {
     /// reason names the failed lookup instead of the setting.
     @Test("turning consent on changes what the engine findings say about why")
     func consentIsLoadBearing() async {
-        let off = await HealthReport.standard(updateChecksEnabled: { false }).run()
+        let off = await standardReport(updateChecksEnabled: { false }).run()
             .filter { $0.id.hasPrefix("engine.") }
-        let on = await HealthReport.standard(updateChecksEnabled: { true }).run()
+        let on = await standardReport(updateChecksEnabled: { true }).run()
             .filter { $0.id.hasPrefix("engine.") }
 
         func reason(_ finding: HealthFinding) -> String? {
@@ -76,7 +86,7 @@ struct StandardReportTests {
 
     @Test("every finding has a non-empty title and a stable id")
     func findingsAreWellFormed() async {
-        let findings = await HealthReport.standard(updateChecksEnabled: { false }).run()
+        let findings = await standardReport(updateChecksEnabled: { false }).run()
         #expect(!findings.isEmpty)
         #expect(Set(findings.map(\.id)).count == findings.count, "ids must be unique")
         for finding in findings {
@@ -90,7 +100,7 @@ struct StandardReportTests {
     /// that quietly did nothing looks identical to one that had nothing to do.
     @Test("every skipped or unknown finding carries a non-empty reason")
     func informationalStatusesAlwaysSayWhy() async {
-        for finding in await HealthReport.standard(updateChecksEnabled: { false }).run() {
+        for finding in await standardReport(updateChecksEnabled: { false }).run() {
             switch finding.status {
             case .skipped(let reason), .unknown(let reason):
                 #expect(!reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,

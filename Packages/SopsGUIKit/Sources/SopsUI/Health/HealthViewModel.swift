@@ -14,6 +14,19 @@ public final class HealthViewModel {
     /// flag rather than infer it from `findings` being non-empty.
     public private(set) var hasCompletedRefresh = false
 
+    /// When the currently-shown `findings` finished being produced. `nil`
+    /// until the first refresh completes, and updated every time `findings`
+    /// is replaced — never captured once and forgotten.
+    ///
+    /// Ticket #22: findings carried no timestamp at all, so a panel showing
+    /// results from minutes or hours ago (this view model is one shared
+    /// instance for the whole app — see `HealthPanel`'s `.task` doc comment)
+    /// looked identical to one showing what was true right now. `HealthPanel`
+    /// reads this to show "Last checked <relative time>" next to the Re-run
+    /// button, which is the cheapest honest signal: a report that finished 20
+    /// minutes ago visibly says so instead of implying it is current.
+    public private(set) var lastRefreshedAt: Date?
+
     /// Built fresh on every `refresh()` rather than captured once — see
     /// `init(reportBuilder:)`.
     private let reportBuilder: @MainActor @Sendable () -> HealthReport
@@ -135,6 +148,7 @@ public final class HealthViewModel {
                 let results = await self.reportBuilder().run()
                 self.findings = results
                 self.hasCompletedRefresh = true
+                self.lastRefreshedAt = Date()
             } while self.rerunRequested
             self.isRunning = false
             self.inFlightRefresh = nil
