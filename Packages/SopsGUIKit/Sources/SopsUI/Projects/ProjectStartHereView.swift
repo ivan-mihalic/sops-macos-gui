@@ -158,8 +158,8 @@ import SwiftUI
 /// `FileListView`'s own toolbar "+" already uses (`AppShell
 /// .makeNewFileModel(projectRoot:keyStore:)` is what actually builds a
 /// wizard); this view never builds one itself. `projectRoot` is read for
-/// exactly one purpose — `RecipientRegistry.load(in:)`, the same
-/// non-throwing, best-effort read `RecipientPicker`/`NewSecretFileSheet`
+/// exactly one purpose — `RecipientRegistry.loadOrQuarantine(in:)`, the same
+/// non-throwing, best-effort read `ProjectAccessModel`/`RecipientAccessModel`
 /// already perform — never for a scan, a config resolve, or anything else.
 public struct ProjectStartHereView: View {
     private let configState: CreationPlan?
@@ -175,9 +175,9 @@ public struct ProjectStartHereView: View {
     /// hiding a recipient the config itself names.
     ///
     /// Read eagerly here rather than via `.task` (`RecipientPicker`'s own
-    /// pattern, tried first): `RecipientRegistry.load(in:)` is a plain
-    /// synchronous `throws` function, not `async` — there is no real
-    /// asynchrony to defer to a task in the first place, only file I/O
+    /// pattern, tried first): `RecipientRegistry.loadOrQuarantine(in:)` is a
+    /// plain synchronous, non-throwing function, not `async` — there is no
+    /// real asynchrony to defer to a task in the first place, only file I/O
     /// small enough that `RecipientPicker`'s own `.task` already treats it
     /// as cheap.
     ///
@@ -205,6 +205,17 @@ public struct ProjectStartHereView: View {
     /// *identity*, so a `projectRoot` change on an otherwise-identical
     /// `ProjectStartHereView` would not have re-triggered it.
     private let registryRecords: [RecipientRecord]
+    /// Set when the registry read above found `recipients.json` present but
+    /// undecodable and moved it aside — see `RecipientRegistry
+    /// .loadOrQuarantine(in:)`. `nil` on every ordinary path, including a
+    /// project that has simply never named a recipient. Not yet rendered
+    /// anywhere on this screen — exposed for the same reason
+    /// `ProjectAccessModel.registryQuarantineNotice` and
+    /// `RecipientAccessModel.registryQuarantineNotice` are: so a corrupt
+    /// registry degrades to "no labels" *with a signal a caller can act on*,
+    /// rather than the silent `(try? load) ?? []` this call site used before
+    /// (#27 tvrzení 5).
+    public let registryQuarantineNotice: String?
 
     public init(
         configState: CreationPlan?, otherFormatCount: Int, projectRoot: URL,
@@ -214,7 +225,9 @@ public struct ProjectStartHereView: View {
         self.otherFormatCount = otherFormatCount
         self.projectRoot = projectRoot
         self.onNewFile = onNewFile
-        self.registryRecords = (try? RecipientRegistry.load(in: projectRoot)) ?? []
+        let registry = RecipientRegistry.loadOrQuarantine(in: projectRoot)
+        self.registryRecords = registry.records
+        self.registryQuarantineNotice = registry.quarantineNotice
     }
 
     public var body: some View {
