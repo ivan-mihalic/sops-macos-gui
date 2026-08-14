@@ -90,7 +90,12 @@ Two constraints from that ADR bind everything downstream:
 
 - **Follow Apple HIG for macOS 26+ to the maximum, including Liquid Glass** design language
 - **Sidebar layout** (NavigationSplitView): projects/environments in sidebar; pinned at the bottom: **About** and **Settings**
-- **Settings** opens with the standard `⌘,` shortcut; contains: session TTL, clipboard clear delay, update channel/auto-update toggle, language (future), theme override
+- **Settings** opens with the standard `⌘,` shortcut; today it has three tabs — **Health**
+  (re-runnable onboarding report), **Key** (import an age key), **Updates** (a single toggle
+  consenting to the engine-freshness/update lookup in §6 B). **Planned, not yet built:** a
+  session-TTL control, a clipboard-clear-delay control, an update-channel selector, and a
+  manual theme override — none of these exist in Settings today. Language selection is future
+  work, as noted below, and not part of this list because it was never claimed built.
 - **Theme:** light/dark following system (auto), manual override in Settings
 - **About:** app version, check-for-updates button, auto-update toggle (Sparkle best practice: user consent on first launch, EdDSA signatures, delta updates later)
 - **Multilanguage-ready:** all strings in String Catalogs from day one; English is the default and the only shipped language for now
@@ -114,7 +119,8 @@ A dedicated Help section with runnable snippets:
    age-keygen -o /etc/age/server.key   # print public key, chmod 600, root-only
    ```
 4. **Key generation for colleagues**
-   - macOS: `brew install age && age-keygen` (or in-app generator)
+   - macOS: `brew install age && age-keygen` (an in-app generator is planned — M3, §9 — but
+     does not exist yet; today the app can only import a key, never generate one)
    - Linux: distro package + `age-keygen`
    - Windows: `winget install FiloSottile.age` / scoop; WSL note
 5. **`.sops.yaml` cookbook** — creation_rules, `encrypted_regex` partial encryption, per-environment key groups; plus a wizard in the app that generates it
