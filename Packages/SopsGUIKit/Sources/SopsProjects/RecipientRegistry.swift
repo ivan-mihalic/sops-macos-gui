@@ -50,8 +50,16 @@ public enum RecipientRegistry {
     public enum Error: Swift.Error, Equatable, Sendable {
         case emptyLabel
         case invalidAgeRecipient
-        case duplicateAgeRecipient(String)
-        case duplicateID(UUID)
+        /// A record already exists whose `ageRecipient` matches the one being
+        /// saved. No associated value — see `RecipientLabelEditorModel
+        /// .explanation(for:)`'s doc comment: nothing in this codebase reads
+        /// one, a public key is not itself a secret, but a refusal that
+        /// quotes its input is a habit this type does not want to form,
+        /// least of all here.
+        case duplicateAgeRecipient
+        /// A record already exists with the same `id`. No associated value,
+        /// for the identical reason `duplicateAgeRecipient` has none.
+        case duplicateID
         case privateIdentityNotAllowed
         case recordNotFound(UUID)
         case changedOnDisk
@@ -223,9 +231,9 @@ public enum RecipientRegistry {
             if let refusal = refusal(forAgeRecipient: record.ageRecipient) {
                 throw refusal
             }
-            guard recordIDs.insert(record.id).inserted else { throw Error.duplicateID(record.id) }
+            guard recordIDs.insert(record.id).inserted else { throw Error.duplicateID }
             guard recipientIDs.insert(record.ageRecipient).inserted else {
-                throw Error.duplicateAgeRecipient(record.ageRecipient)
+                throw Error.duplicateAgeRecipient
             }
         }
     }
