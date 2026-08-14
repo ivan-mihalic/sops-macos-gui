@@ -116,7 +116,30 @@ extension HealthReport {
         // for every caller (almost every test in this package) that never
         // records a debt in the first place. The real app wires in
         // `SopsProjects.RotationDebtLedgerSource()`.
-        rotationDebt: any RotationDebtSource = NoRotationDebt()
+        rotationDebt: any RotationDebtSource = NoRotationDebt(),
+        // Test-only seam (ticket #21): nil in every real caller, which gets
+        // the same `GitHubReleaseSource(isEnabled:)` this always built. A
+        // default is safe here — unlike `keyStore`/`appUpdates` above, there
+        // is no wrong-but-plausible stand-in risk, because "build the real
+        // source" is correct for every caller that does not pass one.
+        //
+        // What it exists for: `GitHubReleaseSource`'s production initializer
+        // builds its own ephemeral session internally, with no way for a
+        // caller of `.standard` to see or intercept it.
+        // Before this seam, nothing exercised the *actual* call chain this
+        // app uses in production — `.standard` → `EngineFreshnessCheck` →
+        // `GitHubReleaseSource.latestRelease` — with instrumentation
+        // attached, so a stray network call added anywhere in that chain
+        // would have been invisible to every test in the suite. Tests pass a
+        // `GitHubReleaseSource` built through its own test-only
+        // `init(session:baseURL:isEnabled:)` with a `URLProtocol` registered
+        // on that specific session — see `FullReportNetworkGuardTests`, and
+        // its header comment for why a *globally* registered `URLProtocol`
+        // (`URLProtocol.registerClass`) cannot do this job: measured
+        // directly, it does not intercept traffic from an ephemeral or
+        // otherwise custom-configured session, which is what this call
+        // actually constructs.
+        upstream: (any UpstreamVersionProviding)? = nil
     ) -> HealthReport {
         // Optional, never defaulted to a version number. An unreadable engine
         // version used to become 0.0.0, which loses every comparison — see
@@ -132,7 +155,7 @@ extension HealthReport {
             ExternalToolCheck(locator: ToolLocator(), embeddedSopsVersion: embeddedSops),
             EngineFreshnessCheck(
                 embeddedSops: embeddedSops, embeddedAge: embeddedAge,
-                upstream: GitHubReleaseSource(isEnabled: updateChecksEnabled)),
+                upstream: upstream ?? GitHubReleaseSource(isEnabled: updateChecksEnabled)),
             SecurityPostureCheck(
                 osVersion: SemanticVersion(os.majorVersion, os.minorVersion, os.patchVersion),
                 // 26.0, matching `Package.swift`, `project.yml`

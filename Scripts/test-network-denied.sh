@@ -10,20 +10,35 @@
 #   still passes. No check hangs, crashes, or reports a wrong verdict because
 #   a request failed. That is worth having and it is all this proves.
 #
-#   It does NOT establish that the app never *attempts* a request. Failures are
-#   swallowed into `.lookupFailed` by design, the consent tests drive a
-#   `RecordingURLProtocol` on their own session, and the one test that touches
-#   a real socket skips under this profile. So an unwanted request is invisible
-#   here.
+#   It does NOT, on its own, establish that the app never *attempts* a request.
+#   Failures are swallowed into `.lookupFailed` by design, so an unwanted
+#   request would be invisible to this script.
 #
-#   Worse, the sandboxed run asserts a strict subset of the unsandboxed one:
-#   231 tests with 5 skipped versus 231 with 2. Anything gated on a resource
-#   the sandbox denies is silently absent from the very run meant to be
-#   strictest.
+#   That gap is now closed elsewhere, and deliberately elsewhere:
+#   `FullReportNetworkGuardTests` runs the real `HealthReport.standard` chain
+#   with consent off and asserts zero requests reached the URL loading system.
+#   It runs in the ordinary suite, not here, because it needs the network
+#   stack present in order to watch it.
 #
-# Closing that gap needs an observation point inside the process — a protocol
-# registered on every session the app can use, asserting zero requests during a
-# full report with consent off. Recorded as M3 work rather than half-built here.
+#   ⚠️ The obvious implementation of that guard does not work, and the reason
+#   is worth keeping: a process-wide `URLProtocol.registerClass` intercepts
+#   `URLSession.shared` and *not* a session built from an ephemeral or custom
+#   configuration — measured directly. `GitHubReleaseSource` builds an
+#   ephemeral one, so a global registration would have reported "zero
+#   requests" whether or not any were made: an observation point with a hole
+#   exactly where it matters, which is worse than none, because it reads as
+#   proof. The guard therefore instruments that one session by name, and a
+#   companion test asserts the app constructs a `URLSession` in exactly one
+#   file, so a second one added later cannot slip past it.
+#
+#   Still true, and not fixable here: the sandboxed run asserts a strict
+#   subset of the unsandboxed one — anything gated on a resource the sandbox
+#   denies is absent from the very run meant to be strictest. The sandbox
+#   really does deny those resources, so those skips are irreducible. What
+#   changed is that they are no longer silent: `./Scripts/test.sh` prints
+#   every skipped test with its reason in a block at the end of the run, so
+#   the difference between the two runs can be read rather than inferred from
+#   a count.
 #
 # Positive control: also confirms the profile actually blocks networking by
 # running curl against a real host first — if that unexpectedly succeeds, the
