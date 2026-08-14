@@ -45,26 +45,27 @@ import SwiftUI
 ///   to propose a brand-new config (`RecipientPicker`'s `.noConfig`
 ///   branch). Not phrased as a defect — `CreationPlan.noConfig`'s own doc
 ///   comment treats it as a legitimate starting point.
-/// - `.governedByRule` — a rule already reaches this location:
-///   `LocalizedKey.newFileInfoGovernedByRule`, named by its own recipients
-///   (a registry label when `RecipientRegistry.load(in: projectRoot)` has
-///   one, the shortened public key otherwise — see `recipientNames(_:)`),
-///   with `LocalizedKey.newFileInfoEncryptedRegexScoping` appended whenever
-///   the rule sets `encrypted_regex`. Both keys, and the append-on-scoping
-///   behavior, are reused verbatim from `NewSecretFileSheet.infoLineText`
-///   rather than reimplemented: that function's own doc comment states why
-///   the disclosure exists ("Naming only who can read the file, and saying
-///   nothing about how much of it is encrypted, is the silent half of an
-///   access change — spec §4.1 decision 4") and the reason applies
-///   identically here — this screen's "Ready" framing would otherwise
-///   assert a completeness the wizard, one click later, has to walk back.
-///   A rule that matches but names no recipients at all is a real,
-///   sops-admitted shape (`CreationPlanResolverTests
+/// - `.governedByRule` — a rule already reaches this location: the whole
+///   sentence — who it will be encrypted for, plus, when the rule sets
+///   `encrypted_regex`, the disclosure that it also scopes which values get
+///   encrypted at all — comes from `NewSecretFileSheet
+///   .governedByRuleSentence(recipients:encryptedRegex:recipientNames:)`,
+///   called directly rather than reimplemented. That function's own doc
+///   comment has the full account, including why it is a function call and
+///   not merely a shared pair of keys: an earlier version of this file
+///   re-derived the same guard-and-join independently and silently dropped
+///   the `encrypted_regex` disclosure entirely (this task's review, "the
+///   silent half of an access change" applies here exactly as it does one
+///   screen over — spec §4.1 decision 4). Recipients are named with a
+///   registry label when `RecipientRegistry.load(in: projectRoot)` has one,
+///   the shortened public key otherwise — see `recipientNames(_:)`. A rule
+///   that matches but names no recipients at all is a real, sops-admitted
+///   shape (`CreationPlanResolverTests
 ///   .ruleWithNoKeyGroupIsGovernedByRuleWithNoRecipients`), not a
 ///   hypothetical this file is padding out — `presentation(for:
 ///   recipientNames:)` falls through to `CreationFailurePresenter
-///   .messageForRuleWithNoRecipients()` for it instead of claiming an
-///   encryption that will not happen, the identical guard
+///   .messageForRuleWithNoRecipients()` for it instead of calling
+///   `governedByRuleSentence` at all, the identical guard
 ///   `NewSecretFileSheet.infoLineText` already holds one screen over.
 /// - `.noRuleMatched` — `LocalizedKey.newFileInfoNoRuleMatched` ("No rule in
 ///   .sops.yaml matches this location yet.") — the wizard's own careful
@@ -134,16 +135,31 @@ public struct ProjectStartHereView: View {
     /// synchronous `throws` function, not `async` — there is no real
     /// asynchrony to defer to a task in the first place, only file I/O
     /// small enough that `RecipientPicker`'s own `.task` already treats it
-    /// as cheap. Measured directly against this app's own headless snapshot
-    /// tool (`./Scripts/snapshots.sh`, whose technique is documented in
-    /// CLAUDE.md, "Visual verification"): a `.task`-based version of this
-    /// property was still empty by the time the rendered PNG was captured —
-    /// `NSHostingView.layoutSubtreeIfNeeded()`/`displayIfNeeded()` do not
-    /// pump a `Task` to completion, and this file's own snapshot
-    /// (`start-here-governed-by-rule`) showed a shortened key instead of
-    /// the registry label it was built to prove. A `let` set at `init`
-    /// sidesteps the whole class of "stale during a synchronous headless
-    /// render" bug rather than working around it per call site.
+    /// as cheap.
+    ///
+    /// Measured directly against this app's own headless snapshot tool
+    /// (`./Scripts/snapshots.sh`): a `.task`-based version of this property
+    /// was still empty by the time the rendered PNG was captured — the
+    /// `start-here-governed-by-rule` snapshot showed a shortened key
+    /// instead of the registry label it was built to prove. The likely
+    /// mechanism, not fully confirmed: `Snapshot.swift`'s render path never
+    /// orders its window front (`window.setIsVisible(false)`, never
+    /// `orderFront`/`makeKeyAndOrderFront` — see that file's own doc
+    /// comment, "Why this, and not a screenshot of the running app"), so no
+    /// appear event may ever reach this view to start a `.task` closure at
+    /// all — it is not that the closure started and lost a race.
+    /// (`Snapshot.swift` does give AppKit a deliberate pause,
+    /// `RunLoop.current.run(until:)` after the first `layoutSubtreeIfNeeded()`
+    /// — real, and enough for `List`/`Form` content to populate — but
+    /// `displayIfNeeded()` is never called anywhere in that path, and a
+    /// pumped run loop does not help a task that was never scheduled to
+    /// begin with.) Whatever the exact mechanism, a `let` set at `init`
+    /// sidesteps the entire class of "may not have run yet under a
+    /// synchronous headless render" rather than working around one
+    /// instance of it — and, separately from snapshots, it also fixes a
+    /// staleness `.task` would have kept: that modifier runs once per view
+    /// *identity*, so a `projectRoot` change on an otherwise-identical
+    /// `ProjectStartHereView` would not have re-triggered it.
     private let registryRecords: [RecipientRecord]
 
     public init(
@@ -227,26 +243,26 @@ public struct ProjectStartHereView: View {
             guard !recipients.isEmpty else {
                 return .failure(CreationFailurePresenter.messageForRuleWithNoRecipients())
             }
-            let governed = String(format: LocalizedKey.newFileInfoGovernedByRule.text, recipientNames(recipients))
-            // `encrypted_regex` disclosure, reused verbatim from
-            // `NewSecretFileSheet.infoLineText` — see this type's own doc
-            // comment, "What each of the five configState values shows",
-            // for why it belongs here too. Joined with a literal `" "`,
-            // the one instance of composing two whole catalog sentences —
-            // `infoLineText` names this same choice in its own comment for
-            // the identical join.
-            guard !encryptedRegex.isEmpty else {
-                return .headline(governed, offersCreateButton: true)
-            }
-            let scoping = String(format: LocalizedKey.newFileInfoEncryptedRegexScoping.text, encryptedRegex)
-            return .headline(governed + " " + scoping, offersCreateButton: true)
+            // The whole sentence, including the `encrypted_regex`
+            // disclosure when the rule sets one, comes from
+            // `NewSecretFileSheet.governedByRuleSentence(recipients:
+            // encryptedRegex:recipientNames:)` — called directly, not
+            // reimplemented. See that function's own doc comment for why
+            // this is a function call rather than a second copy of its
+            // guard-and-join.
+            let text = NewSecretFileSheet.governedByRuleSentence(
+                recipients: recipients, encryptedRegex: encryptedRegex, recipientNames: recipientNames)
+            return .headline(text, offersCreateButton: true)
         case .noConfig:
             return .headline(LocalizedKey.newFileInfoNoConfig.text, offersCreateButton: true)
         case .noRuleMatched:
-            // Two whole catalog sentences, joined the same way the
-            // `.governedByRule` arm above joins its own two — see this
-            // type's own doc comment for why this state needs a second
-            // sentence the wizard's identical first one does not.
+            // Two whole catalog sentences, joined with a literal `" "` —
+            // composition, not assembly from fragments, the same technique
+            // (and the same reasoning) `NewSecretFileSheet
+            // .governedByRuleSentence`'s own doc comment names for its own
+            // join. See this type's own doc comment for why this state
+            // needs a second sentence the wizard's identical first one does
+            // not.
             let matched = LocalizedKey.newFileInfoNoRuleMatched.text
             let reassurance = LocalizedKey.startHereNoRuleMatchedReassurance.text
             return .headline(matched + " " + reassurance, offersCreateButton: false)
@@ -265,10 +281,15 @@ public struct ProjectStartHereView: View {
 
     /// `recipient`'s registry label when `registryRecords` has one,
     /// otherwise the public key itself, shortened — never an invented
-    /// name. Identical fallback to `RecipientPicker.displayName(for:)` and
-    /// `NewSecretFileSheet.recipientNames(_:)`, so an unlabeled key reads
-    /// the same way on this screen as it does one click later in the
-    /// wizard.
+    /// name. The identical *fallback rule* `RecipientPicker
+    /// .displayName(for:)` and `NewSecretFileSheet.recipientNames(_:)` each
+    /// keep, so an unlabeled key reads the same way on this screen as it
+    /// does one click later in the wizard — not shared code, unlike
+    /// `governedByRuleSentence` above: each of those three methods reads
+    /// its own view's own `registryRecords`, so there is no instance-free
+    /// version of this specific lookup to extract, only the leaf
+    /// `NewSecretFileSheet.shortenedKey(_:)` it falls back to, which all
+    /// three do already call rather than reimplement.
     private func recipientNames(_ recipients: [String]) -> String {
         recipients.map { recipient in
             registryRecords.first { $0.ageRecipient == recipient }?.label ?? NewSecretFileSheet.shortenedKey(recipient)
@@ -286,9 +307,17 @@ public struct ProjectStartHereView: View {
     private func presentationBody(_ presentation: Presentation) -> some View {
         switch presentation {
         case .headline(let text, let offersCreateButton):
+            // `.fixedSize` matters here specifically: `.governedByRule`'s
+            // text can carry the `encrypted_regex` disclosure appended
+            // (`NewSecretFileSheet.governedByRuleSentence`'s own three-clause
+            // sentence, ~250 characters combined) — the review's own
+            // finding that this state was the one new output nothing had
+            // rendered and looked at (see `Catalog.swift`'s
+            // `start-here-governed-by-rule-with-scoping` snapshot).
             Text(text)
                 .font(.title3.weight(.semibold))
                 .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
             if offersCreateButton {
                 Button(LocalizedKey.startHereCreateFirstFileButton.text, action: onNewFile)
             }

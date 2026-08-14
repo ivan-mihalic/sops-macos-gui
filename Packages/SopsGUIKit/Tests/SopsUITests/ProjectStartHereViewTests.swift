@@ -92,11 +92,13 @@ struct ProjectStartHereViewPresentationTests {
 
     /// Review finding, Important 1: naming only who can read the file, and
     /// saying nothing about how much of it is encrypted, is the silent half
-    /// of an access change (`NewSecretFileSheet.infoLineText`'s own doc
-    /// comment, spec §4.1 decision 4). This screen's "Ready" framing needs
-    /// the identical disclosure the wizard's ⓘ line already carries for the
-    /// same `CreationPlan` case — appended the same way, with the same
-    /// literal `" "` join.
+    /// of an access change (`NewSecretFileSheet.governedByRuleSentence`'s
+    /// own doc comment, spec §4.1 decision 4). This screen's own
+    /// "…it will be encrypted for: …" sentence needs the identical
+    /// disclosure the wizard's ⓘ line already carries for the same
+    /// `CreationPlan` case — both now come from that one shared function,
+    /// so this test is really pinning that `presentation(for:
+    /// recipientNames:)` actually calls it rather than a re-derived copy.
     @Test(".governedByRule whose rule sets encrypted_regex discloses the plaintext scoping too")
     func governedByRuleWithEncryptedRegex() throws {
         let regex = "^(data|stringData)$"

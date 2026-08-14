@@ -836,13 +836,23 @@ enum Fixtures {
     /// second, unlabeled recipient has no such requirement —
     /// `CreationPlan.governedByRule` carries raw `[String]` and validates
     /// nothing — so it stays an obvious placeholder.
-    static func startHereGovernedFixture() throws -> (plan: CreationPlan, projectRoot: URL) {
+    /// - Parameter encryptedRegex: passed straight through into the built
+    ///   plan. Non-empty by a caller who wants
+    ///   `start-here-governed-by-rule-with-scoping` — the review's own
+    ///   finding that the `encrypted_regex` disclosure (Important 1's fix)
+    ///   was the one new output in that round with no snapshot and no
+    ///   `.fixedSize` on the `Text` rendering it.
+    static func startHereGovernedFixture(
+        encryptedRegex: String = ""
+    ) throws -> (plan: CreationPlan, projectRoot: URL) {
         let labeled = try SnapshotAgeKeyPair.generate()
         let unlabeled = "age1qunlabeledunlabeledunlabeledunlabeledunlabeledunlabeledunla"
         let root = try startHereProjectRoot()
         try RecipientRegistry.save(
             [RecipientRecord(label: "Alice", kind: .person, ageRecipient: labeled.public)], in: root)
-        return (.governedByRule(recipients: [labeled.public, unlabeled], encryptedRegex: ""), root)
+        return (
+            .governedByRule(recipients: [labeled.public, unlabeled], encryptedRegex: encryptedRegex), root
+        )
     }
 
     // MARK: - DotEnvPreviewTable

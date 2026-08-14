@@ -431,12 +431,15 @@ enum Catalog {
         ]
     }
 
-    // MARK: - ProjectStartHereView, the three states an empty project can show
+    // MARK: - ProjectStartHereView
     //
     // `.configUnreadable`/`.unsupportedRule` get no snapshot here — Task 2's
-    // brief names three entries, and both of those already render through
-    // `CreationFailurePresenter.message(forBlocking:)`, the identical failure
-    // banner other screens already snapshot.
+    // brief names three entries for the three states without one, and both
+    // of those already render through `CreationFailurePresenter
+    // .message(forBlocking:)`, the identical failure banner other screens
+    // already snapshot. `.governedByRule` gets two: with and without an
+    // `encrypted_regex` scoping the rule — see the `encryptedRegex`
+    // fixture's own comment below for why the second entry exists at all.
     private static func projectStartHere() throws -> [Snapshot] {
         let size = CGSize(width: 420, height: 320)
         // A bare root for the two states with no recipients to label either
@@ -447,6 +450,13 @@ enum Catalog {
         // `Fixtures.startHereGovernedFixture()`'s own doc comment for why
         // the plan and the root cannot be mixed and matched.
         let (governedPlan, governedRoot) = try Fixtures.startHereGovernedFixture()
+        // A third root/plan pair, whose rule additionally sets
+        // `encrypted_regex` — the one new output Important 1's fix produced
+        // (`NewSecretFileSheet.governedByRuleSentence`'s appended scoping
+        // disclosure) that this catalog had never rendered at all before
+        // the review caught it.
+        let (governedWithScopingPlan, governedWithScopingRoot) = try Fixtures.startHereGovernedFixture(
+            encryptedRegex: "^(data|stringData)$")
         func startHere(
             _ name: String, _ configState: CreationPlan, in projectRoot: URL, otherFormatCount: Int = 0
         ) -> Snapshot {
@@ -463,6 +473,11 @@ enum Catalog {
             // shortened key (deliberately unlabeled) — see
             // `Fixtures.startHereGovernedFixture()`'s own doc comment.
             startHere("start-here-governed-by-rule", governedPlan, in: governedRoot),
+            // The `encrypted_regex` disclosure, actually rendered and
+            // looked at — see this function's own comment above.
+            startHere(
+                "start-here-governed-by-rule-with-scoping", governedWithScopingPlan,
+                in: governedWithScopingRoot),
             startHere("start-here-no-rule-matched", Fixtures.startHereNoRuleMatched, in: plainRoot),
             // Task 2's own review question: whether a project that already
             // holds other-format sops files still reads clearly when the
