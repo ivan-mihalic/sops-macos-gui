@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import SopsEngine
 
@@ -169,6 +170,11 @@ public struct ProjectHealthCheck: HealthCheck {
 
         let leak = gitignoreFinding(for: project, idScope: idScope, root: root,
                                     tree: tree, scope: scope, gitPath: gitPath)
+        // Emitted regardless of .sops.yaml, for the identical reason `leak`
+        // is: a loose file mode is a fact about a file, not about whether
+        // this app can parse the config governing it.
+        let permissions = filePermissionsFinding(for: project, idScope: idScope, root: root,
+                                                  tree: tree, scope: scope)
 
         guard FileManager.default.fileExists(atPath: configURL.path) else {
             // The plaintext-leak finding is emitted even here. A project with
@@ -214,7 +220,7 @@ public struct ProjectHealthCheck: HealthCheck {
                     // from finding a claim this app could not actually back
                     // up yet, and the next one is worth holding to the same
                     // standard before it lands.
-                    explanation: "Add a .sops.yaml file at the project root with a creation_rules entry naming the age public keys new files should be encrypted to. This app can propose one now: select this project, click the toolbar's New File button (or press ⌘N), add at least one recipient, then click Propose .sops.yaml — it shows the file before writing it, and writes it only once you confirm. Writing the file by hand is just as valid; see sops's own documentation for the file format.")), leak]
+                    explanation: "Add a .sops.yaml file at the project root with a creation_rules entry naming the age public keys new files should be encrypted to. This app can propose one now: select this project, click the toolbar's New File button (or press ⌘N), add at least one recipient, then click Propose .sops.yaml — it shows the file before writing it, and writes it only once you confirm. Writing the file by hand is just as valid; see sops's own documentation for the file format.")), leak, permissions]
         }
 
         // Probe that the config itself loads under sops's own parser,
@@ -244,7 +250,7 @@ public struct ProjectHealthCheck: HealthCheck {
                 status: .problem,
                 detail: "The .sops.yaml in \(project.rootPath) could not be parsed: \(error).",
                 remediation: Remediation(
-                    explanation: "Fix the YAML syntax, then re-run this check.")), leak]
+                    explanation: "Fix the YAML syntax, then re-run this check.")), leak, permissions]
         }
 
         return [
@@ -255,6 +261,7 @@ public struct ProjectHealthCheck: HealthCheck {
             recipientFinding(for: project, idScope: idScope, root: root,
                              configPath: configURL.path, tree: tree, scope: scope),
             leak,
+            permissions,
         ]
     }
 
@@ -845,4 +852,79 @@ public struct ProjectHealthCheck: HealthCheck {
 
     static let newlineInNameNote =
         "One of these filenames contains a line break, which .gitignore cannot express and no single-line command can name safely, so this app is not offering one — rename the file first."
+
+    /// Reports any encrypted file whose POSIX mode grants read or write to
+    /// anyone besides its owner — `0644`, `0664`, `0666`, and so on.
+    ///
+    /// Nothing else in this app ever looks at a secret file's mode.
+    /// `AtomicFileWriter.write` deliberately preserves whatever mode an
+    /// *existing* file already has (see that type's own doc comment) — a new
+    /// file this app creates gets `0600`, but a file that arrived on this
+    /// machine some other way (`git clone` under a permissive umask, `cp`
+    /// from a USB drive, a tarball extracted with `tar xf`) keeps whatever
+    /// mode it arrived with through every save this app makes to it,
+    /// silently. Encryption protects the *content* from anyone who cannot
+    /// decrypt it; it does not stop a `chmod 644`'d file from telling every
+    /// other account on the machine who this project encrypts to, when the
+    /// file was last touched, and how large the secret set is — none of
+    /// which needs a key to read.
+    ///
+    /// `stat`, not `lstat`: a symlink's own mode is not meaningful here — on
+    /// macOS a symlink always reports as `lrwxrwxrwx` regardless of what it
+    /// points at — so this asks about the mode of whatever file the link
+    /// resolves to, the one whose bytes are actually the ciphertext.
+    /// `EncryptedFileMetadata` and `SniffedFile.url` name the file this app
+    /// would report a finding about (the link, inside the project); this
+    /// only borrows `stat`'s symlink-following for the one number that has
+    /// to come from the *target*.
+    ///
+    /// Both `tree.encrypted` and `tree.encryptedInOtherFormats`: a mode
+    /// problem has nothing to do with which serialization the bridge can
+    /// parse, so a sops-encrypted `.env` this app cannot read the recipients
+    /// of is exactly as worth reporting here as one it can.
+    private func filePermissionsFinding(
+        for project: InspectedProject, idScope: String, root: URL,
+        tree: ScannedTree, scope: ProjectScopeAccountant
+    ) -> ScopedFinding {
+        let findingID = "project.\(idScope).file-permissions"
+        let title = "\(project.name): file permissions"
+
+        let rootPrefix = Self.canonicalPath(root.path) + "/"
+        func relativeName(_ url: URL) -> String {
+            let path = CanonicalPath.ofLeaf(url.path)
+            return path.hasPrefix(rootPrefix) ? String(path.dropFirst(rootPrefix.count)) : path
+        }
+
+        let candidates = tree.encrypted.map(\.url) + tree.encryptedInOtherFormats
+        var loose: [(name: String, mode: mode_t)] = []
+        for url in candidates {
+            var info = stat()
+            guard stat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+                // Vanished between the walk and this check, or resolves to
+                // something that is not a regular file (a dangling link,
+                // for instance) — not this finding's question to answer.
+                continue
+            }
+            let mode = info.st_mode & 0o777
+            guard mode & 0o077 != 0 else { continue }
+            loose.append((relativeName(url), mode))
+        }
+
+        guard !loose.isEmpty else {
+            return scope.finding(
+                about: .theWholeTree, id: findingID, title: title, status: .ok,
+                detail: "Every encrypted file under \(project.rootPath) is readable and writable only by its owner.")
+        }
+
+        let sorted = loose.sorted { $0.name < $1.name }
+        let names = sorted.map { "\($0.name) (mode \(String($0.mode, radix: 8)))" }
+        let command = AgeKeyFileLocations.protectCommand(for: sorted.map { root.appendingPathComponent($0.name).path })
+
+        return scope.finding(
+            about: .theWholeTree, id: findingID, title: title, status: .warning,
+            detail: "These encrypted files under \(project.rootPath) are readable or writable by more than their owner: \(names.joined(separator: ", ")). Encryption still protects the contents from anyone who cannot decrypt it, but a loose mode lets every other account on this machine see who the file is encrypted to, its size, and when it last changed.",
+            remediation: Remediation(
+                explanation: "Narrow the file's permissions so only you can read or write it.",
+                command: command))
+    }
 }
