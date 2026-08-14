@@ -229,31 +229,22 @@ func Encrypt(plain []byte, format Format, opts EncryptOpts) ([]byte, error) {
 	//     timeout. Recipients come from a project's `.sops.yaml`, so a cloned
 	//     repository could name the plugin. That is the same vector
 	//     `parseDecryptionIdentities` closes on the identity side.
-	for index, recipient := range opts.AgeRecipients {
-		if !strings.HasPrefix(recipient, "age1") {
-			return nil, fmt.Errorf(
-				"recipient %d is not a native age recipient: it must begin with %q",
-				// Index, never the value: the value may be a private key.
-				index+1, "age1")
-		}
-		// `age1<name>1<data>` is the plugin form. A native X25519 recipient is
-		// bech32 over `age1` with no further separator.
-		if rest := recipient[len("age1"):]; strings.Contains(rest, "1") {
-			return nil, fmt.Errorf(
-				"recipient %d looks like an age plugin recipient; this app supports "+
-					"native age recipients only, and never runs a plugin binary",
-				index+1)
-		}
-	}
-
-	masterKeys, err := sopsage.MasterKeysFromRecipients(strings.Join(opts.AgeRecipients, ","))
+	//
+	// This used to be its own hand-written copy of these two checks, calling
+	// upstream's sopsage.MasterKeysFromRecipients directly instead of the
+	// nativeAgeMasterKeys validator UpdateRecipients and validAgeRecipients
+	// (configwrite.go) already share. The two implementations happened to
+	// agree — each had its own test (bridge_test.go, recipients_test.go) —
+	// but nothing made them agree: a third recipients-to-sops path could add
+	// a third copy, forget one of the two checks, and every existing test
+	// would stay green because none of them looks at another path's code.
+	// TestRecipientValidationHasExactlyOneChokepoint (recipientvalidation_test.go)
+	// now asserts structurally that nativeAgeMasterKeys is the only function
+	// that mints a key-group member from a recipient string, so this cannot
+	// silently regress back into a second implementation.
+	masterKeys, err := nativeAgeMasterKeys(opts.AgeRecipients)
 	if err != nil {
-		// Never `%w`: see above. The recipients string may contain a private
-		// key the user pasted into the wrong field.
-		return nil, fmt.Errorf("the age recipients could not be parsed")
-	}
-	if len(masterKeys) == 0 {
-		return nil, fmt.Errorf("no age recipients given")
+		return nil, err
 	}
 	group := make(sops.KeyGroup, 0, len(masterKeys))
 	for _, mk := range masterKeys {
