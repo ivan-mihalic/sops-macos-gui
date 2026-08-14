@@ -101,4 +101,38 @@ struct FlatYAMLEmitterTests {
         let rows = try roundTrip([])
         #expect(rows.isEmpty)
     }
+
+    /// `U+0085` (NEL) was, until this fix, the one escape-table gap the
+    /// emitter's own doc comment admitted to: it fell through to the
+    /// `default:` arm and was written literally, and sops's YAML layer reads
+    /// a literal NEL back differently than it was written, so the value did
+    /// not survive the round trip — `SecretFileCreatorTests` proved the
+    /// safety net catches this as `roundTripMismatch` rather than silently
+    /// corrupting the value. This test proves the actual fix: once `U+0085`
+    /// is in the escape table, the value round-trips intact and no mismatch
+    /// is ever raised.
+    ///
+    /// `U+2028` (LINE SEPARATOR) and `U+2029` (PARAGRAPH SEPARATOR) are
+    /// included alongside it not because they showed the same defect — a
+    /// direct probe of each (same shape as this test, run before this fix)
+    /// showed both already round-tripped intact through the unescaped
+    /// `default:` arm — but so a regression in either direction (escaping
+    /// them when unnecessary, or a future change that breaks their
+    /// round-trip) would be caught here rather than assumed to still hold.
+    @Test("U+0085 (NEL), U+2028 (LS) and U+2029 (PS) all survive the round trip intact")
+    func lineBreakLookalikesSurviveRoundTrip() throws {
+        let entries = [
+            DotEnvEntry(key: "NEL", value: "before\u{0085}after", line: 1),
+            DotEnvEntry(key: "LINE_SEPARATOR", value: "before\u{2028}after", line: 2),
+            DotEnvEntry(key: "PARAGRAPH_SEPARATOR", value: "before\u{2029}after", line: 3),
+        ]
+
+        let rows = try roundTrip(entries)
+
+        #expect(rows.count == entries.count)
+        for entry in entries {
+            let row = rows.first { $0.path == [entry.key] }
+            #expect(row?.value == entry.value, "key \(entry.key)")
+        }
+    }
 }
