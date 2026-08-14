@@ -654,9 +654,13 @@ public struct ProjectAccessView: View {
 /// on purpose: both panels can rewrite the file underneath an editor holding
 /// edits nobody saved. `AccessGateAsymmetryTests` pins both halves — that the
 /// load-state term is the only difference, and that this paragraph exists.
+/// The shared half is `UnsavedWorkGate.isClear`, not written out by hand here
+/// — see that type's doc comment (ticket #23) for why it exists: this gate,
+/// `SecretEditorView.canOpenAccessPanel` and `WorkspaceSwitchDecision.forSwitch`
+/// each used to carry their own copy of `!isDirty && !isSaving`.
 enum ProjectAccessGate {
     static func canOpen(hasProject: Bool, documentIsDirty: Bool, documentIsSaving: Bool) -> Bool {
-        hasProject && !documentIsDirty && !documentIsSaving
+        hasProject && UnsavedWorkGate.isClear(isDirty: documentIsDirty, isSaving: documentIsSaving)
     }
 }
 

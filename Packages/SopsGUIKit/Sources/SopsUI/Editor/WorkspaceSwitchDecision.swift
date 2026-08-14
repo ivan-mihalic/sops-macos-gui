@@ -87,13 +87,24 @@ public enum WorkspaceSwitchDecision: Equatable, Sendable {
     ///     document; `false` when no document is open. Not defaulted, on
     ///     purpose: a default would let a new call site silently reintroduce
     ///     the hole this parameter exists to close.
+    ///
+    /// "Is there anything at stake at all" is `UnsavedWorkGate.isClear`, the
+    /// same question `SecretEditorView.canOpenAccessPanel` and
+    /// `ProjectAccessGate.canOpen` ask before they let a different action
+    /// touch this document — see that type's doc comment (ticket #23). What
+    /// stays local to this function is *which* answer a `false` gets:
+    /// `saveIsInFlight` outranks `documentIsDirty` for the reason above, and
+    /// neither boolean gate needs that distinction because both of them
+    /// simply refuse either way.
     public static func forSwitch<Target: Equatable>(
         from current: Target, to requested: Target,
         documentIsDirty: Bool, saveIsInFlight: Bool
     ) -> WorkspaceSwitchDecision {
         guard current != requested else { return .alreadyThere }
-        if saveIsInFlight { return .waitForSaveInFlight }
-        return documentIsDirty ? .askAboutUnsavedChanges : .proceed
+        guard !UnsavedWorkGate.isClear(isDirty: documentIsDirty, isSaving: saveIsInFlight) else {
+            return .proceed
+        }
+        return saveIsInFlight ? .waitForSaveInFlight : .askAboutUnsavedChanges
     }
 
     /// The decision for quitting the application.
