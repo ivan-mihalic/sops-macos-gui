@@ -49,6 +49,25 @@ public protocol AppUpdateStatusProviding: Sendable {
     var state: AppUpdateState { get }
 }
 
+/// Ticket #4: whether — and for how long — an imported session key stays
+/// usable before `SessionKeyStore` treats it as expired.
+///
+/// Only two cases, unlike `KeyStoreState`/`AppUpdateState`'s three or more:
+/// `SessionKeyStore` has no "no TTL" mode to report — every session it starts
+/// carries one — so the only honest facts here are "here is the number" and
+/// "nothing could tell me the number" (no store was wired in). Still a
+/// protocol rather than reading `SessionTTLPreference` directly from this
+/// check, for the same reason every other provider here is one: a fact this
+/// check depends on belongs behind a seam a test can fake.
+public enum SessionTTLState: Equatable, Sendable {
+    case enforced(minutes: Int)
+    case unavailable(reason: String)
+}
+
+public protocol SessionTTLStatusProviding: Sendable {
+    var state: SessionTTLState { get }
+}
+
 /// PROPOSAL.md §6 C. Everything here is read-only inspection of the local
 /// machine and the app's own configuration.
 ///
@@ -76,6 +95,7 @@ public struct SecurityPostureCheck: HealthCheck {
     /// The login shell could not be asked where else sops would look, so the
     /// path list below is short by an unknown amount.
     private let legacyKeyFileProbeFailed: Bool
+    private let sessionTTL: any SessionTTLStatusProviding
 
     public init(osVersion: SemanticVersion,
                 minimumOSVersion: SemanticVersion,
@@ -83,7 +103,8 @@ public struct SecurityPostureCheck: HealthCheck {
                 biometry: any BiometryStatusProviding,
                 appUpdates: any AppUpdateStatusProviding,
                 legacyKeyFilePaths: [String],
-                legacyKeyFileProbeFailed: Bool = false) {
+                legacyKeyFileProbeFailed: Bool = false,
+                sessionTTL: any SessionTTLStatusProviding = SystemSessionTTL()) {
         self.osVersion = osVersion
         self.minimumOSVersion = minimumOSVersion
         self.keyStore = keyStore
@@ -91,10 +112,11 @@ public struct SecurityPostureCheck: HealthCheck {
         self.appUpdates = appUpdates
         self.legacyKeyFilePaths = legacyKeyFilePaths
         self.legacyKeyFileProbeFailed = legacyKeyFileProbeFailed
+        self.sessionTTL = sessionTTL
     }
 
     public func run() async -> [HealthFinding] {
-        [osFinding, biometryFinding, keyStoreFinding, legacyKeyFileFinding, appUpdateFinding]
+        [osFinding, biometryFinding, keyStoreFinding, sessionTTLFinding, legacyKeyFileFinding, appUpdateFinding]
     }
 
     private var osFinding: HealthFinding {
@@ -167,6 +189,23 @@ public struct SecurityPostureCheck: HealthCheck {
             HealthFinding(id: "security.keystore", title: "Your age key",
                           status: .skipped(reason: reason),
                           detail: "Nothing about your key has been checked, and nothing here is a verdict on it.")
+        }
+    }
+
+    /// Ticket #4: names the policy that clears an imported key from memory
+    /// after inactivity, so it does not read as a fact this app never checks
+    /// — PROPOSAL.md §6 C names a session-TTL branch, and until this existed
+    /// `run()` returned five findings, none of them about it.
+    private var sessionTTLFinding: HealthFinding {
+        switch sessionTTL.state {
+        case .enforced(let minutes):
+            HealthFinding(id: "security.session-ttl", title: "Session key expiry", status: .ok,
+                          detail: "An imported age key is cleared from this app's memory after \(minutes) "
+                              + "minute\(minutes == 1 ? "" : "s") of inactivity, and immediately when this Mac sleeps.")
+        case .unavailable(let reason):
+            HealthFinding(id: "security.session-ttl", title: "Session key expiry",
+                          status: .skipped(reason: reason),
+                          detail: "Nothing about session expiry has been checked.")
         }
     }
 

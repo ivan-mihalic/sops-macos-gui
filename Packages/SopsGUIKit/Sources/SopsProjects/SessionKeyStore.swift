@@ -7,11 +7,15 @@ import SopsHealth
 /// Keychain.
 ///
 /// This is the M2 shape of key storage per the decision recorded for this
-/// milestone: Keychain storage with Touch ID and a session TTL is M3. Until
-/// then the key is imported by an explicit user gesture (`importKey(_:)` /
-/// `importFromLegacyKeyFile(at:)`, both driven by `KeyImportView`, never
-/// anything automatic) and lives in a single `private var` for as long as the
-/// app runs, or until `forget()` is called.
+/// milestone: Keychain storage with Touch ID is M3. The key is imported by an
+/// explicit user gesture (`importKey(_:)` / `importFromLegacyKeyFile(at:)`,
+/// both driven by `KeyImportView`, never anything automatic) and lives in a
+/// single `private var` until whichever comes first: `forget()` is called,
+/// this Mac goes to sleep (`App/SopsGUIApp.swift`'s `AppDelegate` calls
+/// `forget()` from its `NSWorkspace.willSleepNotification` observer), or the
+/// TTL from `SessionTTLPreference` elapses — see `expireIfNeeded()`'s doc
+/// comment for why that last one is a deadline compared against a clock read
+/// at use time, not a timer.
 ///
 /// Every caller already goes through this type's protocol-shaped surface
 /// (`state`, `importKey`, `forget`, `withKey`) rather than a raw `String`, so
@@ -47,13 +51,22 @@ import SopsHealth
 /// there is no supported way to zero its backing buffer on demand, and the
 /// runtime is free to keep other copies alive (SwiftUI's own state diffing,
 /// `@Observable`'s change tracking, ARC retaining an enclosing closure) for
-/// as long as it likes. This type does not attempt to fight that. It holds
-/// exactly one `String`, in exactly one place, and never logs, prints, or
-/// serializes it — that is the whole of its guarantee. The actual fix for
-/// "a Swift `String` cannot be reliably zeroed" is M3's Keychain-backed
-/// store, which never materializes the key as a long-lived Swift `String` in
-/// the app's own memory in the first place; this type only holds the
-/// perimeter (never touches disk, never appears in an error) until then.
+/// as long as it likes. This type does not attempt to fight that, and this is
+/// stated plainly rather than papered over with a `zeroize()` that could not
+/// actually zero anything: `key` itself is never explicitly cleared byte by
+/// byte, only set to `nil` and left for the runtime to reclaim on its own
+/// schedule. What this type does instead is bound the *lifetime* of the
+/// exposure (TTL, sleep-lock, `forget()`) and the *surface* that could leak it
+/// (`withKey`'s lend-for-one-call discipline, no raw getter, never logs,
+/// prints, or serializes it) — real guarantees, just not the same guarantee
+/// as zeroing. The one buffer genuinely zeroed on the way out is
+/// `withGoString`'s heap-allocated `[CChar]` copy at the Swift/Go boundary
+/// (`SopsBridge.zeroCString`, called from a `defer`) — real storage this app
+/// allocated itself, with no other holder, unlike the `String` above. The
+/// actual fix for "a Swift `String` cannot be reliably zeroed" is M3's
+/// Keychain-backed store, which never materializes the key as a long-lived
+/// Swift `String` in the app's own memory in the first place; this type only
+/// holds the perimeter until then.
 @MainActor
 @Observable
 public final class SessionKeyStore {
@@ -107,11 +120,62 @@ public final class SessionKeyStore {
     private static let agePrivateKeyPrefix = "AGE-SECRET-KEY-1"
 
     private var key: String?
+    /// The wall-clock instant at which `key` stops being usable, or nil when
+    /// no key is imported. Compared against `now()` on every `state` read and
+    /// every `withKey` call — see "Why expiry is a comparison, not a timer"
+    /// below.
+    private var expiresAt: Date?
+    /// Injected so tests can prove expiry without ever sleeping for real —
+    /// see `SessionKeyStoreTests`'s `FakeClock`. Defaults to the real wall
+    /// clock, `Date()`, and deliberately *not* `ContinuousClock` or
+    /// `SuspendingClock`: this store needs "how much real, calendar time has
+    /// passed", which is exactly what `Date()` reports, sleep or no sleep.
+    private let now: () -> Date
+    /// Read fresh on every `importKey`, not captured once at `init` — a
+    /// value the user changes in Settings between one import and the next
+    /// must take effect on the next import without a relaunch, the same
+    /// "read live" discipline `UpdateCheckConsent` already follows elsewhere
+    /// in this app. Defaults to the shipped policy, `SessionTTLPreference`.
+    private let ttlMinutes: () -> Int
 
-    public init() {}
+    public init(now: @escaping () -> Date = Date.init,
+                ttlMinutes: @escaping () -> Int = { SessionTTLPreference.minutes() }) {
+        self.now = now
+        self.ttlMinutes = ttlMinutes
+    }
+
+    /// Why expiry is a comparison, not a timer
+    /// ----------------------------------------
+    /// The obvious-looking alternative — schedule a `Task.sleep(for:)` for
+    /// the TTL and have it call `forget()` when it wakes — is wrong on
+    /// macOS: `Task.sleep` does not advance while the machine is asleep, so a
+    /// Mac put to sleep one minute into a 15-minute TTL and woken eight hours
+    /// later would only expire the key eight hours *after* it should have,
+    /// not on schedule. Comparing a stored deadline against `now()` at the
+    /// moment of use has no such failure mode — the deadline is a plain
+    /// `Date`, wall-clock time keeps moving whether or not the process is
+    /// scheduled to run, and the first access after a long sleep sees a
+    /// `now()` far past `expiresAt` and correctly reports expired. See
+    /// `SessionKeyStoreTests.expiryIsCorrectAcrossASimulatedSleep`.
+    ///
+    /// The cost of this approach, stated plainly rather than left implicit:
+    /// expiry is *lazy*. A key nobody ever touches again after its TTL
+    /// elapses sits in `key` — logically expired, reported as `.empty` by
+    /// `state`, unreachable through `withKey` — until the next call into this
+    /// store notices and clears it. `App/SopsGUIApp.swift`'s `AppDelegate`
+    /// closes the one gap that would otherwise leave a key resident
+    /// indefinitely: it calls `forget()` directly the moment `NSWorkspace`
+    /// reports the system is about to sleep, which is the point at which a
+    /// key sitting unattended actually becomes a risk, TTL or not.
+    private func expireIfNeeded() {
+        guard let expiresAt, now() >= expiresAt else { return }
+        key = nil
+        self.expiresAt = nil
+    }
 
     public var state: KeyStoreState {
-        key == nil ? .empty : .configured
+        expireIfNeeded()
+        return key == nil ? .empty : .configured
     }
 
     /// Validates and stores `text` as the session's decryption identity.
@@ -168,6 +232,10 @@ public final class SessionKeyStore {
         guard Self.looksLikeACompleteAgeKey(trimmed) else { throw Error.notAnAgeKey }
 
         key = trimmed
+        // `ttlMinutes()` is called here, not stashed at `init`, so a value
+        // the user changes in Settings between imports takes effect on the
+        // next one — see the property's own doc comment.
+        expiresAt = now().addingTimeInterval(TimeInterval(ttlMinutes()) * 60)
     }
 
     /// Whether `candidate` has the length and alphabet `age-keygen` produces.
@@ -273,16 +341,20 @@ public final class SessionKeyStore {
     /// control.
     public func forget() {
         key = nil
+        expiresAt = nil
     }
 
     /// Lends the key to `body` for the duration of the call, and only for
     /// that duration — nothing about the key is retained past `body`
     /// returning (or throwing).
     ///
-    /// Returns `nil`, without invoking `body`, if no key is configured.
+    /// Returns `nil`, without invoking `body`, if no key is configured *or*
+    /// the TTL has elapsed since it was imported — `expireIfNeeded()` runs
+    /// first, so an expired key is never lent out even once.
     /// Callers that need to distinguish "no key was configured" from "`body`
     /// itself produced `nil`" should check `state` first.
     public func withKey<R>(_ body: (String) throws -> R) rethrows -> R? {
+        expireIfNeeded()
         guard let key else { return nil }
         return try body(key)
     }
@@ -300,6 +372,7 @@ public final class SessionKeyStore {
     /// never holds the key itself; only `body`, which this store invokes
     /// directly, ever sees it, exactly as with the synchronous overload.
     public func withKey<R>(_ body: (String) async throws -> R) async rethrows -> R? {
+        expireIfNeeded()
         guard let key else { return nil }
         return try await body(key)
     }
@@ -321,5 +394,26 @@ public final class SessionKeyStore {
 
     public var healthSource: HealthSource {
         HealthSource(state: state)
+    }
+
+    /// Adapts this store to `SessionTTLStatusProviding` so
+    /// `SecurityPostureCheck`'s `security.session-ttl` finding names the
+    /// policy this exact store enforces, not merely
+    /// `SystemSessionTTL`'s reading of `UserDefaults` from wherever it
+    /// happens to be constructed. Reports the *policy* — what the next
+    /// import will use — rather than a currently-imported key's remaining
+    /// time; there is no finding for "your key expires in 4 minutes" today,
+    /// and the id above is deliberately about the mechanism being on, not
+    /// about a live countdown.
+    public struct TTLHealthSource: SessionTTLStatusProviding {
+        public let state: SessionTTLState
+
+        fileprivate init(state: SessionTTLState) {
+            self.state = state
+        }
+    }
+
+    public var ttlHealthSource: TTLHealthSource {
+        TTLHealthSource(state: .enforced(minutes: ttlMinutes()))
     }
 }

@@ -51,6 +51,18 @@ Server:       private_S (only on the server)   →  public_S  ┘  sensitive →
 - Unlock session: decrypted key held only in memory with a configurable TTL (Settings), zeroed after expiry
 - Reveal own key: Touch ID → show `AGE-SECRET-KEY-1…` + copy button; clipboard auto-cleared after ~30 s; auto-hide after timeout
 - Memory hygiene from day one: no swap-out of key material where possible, explicit zeroing, no key material in logs/crash reports
+
+  > **What's actually built today** (ticket #4, 2026-08-14): the TTL exists and is
+  > enforced — `SessionKeyStore` clears the key once `SessionTTLPreference`'s
+  > minutes elapse, and immediately when the Mac sleeps — but it is not yet a
+  > *Settings* control; it runs at a shipped default until that lands (see §4's
+  > own "Planned, not yet built" list, which still has it). "Zeroed after expiry"
+  > is true for the one buffer this app can actually zero — the copy
+  > `withGoString` makes to cross the Swift/Go boundary — and not true of the
+  > `String` `SessionKeyStore` itself holds: Swift gives no supported way to zero
+  > a `String`'s backing storage on demand. See `SessionKeyStore`'s own doc
+  > comment for the full account, including why that is stated rather than
+  > papered over.
 - Import of existing `~/.config/sops/age/keys.txt` (migration into Keychain)
 
 ### File compatibility (hard requirement)

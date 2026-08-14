@@ -37,6 +37,48 @@ public enum UpdateCheckConsent {
     }
 }
 
+/// How long an imported age key stays usable before `SessionKeyStore` treats
+/// it as expired (ticket #4 — PROPOSAL.md §2's "configurable unlock session
+/// TTL"; the control itself is not yet in Settings, see `SessionKeyStore`'s
+/// own doc comment for why shipping the mechanism first was the right split).
+///
+/// Same shape as `UpdateCheckConsent` right above: a `UserDefaults`-backed
+/// static, read fresh on every session start rather than cached, so a value
+/// changed mid-run is honoured the next time a key is imported.
+public enum SessionTTLPreference {
+    public static let defaultsKey = "session.keyTTLMinutes"
+
+    /// 15 minutes. Long enough that filling out one form doesn't re-prompt for
+    /// a key, short enough that an unattended, unlocked Mac does not stay a
+    /// standing decrypt oracle for the rest of the day.
+    public static let defaultMinutes = 15
+
+    /// 1…480 (8 hours). The floor exists because a TTL of zero — or less —
+    /// would expire the key before any use of it could complete, which is not
+    /// a short session, it is a store that never actually holds a key. The
+    /// ceiling exists because an unbounded value is "no TTL" wearing a
+    /// costume, and "no TTL" is the defect this ticket closes.
+    public static let allowedRange = 1...480
+
+    public static func minutes(in defaults: UserDefaults = .standard) -> Int {
+        let stored = defaults.object(forKey: defaultsKey) as? Int
+        return clamp(stored ?? defaultMinutes)
+    }
+
+    /// Clamped on the way in, not merely on the way out: a value written once
+    /// and read many times (every `SessionKeyStore.importKey` call in the
+    /// session) should not have to re-derive "is this still sane" on every
+    /// read, and a `defaults read` of the raw plist should show the value the
+    /// app will actually honour.
+    public static func setMinutes(_ minutes: Int, in defaults: UserDefaults = .standard) {
+        defaults.set(clamp(minutes), forKey: defaultsKey)
+    }
+
+    private static func clamp(_ minutes: Int) -> Int {
+        min(max(minutes, allowedRange.lowerBound), allowedRange.upperBound)
+    }
+}
+
 extension HealthReport {
 
     /// The report shown in the wizard and the Settings panel.
@@ -66,7 +108,8 @@ extension HealthReport {
         projects: any ProjectSourceProviding = NoProjects(),
         keyStore: any KeyStoreStatusProviding,
         biometry: any BiometryStatusProviding = SystemBiometry(),
-        appUpdates: any AppUpdateStatusProviding
+        appUpdates: any AppUpdateStatusProviding,
+        sessionTTL: any SessionTTLStatusProviding = SystemSessionTTL()
     ) -> HealthReport {
         // Optional, never defaulted to a version number. An unreadable engine
         // version used to become 0.0.0, which loses every comparison — see
@@ -103,7 +146,8 @@ extension HealthReport {
                 // `~/.config/sops/age/keys.txt`, a location sops does not read
                 // on macOS at all. See `AgeKeyFileLocations`.
                 legacyKeyFilePaths: legacyKeyFiles.paths,
-                legacyKeyFileProbeFailed: legacyKeyFiles.loginShellUnavailable),
+                legacyKeyFileProbeFailed: legacyKeyFiles.loginShellUnavailable,
+                sessionTTL: sessionTTL),
             ProjectHealthCheck(source: projects),
         ])
     }
@@ -129,6 +173,20 @@ public struct UnshippedAppUpdates: AppUpdateStatusProviding {
     public init() {}
     public let state = AppUpdateState.unavailable(
         reason: "This report was not given a real app-update status provider.")
+}
+
+/// The default `security.session-ttl` source: the configured policy, read
+/// live from `UserDefaults` — not the live state of any particular
+/// `SessionKeyStore`. Unlike `UnshippedKeyStore`/`UnshippedAppUpdates`, this is
+/// not a stand-in for a feature that has not shipped: every `SessionKeyStore`
+/// enforces a TTL from the moment this ticket landed, so a default here does
+/// not silently mask an unshipped subject the way those two are documented to
+/// guard against. `SopsGUIApp` passes the real store's own `ttlHealthSource`
+/// instead, so the report a user actually sees answers for *their* running
+/// session, not merely the policy on disk.
+public struct SystemSessionTTL: SessionTTLStatusProviding {
+    public init() {}
+    public var state: SessionTTLState { .enforced(minutes: SessionTTLPreference.minutes()) }
 }
 
 public struct SystemBiometry: BiometryStatusProviding {

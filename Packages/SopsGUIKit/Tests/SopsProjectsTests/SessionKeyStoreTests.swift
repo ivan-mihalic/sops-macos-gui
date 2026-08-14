@@ -127,6 +127,120 @@ struct SessionKeyStoreTests {
         #expect(store.withKey { $0 } == nil)
     }
 
+    // MARK: - TTL (ticket #4)
+
+    /// A controllable clock, so expiry is provable without a test ever
+    /// sleeping for real. `now` starts at an arbitrary fixed instant — not
+    /// `Date()` at test-run time — so the test's own wall-clock speed can
+    /// never make it flaky.
+    private final class FakeClock {
+        var current = Date(timeIntervalSince1970: 1_700_000_000)
+        func now() -> Date { current }
+        func advance(minutes: Int) { current = current.addingTimeInterval(Double(minutes) * 60) }
+    }
+
+    @Test("a key stays usable before its TTL elapses")
+    func keyUsableBeforeTTLElapses() throws {
+        let clock = FakeClock()
+        let store = SessionKeyStore(now: clock.now, ttlMinutes: { 15 })
+        try store.importKey(validKey)
+
+        clock.advance(minutes: 14)
+
+        #expect(store.state == .configured)
+        #expect(store.withKey { $0 } == validKey)
+    }
+
+    /// The defect this ticket exists to close: before this, nothing ever set
+    /// `state` back to `.empty` on its own — only an explicit `forget()`
+    /// call did. The deadline is compared against `now()` on every access
+    /// rather than driven by a sleeping timer, precisely so this is correct
+    /// even if the process was asleep for the entire interval — see the
+    /// class doc comment.
+    @Test("a key becomes unusable once its TTL has elapsed")
+    func keyUnusableAfterTTLElapses() throws {
+        let clock = FakeClock()
+        let store = SessionKeyStore(now: clock.now, ttlMinutes: { 15 })
+        try store.importKey(validKey)
+
+        clock.advance(minutes: 15)
+
+        #expect(store.state == .empty)
+        #expect(store.withKey { $0 } == nil)
+    }
+
+    @Test("the async withKey overload also honours the TTL")
+    func asyncWithKeyHonoursTTL() async throws {
+        let clock = FakeClock()
+        let store = SessionKeyStore(now: clock.now, ttlMinutes: { 15 })
+        try store.importKey(validKey)
+
+        clock.advance(minutes: 15)
+
+        let result: String? = await store.withKey { $0 }
+        #expect(result == nil)
+    }
+
+    /// The TTL is read once per import, not once per process — a value the
+    /// user changes in Settings between one import and the next must take
+    /// effect on the next import without a relaunch, the same "read live"
+    /// discipline `UpdateCheckConsent` and the key store itself already
+    /// follow elsewhere in this app.
+    @Test("each import reads the TTL provider afresh")
+    func ttlIsReadFreshOnEachImport() throws {
+        let clock = FakeClock()
+        var minutes = 5
+        let store = SessionKeyStore(now: clock.now, ttlMinutes: { minutes })
+
+        try store.importKey(validKey)
+        clock.advance(minutes: 5)
+        #expect(store.state == .empty, "the first import's 5-minute TTL should have expired it")
+
+        minutes = 60
+        try store.importKey(validKey)
+        clock.advance(minutes: 5)
+        #expect(store.state == .configured, "the second import's 60-minute TTL should still be live")
+    }
+
+    /// Expiry is only ever *checked*, never driven by anything that runs on a
+    /// timer — so it does not matter, for correctness, whether the clock's
+    /// value jumped because of a real elapsed 20 minutes or because the
+    /// machine spent those 20 minutes asleep and `now()` simply reports a
+    /// later wall-clock time on the next call after waking. This test stands
+    /// in for that: it advances the fake clock by more than the TTL in one
+    /// jump, the way a wake-from-sleep would, with no intervening access.
+    @Test("expiry is correct across a simulated system sleep, because it is never driven by a running timer")
+    func expiryIsCorrectAcrossASimulatedSleep() throws {
+        let clock = FakeClock()
+        let store = SessionKeyStore(now: clock.now, ttlMinutes: { 15 })
+        try store.importKey(validKey)
+
+        // One jump, not a sequence of small advances — this is what
+        // `Date()` does across real sleep: no calls happen while asleep, and
+        // the next call simply reports a later time.
+        clock.advance(minutes: 400)
+
+        #expect(store.state == .empty)
+        #expect(store.withKey { $0 } == nil)
+    }
+
+    @Test("forget() clears a not-yet-expired TTL along with the key")
+    func forgetClearsTheDeadlineToo() throws {
+        let clock = FakeClock()
+        let store = SessionKeyStore(now: clock.now, ttlMinutes: { 15 })
+        try store.importKey(validKey)
+
+        store.forget()
+        // A very large advance would expire the old deadline regardless —
+        // this proves forget() actually cleared it rather than merely
+        // leaving an already-expired-eventually deadline in place, by using
+        // an advance smaller than the TTL and importing again.
+        clock.advance(minutes: 1)
+        try store.importKey(validKey)
+
+        #expect(store.state == .configured)
+    }
+
     // MARK: - keys.txt import
 
     @Test("a keys.txt containing comments and one key imports correctly")

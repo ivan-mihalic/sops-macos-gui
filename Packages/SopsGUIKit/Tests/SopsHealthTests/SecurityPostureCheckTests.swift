@@ -8,6 +8,7 @@ private struct FakeBiometry: BiometryStatusProviding { let state: BiometryState 
 private struct FakeUpdates: AppUpdateStatusProviding {
     let state: AppUpdateState
 }
+private struct FakeSessionTTL: SessionTTLStatusProviding { let state: SessionTTLState }
 
 private func finding(_ findings: [HealthFinding], _ id: String) -> HealthFinding {
     findings.first { $0.id == id }!
@@ -18,7 +19,8 @@ private func makeCheck(
     keyStore: KeyStoreState = .configured,
     biometry: BiometryState = .available,
     updates: AppUpdateState = .upToDate(version: "1.0.0"),
-    legacyKeyFilePaths: [String] = ["/nonexistent/keys.txt"]
+    legacyKeyFilePaths: [String] = ["/nonexistent/keys.txt"],
+    sessionTTL: SessionTTLState = .enforced(minutes: 15)
 ) -> SecurityPostureCheck {
     SecurityPostureCheck(
         osVersion: os,
@@ -26,7 +28,8 @@ private func makeCheck(
         keyStore: FakeKeyStore(state: keyStore),
         biometry: FakeBiometry(state: biometry),
         appUpdates: FakeUpdates(state: updates),
-        legacyKeyFilePaths: legacyKeyFilePaths)
+        legacyKeyFilePaths: legacyKeyFilePaths,
+        sessionTTL: FakeSessionTTL(state: sessionTTL))
 }
 
 @Suite("SecurityPostureCheck")
@@ -189,6 +192,34 @@ ScratchDirectoryRegistry.shared.register(dir)
             }
             #expect(!reason.isEmpty, "a skipped check must say why")
         }
+    }
+
+    // MARK: - Session TTL (ticket #4)
+
+    /// The provider states the policy in force; this check turns it into an
+    /// informational finding. `.enforced` is the only outcome
+    /// `SessionKeyStore.ttlHealthSource` can ever produce — the store has no
+    /// "no TTL" mode — but the provider is still a protocol, not a `let`, for
+    /// the same reason `KeyStoreStatusProviding` is: a fact a check depends on
+    /// belongs behind a seam a test can fake, not a concrete type reaching
+    /// into `SessionTTLPreference` itself.
+    @Test("an enforced TTL is reported OK, naming the number of minutes")
+    func enforcedTTLIsOK() async {
+        let found = finding(await makeCheck(sessionTTL: .enforced(minutes: 15)).run(), "security.session-ttl")
+        #expect(found.status == .ok)
+        #expect(found.detail.contains("15"), "the finding must name the configured minutes: \(found.detail)")
+    }
+
+    @Test("an unavailable TTL provider is skipped, never a false OK")
+    func unavailableTTLProviderIsSkipped() async {
+        let found = finding(
+            await makeCheck(sessionTTL: .unavailable(reason: "no session key store was wired in")).run(),
+            "security.session-ttl")
+        guard case .skipped(let reason) = found.status else {
+            Issue.record("expected skipped, got \(found.status)")
+            return
+        }
+        #expect(!reason.isEmpty)
     }
 
     @Test("no finding ever contains key material")
