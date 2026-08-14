@@ -151,7 +151,13 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
 
     case filesNoProjectSelected = "files.no-project-selected"
     case filesScanning = "files.scanning"
-    case filesEmptyTitle = "files.empty.title"
+    // `files.empty.title` ("No encrypted files found in this project.") lived
+    // here through M2 but is gone as of Phase 3 Task 2: a *complete* empty
+    // scan now renders `ProjectStartHereView` instead, which never makes
+    // that bare claim — it says what `configState` actually supports (see
+    // that type's own doc comment). Only the *incomplete*-scan empty state
+    // below survived, because "empty" is not a claim this app can make
+    // honestly over a walk that did not finish.
     case filesProjectMissingTitle = "files.project-missing.title"
     case filesProjectUnreadableTitle = "files.project-unreadable.title"
     // Shown when a walk fell short of the whole tree in a way that blocks any
@@ -159,9 +165,10 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // from `ScannedTree.incompleteScanReason` — see
     // `FileListView.incompleteScanBanner`.
     case filesScanIncompleteTitle = "files.scan-incomplete.title"
-    // The empty state over an incomplete walk. `files.empty.title` claims the
-    // project holds no encrypted files; over a walk that could not see all of
-    // it, that claim is not available.
+    // The empty state over an incomplete walk — the one case
+    // `ProjectStartHereView` never reaches (`FileListView.showsStartHere`
+    // requires `incompleteScanReason == nil`), because "no encrypted files"
+    // is not a claim this app can make about a walk that did not finish.
     case filesEmptyPartialTitle = "files.empty-partial.title"
     // Formatted with the comma-joined list of directory names never entered —
     // see `FileListView.footnotes`.
@@ -182,32 +189,37 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
 
     // MARK: Phase 3 Task 2 — ProjectStartHereView
     //
-    // What an *empty, completely scanned* project shows in place of
+    // What an *empty, completely scanned* project shows in place of the old
     // `files.empty.title` — see `ProjectStartHereView`'s own doc comment for
-    // which of `CreationPlan`'s five values reaches which of these, and why
-    // `.configUnreadable`/`.unsupportedRule` get no key here at all: those
-    // two reuse `CreationFailurePresenter.message(forBlocking:)`'s own
-    // sentence rather than a second, competing one.
-
-    // Deliberately does not name ".sops.yaml" as a problem — a project with
-    // no config yet is a legitimate starting point (`CreationPlan.noConfig`'s
-    // own doc comment), not a defect to apologize for.
-    case startHereNoConfigTitle = "start-here.no-config.title"
-    // Formatted with the comma-joined recipient names/keys this plan would
-    // encrypt for — see `ProjectStartHereView.recipientNames(_:)`. Never
-    // shown for a rule that matches but names no recipients at all
-    // (`CreationPlanResolverTests
-    // .ruleWithNoKeyGroupIsGovernedByRuleWithNoRecipients` is the real,
-    // sops-admitted shape) — that falls through to
-    // `CreationFailurePresenter.messageForRuleWithNoRecipients()` instead,
-    // the same guard `NewSecretFileSheet.infoLineText` already holds one
-    // screen over.
-    case startHereGovernedTitle = "start-here.governed.title"
-    // The one case this screen must not collapse into "no config" —
-    // `.sops.yaml` exists and has rules, they simply do not reach this
-    // location. See `FileListModel.configState`'s own doc comment, the
-    // paragraph this key exists to honor.
-    case startHereNoRuleMatchedTitle = "start-here.no-rule-matched.title"
+    // which of `CreationPlan`'s five values reaches which sentence.
+    //
+    // Only two cases get a key here at all. `.noConfig` and `.governedByRule`
+    // reuse `new-file.info.no-config`/`new-file.info.governed-by-rule`
+    // (`NewSecretFileSheet`'s own ⓘ-line keys) verbatim rather than a second,
+    // near-duplicate entry with the same fact worded slightly differently —
+    // an earlier draft of this file kept three separate "start-here.*.title"
+    // keys that said the same three facts `new-file.info.*` already say, and
+    // the `.no-rule-matched` one had already drifted into two false claims
+    // (see `ProjectStartHereView`'s own doc comment for the account) before
+    // this review caught it. `.configUnreadable`/`.unsupportedRule` get no
+    // key here either — those two reuse `CreationFailurePresenter
+    // .message(forBlocking:)`'s own sentence.
+    //
+    // `.noRuleMatched` is the one case that genuinely needs a key of its own,
+    // and only a second, additive one: `new-file.info.no-rule-matched` is
+    // reused for the *fact* ("no rule matches"), and this key supplies the
+    // *reassurance* the wizard's own ⓘ line does not need to say out loud —
+    // it sits directly above a working `RecipientPicker`, so nothing there
+    // has to state "this isn't an error". This screen has no such context to
+    // lean on.
+    //
+    // Hedged with "may still" rather than "does" or "will" — this project
+    // could have no `creation_rules` at all (`.noRuleMatched` covers that
+    // shape too, per `CreationRuleLookup.matched`'s own doc comment), so a
+    // flat claim that another rule exists would be exactly the false
+    // "already has rules" `ProjectStartHereView`'s doc comment names as the
+    // finding this key exists to close.
+    case startHereNoRuleMatchedReassurance = "start-here.no-rule-matched.reassurance"
     // The button `.noConfig`/`.governedByRule` show. Not "New File" (the
     // toolbar "+"'s own tooltip, `files.new-file-button`) — this is a
     // visible label on a real button, not an icon-only control's

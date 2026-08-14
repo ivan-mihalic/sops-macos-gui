@@ -804,14 +804,46 @@ enum Fixtures {
 
     static let startHereNoConfig: CreationPlan = .noConfig
 
-    static let startHereGoverned: CreationPlan = .governedByRule(
-        recipients: [
-            "age1qexampleexampleexampleexampleexampleexampleexampleexampleexample",
-            "age1qanotherexampleanotherexampleanotherexampleanotherexampleanother",
-        ],
-        encryptedRegex: "")
-
     static let startHereNoRuleMatched: CreationPlan = .noRuleMatched
+
+    /// A bare throwaway project root — no registry content, because
+    /// `.noConfig`/`.noRuleMatched` have no recipients to label either way.
+    /// `RecipientRegistry.load(in:)` degrades to an empty registry for a
+    /// directory whose `.sops-gui/recipients.json` does not exist, the same
+    /// contract every other caller of that function keeps.
+    static func startHereProjectRoot() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("snapshot-start-here-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    /// A `.governedByRule` plan paired with the one project root whose
+    /// registry actually labels one of its recipients "Alice" — the pairing
+    /// matters, since `ProjectStartHereView` only shows a label for a
+    /// recipient the registry it reads actually names. Added when this
+    /// task's review found the view had no way to show a nickname at all
+    /// ("Decision on your disclosed limitation"); the snapshot this builds
+    /// for proves the fix reaches the rendered screen: the first recipient
+    /// should read "Alice", the second — deliberately left unlabeled —
+    /// should still read as a shortened key, never an invented name.
+    ///
+    /// The labeled recipient is real, from `age-keygen`
+    /// (`SnapshotAgeKeyPair.generate()`) — `RecipientRegistry.save`
+    /// validates the bech32 shape before writing, so a hand-typed
+    /// placeholder like `"age1qexample…"` is refused with
+    /// `.invalidAgeRecipient` before a registry ever reaches disk. The
+    /// second, unlabeled recipient has no such requirement —
+    /// `CreationPlan.governedByRule` carries raw `[String]` and validates
+    /// nothing — so it stays an obvious placeholder.
+    static func startHereGovernedFixture() throws -> (plan: CreationPlan, projectRoot: URL) {
+        let labeled = try SnapshotAgeKeyPair.generate()
+        let unlabeled = "age1qunlabeledunlabeledunlabeledunlabeledunlabeledunlabeledunla"
+        let root = try startHereProjectRoot()
+        try RecipientRegistry.save(
+            [RecipientRecord(label: "Alice", kind: .person, ageRecipient: labeled.public)], in: root)
+        return (.governedByRule(recipients: [labeled.public, unlabeled], encryptedRegex: ""), root)
+    }
 
     // MARK: - DotEnvPreviewTable
 

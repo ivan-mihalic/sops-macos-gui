@@ -230,6 +230,15 @@ public struct FileListView: View {
     /// `.noRuleMatched` (or any of the other four `configState` values)
     /// into that claim would be dishonest. `footnotes` reads this too, so
     /// the two cannot disagree about which branch is showing.
+    ///
+    /// This condition says nothing about `model.configState` itself, on
+    /// purpose: `showsStartHere == true` picks the branch, but
+    /// `ProjectStartHereView` can still render blank if `configState` is
+    /// `nil` — reachable even here via a real (if rare) TOCTOU race in
+    /// `FileListModel.resolveConfigState`. See that view's own doc comment,
+    /// "What each of the five configState values shows", the `nil`
+    /// paragraph, for the full account of why that is an accepted gap
+    /// rather than a regression.
     private var showsStartHere: Bool {
         model.files.isEmpty && model.incompleteScanReason == nil
     }
@@ -261,7 +270,7 @@ public struct FileListView: View {
                 // each of `model.configState`'s five values shows here.
                 ProjectStartHereView(
                     configState: model.configState, otherFormatCount: model.otherFormatCount,
-                    onNewFile: onNewFile)
+                    projectRoot: model.projectRoot, onNewFile: onNewFile)
             } else if model.files.isEmpty {
                 // Reachable only over an incomplete walk now (`showsStartHere`
                 // above is false whenever `incompleteScanReason` is non-nil).

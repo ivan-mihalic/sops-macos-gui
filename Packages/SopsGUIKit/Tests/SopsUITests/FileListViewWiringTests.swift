@@ -88,6 +88,17 @@ ScratchDirectoryRegistry.shared.register(root)
 
     /// The claim that must not be made. This is the sentence the whole
     /// `incompleteScanReason` design exists to prevent.
+    ///
+    /// The bare "no encrypted files found" claim this test used to check
+    /// against directly (`files.empty.title`) no longer exists in the
+    /// catalog at all as of Phase 3 Task 2 — a *complete* empty scan now
+    /// renders `ProjectStartHereView` instead, which never makes that claim
+    /// (see that type's own doc comment). What is left to guard here is
+    /// that an *incomplete* scan still gets the narrowed placeholder rather
+    /// than nothing — `ProjectStartHereViewTests
+    /// .FileListViewStartHereWiringTests.incompleteScanNeverShowsGuidance`
+    /// covers the sibling claim, that the start-here guidance itself must
+    /// not appear over this exact fixture.
     @Test("an incomplete scan never claims the project holds no encrypted files")
     func incompleteScanNeverClaimsEmptiness() async throws {
         let root = try project("empty-partial")
@@ -103,8 +114,6 @@ ScratchDirectoryRegistry.shared.register(root)
         try #require(model.files.isEmpty, "precondition: the scan found nothing it could reach")
 
         let shown = text(of: model)
-        #expect(!shown.contains(LocalizedKey.filesEmptyTitle.text),
-                "the view told the user this project holds no encrypted files, over a scan that could not look")
         #expect(shown.contains(LocalizedKey.filesEmptyPartialTitle.text),
                 "the narrowed empty state was not shown")
     }

@@ -23,7 +23,7 @@ enum Catalog {
         snapshots += try projectSidebar()
         snapshots += try await secretEditor()
         snapshots += try await fileList()
-        snapshots += projectStartHere()
+        snapshots += try projectStartHere()
         snapshots += dotEnvPreview()
         snapshots += try await newSecretFileSheet()
         // The guide's images. In the same catalog so one run can produce
@@ -437,21 +437,39 @@ enum Catalog {
     // brief names three entries, and both of those already render through
     // `CreationFailurePresenter.message(forBlocking:)`, the identical failure
     // banner other screens already snapshot.
-    private static func projectStartHere() -> [Snapshot] {
+    private static func projectStartHere() throws -> [Snapshot] {
         let size = CGSize(width: 420, height: 320)
-        func startHere(_ name: String, _ configState: CreationPlan, otherFormatCount: Int = 0) -> Snapshot {
+        // A bare root for the two states with no recipients to label either
+        // way — see `Fixtures.startHereProjectRoot()`'s own doc comment.
+        let plainRoot = try Fixtures.startHereProjectRoot()
+        // Its own paired root, whose registry actually labels one of this
+        // plan's own recipients "Alice" — see
+        // `Fixtures.startHereGovernedFixture()`'s own doc comment for why
+        // the plan and the root cannot be mixed and matched.
+        let (governedPlan, governedRoot) = try Fixtures.startHereGovernedFixture()
+        func startHere(
+            _ name: String, _ configState: CreationPlan, in projectRoot: URL, otherFormatCount: Int = 0
+        ) -> Snapshot {
             Snapshot(name, size: size) {
-                ProjectStartHereView(configState: configState, otherFormatCount: otherFormatCount, onNewFile: {})
+                ProjectStartHereView(
+                    configState: configState, otherFormatCount: otherFormatCount, projectRoot: projectRoot,
+                    onNewFile: {})
             }
         }
         return [
-            startHere("start-here-no-config", Fixtures.startHereNoConfig),
-            startHere("start-here-governed-by-rule", Fixtures.startHereGoverned),
-            startHere("start-here-no-rule-matched", Fixtures.startHereNoRuleMatched),
+            startHere("start-here-no-config", Fixtures.startHereNoConfig, in: plainRoot),
+            // Proves the registry-label fix reaches the screen: the first
+            // recipient reads "Alice", the second still reads as a
+            // shortened key (deliberately unlabeled) — see
+            // `Fixtures.startHereGovernedFixture()`'s own doc comment.
+            startHere("start-here-governed-by-rule", governedPlan, in: governedRoot),
+            startHere("start-here-no-rule-matched", Fixtures.startHereNoRuleMatched, in: plainRoot),
             // Task 2's own review question: whether a project that already
             // holds other-format sops files still reads clearly when the
             // guidance and that note share one screen.
-            startHere("start-here-no-config-other-formats", Fixtures.startHereNoConfig, otherFormatCount: 3),
+            startHere(
+                "start-here-no-config-other-formats", Fixtures.startHereNoConfig, in: plainRoot,
+                otherFormatCount: 3),
         ]
     }
 

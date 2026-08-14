@@ -1663,17 +1663,6 @@
         }
       }
     },
-    "files.empty.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No encrypted files found in this project."
-          }
-        }
-      }
-    },
     "files.no-project-selected": {
       "extractionState": "manual",
       "localizations": {
@@ -1696,35 +1685,13 @@
         }
       }
     },
-    "start-here.no-config.title": {
+    "start-here.no-rule-matched.reassurance": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This project has no .sops.yaml yet, so nothing decides who could read a file here."
-          }
-        }
-      }
-    },
-    "start-here.governed.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ready — a rule in this project's .sops.yaml already covers new files here. It will be encrypted for: %@"
-          }
-        }
-      }
-    },
-    "start-here.no-rule-matched.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This project's .sops.yaml already has rules, but none of them cover this location yet. That's not an error — a file created here would have its recipients chosen by hand instead of a rule."
+            "value": "That's not an error — a rule elsewhere in .sops.yaml may still cover files created in a different location."
           }
         }
       }

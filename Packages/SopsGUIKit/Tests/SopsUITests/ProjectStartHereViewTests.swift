@@ -1,4 +1,5 @@
 import AppKit
+import Foundation
 import ScratchCleanup
 import SopsHealth
 import SopsProjects
@@ -6,6 +7,51 @@ import SwiftUI
 import Testing
 
 @testable import SopsUI
+
+// MARK: - Fixture plumbing
+//
+// A real `age-keygen` identity, needed for exactly one test below
+// (`governedByRuleShowsRegistryLabel`): `RecipientRegistry.save` validates
+// every `ageRecipient` against the real bech32 shape
+// (`looksLikeNativeAgeRecipient`), so a hand-typed placeholder like
+// "age1qexample…" is refused with `.invalidAgeRecipient` before it ever
+// reaches disk. Duplicated from `FileListModelConfigStateTests.swift`
+// rather than shared — that file's own header comment states why every
+// `SopsUITests` file needing this shape keeps its own copy.
+private struct StartHereFixtureError: Error, CustomStringConvertible {
+    let description: String
+    init(_ description: String) { self.description = description }
+}
+
+private func startHereToolPath(_ name: String) throws -> String {
+    let candidates = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+        .map { ($0 as NSString).appendingPathComponent(name) }
+    guard let found = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+        throw StartHereFixtureError("\(name) not found in \(candidates)")
+    }
+    return found
+}
+
+private struct StartHereAgeKeyPair {
+    let `public`: String
+
+    static func generate() throws -> StartHereAgeKeyPair {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: try startHereToolPath("age-keygen"))
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        process.waitUntilExit()
+        var pub = ""
+        for line in output.split(separator: "\n") where line.hasPrefix("# public key: ") {
+            pub = String(line.dropFirst("# public key: ".count))
+        }
+        guard !pub.isEmpty else { throw StartHereFixtureError("age-keygen produced no usable public key") }
+        return StartHereAgeKeyPair(public: pub)
+    }
+}
 
 // MARK: - ProjectStartHereView.presentation — the five configState shapes, decided without rendering
 //
@@ -22,20 +68,57 @@ struct ProjectStartHereViewPresentationTests {
 
     private func joinedNames(_ recipients: [String]) -> String { recipients.joined(separator: ", ") }
 
+    /// `.noConfig` reuses `NewSecretFileSheet`'s own ⓘ-line key verbatim —
+    /// review finding: an earlier draft kept a separate, near-duplicate
+    /// "start-here.no-config.title" catalog entry that said the identical
+    /// fact in slightly different words.
     @Test(".noConfig offers the create-first-file button")
     func noConfig() {
         let presentation = ProjectStartHereView.presentation(for: .noConfig, recipientNames: joinedNames)
-        #expect(presentation == .headline(LocalizedKey.startHereNoConfigTitle.text, offersCreateButton: true))
+        #expect(presentation == .headline(LocalizedKey.newFileInfoNoConfig.text, offersCreateButton: true))
     }
 
+    /// Reuses `NewSecretFileSheet`'s own `new-file.info.governed-by-rule`,
+    /// for the identical reason `.noConfig` does above.
     @Test(".governedByRule names the recipients through the injected formatter and offers the button")
     func governedByRule() {
         let presentation = ProjectStartHereView.presentation(
             for: .governedByRule(recipients: ["age1abc", "age1def"], encryptedRegex: ""),
             recipientNames: joinedNames)
         #expect(presentation == .headline(
-            String(format: LocalizedKey.startHereGovernedTitle.text, "age1abc, age1def"),
+            String(format: LocalizedKey.newFileInfoGovernedByRule.text, "age1abc, age1def"),
             offersCreateButton: true))
+    }
+
+    /// Review finding, Important 1: naming only who can read the file, and
+    /// saying nothing about how much of it is encrypted, is the silent half
+    /// of an access change (`NewSecretFileSheet.infoLineText`'s own doc
+    /// comment, spec §4.1 decision 4). This screen's "Ready" framing needs
+    /// the identical disclosure the wizard's ⓘ line already carries for the
+    /// same `CreationPlan` case — appended the same way, with the same
+    /// literal `" "` join.
+    @Test(".governedByRule whose rule sets encrypted_regex discloses the plaintext scoping too")
+    func governedByRuleWithEncryptedRegex() throws {
+        let regex = "^(data|stringData)$"
+        let presentation = ProjectStartHereView.presentation(
+            for: .governedByRule(recipients: ["age1abc"], encryptedRegex: regex), recipientNames: joinedNames)
+        guard case .headline(let text, let offersCreateButton) = presentation else {
+            Issue.record("expected .headline, got \(presentation)")
+            return
+        }
+        let recipientsSentence = String(format: LocalizedKey.newFileInfoGovernedByRule.text, "age1abc")
+        let scopingSentence = String(format: LocalizedKey.newFileInfoEncryptedRegexScoping.text, regex)
+        #expect(text.hasPrefix(recipientsSentence), "the recipients sentence must still lead the line")
+        #expect(text.contains(scopingSentence), "the scoping disclosure is missing: \(text)")
+        #expect(offersCreateButton)
+    }
+
+    @Test("a rule that sets no encrypted_regex says nothing about scoping")
+    func governedByRuleWithoutEncryptedRegexSaysNothingExtra() {
+        let presentation = ProjectStartHereView.presentation(
+            for: .governedByRule(recipients: ["age1abc"], encryptedRegex: ""), recipientNames: joinedNames)
+        #expect(presentation == .headline(
+            String(format: LocalizedKey.newFileInfoGovernedByRule.text, "age1abc"), offersCreateButton: true))
     }
 
     /// The real, sops-admitted shape `CreationPlanResolverTests
@@ -55,15 +138,35 @@ struct ProjectStartHereViewPresentationTests {
         }
     }
 
-    /// The load-bearing case: `.sops.yaml` exists and has rules, they simply
-    /// do not reach this location — never collapsed into "no config". No
-    /// button, unlike the two cases above — see `ProjectStartHereView`'s own
-    /// doc comment for why.
-    @Test(".noRuleMatched explains that rules exist but do not cover this path, and offers no button")
+    /// The load-bearing case, and the one the review's Critical finding was
+    /// about. Two things must both hold:
+    ///
+    /// 1. The *fact* half reuses `new-file.info.no-rule-matched` verbatim
+    ///    ("No rule in .sops.yaml matches this location yet.") — the
+    ///    wizard's own careful wording, which never claims rules exist.
+    /// 2. The *reassurance* half must never claim recipients here would be
+    ///    "chosen by hand" as a certainty: the exact fixture Task 1 wrote to
+    ///    pin this distinction (`FileListModelConfigStateTests
+    ///    .noRuleMatchedFixture`, `path_regex: ^secrets/`) describes a
+    ///    project where a file created under `secrets/` *is* rule-governed,
+    ///    automatically — so this sentence is asserted not to contain
+    ///    "hand" or "by hand" at all, the literal words the first, wrong
+    ///    draft used to make that false promise.
+    @Test(".noRuleMatched states the fact and a hedged reassurance, never a project-wide promise")
     func noRuleMatched() {
         let presentation = ProjectStartHereView.presentation(for: .noRuleMatched, recipientNames: joinedNames)
-        #expect(
-            presentation == .headline(LocalizedKey.startHereNoRuleMatchedTitle.text, offersCreateButton: false))
+        let expected = LocalizedKey.newFileInfoNoRuleMatched.text + " "
+            + LocalizedKey.startHereNoRuleMatchedReassurance.text
+        #expect(presentation == .headline(expected, offersCreateButton: false))
+
+        guard case .headline(let text, _) = presentation else {
+            Issue.record("expected .headline")
+            return
+        }
+        #expect(!text.lowercased().contains("by hand"),
+                "must not promise every file here needs hand-picked recipients: \(text)")
+        #expect(!text.lowercased().contains("already has rules"),
+                "must not assert that rules exist — a .sops.yaml with no creation_rules key is .noRuleMatched too: \(text)")
     }
 
     /// Reused verbatim from `CreationFailurePresenter`, not re-worded here —
@@ -142,6 +245,16 @@ private enum StartHereAXProbe {
     /// answers `true` from `accessibilityPerformPress` regardless, so the
     /// real proof a click landed is always the caller's own side effect
     /// (see `ProjectStartHereViewButtonTests.buttonInvokesOnNewFile`).
+    ///
+    /// `accessibilityPerformPress` is declared to return `BOOL` on the
+    /// informal `NSAccessibility` protocol, but this calls it through plain
+    /// `perform(_:)` (`Selector` → `Unmanaged<AnyObject>?`), which is
+    /// formally undefined for a method whose real return type is not an
+    /// object pointer. This is safe *only* because the result is discarded
+    /// unread below (`_ = object.perform(pressSelector)`) — do not
+    /// "improve" this into `.takeUnretainedValue()` or any other read of
+    /// the return value; that would reinterpret raw bits as `Unmanaged`
+    /// noise and can crash.
     @discardableResult
     static func pressButton(labeled label: String, size: CGSize, _ build: @MainActor () -> some View) -> Bool {
         let enhanced = NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface")
@@ -179,6 +292,8 @@ private enum StartHereAXProbe {
         if string("accessibilityLabel") == label {
             let pressSelector = Selector(("accessibilityPerformPress"))
             if object.responds(to: pressSelector) {
+                // See this type's own doc comment on `pressButton` — the
+                // result is intentionally never read.
                 _ = object.perform(pressSelector)
                 return true
             }
@@ -243,9 +358,20 @@ struct ProjectStartHereViewRenderTests {
 
     private static let size = CGSize(width: 360, height: 320)
 
-    private func text(_ configState: CreationPlan?, otherFormatCount: Int = 0) -> String {
+    /// A project root that is never created on disk. `RecipientRegistry
+    /// .load(in:)` degrades to an empty registry for a path that does not
+    /// exist (`try?`, the same contract every other caller of that function
+    /// keeps), so every render test that does not care about registry
+    /// labels can share this fixed, non-existent path rather than standing
+    /// up a real temp directory per test.
+    private static let noRegistryProjectRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent("project-start-here-render-tests-no-registry")
+
+    private func text(_ configState: CreationPlan?, otherFormatCount: Int = 0, projectRoot: URL = noRegistryProjectRoot) -> String {
         StartHereAXProbe.tree(size: Self.size) {
-            ProjectStartHereView(configState: configState, otherFormatCount: otherFormatCount, onNewFile: {})
+            ProjectStartHereView(
+                configState: configState, otherFormatCount: otherFormatCount, projectRoot: projectRoot,
+                onNewFile: {})
         }
         .map { $0.label + " " + $0.value + " " + $0.help }
         .joined(separator: "\n")
@@ -255,7 +381,7 @@ struct ProjectStartHereViewRenderTests {
     func nilConfigStateRendersNothing() {
         let shown = text(nil)
         for key: LocalizedKey in [
-            .startHereNoConfigTitle, .startHereNoRuleMatchedTitle, .startHereCreateFirstFileButton,
+            .newFileInfoNoConfig, .newFileInfoNoRuleMatched, .startHereCreateFirstFileButton,
         ] {
             #expect(!shown.contains(key.text), "rendered \(key.rawValue) before configState resolved: \(shown)")
         }
@@ -266,7 +392,7 @@ struct ProjectStartHereViewRenderTests {
         let shown = text(.noConfig)
         // Canary: an empty tree cannot contain anything, and the assertions
         // below would pass by finding nothing.
-        #expect(shown.contains(LocalizedKey.startHereNoConfigTitle.text),
+        #expect(shown.contains(LocalizedKey.newFileInfoNoConfig.text),
                 "the tree did not populate — this test would be vacuous: \(shown)")
         #expect(shown.contains(LocalizedKey.startHereCreateFirstFileButton.text))
     }
@@ -282,6 +408,56 @@ struct ProjectStartHereViewRenderTests {
         #expect(shown.contains(LocalizedKey.startHereCreateFirstFileButton.text))
     }
 
+    /// Review finding, "Decision on your disclosed limitation": a labeled
+    /// recipient must read as its registry label here, exactly as it does
+    /// in `RecipientPicker`/`NewSecretFileSheet`. Uses a real, throwaway
+    /// project root and a real `RecipientRegistry.save`, not a mock — the
+    /// same discipline `FileListModelConfigStateTests` holds `configState`
+    /// resolution to, applied to the registry read this task's review added.
+    @Test(".governedByRule shows a registry label when one exists, and a shortened key when it doesn't",
+          .enabled(if: LocalizationTests.bundleHasMacOSLayout,
+                   "this asserts on text a *format* key produces, and swift test's native build system never compiles .xcstrings — every key falls back to its own raw value, which carries no %@ to substitute into, so neither the label nor the shortened key would ever appear; run under xcodebuild or swift test --build-system swiftbuild"))
+    func governedByRuleShowsRegistryLabel() throws {
+        // Real, from `age-keygen` — `RecipientRegistry.save` validates the
+        // bech32 shape before writing, so a hand-typed placeholder would be
+        // refused with `.invalidAgeRecipient` before this test ever reaches
+        // the assertion it exists to make. Never used to encrypt or decrypt
+        // anything, and thrown away with the temp directory below.
+        let labeled = try StartHereAgeKeyPair.generate().public
+        // Deliberately *not* a real age key — nothing here ever validates
+        // an unlabeled recipient's shape (`CreationPlan.governedByRule`
+        // carries raw `[String]`), so a placeholder is fine, and using one
+        // makes clear at a glance that this value is never looked up in the
+        // registry, only shortened.
+        let unlabeled = "age1qunlabeledunlabeledunlabeledunlabeledunlabeledunlabeledunla"
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("start-here-registry-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(root)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try RecipientRegistry.save(
+            [RecipientRecord(label: "Alice", kind: .person, ageRecipient: labeled)], in: root)
+
+        let shown = text(.governedByRule(recipients: [labeled, unlabeled], encryptedRegex: ""), projectRoot: root)
+
+        #expect(shown.contains("Alice"), "the labeled recipient must read as its registry label: \(shown)")
+        #expect(shown.contains(NewSecretFileSheet.shortenedKey(unlabeled)),
+                "the unlabeled recipient must still fall back to a shortened key, never an invented name: \(shown)")
+        #expect(!shown.contains(labeled), "the labeled recipient's raw key must not also be shown: \(shown)")
+    }
+
+    /// Review finding, Important 1: the plaintext-scoping disclosure must
+    /// reach this screen too, not only the wizard's ⓘ line.
+    @Test(".governedByRule with encrypted_regex discloses the plaintext scoping",
+          .enabled(if: LocalizationTests.bundleHasMacOSLayout,
+                   "this asserts on text a *format* key produces, and swift test's native build system never compiles .xcstrings — every key falls back to its own raw value, which carries no %@ to substitute into; run under xcodebuild or swift test --build-system swiftbuild"))
+    func governedByRuleWithEncryptedRegexRenders() {
+        let recipient = "age1qexampleexampleexampleexampleexampleexampleexampleexamplex"
+        let regex = "^(data|stringData)$"
+        let shown = text(.governedByRule(recipients: [recipient], encryptedRegex: regex))
+        #expect(shown.contains(String(format: LocalizedKey.newFileInfoEncryptedRegexScoping.text, regex)),
+                "the plaintext-scoping disclosure is missing from the rendered screen: \(shown)")
+    }
+
     @Test(".governedByRule with no recipients shows the no-recipients refusal, not the button")
     func governedByRuleWithNoRecipientsRenders() {
         let shown = text(.governedByRule(recipients: [], encryptedRegex: ""))
@@ -290,11 +466,14 @@ struct ProjectStartHereViewRenderTests {
                 "must not offer to create a file nothing will be encrypted for: \(shown)")
     }
 
-    @Test(".noRuleMatched explains the state and shows no button")
+    @Test(".noRuleMatched explains the state, hedged, and shows no button")
     func noRuleMatchedRenders() {
         let shown = text(.noRuleMatched)
-        #expect(shown.contains(LocalizedKey.startHereNoRuleMatchedTitle.text),
+        #expect(shown.contains(LocalizedKey.newFileInfoNoRuleMatched.text),
                 "the tree did not populate — this test would be vacuous: \(shown)")
+        #expect(shown.contains(LocalizedKey.startHereNoRuleMatchedReassurance.text))
+        #expect(!shown.lowercased().contains("by hand"),
+                "must not promise every file here needs hand-picked recipients: \(shown)")
         #expect(!shown.contains(LocalizedKey.startHereCreateFirstFileButton.text),
                 ".noRuleMatched must not offer the create-first-file button: \(shown)")
     }
@@ -333,6 +512,9 @@ struct ProjectStartHereViewRenderTests {
 @MainActor
 struct ProjectStartHereViewButtonTests {
 
+    private static let noRegistryProjectRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent("project-start-here-button-tests-no-registry")
+
     /// Proof the button is actually wired to `onNewFile`, not merely present
     /// with the right label — the same distinction
     /// `AppShellTests`'s own `onNewFile` source check exists for one layer
@@ -344,7 +526,9 @@ struct ProjectStartHereViewButtonTests {
         let pressed = StartHereAXProbe.pressButton(
             labeled: LocalizedKey.startHereCreateFirstFileButton.text, size: CGSize(width: 360, height: 320)
         ) {
-            ProjectStartHereView(configState: .noConfig, otherFormatCount: 0, onNewFile: { invoked = true })
+            ProjectStartHereView(
+                configState: .noConfig, otherFormatCount: 0, projectRoot: Self.noRegistryProjectRoot,
+                onNewFile: { invoked = true })
         }
         #expect(pressed, "no pressable button with the expected label was found")
         #expect(invoked, "the button's AX press action did not call onNewFile")
@@ -404,10 +588,17 @@ struct FileListViewStartHereWiringTests {
         try #require(model.files.isEmpty && model.incompleteScanReason == nil)
 
         let shown = text(of: model)
-        #expect(shown.contains(LocalizedKey.startHereNoConfigTitle.text),
+        #expect(shown.contains(LocalizedKey.newFileInfoNoConfig.text),
                 "the tree did not populate — this test would be vacuous: \(shown)")
     }
 
+    /// Pinned against the specific branch, not just "nothing start-here
+    /// showed": review finding — for a missing root, `FileListModel
+    /// .resolveConfigState` also returns `nil`, so the start-here guidance
+    /// text would be absent whether or not `showsStartHere` correctly
+    /// excluded `rootMissing` at all. Asserting `filesProjectMissingTitle`
+    /// is what actually proves the `rootMissing` placeholder — not a blank
+    /// pane — is what rendered.
     @Test("a missing project root never shows the start-here guidance")
     func missingRootNeverShowsGuidance() async throws {
         let root = FileManager.default.temporaryDirectory
@@ -417,8 +608,10 @@ struct FileListViewStartHereWiringTests {
         try #require(model.rootMissing)
 
         let shown = text(of: model)
-        #expect(!shown.contains(LocalizedKey.startHereNoConfigTitle.text))
+        #expect(!shown.contains(LocalizedKey.newFileInfoNoConfig.text))
         #expect(!shown.contains(LocalizedKey.startHereCreateFirstFileButton.text))
+        #expect(shown.contains(LocalizedKey.filesProjectMissingTitle.text),
+                "the rootMissing placeholder itself must still be shown, not a blank pane")
     }
 
     @Test("an unreadable project root never shows the start-here guidance")
@@ -434,8 +627,10 @@ struct FileListViewStartHereWiringTests {
         try #require(model.rootUnreadable)
 
         let shown = text(of: model)
-        #expect(!shown.contains(LocalizedKey.startHereNoConfigTitle.text))
+        #expect(!shown.contains(LocalizedKey.newFileInfoNoConfig.text))
         #expect(!shown.contains(LocalizedKey.startHereCreateFirstFileButton.text))
+        #expect(shown.contains(LocalizedKey.filesProjectUnreadableTitle.text),
+                "the rootUnreadable placeholder itself must still be shown, not a blank pane")
     }
 
     /// The exact claim this whole task must not make: an incomplete walk
@@ -456,7 +651,7 @@ struct FileListViewStartHereWiringTests {
         try #require(model.incompleteScanReason != nil && model.files.isEmpty)
 
         let shown = text(of: model)
-        #expect(!shown.contains(LocalizedKey.startHereNoConfigTitle.text))
+        #expect(!shown.contains(LocalizedKey.newFileInfoNoConfig.text))
         #expect(!shown.contains(LocalizedKey.startHereCreateFirstFileButton.text))
         #expect(shown.contains(LocalizedKey.filesEmptyPartialTitle.text),
                 "the narrowed empty-partial state must still be shown")
@@ -487,7 +682,7 @@ struct FileListViewStartHereWiringTests {
             FileListView(model: model, selection: .constant(nil), onNewFile: {})
         }
         let shown = nodes.map { $0.label + " " + $0.value + " " + $0.help }.joined(separator: "\n")
-        #expect(shown.contains(LocalizedKey.startHereNoConfigTitle.text),
+        #expect(shown.contains(LocalizedKey.newFileInfoNoConfig.text),
                 "the tree did not populate — this test would be vacuous: \(shown)")
 
         let noteText = String(format: LocalizedKey.filesOtherFormatNote.text, 1)
