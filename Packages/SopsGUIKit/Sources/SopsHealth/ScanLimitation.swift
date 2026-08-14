@@ -44,13 +44,21 @@ import Foundation
 ///   existing tests, as does quietly restoring an exclusion
 ///   (`.skipsHiddenFiles` → 34 issues).
 ///
-/// What is **not** enforced: a new `continue` in the walk that records nothing.
-/// The enum cannot see a statement that never mentions it. Guarding that needs
-/// a test that pins the walk's own coverage — a fixture with a known file count
-/// asserted against what the scan reports having examined — which does not
-/// exist yet. Until it does, this type makes the honest path easy and the
-/// dishonest path visible in review; it does not make the dishonest path
-/// impossible. Do not let §9 or a task report say otherwise.
+/// What was **not** enforced, until ticket #25: a new `continue` in the walk
+/// that records nothing. This enum cannot see a statement that never mentions
+/// it — no case of it can catch an omission of itself. `ProjectScanner
+/// .walk`'s coverage is now pinned separately, by `ScannedTree.filesVisited`
+/// (a plain count, not a member of this enum) and
+/// `ProjectScanCoverageTests`, which builds a fixture with a known file
+/// count and asserts the walk reports having visited every one of them.
+/// Proven able to catch the illustrative defect this comment used to
+/// describe only in prose: a plausible size-cap `continue`, added to the
+/// walk and recording nothing, was introduced during that work, observed to
+/// fail exactly that test with the rest of the suite green, and reverted —
+/// see the session report for the transcript. This type still makes the
+/// honest path easy and a *labelled* omission visible in review; the
+/// coverage test is what makes an *unlabelled* one visible too, by counting
+/// rather than by reading.
 public enum ScanLimitation: Sendable, Hashable {
     /// A directory this app always declines to enter, by name, anywhere in the
     /// tree — see `ProjectScanner.skippedDirectoryNames`.
@@ -65,7 +73,14 @@ public enum ScanLimitation: Sendable, Hashable {
     case unreadableFile(path: String)
     /// A symbolic link pointing at a directory. Deliberately not followed —
     /// see `ProjectScanner.walk` — and therefore named.
-    case directorySymlinkNotFollowed(path: String)
+    ///
+    /// `target` is the link's resolved real destination (ticket #25 claim
+    /// 2) — kept, not just the link's own path, so the UI can offer "add
+    /// `target` as its own project" instead of only disclosing that
+    /// something went unwalked. `ProjectScanner.walk` already resolves this
+    /// to decide the case applies at all; before this it threw the
+    /// resolution away rather than keeping it.
+    case directorySymlinkNotFollowed(path: String, target: String)
     /// A file that carries what looks like sops metadata whose block is larger
     /// than even the escalated tail read reaches, so its recipient list could
     /// not be read.

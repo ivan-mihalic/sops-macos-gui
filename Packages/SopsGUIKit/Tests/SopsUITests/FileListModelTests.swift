@@ -119,6 +119,30 @@ ScratchDirectoryRegistry.shared.register(root)
                 "the exclusion was not disclosed on an ordinary, untruncated scan")
     }
 
+    /// Ticket #25 claim 2. `FileListModel` is what `FileListView` reads to
+    /// offer "Add as Project" for an unfollowed directory symlink's target —
+    /// this pins that the model actually carries the pair
+    /// (`ScannedTree.unfollowedDirectorySymlinks`), not just that the scanner
+    /// itself produces it (`UnfollowedSymlinkTargetTests` in `SopsHealthTests`
+    /// already covers that half).
+    @Test("an unfollowed directory symlink's target reaches the model")
+    func unfollowedSymlinkTargetReachesTheModel() async throws {
+        let root = try makeProject()
+        let shared = FileManager.default.temporaryDirectory
+            .appendingPathComponent("file-list-symlink-target-\(UUID().uuidString)")
+        ScratchDirectoryRegistry.shared.register(shared)
+        try FileManager.default.createDirectory(at: shared, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: shared) }
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("linked-secrets"), withDestinationURL: shared)
+
+        let model = FileListModel(projectRoot: root)
+        await model.refresh()
+
+        #expect(model.unfollowedDirectorySymlinks.count == 1)
+        #expect(model.unfollowedDirectorySymlinks.first?.target == shared.resolvingSymlinksInPath().path)
+    }
+
     @Test("refresh finds an encrypted file and reports it relative to the project root")
     func refreshFindsEncryptedFile() async throws {
         let root = try makeProject()

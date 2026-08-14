@@ -42,9 +42,16 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case settingsTabHealth = "settings.tab.health"
     case settingsTabUpdates = "settings.tab.updates"
     case settingsTabKey = "settings.tab.key"
+    case settingsTabScanning = "settings.tab.scanning"
     case settingsUpdatesToggle = "settings.updates.toggle"
     case settingsUpdatesExplanation = "settings.updates.explanation"
     case settingsUpdatesPrivacy = "settings.updates.privacy"
+    // Ticket #25 claim 1: ProjectScanner.maxScannedFiles used to be a
+    // hardcoded ceiling nothing in the app could change — see
+    // ScanBudgetSetting.
+    case settingsScanningBudgetLabel = "settings.scanning.budget-label"
+    case settingsScanningBudgetFooter = "settings.scanning.budget-footer"
+    case settingsScanningResetButton = "settings.scanning.reset-button"
 
     case keyStatusConfigured = "key.status.configured"
     case keyStatusEmpty = "key.status.empty"
@@ -188,6 +195,10 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // Formatted with the count of sops files this build can't open (dotenv/
     // JSON/INI — YAML-only for v1) — see `FileListModel.otherFormatCount`.
     case filesOtherFormatNote = "files.other-format.note"
+    // Ticket #25 claim 2. Formatted with the symlink's own relative path and
+    // its resolved target — see `FileListView.unfollowedSymlinkFootnote`.
+    case filesUnfollowedSymlinkNote = "files.unfollowed-symlink.note"
+    case filesAddSymlinkTargetButton = "files.unfollowed-symlink.add-button"
 
     // MARK: Task 7 (F2) — reaching the new-file wizard from the file list
 
@@ -410,6 +421,11 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // renders only in the branch where a rule *was* identified, which is the
     // one branch that does not need it.
     case projectAccessOtherRulesInScope = "project-access.other-rules-in-scope"
+    // Ticket #24 claim 1. Sits directly under `projectAccessOtherRulesInScope`
+    // and requires an explicit check before "Apply to Files" is reachable at
+    // all — see `ProjectAccessModel.requiresWidenedScopeAcknowledgement`.
+    // Stating the fact was never the gap; nothing enforced that it was read.
+    case projectAccessWidenedScopeAcknowledgement = "project-access.widened-scope.acknowledgement"
     // The heading over the list of files an apply would re-wrap, shown before
     // the run rather than only as results after it. The counts above it say
     // how many; this says which — the question a user actually has to answer
@@ -421,6 +437,10 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // remainder is stated rather than left to be inferred from the count above.
     case projectAccessFilesPreviewMore = "project-access.files-preview.more"
     case projectAccessScanIncompleteTitle = "project-access.scan-incomplete.title"
+    // Ticket #24 claim 3. Formatted with how many files a previous run left
+    // untouched — `ProjectAccessModel.previousIncompleteRun`, read from
+    // `RunRecordStore` so it survives the panel having been closed.
+    case projectAccessPreviousRunIncomplete = "project-access.previous-run-incomplete"
     // The two ways a project can produce an *empty* scan that is not an
     // answer about anything. Reported rather than folded into "no encrypted
     // files found here", which would be a confident statement about a
@@ -489,6 +509,11 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // in-flight run rather than asking again — see
     // `ProjectAccessModel.startApplyingToFiles`.
     case projectAccessErrorAlreadyRunning = "project-access.error.already-running"
+    // `ProjectAccessModel.FileApplyRefusal.widenedScopeNotAcknowledged`:
+    // reachable in practice only if a future caller finds a way to press
+    // Apply while the view's own gate should have disabled it — see
+    // `ProjectAccessView.canApplyToFiles`.
+    case projectAccessErrorWidenedScopeNotAcknowledged = "project-access.error.widened-scope-not-acknowledged"
     // The creation-rule half of `access.duplicate-recipients`, formatted the
     // same way and for the same reason.
     case projectAccessDuplicateRecipients = "project-access.duplicate-recipients"

@@ -1741,6 +1741,28 @@
         }
       }
     },
+    "files.unfollowed-symlink.add-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add as Project"
+          }
+        }
+      }
+    },
+    "files.unfollowed-symlink.note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ is a symbolic link to a directory, %@, which this scan does not follow."
+          }
+        }
+      }
+    },
     "files.project-missing.title": {
       "extractionState": "manual",
       "localizations": {
@@ -2604,6 +2626,17 @@
         }
       }
     },
+    "project-access.error.widened-scope-not-acknowledged": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check the box confirming you want to include files governed by a different creation rule, then try again."
+          }
+        }
+      }
+    },
     "project-access.error.empty-recipients": {
       "extractionState": "manual",
       "localizations": {
@@ -2780,6 +2813,17 @@
         }
       }
     },
+    "project-access.widened-scope.acknowledgement": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "I understand this also re-wraps files a different creation rule governs, for a key set that rule never named."
+          }
+        }
+      }
+    },
     "project-access.result.failed": {
       "extractionState": "manual",
       "localizations": {
@@ -2864,6 +2908,29 @@
           "stringUnit": {
             "state": "translated",
             "value": "This project was not fully searched"
+          }
+        }
+      }
+    },
+    "project-access.previous-run-incomplete": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "A previous run against this project did not finish: %d file was never re-wrapped for the current recipients. Apply again to finish."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "A previous run against this project did not finish: %d files were never re-wrapped for the current recipients. Apply again to finish."
+                }
+              }
+            }
           }
         }
       }
@@ -3448,6 +3515,50 @@
           "stringUnit": {
             "state": "translated",
             "value": "Key"
+          }
+        }
+      }
+    },
+    "settings.scanning.budget-footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A very large project can exhaust this limit before every file has been examined; its findings then read as unknown rather than a false all-clear. Raise the limit if a scan is being truncated; lower it only if scanning itself feels slow."
+          }
+        }
+      }
+    },
+    "settings.scanning.budget-label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maximum files per scan"
+          }
+        }
+      }
+    },
+    "settings.scanning.reset-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reset to Default"
+          }
+        }
+      }
+    },
+    "settings.tab.scanning": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scanning"
           }
         }
       }

@@ -250,7 +250,7 @@ public struct ProjectRecipientApplier: Sendable {
             try SopsBridge.updateRecipients($0, to: $1, agePrivateKey: $2)
         },
         scanProject: @escaping @Sendable (URL) async -> ScannedTree = {
-            await ProjectScanner.scan(root: $0)
+            await ProjectScanner.scan(root: $0, maxScannedFiles: ScanBudgetSetting.current())
         },
         proposeConfig: @escaping @Sendable (String, String, [String], [String]) throws
             -> ConfigRecipientUpdate = { configPath, targetPath, recipients, candidates in

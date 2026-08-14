@@ -169,14 +169,23 @@ public struct ProjectAccessView: View {
         Self.canApplyToFiles(
             loadState: model.loadState, fileCount: model.filesToApply.count,
             stagedIsEmpty: model.stagedRecipients.isEmpty,
-            keyConfigured: model.keyConfigured, isApplyingFiles: model.isApplyingFiles)
+            keyConfigured: model.keyConfigured, isApplyingFiles: model.isApplyingFiles,
+            widenedScopeRequiresAcknowledgement: model.requiresWidenedScopeAcknowledgement,
+            widenedScopeAcknowledged: model.widenedScopeAcknowledged)
     }
 
+    /// `widenedScopeRequiresAcknowledgement`/`widenedScopeAcknowledged` take
+    /// no default — ticket #24 claim 1 — for the same reason
+    /// `WorkspaceSwitchDecision.forSwitch`'s `saveIsInFlight` parameter
+    /// doesn't: a default would let a future call site silently reintroduce
+    /// the hole this pair exists to close.
     static func canApplyToFiles(
         loadState: ProjectAccessModel.LoadState, fileCount: Int, stagedIsEmpty: Bool,
-        keyConfigured: Bool, isApplyingFiles: Bool
+        keyConfigured: Bool, isApplyingFiles: Bool,
+        widenedScopeRequiresAcknowledgement: Bool, widenedScopeAcknowledged: Bool
     ) -> Bool {
         loadState == .loaded && fileCount > 0 && !stagedIsEmpty && keyConfigured && !isApplyingFiles
+            && (!widenedScopeRequiresAcknowledgement || widenedScopeAcknowledged)
     }
 
     // MARK: - Content
@@ -209,6 +218,7 @@ public struct ProjectAccessView: View {
 
     private var loadedContent: some View {
         VStack(alignment: .leading, spacing: 10) {
+            previousIncompleteRunBanner
             scope
             filesPreview
             configSection
@@ -254,6 +264,34 @@ public struct ProjectAccessView: View {
             }
 
             results
+        }
+    }
+
+    /// Ticket #24 claims 2 and 3. `ProjectAccessModel.previousIncompleteRun`
+    /// is `nil` on every ordinary open — this only appears when the last run
+    /// against this project (this session or a previous one; the record
+    /// survives the panel closing, see `RunRecordStore`) was cancelled
+    /// between files and left some untouched. Names how many, and the "at
+    /// least clearly show the in-progress state" half of the ticket's
+    /// acceptance criteria is done by that alone: pressing Apply to Files
+    /// again naturally finishes the job, because a file already at the
+    /// requested set costs one metadata read and reports `.unchanged`
+    /// rather than being re-wrapped — see `ProjectRecipientApplier
+    /// .applyToOne`'s own doc comment.
+    @ViewBuilder
+    private var previousIncompleteRunBanner: some View {
+        if let run = model.previousIncompleteRun {
+            Label(
+                String(
+                    format: LocalizedKey.projectAccessPreviousRunIncomplete.text,
+                    run.notAttempted.count),
+                systemImage: "exclamationmark.triangle.fill"
+            )
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.orange)
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.orange.opacity(0.12))
         }
     }
 
@@ -326,6 +364,21 @@ public struct ProjectAccessView: View {
                     )
                     .font(.caption).foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
+
+                    // Ticket #24 claim 1. The sentence above used to be the
+                    // only thing standing between a user and re-wrapping
+                    // another rule's files — reading it was never enforced.
+                    // `ProjectAccessModel.applyToFiles()` now refuses until
+                    // this is checked; see `canApplyToFiles`.
+                    Toggle(
+                        LocalizedKey.projectAccessWidenedScopeAcknowledgement.text,
+                        isOn: Binding(
+                            get: { model.widenedScopeAcknowledged },
+                            set: { model.acknowledgeWidenedScope($0) })
+                    )
+                    .toggleStyle(.checkbox)
+                    .font(.caption)
+                    .disabled(model.isApplyingFiles)
                 }
             }
 
@@ -621,6 +674,7 @@ public struct ProjectAccessView: View {
         case .noKey: LocalizedKey.accessNeedsKeyBody.text
         case .notLoaded: LocalizedKey.projectAccessScanning.text
         case .alreadyRunning: LocalizedKey.projectAccessErrorAlreadyRunning.text
+        case .widenedScopeNotAcknowledged: LocalizedKey.projectAccessErrorWidenedScopeNotAcknowledged.text
         }
     }
 }
@@ -654,9 +708,13 @@ public struct ProjectAccessView: View {
 /// on purpose: both panels can rewrite the file underneath an editor holding
 /// edits nobody saved. `AccessGateAsymmetryTests` pins both halves — that the
 /// load-state term is the only difference, and that this paragraph exists.
+/// The shared half is `UnsavedWorkGate.isClear`, not written out by hand here
+/// — see that type's doc comment (ticket #23) for why it exists: this gate,
+/// `SecretEditorView.canOpenAccessPanel` and `WorkspaceSwitchDecision.forSwitch`
+/// each used to carry their own copy of `!isDirty && !isSaving`.
 enum ProjectAccessGate {
     static func canOpen(hasProject: Bool, documentIsDirty: Bool, documentIsSaving: Bool) -> Bool {
-        hasProject && !documentIsDirty && !documentIsSaving
+        hasProject && UnsavedWorkGate.isClear(isDirty: documentIsDirty, isSaving: documentIsSaving)
     }
 }
 

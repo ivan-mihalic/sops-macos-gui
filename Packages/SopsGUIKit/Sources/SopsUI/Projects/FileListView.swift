@@ -34,6 +34,15 @@ public final class FileListModel {
     /// …). Not a defect and not a warning — a permanent, named, bounded
     /// exclusion, so it is stated quietly rather than in the banner.
     public private(set) var skippedDirectoryNames: [String] = []
+    /// Directory symlinks this walk found and declined to follow, each
+    /// paired with where it actually points — ticket #25 claim 2.
+    /// `FileListView` offers "Add as Project" per entry rather than
+    /// following the link itself: `ProjectScanner.walk`'s own comment names
+    /// the real hazard a followed link can cause (escaping the project
+    /// entirely on the strength of one `ln -s /`), so not following stays
+    /// correct and this is what makes the consequence actionable instead of
+    /// only named in prose.
+    public private(set) var unfollowedDirectorySymlinks: [ScannedTree.UnfollowedSymlink] = []
     public private(set) var rootMissing = false
     /// The root exists but could not be read — changed permissions, a
     /// detached volume, a revoked sandbox scope.
@@ -88,7 +97,11 @@ public final class FileListModel {
     /// view must never see it paired with `files` from a different scan.
     public func refresh() async {
         isScanning = true
-        let tree = await ProjectScanner.scan(root: projectRoot)
+        // `ScanBudgetSetting.current()` is read fresh on every refresh, not
+        // captured once, for the same reason `ProjectHealthCheck`'s own
+        // `scanBudget` closure is: a value raised in Settings › Scanning
+        // must take effect on the next refresh, not only after a relaunch.
+        let tree = await ProjectScanner.scan(root: projectRoot, maxScannedFiles: ScanBudgetSetting.current())
 
         // Only the YAML-sniffed files are listed as *openable* — the editor
         // (`SopsEngine.SopsDocument`) only reads sops's YAML store; dotenv/
@@ -103,6 +116,7 @@ public final class FileListModel {
         otherFormatCount = tree.encryptedInOtherFormats.count
         incompleteScanReason = tree.incompleteScanReason
         skippedDirectoryNames = tree.skippedDirectoryNames.sorted()
+        unfollowedDirectorySymlinks = tree.unfollowedDirectorySymlinks.sorted { $0.path < $1.path }
         rootMissing = tree.rootMissing
         rootUnreadable = tree.rootUnreadable
         configState = Self.resolveConfigState(projectRoot: projectRoot)
@@ -168,11 +182,23 @@ public struct FileListView: View {
     /// caller decides whether there is a project to ask about at all — see
     /// `AppShell.makeNewFileModel(projectRoot:keyStore:)`.
     private let onNewFile: () -> Void
+    /// What each unfollowed directory symlink's "Add as Project" button
+    /// does, handed the symlink's resolved target path — ticket #25 claim
+    /// 2. Defaults to doing nothing, matching `onUpdateConsentChanged`'s
+    /// default elsewhere in this app: every existing call site and the
+    /// snapshot catalog that doesn't care about this action keeps compiling
+    /// and rendering unchanged. The real wiring
+    /// (`ProjectSidebarModel.addProject(path:)`) belongs to
+    /// `ProjectWorkspaceView`, not to this view, for the same reason
+    /// `onNewFile` does: this view only ever asks.
+    private let onAddProjectAtPath: (String) -> Void
 
-    public init(model: FileListModel, selection: Binding<URL?>, onNewFile: @escaping () -> Void) {
+    public init(model: FileListModel, selection: Binding<URL?>, onNewFile: @escaping () -> Void,
+                onAddProjectAtPath: @escaping (String) -> Void = { _ in }) {
         self.model = model
         self._selection = selection
         self.onNewFile = onNewFile
+        self.onAddProjectAtPath = onAddProjectAtPath
     }
 
     public var body: some View {
@@ -322,6 +348,35 @@ public struct FileListView: View {
         if !model.skippedDirectoryNames.isEmpty {
             footnote(String(format: LocalizedKey.filesSkippedDirectoriesNote.text,
                             model.skippedDirectoryNames.joined(separator: ", ")))
+        }
+        ForEach(model.unfollowedDirectorySymlinks, id: \.path) { link in
+            unfollowedSymlinkFootnote(link)
+        }
+    }
+
+    /// One row per unfollowed directory symlink, naming what it points at
+    /// and offering to add that target as its own project — ticket #25
+    /// claim 2. A separate row per link rather than folding them into one
+    /// sentence the way `skippedDirectoryNames` does: each has its own
+    /// action, and a shared "Add as Project" button would have nothing to
+    /// tell which target it acts on.
+    private func unfollowedSymlinkFootnote(_ link: ScannedTree.UnfollowedSymlink) -> some View {
+        VStack(spacing: 0) {
+            Divider()
+            HStack {
+                Text(String(format: LocalizedKey.filesUnfollowedSymlinkNote.text,
+                            model.relativePath(for: URL(fileURLWithPath: link.path)), link.target))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button(LocalizedKey.filesAddSymlinkTargetButton.text) {
+                    onAddProjectAtPath(link.target)
+                }
+                .font(.caption)
+                .buttonStyle(.link)
+            }
+            .padding(8)
         }
     }
 

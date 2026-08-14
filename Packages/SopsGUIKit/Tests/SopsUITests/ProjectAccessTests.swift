@@ -541,6 +541,150 @@ struct ProjectAccessQueuedRunTests {
     }
 }
 
+// MARK: - Ticket #24 claims 2 and 3: a durable trace of what a project-wide run did
+
+@Suite("ProjectAccessModel — every apply run leaves a durable trace")
+@MainActor
+struct ProjectAccessRunRecordTests {
+
+    private func waitUntil(_ condition: () -> Bool) async {
+        for _ in 0..<400 {
+            if condition() { return }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        Issue.record("condition was never met within 10s")
+    }
+
+    @Test("a completed run is persisted and carries no cancellation")
+    func completedRunIsPersisted() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let added = try ProjectAgeKeyPair.generate()
+        let (root, _) = try makeProject(owner: owner)
+
+        let keyStore = SessionKeyStore()
+        try keyStore.importKey(owner.private)
+        let model = ProjectAccessModel(projectRoot: root, keyStore: keyStore)
+        await model.load()
+        model.stageAdd(added.public)
+        await model.refreshPlan()
+
+        #expect(await model.applyToFiles() == nil)
+
+        let record = try #require(try RunRecordStore.load(in: root))
+        #expect(!record.wasCancelled)
+        #expect(Set(record.results.map(\.path)) == Set(["a.yaml", "b.yaml"]))
+        #expect(record.results.allSatisfy { $0.outcome == .updated })
+        #expect(Set(record.recipients) == Set([owner.public, added.public]))
+        #expect(model.previousIncompleteRun == nil,
+                "a run that finished must not be reported as an incomplete previous run")
+    }
+
+    @Test("a cancelled run's not-attempted files survive the panel closing")
+    func cancelledRunIsPersistedWithNotAttempted() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let added = try ProjectAgeKeyPair.generate()
+        let root = try projectScratchDirectory("project-access-run-record-cancel")
+        try """
+            creation_rules:
+              - path_regex: .*\\.yaml$
+                age:
+                  - \(owner.public)
+
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let encrypted = try SopsBridge.encryptYAML(projectPlainYAML, recipients: [owner.public])
+        for name in ["a.yaml", "b.yaml", "c.yaml"] {
+            try encrypted.write(to: root.appendingPathComponent(name), atomically: true, encoding: .utf8)
+        }
+
+        let keyStore = SessionKeyStore()
+        try keyStore.importKey(owner.private)
+        let gate = FirstCallGate()
+        let applier = ProjectRecipientApplier(rewrapRecipients: { contents, recipients, key in
+            gate.waitIfFirst()
+            return try SopsBridge.updateRecipients(contents, to: recipients, agePrivateKey: key)
+        })
+        let model = ProjectAccessModel(projectRoot: root, keyStore: keyStore, applier: applier)
+        await model.load()
+        model.stageAdd(added.public)
+        await model.refreshPlan()
+
+        model.startApplyingToFiles { _ in }
+        await waitUntil { gate.hasArrived() }
+        try #require(model.isApplyingFiles)
+
+        model.cancelRun()
+        gate.open()
+        await waitUntil { !model.isApplyingFiles }
+
+        let record = try #require(try RunRecordStore.load(in: root))
+        #expect(record.wasCancelled)
+        #expect(!record.notAttempted.isEmpty)
+        #expect(model.previousIncompleteRun == record,
+                "the model's own live state must agree with what was just persisted")
+    }
+
+    @Test("a fresh load surfaces a previous session's cancelled run")
+    func loadSurfacesAPriorIncompleteRun() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let (root, _) = try makeProject(owner: owner)
+        let stale = RunRecord(
+            startedAt: Date(timeIntervalSince1970: 1), finishedAt: Date(timeIntervalSince1970: 2),
+            recipients: [owner.public],
+            results: [RunRecord.FileEntry(path: "a.yaml", outcome: .updated)],
+            notAttempted: ["b.yaml"])
+        try RunRecordStore.save(stale, in: root)
+
+        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
+        await model.load()
+
+        #expect(model.previousIncompleteRun == stale)
+    }
+
+    @Test("a fresh load says nothing about a previous run that completed")
+    func loadIgnoresACompletedPriorRun() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let (root, _) = try makeProject(owner: owner)
+        let completed = RunRecord(
+            startedAt: Date(timeIntervalSince1970: 1), finishedAt: Date(timeIntervalSince1970: 2),
+            recipients: [owner.public],
+            results: [RunRecord.FileEntry(path: "a.yaml", outcome: .updated)],
+            notAttempted: [])
+        try RunRecordStore.save(completed, in: root)
+
+        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
+        await model.load()
+
+        #expect(model.previousIncompleteRun == nil)
+    }
+
+    private func labels(in nodes: [GatingAXProbe.Node]) -> [String] {
+        nodes.flatMap { [$0.label, $0.value] }
+    }
+
+    @Test("the panel actually shows the incomplete-run banner, not just the model")
+    func thePanelRendersTheBanner() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let (root, _) = try makeProject(owner: owner)
+        let stale = RunRecord(
+            startedAt: Date(timeIntervalSince1970: 1), finishedAt: Date(timeIntervalSince1970: 2),
+            recipients: [owner.public],
+            results: [RunRecord.FileEntry(path: "a.yaml", outcome: .updated)],
+            notAttempted: ["b.yaml", "c.yaml"])
+        try RunRecordStore.save(stale, in: root)
+
+        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
+        let host = GatingHost(size: CGSize(width: 560, height: 620)) {
+            AnyView(ProjectAccessView(model: model, onClose: {}, onFilesApplied: {}))
+        }
+        defer { host.finish() }
+        await host.settle(until: { model.loadState == .loaded })
+
+        let expected = String(format: LocalizedKey.projectAccessPreviousRunIncomplete.text, 2)
+        #expect(labels(in: host.nodes()).contains(expected),
+                "the panel must say the previous run left 2 files untouched")
+    }
+}
+
 @Suite("Project access gates")
 struct ProjectAccessGateTests {
 
@@ -570,28 +714,35 @@ struct ProjectAccessGateTests {
     func fileButtonGate() {
         #expect(ProjectAccessView.canApplyToFiles(
             loadState: .loaded, fileCount: 3, stagedIsEmpty: false, keyConfigured: true,
-            isApplyingFiles: false))
+            isApplyingFiles: false, widenedScopeRequiresAcknowledgement: false,
+            widenedScopeAcknowledged: false))
         #expect(!ProjectAccessView.canApplyToFiles(
             loadState: .loaded, fileCount: 0, stagedIsEmpty: false, keyConfigured: true,
-            isApplyingFiles: false))
+            isApplyingFiles: false, widenedScopeRequiresAcknowledgement: false,
+            widenedScopeAcknowledged: false))
         #expect(!ProjectAccessView.canApplyToFiles(
             loadState: .loaded, fileCount: 3, stagedIsEmpty: true, keyConfigured: true,
-            isApplyingFiles: false))
+            isApplyingFiles: false, widenedScopeRequiresAcknowledgement: false,
+            widenedScopeAcknowledged: false))
         #expect(!ProjectAccessView.canApplyToFiles(
             loadState: .loaded, fileCount: 3, stagedIsEmpty: false, keyConfigured: false,
-            isApplyingFiles: false))
+            isApplyingFiles: false, widenedScopeRequiresAcknowledgement: false,
+            widenedScopeAcknowledged: false))
         #expect(!ProjectAccessView.canApplyToFiles(
             loadState: .loaded, fileCount: 3, stagedIsEmpty: false, keyConfigured: true,
-            isApplyingFiles: true))
+            isApplyingFiles: true, widenedScopeRequiresAcknowledgement: false,
+            widenedScopeAcknowledged: false))
         #expect(!ProjectAccessView.canApplyToFiles(
             loadState: .failed("nope"), fileCount: 3, stagedIsEmpty: false, keyConfigured: true,
-            isApplyingFiles: false))
+            isApplyingFiles: false, widenedScopeRequiresAcknowledgement: false,
+            widenedScopeAcknowledged: false))
     }
 
     @Test("every file-apply refusal has an explanation to show")
     func everyRefusalIsExplained() {
         for refusal: ProjectAccessModel.FileApplyRefusal in [
             .notLoaded, .emptyRecipients, .noFiles, .noKey, .alreadyRunning,
+            .widenedScopeNotAcknowledged,
         ] {
             #expect(!ProjectAccessView.explanation(for: refusal).isEmpty)
         }
@@ -1130,6 +1281,133 @@ struct ProjectAccessCrossRuleDisclosureTests {
         let view = ProjectAccessView(model: model, onClose: {}, onFilesApplied: {})
         let sentence = String(format: LocalizedKey.projectAccessOtherRulesInScope.text, 2)
         #expect(!view.fileApplyConfirmationMessage.contains(sentence))
+    }
+}
+
+// MARK: - Ticket #24 claim 1: widening onto another rule's files needs explicit consent
+
+/// Before this, a widened scope that reaches across creation-rule boundaries
+/// was stated in prose — on the panel and again in the confirmation dialog —
+/// but reading the sentence was the only thing standing between a user and
+/// re-wrapping files a different rule's key set governs. This suite pins
+/// that `applyToFiles()` itself refuses until the user has explicitly
+/// acknowledged it, not just been told.
+///
+/// Deliberately narrow: the gate is `!governingRuleIdentified &&
+/// !filesGovernedByOtherRules.isEmpty`, not merely
+/// `!governingRuleIdentified`. `ProjectAccessScopeFallbackTests` already
+/// covers the ordinary widened-scope case (no rule matched *anything*, so
+/// there is no other rule's key set at risk) and continues to apply without
+/// any acknowledgement — see `rulelessProjectStillHasFilesInScope`,
+/// unchanged by this ticket. The acknowledgement exists for the one case the
+/// ticket is actually about: files a *different*, identifiable rule governs.
+@Suite("ProjectAccessModel — widening onto another rule's files needs explicit consent")
+@MainActor
+struct ProjectAccessWidenedScopeAcknowledgementTests {
+
+    @Test("applying to files is refused until the widened scope is acknowledged")
+    func applyIsRefusedWithoutAcknowledgement() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let added = try ProjectAgeKeyPair.generate()
+        let root = try makeCrossRuleProject(owner: owner)
+
+        let keyStore = SessionKeyStore()
+        try keyStore.importKey(owner.private)
+        let model = ProjectAccessModel(projectRoot: root, keyStore: keyStore)
+        await model.load()
+        model.stageAdd(added.public)
+        await model.refreshPlan()
+        try #require(model.plan?.governingRuleIdentified == false)
+        try #require(model.plan?.filesGovernedByOtherRules.isEmpty == false)
+
+        #expect(model.requiresWidenedScopeAcknowledgement)
+        #expect(!model.widenedScopeAcknowledged, "a fresh plan must not start pre-acknowledged")
+        #expect(await model.applyToFiles() == .widenedScopeNotAcknowledged)
+        #expect(model.fileResults.isEmpty, "nothing may be touched before the user consents")
+    }
+
+    @Test("acknowledging the widened scope lets the run proceed")
+    func applyProceedsOnceAcknowledged() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let added = try ProjectAgeKeyPair.generate()
+        let root = try makeCrossRuleProject(owner: owner)
+
+        let keyStore = SessionKeyStore()
+        try keyStore.importKey(owner.private)
+        let model = ProjectAccessModel(projectRoot: root, keyStore: keyStore)
+        await model.load()
+        model.stageAdd(added.public)
+        await model.refreshPlan()
+
+        model.acknowledgeWidenedScope(true)
+        #expect(await model.applyToFiles() == nil)
+        #expect(model.fileResults.count == model.filesToApply.count)
+    }
+
+    @Test("a fresh plan clears a stale acknowledgement")
+    func newPlanClearsAcknowledgement() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let added = try ProjectAgeKeyPair.generate()
+        let root = try makeCrossRuleProject(owner: owner)
+
+        let keyStore = SessionKeyStore()
+        try keyStore.importKey(owner.private)
+        let model = ProjectAccessModel(projectRoot: root, keyStore: keyStore)
+        await model.load()
+        model.stageAdd(added.public)
+        await model.refreshPlan()
+        model.acknowledgeWidenedScope(true)
+        #expect(model.widenedScopeAcknowledged)
+
+        // Any later plan — even one recomputed for the same staged set —
+        // must not let an old acknowledgement carry forward silently onto
+        // whatever the new plan's scope turns out to be.
+        await model.refreshPlan()
+        #expect(!model.widenedScopeAcknowledged,
+                "a stale acknowledgement survived a re-plan — a scope the user never saw could be applied")
+    }
+
+    @Test("a project with no other rule in play never requires acknowledgement")
+    func ordinaryWidenedScopeNeedsNoAcknowledgement() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let added = try ProjectAgeKeyPair.generate()
+        let root = try projectScratchDirectory()
+        try """
+            creation_rules:
+              - path_regex: nothing-here/.*\\.yaml$
+                age: \(owner.public)
+
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let encrypted = try SopsBridge.encryptYAML(projectPlainYAML, recipients: [owner.public])
+        try encrypted.write(
+            to: root.appendingPathComponent("secret.yaml"), atomically: true, encoding: .utf8)
+
+        let keyStore = SessionKeyStore()
+        try keyStore.importKey(owner.private)
+        let model = ProjectAccessModel(projectRoot: root, keyStore: keyStore)
+        await model.load()
+        model.stageAdd(added.public)
+
+        try #require(model.plan?.governingRuleIdentified == false)
+        try #require(model.plan?.filesGovernedByOtherRules.isEmpty == true)
+        #expect(!model.requiresWidenedScopeAcknowledgement)
+        #expect(await model.applyToFiles() == nil, "no other rule's files are at stake here")
+    }
+
+    @Test("the Apply Files gate itself requires acknowledgement, not just the model")
+    func viewGateRequiresAcknowledgement() {
+        #expect(!ProjectAccessView.canApplyToFiles(
+            loadState: .loaded, fileCount: 3, stagedIsEmpty: false, keyConfigured: true,
+            isApplyingFiles: false, widenedScopeRequiresAcknowledgement: true,
+            widenedScopeAcknowledged: false))
+        #expect(ProjectAccessView.canApplyToFiles(
+            loadState: .loaded, fileCount: 3, stagedIsEmpty: false, keyConfigured: true,
+            isApplyingFiles: false, widenedScopeRequiresAcknowledgement: true,
+            widenedScopeAcknowledged: true))
+        #expect(ProjectAccessView.canApplyToFiles(
+            loadState: .loaded, fileCount: 3, stagedIsEmpty: false, keyConfigured: true,
+            isApplyingFiles: false, widenedScopeRequiresAcknowledgement: false,
+            widenedScopeAcknowledged: false))
     }
 }
 

@@ -264,4 +264,29 @@ struct NewFileSwitchWiringTests {
             source.contains("keyboardShortcut(\"n\", modifiers: .command)"),
             "FileListView no longer wires ⌘N onto the new-file action")
     }
+
+    /// Ticket #25 claim 2. `FileListView` only ever *asks* for an unfollowed
+    /// symlink's target to be added as a project (see `onAddProjectAtPath`'s
+    /// own doc comment) — the same "this view decides nothing" shape as
+    /// `onNewFile`, checked the same way: by reading the wiring rather than
+    /// pressing the button, since a second overlapping AX press probe in this
+    /// same file's test process is exactly the shared-flag hazard
+    /// `AccessibilityTreeTests`' doc comment (and this app's own STATE.md)
+    /// records — not worth adding for one more button when the source-text
+    /// check already proves the call reaches `ProjectSidebarModel.addProject`.
+    @Test("the Add as Project action reaches ProjectSidebarModel.addProject, not a second implementation")
+    func addProjectActionReachesTheSidebarModel() throws {
+        let appShellSource = try Self.appShellSource
+        let routingMessage = "AppShell no longer routes FileListView's Add-as-Project action through "
+            + "ProjectSidebarModel.addProject — a symlink target could now be added by some other, "
+            + "unaudited path, or not at all"
+        #expect(
+            appShellSource.contains("onAddProjectAtPath: { path in projects.addProject(path: path) }"),
+            "\(routingMessage)")
+
+        let fileListViewSource = try Self.fileListViewSource
+        let parameterMessage = "FileListView no longer takes an onAddProjectAtPath action — the "
+            + "unfollowed-symlink footnote's button has nowhere to route its click"
+        #expect(fileListViewSource.contains("onAddProjectAtPath"), "\(parameterMessage)")
+    }
 }

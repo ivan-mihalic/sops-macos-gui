@@ -162,9 +162,12 @@ public struct SecretEditorView: View {
     /// with no prompt, no error and no dirty indicator surviving to warn
     /// the user. Pulled out as a pure function — mirroring
     /// `WorkspaceSwitchDecision`/`QuitRequest` elsewhere in this module — so
-    /// the gate is directly testable without a rendered view.
+    /// the gate is directly testable without a rendered view. The `!isDirty
+    /// && !isSaving` half of the question is `UnsavedWorkGate.isClear`, not
+    /// written out here — see that type's doc comment (ticket #23) for why
+    /// three hand-written copies of it used to exist.
     static func canOpenAccessPanel(loadState: LoadState, isDirty: Bool, isSaving: Bool) -> Bool {
-        loadState == .loaded && !isDirty && !isSaving
+        loadState == .loaded && UnsavedWorkGate.isClear(isDirty: isDirty, isSaving: isSaving)
     }
 
     /// - Parameters:

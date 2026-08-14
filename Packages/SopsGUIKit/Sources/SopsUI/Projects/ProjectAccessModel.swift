@@ -70,6 +70,15 @@ public final class ProjectAccessModel {
         /// all, because it now waits for whatever run was already in flight
         /// before calling `applyToFiles()` again — see its doc comment.
         case alreadyRunning
+        /// The scope widened onto files a *different*, identifiable creation
+        /// rule governs (`Plan.filesGovernedByOtherRules`), and the user has
+        /// not said so is fine — see `requiresWidenedScopeAcknowledgement`.
+        /// Ticket #24 claim 1: before this existed, the only thing standing
+        /// between a user and re-wrapping another rule's files was a
+        /// sentence on the panel restating what `filesInScope`'s own doc
+        /// comment already calls out as the one way this fallback is not
+        /// silent — reading it was never enforced.
+        case widenedScopeNotAcknowledged
     }
 
     public private(set) var loadState: LoadState = .idle
@@ -101,6 +110,25 @@ public final class ProjectAccessModel {
     /// Set once a config write has succeeded in this session, so the view can
     /// say so rather than leaving the button looking untouched.
     public private(set) var configWritten = false
+    /// Whether the user has explicitly said the current plan's widened scope
+    /// — files a *different* creation rule governs — is fine. Ticket #24
+    /// claim 1. Cleared on every new `plan` (`load()`, `refreshPlan()`), on
+    /// purpose: an acknowledgement is about the scope the user actually saw,
+    /// and a plan can change what that scope is (a file added, a rule
+    /// edited elsewhere) without this model itself detecting whether it
+    /// changed — clearing unconditionally is the only version of this that
+    /// cannot go stale silently.
+    public private(set) var widenedScopeAcknowledged = false
+    /// The last-run record `load()` found on disk, when that run left files
+    /// untouched (`RunRecord.wasCancelled`) — `nil` for a project with no
+    /// prior run, or whose prior run completed. Ticket #24 claim 3: what the
+    /// view reads to tell the user their last run did not finish, and how
+    /// many files it never got to, surviving the panel having been closed
+    /// and reopened. Updated again after this session's own `applyToFiles()`
+    /// completes, so a run that finishes what a previous one left undone
+    /// clears the banner within the same session rather than only on the
+    /// next `load()`.
+    public private(set) var previousIncompleteRun: RunRecord?
 
     /// The project this panel is about. Readable so the label editor knows
     /// which project's `.sops-gui/recipients.json` a name would be written to.
@@ -179,6 +207,30 @@ public final class ProjectAccessModel {
     /// config governs nothing still has files in scope.
     public var filesToApply: [URL] { plan?.filesInScope ?? [] }
 
+    /// Whether the current plan needs `widenedScopeAcknowledged` before
+    /// `applyToFiles()` will run at all — ticket #24 claim 1.
+    ///
+    /// Deliberately narrower than `!plan.governingRuleIdentified`: a project
+    /// whose rule matches *nothing* also falls back to every encrypted file,
+    /// and that fallback is unremarkable — there is no other rule whose key
+    /// set is at stake, only files nobody has opinions about yet. The
+    /// consent this gate exists for is specifically about
+    /// `filesGovernedByOtherRules`: files a *different*, identifiable rule
+    /// already governs, which an apply here would re-wrap for a key set
+    /// that rule never named.
+    public var requiresWidenedScopeAcknowledgement: Bool {
+        guard let plan else { return false }
+        return !plan.governingRuleIdentified && !plan.filesGovernedByOtherRules.isEmpty
+    }
+
+    /// Records whether the user has said the current plan's widened scope
+    /// is fine. The view's `Toggle` writes this directly; there is no
+    /// validation to do here beyond storing the answer to the question that
+    /// was actually asked.
+    public func acknowledgeWidenedScope(_ acknowledged: Bool) {
+        widenedScopeAcknowledged = acknowledged
+    }
+
     /// Every recipient worth showing, in config order first and then staged
     /// additions. Same shape and same fallback-to-the-public-key rule as the
     /// per-file panel — `RecipientAccessModel.AccessEntry` is reused rather
@@ -235,6 +287,7 @@ public final class ProjectAccessModel {
         fileResults = []
         notAttempted = []
         configWritten = false
+        widenedScopeAcknowledged = false
 
         let inspected = await applier.plan(projectRoot: projectRoot, recipients: stagedRecipients)
 
@@ -268,6 +321,21 @@ public final class ProjectAccessModel {
         let registry = loadRegistry(projectRoot)
         registryRecords = registry.records
         registryQuarantineNotice = registry.quarantineNotice
+        // A record this app cannot read (corrupt JSON, a shape from a future
+        // version) degrades to "nothing to report" rather than failing the
+        // load — the same non-throwing-degrades-gracefully contract
+        // `loadRegistry` already holds for the label directory, and for the
+        // same reason: a local trace file must never be able to block the
+        // panel from opening at all.
+        //
+        // Note the deliberate asymmetry with the registry directly above,
+        // which *does* now surface a notice when it quarantines a corrupt
+        // file: that one holds names the user typed and would silently lose,
+        // so its loss is worth a sentence. This one is a trace of the app's
+        // own last run, and re-running the apply reconstructs it.
+        previousIncompleteRun = (try? RunRecordStore.load(in: projectRoot))
+            .flatMap { $0 }
+            .flatMap { $0.wasCancelled ? $0 : nil }
         loadState = .loaded
     }
 
@@ -299,6 +367,10 @@ public final class ProjectAccessModel {
         let fresh = await applier.plan(projectRoot: projectRoot, recipients: stagedRecipients)
         guard generation == planGeneration else { return }
         plan = fresh
+        // See `widenedScopeAcknowledged`'s own doc comment: cleared
+        // unconditionally on every accepted plan, not only when the scope
+        // this model can detect actually changed.
+        widenedScopeAcknowledged = false
     }
 
     /// Runs `refreshPlan()` in a task this model owns, cancelling whichever
@@ -390,6 +462,9 @@ public final class ProjectAccessModel {
         let files = filesToApply
         guard !files.isEmpty else { return .noFiles }
         guard keyConfigured else { return .noKey }
+        guard !requiresWidenedScopeAcknowledgement || widenedScopeAcknowledged else {
+            return .widenedScopeNotAcknowledged
+        }
         guard !isApplyingFiles else { return .alreadyRunning }
 
         isApplyingFiles = true
@@ -399,6 +474,7 @@ public final class ProjectAccessModel {
 
         let recipients = stagedRecipients
         let applier = self.applier
+        let startedAt = Date()
 
         // `withKey` lends the identity for exactly this call and returns nil
         // without invoking the body when no key is configured — the same
@@ -416,7 +492,61 @@ public final class ProjectAccessModel {
         guard let run else { return .noKey }
         fileResults = run.results
         notAttempted = run.notAttempted
+
+        // Ticket #24 claims 2 and 3. Persisted regardless of whether the run
+        // completed or was cancelled — `RunRecord.wasCancelled` (derived
+        // from `notAttempted`) is what a reader checks. `try?`: a failure to
+        // persist this trace must never be reported as a failure of the
+        // apply itself, which already happened and whose real results are
+        // in `fileResults` on this model right now.
+        let record = RunRecord(
+            startedAt: startedAt, finishedAt: Date(), recipients: recipients,
+            results: run.results.map { fileResult -> RunRecord.FileEntry in
+                let failureReason: String?
+                if case .failed(let reason) = fileResult.outcome { failureReason = reason } else { failureReason = nil }
+                return RunRecord.FileEntry(
+                    path: Self.relativePath(for: fileResult.url, under: projectRoot),
+                    outcome: Self.recordOutcome(for: fileResult.outcome),
+                    failureReason: failureReason)
+            },
+            notAttempted: run.notAttempted.map { Self.relativePath(for: $0, under: projectRoot) })
+        try? RunRecordStore.save(record, in: projectRoot)
+        // Re-read rather than reuse `record` in memory: JSON round-trips a
+        // `Date` through ISO 8601 text, which is second-precision, so the
+        // in-memory value (sub-second) and what a later `load()` would see
+        // are not literally equal — reading back here is what keeps
+        // `previousIncompleteRun` the same value a fresh `load()` in a new
+        // session would produce, rather than a slightly different one only
+        // this session ever sees.
+        previousIncompleteRun = record.wasCancelled
+            ? ((try? RunRecordStore.load(in: projectRoot)) ?? record) : nil
+
         return nil
+    }
+
+    /// `url`'s path relative to `projectRoot`. Duplicated from
+    /// `FileListModel.relativePath(for:)` rather than shared — that type's
+    /// own version of this exists for the identical reason
+    /// `ProjectRecipientApplier.sortedByProjectRelativePath`'s doc comment
+    /// gives for its own duplicate: a plain path computation with no
+    /// dependency worth introducing one for.
+    private static func relativePath(for url: URL, under root: URL) -> String {
+        let base = root.standardizedFileURL.path
+        var path = url.standardizedFileURL.path
+        guard path.hasPrefix(base) else { return path }
+        path.removeFirst(base.count)
+        if path.hasPrefix("/") { path.removeFirst() }
+        return path
+    }
+
+    private static func recordOutcome(
+        for outcome: ProjectRecipientApplier.FileOutcome
+    ) -> RunRecord.Outcome {
+        switch outcome {
+        case .updated: .updated
+        case .unchanged: .unchanged
+        case .failed: .failed
+        }
     }
 
     /// Runs `applyToFiles()` in a task this model can cancel. Cancellation is

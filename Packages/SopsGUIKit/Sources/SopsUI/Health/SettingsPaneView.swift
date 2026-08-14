@@ -27,6 +27,8 @@ public struct SettingsPaneView: View {
                 .tabItem { Label(.settingsTabHealth, systemImage: "stethoscope") }
             KeyImportView(store: keyStore)
                 .tabItem { Label(.settingsTabKey, systemImage: "key") }
+            ScanSettingsPanel()
+                .tabItem { Label(.settingsTabScanning, systemImage: "magnifyingglass") }
             UpdateSettingsPanel(onConsentChanged: onUpdateConsentChanged)
                 .tabItem { Label(.settingsTabUpdates, systemImage: "arrow.down.circle") }
         }

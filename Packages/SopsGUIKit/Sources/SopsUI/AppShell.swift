@@ -536,7 +536,13 @@ private struct ProjectWorkspaceView: View {
                     selection: Binding(
                         get: { selectedFileURL },
                         set: { requestFileSwitch(to: $0) }),
-                    onNewFile: { requestNewFile() }
+                    onNewFile: { requestNewFile() },
+                    // Ticket #25 claim 2. `ProjectSidebarModel.addProject`
+                    // already owns error handling and selection for exactly
+                    // this action — the sidebar's own drag-and-drop add uses
+                    // it too — so this is the same call, reached from a
+                    // second place rather than a second implementation of it.
+                    onAddProjectAtPath: { path in projects.addProject(path: path) }
                 )
                 projectAccessBar(projectRoot: fileListModel.projectRoot)
             }
