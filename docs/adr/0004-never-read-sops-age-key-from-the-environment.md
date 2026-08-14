@@ -1,4 +1,4 @@
-# ADR 0003 — Never read `SOPS_AGE_KEY` from the environment
+# ADR 0004 — Never read `SOPS_AGE_KEY` from the environment
 
 **Date:** 2026-08-14
 **Status:** Accepted

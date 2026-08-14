@@ -63,7 +63,7 @@ import Foundation
 /// starts handling a variable whose *value* is a secret, which the never-log
 /// rule makes a decision to take deliberately rather than as a side effect. It
 /// is not checked today and nothing here implies it was — see
-/// [ADR 0003](../../../../docs/adr/0003-never-read-sops-age-key-from-the-environment.md)
+/// [ADR 0004](../../../../docs/adr/0004-never-read-sops-age-key-from-the-environment.md)
 /// for the reasoning and why this is permanent, not merely unimplemented.
 public enum AgeKeyFileLocations {
 
