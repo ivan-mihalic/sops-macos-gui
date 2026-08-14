@@ -102,8 +102,8 @@ ScratchDirectoryRegistry.shared.register(url)
         Thread.sleep(forTimeInterval: 0.05)
 
         for _ in 0..<6 {
-            try AtomicFileWriter.write(newPayload, to: destination)
-            try AtomicFileWriter.write(oldPayload, to: destination)
+            try AtomicFileWriter.write(newPayload, to: destination, expecting: nil)
+            try AtomicFileWriter.write(oldPayload, to: destination, expecting: nil)
         }
 
         observations.stop()
@@ -205,7 +205,7 @@ ScratchDirectoryRegistry.shared.register(url)
             try FileManager.default.setAttributes(
                 [.posixPermissions: originalMode], ofItemAtPath: destination.path)
 
-            try AtomicFileWriter.write(Data("after".utf8), to: destination)
+            try AtomicFileWriter.write(Data("after".utf8), to: destination, expecting: nil)
 
             let resulting = try mode(of: destination)
             #expect(
@@ -224,7 +224,7 @@ ScratchDirectoryRegistry.shared.register(url)
         let directory = try makeScratchDirectory()
         let destination = directory.appendingPathComponent("brand-new.yaml")
 
-        try AtomicFileWriter.write(Data("fresh".utf8), to: destination)
+        try AtomicFileWriter.write(Data("fresh".utf8), to: destination, expecting: nil)
 
         #expect(try mode(of: destination) == 0o600)
         #expect(try Data(contentsOf: destination) == Data("fresh".utf8))
@@ -250,7 +250,7 @@ ScratchDirectoryRegistry.shared.register(url)
 
         var captured: (any Error)?
         #expect(throws: (any Error).self) {
-            do { try AtomicFileWriter.write(Data("nope".utf8), to: destination) }
+            do { try AtomicFileWriter.write(Data("nope".utf8), to: destination, expecting: nil) }
             catch { captured = error; throw error }
         }
 
@@ -290,7 +290,7 @@ ScratchDirectoryRegistry.shared.register(targetDirectory)
         let link = directory.appendingPathComponent("secrets.yaml")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
 
-        try AtomicFileWriter.write(Data("after".utf8), to: link)
+        try AtomicFileWriter.write(Data("after".utf8), to: link, expecting: nil)
 
         #expect(isSymbolicLink(link), "the symlink was replaced by a regular file")
         let linkDestination = try FileManager.default.destinationOfSymbolicLink(atPath: link.path)
@@ -331,7 +331,7 @@ ScratchDirectoryRegistry.shared.register(targetDirectory)
         }
 
         #expect(throws: (any Error).self) {
-            try AtomicFileWriter.write(Data("replacement that must never land".utf8), to: destination)
+            try AtomicFileWriter.write(Data("replacement that must never land".utf8), to: destination, expecting: nil)
         }
 
         #expect(try Data(contentsOf: destination) == original, "the original was modified")
@@ -361,7 +361,7 @@ ScratchDirectoryRegistry.shared.register(targetDirectory)
         let secret = "correct-horse-battery-staple"
         var captured: String?
         do {
-            try AtomicFileWriter.write(Data(secret.utf8), to: destination)
+            try AtomicFileWriter.write(Data(secret.utf8), to: destination, expecting: nil)
         } catch {
             captured = "\(error)  \((error as? any CustomStringConvertible)?.description ?? "")"
         }
@@ -391,7 +391,7 @@ ScratchDirectoryRegistry.shared.register(targetDirectory)
         let destination = directory.appendingPathComponent("secrets.yaml")
         try Data("before".utf8).write(to: destination)
 
-        let receipt = try AtomicFileWriter.write(Data("after".utf8), to: destination)
+        let receipt = try AtomicFileWriter.write(Data("after".utf8), to: destination, expecting: nil)
 
         #expect(receipt.destination == destination.resolvingSymlinksInPath())
         #expect(
@@ -430,7 +430,7 @@ ScratchDirectoryRegistry.shared.register(targetDirectory)
         let link = directory.appendingPathComponent("secrets.yaml")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
 
-        let receipt = try AtomicFileWriter.write(Data("after".utf8), to: link)
+        let receipt = try AtomicFileWriter.write(Data("after".utf8), to: link, expecting: nil)
 
         #expect(receipt.destination == target.resolvingSymlinksInPath())
         #expect(
@@ -457,7 +457,7 @@ ScratchDirectoryRegistry.shared.register(targetDirectory)
         // that is what a second instance of this app would use, and because it
         // replaces the inode rather than editing in place — the case a
         // size-and-mtime-only check could plausibly miss.
-        try AtomicFileWriter.write(Data("what the other writer put there".utf8), to: destination)
+        try AtomicFileWriter.write(Data("what the other writer put there".utf8), to: destination, expecting: nil)
 
         #expect(throws: AtomicFileWriter.Error.destinationChangedOnDisk(path: destination.path)) {
             try AtomicFileWriter.write(Data("the clobbering write".utf8), to: destination,
@@ -534,7 +534,7 @@ ScratchDirectoryRegistry.shared.register(targetDirectory)
         let destination = directory.appendingPathComponent("secrets.yaml")
         try Data("before".utf8).write(to: destination)
 
-        let receipt = try AtomicFileWriter.write(Data("after".utf8), to: destination)
+        let receipt = try AtomicFileWriter.write(Data("after".utf8), to: destination, expecting: nil)
 
         #expect(receipt.fingerprint != nil)
         #expect(receipt.fingerprint == FileFingerprint.of(destination))
@@ -567,12 +567,12 @@ ScratchDirectoryRegistry.shared.register(targetDirectory)
     func noExpectationSkipsTheCheck() throws {
         let directory = try makeScratchDirectory()
         let fresh = directory.appendingPathComponent("new.yaml")
-        try AtomicFileWriter.write(Data("created".utf8), to: fresh)
+        try AtomicFileWriter.write(Data("created".utf8), to: fresh, expecting: nil)
         #expect(try Data(contentsOf: fresh) == Data("created".utf8))
 
         // And over an existing file that something else just rewrote.
         try Data("changed by someone else".utf8).write(to: fresh)
-        try AtomicFileWriter.write(Data("overwritten anyway".utf8), to: fresh)
+        try AtomicFileWriter.write(Data("overwritten anyway".utf8), to: fresh, expecting: nil)
         #expect(try Data(contentsOf: fresh) == Data("overwritten anyway".utf8))
     }
 
@@ -769,9 +769,81 @@ ScratchDirectoryRegistry.shared.register(targetDirectory)
         let destination = directory.appendingPathComponent("secrets.yaml")
         let contents = "klíč: hodnota 🔐\nlist:\n  - a\n"
 
-        try AtomicFileWriter.write(contents, to: destination)
+        try AtomicFileWriter.write(contents, to: destination, expecting: nil)
 
         #expect(try String(contentsOf: destination, encoding: .utf8) == contents)
         #expect(try Data(contentsOf: destination) == Data(contents.utf8))
+    }
+
+    // MARK: - A directory-sync shortfall is reported, never thrown (#19 item 3)
+
+    /// `syncDirectory`'s contract is that a save which already succeeded
+    /// never becomes a thrown error just because the *directory entry's* own
+    /// durability could not be confirmed afterward — see that function's doc
+    /// comment. This proves both halves at once: the save still succeeds
+    /// (the returned receipt and the file's contents are exactly what was
+    /// asked for), and the shortfall still reaches
+    /// `directorySyncFailureReporter` rather than vanishing silently.
+    ///
+    /// Forced deterministically, and without touching the shared,
+    /// process-wide `beforeReplaceHookForTesting` — every other test in this
+    /// suite that also uses that hook runs concurrently with this one
+    /// (`swift test` parallelizes within a suite, not just across suites;
+    /// measured directly: routing this same scenario through the hook
+    /// intermittently observed zero reports, because a *different* test's
+    /// hook closure — checking its own, different `destination` — had
+    /// overwritten this one's in the window between it being set and
+    /// `write` reaching the replace step). Stripping the directory's read
+    /// permission *before* calling `write` at all needs no shared state:
+    /// `lstat`, `open(O_CREAT|O_EXCL)` and `rename` on a directory entry
+    /// all need only write+execute, never read, so staging and the replace
+    /// still succeed exactly as they would with the directory's normal
+    /// mode. Only `syncDirectory`'s own `open(directory.path, O_RDONLY)`,
+    /// which specifically asks to read the directory, needs the bit that
+    /// is missing — reliably, on every run, with no race against anything
+    /// else in the suite.
+    @Test("a directory whose durability cannot be confirmed after the replace is reported, not thrown")
+    func directorySyncFailureIsReportedNotThrown() throws {
+        let directory = try makeScratchDirectory()
+        let destination = directory.appendingPathComponent("secrets.yaml")
+
+        let reports = ReportBox()
+        let originalReporter = AtomicFileWriter.directorySyncFailureReporter
+        defer {
+            AtomicFileWriter.directorySyncFailureReporter = originalReporter
+            // Restore read+write+execute so the suite's own teardown can
+            // still remove this directory.
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        }
+        AtomicFileWriter.directorySyncFailureReporter = { url, code in reports.record(url, code) }
+        try FileManager.default.setAttributes([.posixPermissions: 0o300], ofItemAtPath: directory.path)
+
+        let receipt = try AtomicFileWriter.write(Data("payload".utf8), to: destination, expecting: .absent)
+
+        #expect(receipt.destination == destination)
+        #expect(try Data(contentsOf: destination) == Data("payload".utf8), "the save itself must still have succeeded")
+
+        let seen = reports.snapshot()
+        #expect(seen.count == 1, "expected exactly one report, got \(seen.count)")
+        #expect(seen.first?.0 == directory)
+        #expect(seen.first?.1 == EACCES, "expected EACCES, got errno \(seen.first?.1 ?? -1)")
+    }
+
+    /// Thread-safe recorder for the test above — `AtomicFileWriter`'s own
+    /// static reporter can in principle be hit from more than one thread, and
+    /// `swift test` runs suites in parallel besides.
+    private final class ReportBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var entries: [(URL, Int32)] = []
+        func record(_ url: URL, _ code: Int32) {
+            lock.lock()
+            defer { lock.unlock() }
+            entries.append((url, code))
+        }
+        func snapshot() -> [(URL, Int32)] {
+            lock.lock()
+            defer { lock.unlock() }
+            return entries
+        }
     }
 }

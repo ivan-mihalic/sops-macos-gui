@@ -50,8 +50,16 @@ public enum RecipientRegistry {
     public enum Error: Swift.Error, Equatable, Sendable {
         case emptyLabel
         case invalidAgeRecipient
-        case duplicateAgeRecipient(String)
-        case duplicateID(UUID)
+        /// A record already exists whose `ageRecipient` matches the one being
+        /// saved. No associated value — see `RecipientLabelEditorModel
+        /// .explanation(for:)`'s doc comment: nothing in this codebase reads
+        /// one, a public key is not itself a secret, but a refusal that
+        /// quotes its input is a habit this type does not want to form,
+        /// least of all here.
+        case duplicateAgeRecipient
+        /// A record already exists with the same `id`. No associated value,
+        /// for the identical reason `duplicateAgeRecipient` has none.
+        case duplicateID
         case privateIdentityNotAllowed
         case recordNotFound(UUID)
         case changedOnDisk
@@ -63,6 +71,95 @@ public enum RecipientRegistry {
     public static func load(in project: URL) throws -> [RecipientRecord] {
         try loadSnapshot(in: project).records
     }
+
+    /// `load(in:)`, but for the six call sites in `SopsUI` that used to spell
+    /// it `(try? RecipientRegistry.load(in:)) ?? []` — every one of them a
+    /// pure label lookup with nowhere it was worth threading a thrown error
+    /// through. That idiom is honest about an *absent* registry (`.absent` is
+    /// a real, legitimate empty state — a project that has never named a
+    /// recipient), but it cannot tell absence apart from a `recipients.json`
+    /// that exists and cannot be decoded, and a corrupt-but-present file
+    /// degrades to the exact same silent `[]` either way.
+    ///
+    /// This distinguishes them. A file that fails to *decode* — the shape
+    /// `RecipientRegistryCorruptionTests` exercises — is moved aside the
+    /// same way `ProjectStore.quarantine(_:reason:)` moves a corrupt
+    /// `projects.json`, so the record is preserved for hand recovery and the
+    /// *next* write to this project's registry starts from a clean slate
+    /// rather than being one `save()` away from an unguarded overwrite of
+    /// bytes nobody could read. `quarantineNotice` is `nil` on every
+    /// ordinary path — absent, present and readable, or present and
+    /// undecodable but not on this specific move (see `quarantine(in:)`'s own
+    /// doc comment for that one narrower case) — and non-`nil` exactly when
+    /// something happened that the six call sites did not used to have any
+    /// way to tell their user about.
+    ///
+    /// Any *other* error `load(in:)` can throw — `Error.changedOnDisk` (a
+    /// second writer's fingerprint race, not corruption) or a transient
+    /// `Error.couldNotSave` from the read itself — degrades to `[]` with no
+    /// notice and no quarantine, matching every one of the six call sites'
+    /// prior behaviour for those cases exactly: neither is evidence the file
+    /// itself is bad.
+    public static func loadOrQuarantine(in project: URL) -> (records: [RecipientRecord], quarantineNotice: String?) {
+        do {
+            return (try load(in: project), nil)
+        } catch is DecodingError {
+            return quarantine(in: project)
+        } catch {
+            return ([], nil)
+        }
+    }
+
+    /// Moves an undecodable `recipients.json` aside — `recipients-corrupt-
+    /// <timestamp>-<uuid>.json`, alongside it in `.sops-gui/` — so the file
+    /// this call just failed to read cannot later be clobbered by an
+    /// unguarded save building its baseline from `(try? load) ?? []`'s empty
+    /// result.
+    ///
+    /// Goes through the same directory-descriptor path every other mutation
+    /// in this type does (`registryDirectoryDescriptor`, opened `O_NOFOLLOW`)
+    /// rather than a `FileManager` move keyed by URL, for the identical
+    /// reason the rest of this type does: once the directory is open by
+    /// descriptor, a symlink swapped in afterward cannot redirect the rename.
+    ///
+    /// The one case this cannot make safe on its own is the rename itself
+    /// failing — a read-only `.sops-gui` directory, most likely. `quarantineNotice`
+    /// still names the problem either way; only the wording differs, exactly
+    /// as `ProjectStore.quarantine(_:reason:)`'s `unsafeToWrite` split does.
+    private static func quarantine(in project: URL) -> (records: [RecipientRecord], quarantineNotice: String?) {
+        let displayPath = fileURL(in: project).path
+        guard let directory = try? registryDirectoryDescriptor(in: project, create: false)
+        else {
+            // No `.sops-gui` directory to open by descriptor — the file this
+            // call was told about must have vanished between `load`'s read
+            // and here. Nothing to quarantine; say so rather than claim a
+            // move that did not happen.
+            return ([], "Your recipient names at \(displayPath) could not be read, and this app could not open the directory that held them to move it aside. Names are unavailable until that is resolved by hand.")
+        }
+        defer { close(directory) }
+
+        let quarantineName = "recipients-corrupt-\(quarantineTimestampFormatter.string(from: Date()))-\(UUID().uuidString).json"
+        guard renameat(directory, recipientFileName, directory, quarantineName) == 0 else {
+            return ([], "Your recipient names at \(displayPath) could not be read, and this app could not move it aside to protect it either. Names are unavailable until the file at that path is moved, renamed, or deleted by hand.")
+        }
+        _ = fsync(directory)
+
+        let quarantinePath = directoryURL(in: project).appendingPathComponent(quarantineName).path
+        return ([], "Your recipient names at \(displayPath) could not be read, so the file has been moved aside to \(quarantinePath) in case it can be recovered by hand. Starting fresh from here — nothing was deleted, but every name will need to be re-added.")
+    }
+
+    /// `yyyyMMdd'T'HHmmss'Z'-<uuid>`, the same shape
+    /// `ProjectStore.quarantinedURL(for:)` uses and for the identical
+    /// reason: the timestamp alone is not unique at second resolution (two
+    /// corruption events landing in the same second collide), the `UUID` is
+    /// what actually guarantees it, and the timestamp is kept anyway because
+    /// it costs nothing and makes the backups sort chronologically.
+    private static let quarantineTimestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        return formatter
+    }()
 
     /// The state a caller must carry from its read/preview to a later save.
     /// It distinguishes a registry that was absent from an API caller that
@@ -223,9 +320,9 @@ public enum RecipientRegistry {
             if let refusal = refusal(forAgeRecipient: record.ageRecipient) {
                 throw refusal
             }
-            guard recordIDs.insert(record.id).inserted else { throw Error.duplicateID(record.id) }
+            guard recordIDs.insert(record.id).inserted else { throw Error.duplicateID }
             guard recipientIDs.insert(record.ageRecipient).inserted else {
-                throw Error.duplicateAgeRecipient(record.ageRecipient)
+                throw Error.duplicateAgeRecipient
             }
         }
     }

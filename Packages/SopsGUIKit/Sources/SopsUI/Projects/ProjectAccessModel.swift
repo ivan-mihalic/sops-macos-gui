@@ -75,6 +75,11 @@ public final class ProjectAccessModel {
     public private(set) var loadState: LoadState = .idle
     public private(set) var plan: ProjectRecipientApplier.Plan?
     public private(set) var registryRecords: [RecipientRecord] = []
+    /// Set when the last registry read found `recipients.json` present but
+    /// undecodable and moved it aside — see `RecipientRegistry
+    /// .loadOrQuarantine(in:)`. `nil` on every ordinary path, including a
+    /// project that has simply never named a recipient.
+    public private(set) var registryQuarantineNotice: String?
     /// The age recipients the creation rule names **more than once**, each
     /// listed here exactly once. Same collapse, and the same reason for
     /// disclosing it rather than tidying it away, as
@@ -102,7 +107,7 @@ public final class ProjectAccessModel {
     public let projectRoot: URL
     private let keyStore: SessionKeyStore
     private let applier: ProjectRecipientApplier
-    private let loadRegistry: (URL) -> [RecipientRecord]
+    private let loadRegistry: (URL) -> (records: [RecipientRecord], quarantineNotice: String?)
     private var runTask: Task<Void, Never>?
     /// Which refresh is allowed to publish its result.
     ///
@@ -126,13 +131,15 @@ public final class ProjectAccessModel {
     ///     paths without filesystem permission tricks.
     ///   - loadRegistry: How labels are read. Deliberately non-throwing — a
     ///     registry this cannot read degrades to "no labels" rather than
-    ///     hiding recipients the config itself names.
+    ///     hiding recipients the config itself names. Returns a notice
+    ///     alongside the records exactly when the registry existed but could
+    ///     not be decoded and was moved aside — see `registryQuarantineNotice`.
     public init(
         projectRoot: URL,
         keyStore: SessionKeyStore,
         applier: ProjectRecipientApplier = ProjectRecipientApplier(),
-        loadRegistry: @escaping (URL) -> [RecipientRecord] = { project in
-            (try? RecipientRegistry.load(in: project)) ?? []
+        loadRegistry: @escaping (URL) -> (records: [RecipientRecord], quarantineNotice: String?) = { project in
+            RecipientRegistry.loadOrQuarantine(in: project)
         }
     ) {
         self.projectRoot = projectRoot
@@ -258,7 +265,9 @@ public final class ProjectAccessModel {
         if stagedRecipients.isEmpty {
             stagedRecipients = collapsed.distinct
         }
-        registryRecords = loadRegistry(projectRoot)
+        let registry = loadRegistry(projectRoot)
+        registryRecords = registry.records
+        registryQuarantineNotice = registry.quarantineNotice
         loadState = .loaded
     }
 
@@ -270,7 +279,9 @@ public final class ProjectAccessModel {
     /// because a name changes nothing a plan is about. Nothing encrypted is read
     /// or written here.
     public func reloadRegistry() {
-        registryRecords = loadRegistry(projectRoot)
+        let registry = loadRegistry(projectRoot)
+        registryRecords = registry.records
+        registryQuarantineNotice = registry.quarantineNotice
     }
 
     /// Re-plans against the current staged set, so the config preview

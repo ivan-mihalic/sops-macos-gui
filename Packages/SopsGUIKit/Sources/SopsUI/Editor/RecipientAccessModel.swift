@@ -110,6 +110,15 @@ public final class RecipientAccessModel {
     /// `currentRecipients` every time `load()`/`apply()` succeeds.
     public private(set) var stagedRecipients: [String] = []
     public private(set) var registryRecords: [RecipientRecord] = []
+    /// Set when the last registry read found `recipients.json` present but
+    /// undecodable and moved it aside — see `RecipientRegistry
+    /// .loadOrQuarantine(in:)`. `nil` on every ordinary path, including a
+    /// project that has simply never named a recipient: that is a legitimate
+    /// empty registry, not a problem to report. The view renders this as a
+    /// banner rather than folding it into `loadState`, because losing
+    /// *labels* does not mean this file's own recipients — the thing
+    /// `loadState` is about — failed to load.
+    public private(set) var registryQuarantineNotice: String?
     /// The age recipients this file's SOPS metadata named **more than once**,
     /// each listed here exactly once.
     ///
@@ -136,7 +145,7 @@ public final class RecipientAccessModel {
     private let readFile: (URL) throws -> String
     private let fingerprintFile: (URL) -> FileFingerprint?
     private let writeFile: (String, URL, FileFingerprint?) throws -> FileFingerprint?
-    private let loadRegistry: (URL) -> [RecipientRecord]
+    private let loadRegistry: (URL) -> (records: [RecipientRecord], quarantineNotice: String?)
     /// The one bridge call `apply()` may make. A seam — not just
     /// `SopsBridge.updateRecipients` called inline — so a test can prove
     /// "apply calls only this" directly (spy on the closure) instead of only
@@ -173,7 +182,10 @@ public final class RecipientAccessModel {
     ///     Deliberately non-throwing: the registry is a label directory, not
     ///     an access authority, so a registry this cannot read (missing,
     ///     malformed) degrades to "no labels" rather than blocking the
-    ///     recipients the file's own metadata already reports.
+    ///     recipients the file's own metadata already reports. Returns a
+    ///     notice alongside the records exactly when the registry existed
+    ///     but could not be decoded and was moved aside — see
+    ///     `registryQuarantineNotice`.
     public init(
         fileURL: URL,
         projectURL: URL?,
@@ -184,8 +196,8 @@ public final class RecipientAccessModel {
             contents, url, expecting in
             try AtomicFileWriter.write(contents, to: url, expecting: expecting).fingerprint
         },
-        loadRegistry: @escaping (URL) -> [RecipientRecord] = { project in
-            (try? RecipientRegistry.load(in: project)) ?? []
+        loadRegistry: @escaping (URL) -> (records: [RecipientRecord], quarantineNotice: String?) = { project in
+            RecipientRegistry.loadOrQuarantine(in: project)
         },
         rewrapRecipients: @escaping (String, [String], String) async throws -> String = RecipientAccessModel
             .defaultRewrap
@@ -303,7 +315,9 @@ public final class RecipientAccessModel {
             currentRecipients = collapsed.distinct
             stagedRecipients = collapsed.distinct
             duplicatedRecipients = collapsed.duplicated
-            registryRecords = projectURL.map(loadRegistry) ?? []
+            let registry = projectURL.map(loadRegistry)
+            registryRecords = registry?.records ?? []
+            registryQuarantineNotice = registry?.quarantineNotice
             loadState = .loaded
         } catch let error as SopsBridgeError {
             reset()
@@ -323,7 +337,9 @@ public final class RecipientAccessModel {
     /// all. Nothing encrypted is read or written here.
     public func reloadRegistry() {
         guard let projectURL else { return }
-        registryRecords = loadRegistry(projectURL)
+        let registry = loadRegistry(projectURL)
+        registryRecords = registry.records
+        registryQuarantineNotice = registry.quarantineNotice
     }
 
     private func reset() {
@@ -331,6 +347,7 @@ public final class RecipientAccessModel {
         stagedRecipients = []
         duplicatedRecipients = []
         registryRecords = []
+        registryQuarantineNotice = nil
         encryptedContents = nil
         loadedFingerprint = nil
     }

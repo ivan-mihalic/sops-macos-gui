@@ -199,12 +199,10 @@ public final class RecipientLabelEditorModel {
 
     /// Every refusal the registry can give, translated to a fixed sentence.
     ///
-    /// `duplicateAgeRecipient` and `duplicateID` carry values in their
-    /// associated data and neither is used: a public key is not a secret, but a
-    /// refusal that quotes its input is a habit that reaches the one field where
-    /// it would matter. The registry refuses private-key-shaped text in the
-    /// label, the note and the recipient alike, and this is what the user is
-    /// shown when it does.
+    /// `duplicateAgeRecipient` and `duplicateID` carry no associated value —
+    /// see their own doc comments on `RecipientRegistry.Error`. The registry
+    /// refuses private-key-shaped text in the label, the note and the
+    /// recipient alike, and this is what the user is shown when it does.
     static func explanation(for error: RecipientRegistry.Error) -> LocalizedKey {
         switch error {
         case .emptyLabel: .recipientEditorErrorEmptyLabel

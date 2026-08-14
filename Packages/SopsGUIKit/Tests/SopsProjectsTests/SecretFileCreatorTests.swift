@@ -568,4 +568,109 @@ struct SecretFileCreatorTests {
             #expect(!description.contains(sentinelValue), "leaked in: \(description)")
         }
     }
+
+    // MARK: - Step 7's directory does not survive a step 8 failure (#19 item 4)
+
+    /// Both halves of the property in one test, run strictly one after the
+    /// other: `afterDirectoryCreatedHookForTesting` is process-wide mutable
+    /// state (`swift test` parallelizes within a suite, not just across
+    /// suites — measured directly against an earlier, two-test version of
+    /// this: with each half in its own `@Test`, one intermittently observed
+    /// the *other's* directory-scoped hook closure clobbering its own in the
+    /// window between being set and firing, which sometimes let a write
+    /// intended to fail land untouched instead). A single test has no such
+    /// window against itself, and nothing else in this suite touches this
+    /// particular hook.
+    ///
+    /// **Empty case:** a losing `RENAME_EXCL` race — or, as forced here,
+    /// `AtomicFileWriter` refusing for a different reason — used to leave
+    /// the intermediate directory step 7 created sitting on disk forever,
+    /// empty, with the secrets file itself still never having existed.
+    /// Forced deterministically: the hook fires right after step 7 succeeds
+    /// and strips write permission from the directory it just created, so
+    /// `AtomicFileWriter`'s own temp-file staging (`open(O_CREAT|O_EXCL)`,
+    /// which needs write on its containing directory) fails before anything
+    /// is ever placed inside it.
+    ///
+    /// **Non-empty case**, and the reason cleanup checks "is it empty"
+    /// rather than "did I create it": a directory a second writer has since
+    /// put a real file into must never be removed just because *this* call's
+    /// own write failed. Simulated by having the hook plant an unrelated
+    /// file in the directory before also revoking write permission — from
+    /// this call's point of view indistinguishable from a race it lost after
+    /// already creating the directory.
+    @Test("step 7's directory survives exactly when something real is in it, never otherwise")
+    func directoryFromFailedWriteSurvivesOnlyWhenNonEmpty() throws {
+        let owner = try AgeKeyPair.generate()
+
+        // Empty case.
+        do {
+            let (_, project) = try makeProject()
+            let nested = project.appendingPathComponent("a", isDirectory: true)
+                .appendingPathComponent("b", isDirectory: true)
+            let destination = nested.appendingPathComponent("secret.yaml")
+
+            SecretFileCreator.afterDirectoryCreatedHookForTesting = { directory in
+                // Every other test in this suite also calls `create(...)`
+                // concurrently and would otherwise trip this same hook with
+                // its own, unrelated directory — see this test's own doc
+                // comment.
+                guard directory == nested else { return }
+                try? FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+            }
+            defer {
+                SecretFileCreator.afterDirectoryCreatedHookForTesting = nil
+                // In case an assertion above fails first and leaves it locked.
+                try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: nested.path)
+            }
+
+            #expect(throws: (any Error).self) {
+                try SecretFileCreator.create(
+                    .empty, plan: plan([owner.public]), at: destination, in: project,
+                    sessionKey: owner.private)
+            }
+
+            #expect(
+                !FileManager.default.fileExists(atPath: nested.path),
+                "the leaf directory this call created should not have survived the failed write")
+            #expect(
+                !FileManager.default.fileExists(atPath: project.appendingPathComponent("a").path),
+                "the intermediate directory this call created should not have survived either")
+        }
+
+        // Non-empty case.
+        do {
+            let (_, project) = try makeProject()
+            let directory = project.appendingPathComponent("secrets", isDirectory: true)
+            let destination = directory.appendingPathComponent("secret.yaml")
+
+            SecretFileCreator.afterDirectoryCreatedHookForTesting = { hookDirectory in
+                guard hookDirectory == directory else { return }
+                // A "second writer" landed something real in here first —
+                // before write permission is revoked, or this write itself
+                // could not have placed it either.
+                try? Data("someone else's file".utf8).write(
+                    to: hookDirectory.appendingPathComponent("other.yaml"))
+                try? FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: hookDirectory.path)
+            }
+            defer {
+                SecretFileCreator.afterDirectoryCreatedHookForTesting = nil
+                try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            }
+
+            #expect(throws: (any Error).self) {
+                try SecretFileCreator.create(
+                    .empty, plan: plan([owner.public]), at: destination, in: project,
+                    sessionKey: owner.private)
+            }
+
+            #expect(
+                FileManager.default.fileExists(atPath: directory.path),
+                "a directory holding another writer's file must survive")
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            #expect(
+                FileManager.default.fileExists(atPath: directory.appendingPathComponent("other.yaml").path),
+                "the other writer's file must still be there")
+        }
+    }
 }

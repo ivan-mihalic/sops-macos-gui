@@ -36,6 +36,17 @@ if [[ ! -e ../../Engine/build/SopsBridge.xcframework ]]; then
     ../../Engine/build-xcframework.sh
 fi
 
+# #26 item 1: an xcframework that *exists* but no longer matches the Go
+# sources in Engine/ is a worse trap than a missing one — the suite runs and
+# reports a result, just about a different engine than the one in the diff.
+# See check-xcframework-freshness.sh's own header for the incident this
+# closes. Deliberately refuses rather than auto-rebuilding: the point is that
+# a stale archive is never silently believed, not that this script should
+# guess what the right fix is on every run.
+if ! ../../Scripts/check-xcframework-freshness.sh; then
+    exit 1
+fi
+
 log=$(mktemp -t sopsgui-test)
 trap 'rm -f "$log"' EXIT
 

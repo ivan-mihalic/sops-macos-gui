@@ -24,8 +24,11 @@ private struct Projects: ProjectSourceProviding {
 @Suite("project finding identity")
 struct ProjectFindingIdentityTests {
 
-    /// The exact list from the review. Nine findings, and before the fix only
-    /// six distinct ids.
+    /// The exact list from the review, updated from nine to twelve findings
+    /// when `project.<n>.file-permissions` (#19 item 5) joined
+    /// sops-yaml/recipients/gitignore as the fourth finding per project.
+    /// Before the identity fix, the nine (now twelve) collapsed to six
+    /// distinct ids.
     @Test("names that collide after disambiguation still produce unique ids")
     func disambiguationDoesNotCreateCollisions() async throws {
         let roots = try (0..<3).map { _ -> String in
@@ -41,7 +44,7 @@ struct ProjectFindingIdentityTests {
         let findings = await ProjectHealthCheck(source: Projects(
             projects: zip(names, roots).map { InspectedProject(name: $0, rootPath: $1) })).run()
 
-        #expect(findings.count == 9)
+        #expect(findings.count == 12)
         #expect(Set(findings.map(\.id)).count == findings.count,
                 "ids collide: \(findings.map(\.id).sorted())")
     }

@@ -39,7 +39,7 @@ struct RecipientRegistryTests {
         let duplicate = RecipientRecord(label: "Backup", kind: .server, ageRecipient: Self.firstPublicKey)
         try RecipientRegistry.upsert(first, in: project)
 
-        #expect(throws: RecipientRegistry.Error.duplicateAgeRecipient(Self.firstPublicKey)) {
+        #expect(throws: RecipientRegistry.Error.duplicateAgeRecipient) {
             try RecipientRegistry.upsert(duplicate, in: project)
         }
         #expect(try RecipientRegistry.load(in: project) == [first])
@@ -182,7 +182,7 @@ struct RecipientRegistryTests {
         let first = RecipientRecord(id: id, label: "Laptop", kind: .device, ageRecipient: Self.firstPublicKey)
         let duplicate = RecipientRecord(id: id, label: "Server", kind: .server, ageRecipient: Self.secondPublicKey)
 
-        #expect(throws: RecipientRegistry.Error.duplicateID(id)) {
+        #expect(throws: RecipientRegistry.Error.duplicateID) {
             try RecipientRegistry.save([first, duplicate], in: project)
         }
     }
@@ -199,7 +199,7 @@ struct RecipientRegistryTests {
         let file = RecipientRegistry.fileURL(in: project)
         let observed = try RecipientRegistry.expectedState(in: project)
 
-        try AtomicFileWriter.write(try JSONEncoder().encode([external]), to: file)
+        try AtomicFileWriter.write(try JSONEncoder().encode([external]), to: file, expecting: nil)
 
         #expect(throws: RecipientRegistry.Error.changedOnDisk) {
             try RecipientRegistry.upsert(ours, in: project, expecting: observed)

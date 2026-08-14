@@ -119,4 +119,60 @@ struct RecipientRegistryCorruptionTests {
         let survivors = try RecipientRegistry.load(in: project)
         #expect(survivors.count == 1, "the corrupt contents are gone, replaced by what the caller had")
     }
+
+    // MARK: - loadOrQuarantine (#27 item 5) — what the six SopsUI call sites use now
+
+    @Test("loadOrQuarantine moves a corrupt registry aside and reports it, rather than degrading silently")
+    func loadOrQuarantineMovesACorruptFileAsideAndReportsIt() throws {
+        let (project, file) = try makeProjectWithCorruptRegistry()
+
+        let result = RecipientRegistry.loadOrQuarantine(in: project)
+
+        #expect(result.records.isEmpty)
+        let notice = try #require(result.quarantineNotice, "a corrupt file must produce a notice, not silence")
+        #expect(notice.contains(file.path))
+
+        // The corrupt bytes are gone from the original path...
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        // ...but not deleted: they are still readable, moved aside.
+        let directory = file.deletingLastPathComponent()
+        let siblings = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        let quarantined = try #require(siblings.first { $0.hasPrefix("recipients-corrupt-") })
+        #expect(try Data(contentsOf: directory.appendingPathComponent(quarantined)) == Self.corruptBytes)
+
+        // The quarantine really did clear the slate: a subsequent write no
+        // longer needs to fight the corrupt bytes' fingerprint.
+        #expect(try RecipientRegistry.expectedState(in: project) == .absent)
+        try RecipientRegistry.upsert(newRecord(), in: project, expecting: .absent)
+        #expect(try RecipientRegistry.load(in: project).count == 1)
+    }
+
+    @Test("loadOrQuarantine leaves an absent registry alone — absence is not corruption")
+    func loadOrQuarantineLeavesAnAbsentRegistryAlone() throws {
+        let project = FileManager.default.temporaryDirectory
+            .appendingPathComponent("registry-absent-\(UUID().uuidString)", isDirectory: true)
+        ScratchDirectoryRegistry.shared.register(project)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+
+        let result = RecipientRegistry.loadOrQuarantine(in: project)
+
+        #expect(result.records.isEmpty)
+        #expect(result.quarantineNotice == nil)
+        #expect(!FileManager.default.fileExists(atPath: project.appendingPathComponent(".sops-gui").path),
+                "nothing should have been created just by reading")
+    }
+
+    @Test("loadOrQuarantine leaves a valid registry exactly as it is")
+    func loadOrQuarantineLeavesAValidRegistryAlone() throws {
+        let project = FileManager.default.temporaryDirectory
+            .appendingPathComponent("registry-valid-\(UUID().uuidString)", isDirectory: true)
+        ScratchDirectoryRegistry.shared.register(project)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try RecipientRegistry.save([newRecord()], in: project)
+
+        let result = RecipientRegistry.loadOrQuarantine(in: project)
+
+        #expect(result.records.count == 1)
+        #expect(result.quarantineNotice == nil)
+    }
 }

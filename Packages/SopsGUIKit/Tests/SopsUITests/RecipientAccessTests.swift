@@ -400,6 +400,34 @@ struct RecipientAccessRegistryTests {
         #expect(unknownEntry?.label == nil)
     }
 
+    /// #27 item 5, exercised through this model's real default `loadRegistry`
+    /// rather than an injected seam — the same property `ProjectAccessTests
+    /// .corruptRegistrySurfacesAQuarantineNotice` proves for the sibling
+    /// model.
+    @Test("a corrupt registry surfaces a quarantine notice, and recipients still show unlabelled")
+    func corruptRegistrySurfacesAQuarantineNotice() async throws {
+        let known = try AgeKeyPair.generate()
+        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [known.public])
+        let fileURL = try fixtureFile(encrypted)
+
+        let project = try makeProject()
+        let registryDirectory = project.appendingPathComponent(".sops-gui", isDirectory: true)
+        try FileManager.default.createDirectory(at: registryDirectory, withIntermediateDirectories: true)
+        try Data(#"{"records": "not an array"}"#.utf8)
+            .write(to: registryDirectory.appendingPathComponent("recipients.json"))
+
+        let keyStore = SessionKeyStore()
+        try keyStore.importKey(known.private)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: project, keyStore: keyStore)
+        await model.load()
+
+        #expect(model.registryQuarantineNotice != nil)
+        #expect(model.entries.first?.ageRecipient == known.public)
+        #expect(model.entries.first?.label == nil)
+        #expect(!FileManager.default.fileExists(
+            atPath: registryDirectory.appendingPathComponent("recipients.json").path))
+    }
+
     @Test("a file with no project still shows every recipient by public key")
     func noProjectMeansNoLabelsButNothingHidden() async throws {
         let owner = try AgeKeyPair.generate()
@@ -447,7 +475,7 @@ struct RecipientAccessSeamTests {
         rewrapRecipients: @escaping (String, [String], String) async throws -> String = { contents, recipients, key in
             try await RecipientAccessModel.defaultRewrap(contents, recipients, key)
         },
-        loadRegistry: @escaping (URL) -> [RecipientRecord] = { _ in [] },
+        loadRegistry: @escaping (URL) -> (records: [RecipientRecord], quarantineNotice: String?) = { _ in ([], nil) },
         keyStore: SessionKeyStore
     ) throws -> RecipientAccessModel {
         // Only encrypted when no `readFile` override is supplied — a test
@@ -635,7 +663,7 @@ struct RecipientAccessSeamTests {
                 // Deliberately unrelated to `project` — proving the labels
                 // came from this closure, not a real
                 // `.sops-gui/recipients.json` this test never created.
-                return [RecipientRecord(label: "Injected Label", kind: .device, ageRecipient: known.public)]
+                return ([RecipientRecord(label: "Injected Label", kind: .device, ageRecipient: known.public)], nil)
             },
             keyStore: keyStore)
 

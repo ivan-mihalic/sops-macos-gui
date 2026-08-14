@@ -164,6 +164,34 @@ struct ProjectAccessStagingTests {
         #expect(model.entries.first?.label == "Alice's laptop")
     }
 
+    /// #27 item 5: the default `loadRegistry` is now `RecipientRegistry
+    /// .loadOrQuarantine(in:)`, not a bare `(try? load) ?? []` — this proves
+    /// that wiring end to end, through the model's real default, not an
+    /// injected seam.
+    @Test("a corrupt registry surfaces a quarantine notice, and recipients still show unlabelled")
+    func corruptRegistrySurfacesAQuarantineNotice() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let (root, _) = try makeProject(owner: owner)
+        let registryDirectory = root.appendingPathComponent(".sops-gui", isDirectory: true)
+        try FileManager.default.createDirectory(at: registryDirectory, withIntermediateDirectories: true)
+        try Data(#"{"records": "not an array"}"#.utf8)
+            .write(to: registryDirectory.appendingPathComponent("recipients.json"))
+
+        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
+        await model.load()
+
+        #expect(model.registryQuarantineNotice != nil)
+        // Labels are unavailable, but the recipient itself is not hidden —
+        // exactly the same degrade `unlabelledRecipientsAreNeverHidden`
+        // pins for a registry that was simply never created.
+        #expect(model.entries.first?.ageRecipient == owner.public)
+        #expect(model.entries.first?.label == nil)
+        // The corrupt file no longer sits at the path a future save would
+        // have to fight the fingerprint of.
+        #expect(!FileManager.default.fileExists(
+            atPath: registryDirectory.appendingPathComponent("recipients.json").path))
+    }
+
     @Test("discarding staged changes returns to what the config declares")
     func discardRestoresTheBaseline() async throws {
         let owner = try ProjectAgeKeyPair.generate()

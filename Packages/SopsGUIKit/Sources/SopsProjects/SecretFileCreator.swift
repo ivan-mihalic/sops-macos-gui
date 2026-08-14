@@ -62,13 +62,14 @@ public struct ResolvedEncryption: Equatable, Sendable {
 /// any check above simply never existed — there is no delete-on-failure path
 /// anywhere in this type, because there is nothing to delete: the *file* was
 /// never there. Step 7 is the exception worth naming precisely: it can
-/// create intermediate directories before step 8 ever runs, and this type
-/// does not unwind them if step 8 then fails — a losing `RENAME_EXCL` race,
-/// or `AtomicFileWriter` refusing for some other reason, can leave an empty
-/// directory behind even though the secrets file itself still never
-/// existed. That directory is not itself sensitive (nothing about a
-/// directory name is a secret value) and a later retry at the same
-/// destination reuses it rather than tripping over it.
+/// create intermediate directories before step 8 ever runs. If step 8 then
+/// fails — a losing `RENAME_EXCL` race, or `AtomicFileWriter` refusing for
+/// some other reason — `finishWriting` removes exactly what step 7 created,
+/// and only what is still empty: a directory a second writer's own file has
+/// since landed in (the race-winner case) is left alone, because that
+/// content is precisely what must not be touched. A directory that
+/// pre-existed before this call is never touched either way. See
+/// `finishWriting`'s catch clause for the mechanism.
 ///
 /// ## Self-readability is the default, and the check happens where the
 /// answer actually exists
@@ -436,7 +437,14 @@ public enum SecretFileCreator {
         //    documentation for `createDirectory(at:withIntermediateDirectories:attributes:)`,
         //    which applies `attributes` to every directory this call
         //    creates, not only the last).
+        //
+        //    `existingAncestor` is found *before* creating anything: the
+        //    nearest directory on the way to `directory` that already exists.
+        //    If step 8 below then fails, that is exactly the boundary a
+        //    cleanup may remove up to and not past — see `finishWriting`'s
+        //    catch clause and `removeEmptyDirectoriesCreatedForThisCall`.
         let directory = destination.deletingLastPathComponent()
+        let existingAncestor = nearestExistingAncestor(of: directory)
         do {
             try FileManager.default.createDirectory(
                 at: directory,
@@ -447,6 +455,14 @@ public enum SecretFileCreator {
                 path: directory.path, reason: (error as NSError).localizedDescription)
         }
 
+        // Test-only, and a no-op in every build that does not set it. Lets
+        // `SecretFileCreatorTests` land step 8's failure deterministically
+        // — chmodding the directory this call just created so staging the
+        // temp file inside it fails — rather than racing a real losing
+        // `RENAME_EXCL` attempt, which this process cannot reliably force
+        // from outside `AtomicFileWriter`.
+        afterDirectoryCreatedHookForTesting?(directory)
+
         // 8. The only step that touches disk in this whole call, and the
         //    only one still capable of refusing: `.absent` closes the
         //    window between step 2's check and this write atomically
@@ -456,9 +472,76 @@ public enum SecretFileCreator {
         do {
             return try AtomicFileWriter.write(encrypted, to: destination, expecting: .absent)
         } catch let error as AtomicFileWriter.Error {
+            // A losing `RENAME_EXCL` race, or `AtomicFileWriter` refusing for
+            // some other reason (a permissions problem staging the temp
+            // file, a full volume), can leave the directory step 7 just
+            // created sitting there with nothing in it — the secrets file
+            // itself still never existed (see this type's own doc comment,
+            // "The order is the whole point"), but the directory now does,
+            // for no reason a retry needs. Only removed when it is genuinely
+            // empty: if another writer's file *did* land inside it (the
+            // race-winner case), that content is exactly what must not be
+            // touched, and `removeEmptyDirectoriesCreatedForThisCall` checks
+            // for that before removing anything.
+            removeEmptyDirectoriesCreatedForThisCall(from: directory, upTo: existingAncestor)
             throw Failure.write(error)
         }
     }
+
+    /// The nearest ancestor of `url` that already exists on disk — `url`
+    /// itself if it is already there. Used to bound cleanup on a later
+    /// failure to exactly what step 7 created and nothing older.
+    private static func nearestExistingAncestor(of url: URL) -> URL {
+        var current = url
+        while !FileManager.default.fileExists(atPath: current.path) {
+            let parent = current.deletingLastPathComponent()
+            guard parent.path != current.path else { break }
+            current = parent
+        }
+        return current
+    }
+
+    /// Removes `directory` and any of its now-empty parents, stopping at
+    /// (and never touching) `existingAncestor` — the directory that was
+    /// already there before step 7 ran. Stops at the first non-empty
+    /// directory it finds, innermost first, which is what makes this safe to
+    /// call after a race a second writer won: that writer's file is what
+    /// makes the directory non-empty, and finding it here is exactly the
+    /// signal to leave the rest alone.
+    private static func removeEmptyDirectoriesCreatedForThisCall(
+        from directory: URL, upTo existingAncestor: URL
+    ) {
+        var current = directory
+        while current.path != existingAncestor.path {
+            guard
+                let entries = try? FileManager.default.contentsOfDirectory(atPath: current.path),
+                entries.isEmpty
+            else { return }
+            guard (try? FileManager.default.removeItem(at: current)) != nil else { return }
+            let parent = current.deletingLastPathComponent()
+            guard parent.path != current.path else { return }
+            current = parent
+        }
+    }
+
+    /// See the call site in `finishWriting` above. Lock-guarded for the same
+    /// reason `AtomicFileWriter.beforeReplaceHookForTesting` is: process-wide
+    /// mutable state that `swift test`'s parallel execution can touch from
+    /// more than one thread.
+    static var afterDirectoryCreatedHookForTesting: (@Sendable (URL) -> Void)? {
+        get {
+            afterDirectoryCreatedHookLock.lock()
+            defer { afterDirectoryCreatedHookLock.unlock() }
+            return unguardedAfterDirectoryCreatedHook
+        }
+        set {
+            afterDirectoryCreatedHookLock.lock()
+            defer { afterDirectoryCreatedHookLock.unlock() }
+            unguardedAfterDirectoryCreatedHook = newValue
+        }
+    }
+    private static let afterDirectoryCreatedHookLock = NSLock()
+    private static nonisolated(unsafe) var unguardedAfterDirectoryCreatedHook: (@Sendable (URL) -> Void)?
 
     // MARK: - Step 2: pre-existing destination
 

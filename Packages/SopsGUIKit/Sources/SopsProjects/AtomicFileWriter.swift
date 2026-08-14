@@ -270,9 +270,12 @@ public enum AtomicFileWriter {
     }
 
     /// Writes `contents` as UTF-8. See `write(_:to:expecting:)`.
+    ///
+    /// `expecting:` has no default here on purpose — see the `Data` overload
+    /// just below for why.
     @discardableResult
     public static func write(
-        _ contents: String, to url: URL, expecting: FileFingerprint? = nil
+        _ contents: String, to url: URL, expecting: FileFingerprint?
     ) throws -> AtomicWriteReceipt {
         try write(Data(contents.utf8), to: url, expecting: expecting)
     }
@@ -294,20 +297,30 @@ public enum AtomicFileWriter {
     ///   a file the user already opened.
     /// - Parameter expecting: What the caller last saw at `url`. When
     ///   non-`nil` and the destination no longer matches it, nothing is
-    ///   written and `Error.destinationChangedOnDisk` is thrown. `nil` — the
-    ///   default — means the caller has no expectation to check, which is
-    ///   right for a file only this app writes and wrong for a document the
-    ///   user also edits with other tools. Equivalent to
-    ///   `write(_:to:expecting:)` taking an `Expectation`, with `nil` mapped
-    ///   to `.unchecked` and a fingerprint mapped to `.matching`. See the "A
-    ///   second writer" section of this type's doc comment for the guarantee
-    ///   and its limit.
+    ///   written and `Error.destinationChangedOnDisk` is thrown. `nil` means
+    ///   the caller has no expectation to check, which is right for a file
+    ///   only this app writes and wrong for a document the user also edits
+    ///   with other tools. Equivalent to `write(_:to:expecting:)` taking an
+    ///   `Expectation`, with `nil` mapped to `.unchecked` and a fingerprint
+    ///   mapped to `.matching`. See the "A second writer" section of this
+    ///   type's doc comment for the guarantee and its limit.
+    ///
+    ///   Deliberately **no default value**. A caller that wants `.unchecked`
+    ///   must write `expecting: nil` — visibly, at the call site — rather
+    ///   than getting it by omitting the parameter. This overload used to
+    ///   default to `nil`, which meant a brand new call site that forgot to
+    ///   think about a concurrent writer compiled exactly like one that
+    ///   considered the question and decided it did not apply: nothing
+    ///   distinguished "I checked, and unchecked is right here" from "I
+    ///   didn't think about it". Every call site in this codebase already
+    ///   passed `expecting:` explicitly before this changed — this closes
+    ///   the gap for the next one, not this one.
     /// - Returns: What was written where, including the staging path and the
     ///   fingerprint to pass as the *next* write's `expecting:`. See
     ///   `AtomicWriteReceipt`.
     @discardableResult
     public static func write(
-        _ data: Data, to url: URL, expecting: FileFingerprint? = nil
+        _ data: Data, to url: URL, expecting: FileFingerprint?
     ) throws -> AtomicWriteReceipt {
         try write(data, to: url, expecting: expecting.map(Expectation.matching) ?? .unchecked)
     }
@@ -631,16 +644,63 @@ public enum AtomicFileWriter {
     /// Best-effort `fsync` of the directory the replace happened in, so the
     /// new directory entry is durable and not just the file's contents.
     ///
-    /// Deliberately returns nothing and reports nothing. It runs *after* the
-    /// replace, so by the time it could fail the save has already succeeded —
-    /// see the "What this does not guarantee" section of the type's doc
-    /// comment, which states exactly this rather than letting the code imply
-    /// a stronger promise than it keeps.
+    /// Deliberately returns nothing and *throws* nothing — this runs *after*
+    /// the replace, so by the time it could fail the save has already
+    /// succeeded, and turning that into a reported error would be the more
+    /// damaging lie. See the "What this does not guarantee" section of the
+    /// type's doc comment, which states exactly this rather than letting the
+    /// code imply a stronger promise than it keeps.
+    ///
+    /// It does still *log* a failure, to `directorySyncFailureReporter` — a
+    /// best-effort save that could not confirm the directory entry itself is
+    /// durable is worth knowing about after the fact (a crash report, a
+    /// support conversation about a save that "disappeared" after a power
+    /// loss), even though it is deliberately not worth failing the save over
+    /// in the moment. Only the directory's path and the failing `errno` ever
+    /// reach the reporter — never `data`, per this type's "Errors never
+    /// contain the file's contents" discipline, which applies here exactly as
+    /// it does to every thrown `Error` case above.
     private static func syncDirectory(_ directory: URL) {
         let descriptor = open(directory.path, O_RDONLY)
-        guard descriptor >= 0 else { return }
-        _ = fsync(descriptor)
-        close(descriptor)
+        guard descriptor >= 0 else {
+            directorySyncFailureReporter(directory, errno)
+            return
+        }
+        defer { close(descriptor) }
+        guard fsync(descriptor) == 0 else {
+            directorySyncFailureReporter(directory, errno)
+            return
+        }
+    }
+
+    /// Where a directory-sync failure (see `syncDirectory` above) is
+    /// reported. `internal`, not `private`, so `AtomicFileWriterTests` can
+    /// substitute a capturing closure via `@testable import` instead of
+    /// parsing stderr — the same reason `beforeReplaceHookForTesting` is
+    /// `internal` rather than `private`. The production default writes one
+    /// line to standard error: path and errno only, nothing that could be a
+    /// secret value, and never anything that throws or blocks the caller.
+    ///
+    /// Lock-guarded for the identical reason `beforeReplaceHookForTesting`
+    /// is: `swift test` runs suites in parallel, and this is process-wide
+    /// mutable state.
+    static var directorySyncFailureReporter: @Sendable (URL, Int32) -> Void {
+        get {
+            reporterLock.lock()
+            defer { reporterLock.unlock() }
+            return unguardedDirectorySyncFailureReporter
+        }
+        set {
+            reporterLock.lock()
+            defer { reporterLock.unlock() }
+            unguardedDirectorySyncFailureReporter = newValue
+        }
+    }
+    private static let reporterLock = NSLock()
+    private static nonisolated(unsafe) var unguardedDirectorySyncFailureReporter: @Sendable (URL, Int32) -> Void = {
+        directory, code in
+        FileHandle.standardError.write(
+            Data("sops-macos-gui: could not confirm \(directory.path) is durable on disk: \(String(cString: strerror(code)))\n".utf8))
     }
 
     /// `strerror` for the current `errno`. A path is safe to name; this never

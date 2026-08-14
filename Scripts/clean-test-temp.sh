@@ -21,9 +21,24 @@
 # repo produces, and it is narrow enough not to touch the OS's own scratch
 # files (`ibtoold-*`, `TemporaryDirectory.*`, `com.apple.*`, sockets, caches).
 #
+# Also `go-build<digits>` — a second, unrelated shape, not a fixture at all:
+# `go build`'s own per-invocation cache directory (`cmd/go/internal/work`
+# names it that way), one per run of `Engine/build-xcframework.sh` and every
+# `go test`/`go vet` in `Engine/gobridge`. It carries no UUID, so the pattern
+# above never matched it — measured on this machine (#26 item 5): 2.36 GB
+# across leftover `go-build*` directories that this script had never once
+# swept. Same age floor, same reasoning: `go build` removes its own cache
+# directory on a normal exit, so anything old enough to clear `-mmin` is one a
+# killed or crashed `go` process left behind, not one still in use.
+#
 # What it deliberately does NOT do: match on a hand-maintained list of label
 # prefixes. There are 75+ of them across the suite and a stale list silently
 # under-cleans, which is the failure mode this script exists to prevent.
+# `go-build*` is a named exception because it is not a `<label>-<UUID>`
+# fixture in the first place — extending the *regex* to cover it would either
+# loosen the UUID requirement (matching things that are not fixtures either)
+# or bolt on a second, differently-shaped pattern inline. It gets its own
+# `find`, kept to exactly this one name, rather than either.
 #
 # The age floor is the safety catch: a run in another terminal, or a test still
 # executing right now, owns entries younger than the floor. Default is 60
@@ -59,6 +74,17 @@ while IFS= read -r -d '' entry; do
 done < <(
     find -E "$TMP" -maxdepth 1 \
         -regex ".*/[A-Za-z0-9._-]+-${UUID_TAIL}(\.[A-Za-z0-9]+)?" \
+        -mmin "+${MIN_AGE}" \
+        -print0 2>/dev/null || true
+)
+
+# `go-build<digits>` — see the header comment for why this is a second,
+# separate `find` rather than folded into the pattern above.
+while IFS= read -r -d '' entry; do
+    VICTIMS+=("$entry")
+done < <(
+    find -E "$TMP" -maxdepth 1 \
+        -regex ".*/go-build[0-9]+" \
         -mmin "+${MIN_AGE}" \
         -print0 2>/dev/null || true
 )

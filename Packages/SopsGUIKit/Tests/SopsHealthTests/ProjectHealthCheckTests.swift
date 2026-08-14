@@ -309,4 +309,47 @@ struct ProjectHealthCheckTests {
         // user didn't put there via this app.
         #expect(missing.remediation?.explanation.lowercased().contains("nothing on disk is touched") == true)
     }
+
+    // MARK: - File permissions (#19 item 5)
+
+    /// `makeProject(files:)` writes through `String.write(to:atomically:true)`,
+    /// which — measured directly on this machine, default umask 022 —
+    /// produces mode `0644`: readable by every other account. That is
+    /// exactly the case this finding exists to catch, and it means most of
+    /// this suite's other encrypted-file fixtures are *already* group/other
+    /// readable without anyone intending it — which is itself evidence for
+    /// why nothing before this caught it.
+    @Test("an encrypted file readable by more than its owner is a warning")
+    func looseModeSecretFileIsAWarning() async throws {
+        let root = try makeProject(
+            sopsYAML: "creation_rules:\n  - age: \(devKey)\n",
+            files: ["secret.yaml": encryptedFile(recipients: [devKey])])
+        let path = root + "/secret.yaml"
+        #expect(try (FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? NSNumber)?.intValue == 0o644)
+
+        let check = ProjectHealthCheck(source: FakeProjects(
+            projects: [InspectedProject(name: "demo", rootPath: root)]))
+        let permissions = finding(await check.run(), suffix: "file-permissions")
+
+        #expect(permissions.status == .warning)
+        #expect(permissions.detail.contains("secret.yaml"))
+        #expect(permissions.detail.contains("644"))
+        #expect(permissions.remediation?.command?.contains("chmod 600") == true)
+        #expect(permissions.remediation?.command?.contains("secret.yaml") == true)
+    }
+
+    @Test("an encrypted file readable only by its owner draws no finding")
+    func ownerOnlyModeSecretFileIsOK() async throws {
+        let root = try makeProject(
+            sopsYAML: "creation_rules:\n  - age: \(devKey)\n",
+            files: ["secret.yaml": encryptedFile(recipients: [devKey])])
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: root + "/secret.yaml")
+
+        let check = ProjectHealthCheck(source: FakeProjects(
+            projects: [InspectedProject(name: "demo", rootPath: root)]))
+        let permissions = finding(await check.run(), suffix: "file-permissions")
+
+        #expect(permissions.status == .ok)
+    }
 }
