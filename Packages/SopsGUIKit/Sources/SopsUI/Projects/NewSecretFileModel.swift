@@ -797,6 +797,28 @@ public final class NewSecretFileModel {
                 plainYAMLLoadError = CreationFailurePresenter.message(forUnreadableSourceFile: ())
                 return
             }
+            // A raw NUL is valid UTF-8, so it survives the read above and
+            // would otherwise reach `create()`'s call into `SopsBridge
+            // .encryptYAML` unchanged, where `withGoString`'s `utf8CString`
+            // ends the argument early and everything after it is silently
+            // gone — see `String.crossesCBoundaryIntact`'s own doc comment
+            // for the full account, and `unlockChosenEncryptedFile()` for
+            // the identical guard on the `.encryptedYAML` source (ticket
+            // #17 claim 4). This is milder than that one — a *new* file
+            // ends up missing content the user thought they imported,
+            // rather than an *existing* document's second half being
+            // destroyed — but no less silent: `SecretFileCreator
+            // .verifyRoundTrip`'s `.verbatimYAML` branch only refuses a
+            // non-empty source coming back with zero rows, not a source
+            // that comes back with *some* rows missing, so a NUL byte here
+            // would otherwise cross, truncate, and still report success
+            // (ticket #30).
+            guard text.crossesCBoundaryIntact else {
+                plainYAMLText = nil
+                plainYAMLLoadError = CreationFailurePresenter.message(
+                    forNULByteInSourceFile: url.lastPathComponent)
+                return
+            }
             plainYAMLText = text
             plainYAMLLoadError = nil
             forgetLastCreateFailure()
@@ -831,6 +853,31 @@ public final class NewSecretFileModel {
     public func loadDotEnv(from url: URL) {
         do {
             let data = try Data(contentsOf: url)
+            // Defense-in-depth, not a fix for a reproduced defect (ticket
+            // #30): unlike `loadPlainYAML(from:)`, this file's raw text
+            // never itself reaches `SopsBridge.encryptYAML` — only
+            // `DotEnvParser.parse`'s structured `entries` do, re-serialised
+            // by `create()` through `FlatYAMLEmitter.emit`, whose
+            // `quotedValue` already escapes every C0 control character —
+            // including a raw NUL — as a literal `\xNN` before anything
+            // crosses to the bridge (see that method's own doc comment
+            // table). So a NUL byte here cannot actually reach the
+            // `withGoString` truncation hazard today. This checks anyway,
+            // on the same raw bytes `DotEnvParser.parse` is about to read,
+            // so the guard does not depend on staying in sync with
+            // `FlatYAMLEmitter`'s own escape table remaining complete — the
+            // same boundary this file checks for `.plainYAML` and
+            // `.encryptedYAML`, applied here for consistency rather than a
+            // demonstrated hole. A decode failure here is not itself an
+            // error: `DotEnvParser.parse` below owns the authoritative
+            // UTF-8/BOM handling and reports `.notUTF8` itself when this
+            // plain decode also fails.
+            if let text = String(data: data, encoding: .utf8), !text.crossesCBoundaryIntact {
+                dotEnvParsed = nil
+                dotEnvLoadError = CreationFailurePresenter.message(
+                    forNULByteInSourceFile: url.lastPathComponent)
+                return
+            }
             dotEnvParsed = try DotEnvParser.parse(data)
             dotEnvLoadError = nil
             forgetLastCreateFailure()

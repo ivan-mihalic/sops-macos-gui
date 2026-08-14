@@ -44,11 +44,12 @@ import Testing
 /// ## What counts as "reaches the bridge"
 ///
 /// Every name this codebase actually uses, today, to get file content to a
-/// Go bridge call that treats it as an *existing* encrypted SOPS document:
+/// Go bridge call that treats it as an *existing* encrypted SOPS document —
 /// `SopsBridge.decryptYAML(`, `SopsBridge.decryptToRows(`,
-/// `SopsBridge.recipients(in:`, `SopsBridge.updateRecipients(`, and three
-/// known indirections through a private/injected seam this codebase already
-/// uses for testability (`Self.decrypt(` and `Self.applyChanges(` in
+/// `SopsBridge.recipients(in:`, `SopsBridge.updateRecipients(` — plus
+/// `SopsBridge.encryptYAML(` (ticket #30, below) and three known
+/// indirections through a private/injected seam this codebase already uses
+/// for testability (`Self.decrypt(` and `Self.applyChanges(` in
 /// `SecretDocumentViewModel`; `readRecipients(` and `rewrapRecipients(` in
 /// `ProjectRecipientApplier`). A **new** indirection name introduced later —
 /// a new private static helper, a new injected closure property — is
@@ -62,16 +63,35 @@ import Testing
 /// forces a deliberate look at this file the day a fifth is added using one
 /// of those same names.
 ///
-/// Deliberately **not** in the sink list: `SopsBridge.encryptYAML`.
-/// `NewSecretFileModel.loadPlainYAML`/`.loadDotEnv` read a plaintext (not
-/// yet encrypted) import source and hand it to `encryptYAML` unguarded,
-/// which shares the same underlying `withGoString` truncation mechanism —
-/// but not the failure this ticket is about. There is no *existing*
-/// document whose second half is silently destroyed, because the document
-/// being composed does not exist on disk yet; the failure mode is "the new
-/// file is missing content the user thought they imported", a real but
-/// different-severity gap, left open. See the session report for this
-/// finding rather than a silent scope expansion here.
+/// ## `SopsBridge.encryptYAML(` is in the sink list, and the count is still 4
+///
+/// Ticket #30. `NewSecretFileModel.loadPlainYAML`/`.loadDotEnv` used to read
+/// an import source and hand it to `encryptYAML` unguarded, sharing the same
+/// `withGoString` truncation mechanism as the four crossing points above —
+/// milder, because there is no *existing* document whose second half is
+/// destroyed (the file being composed does not exist on disk yet), but no
+/// less silent: `SecretFileCreator.verifyRoundTrip`'s `.verbatimYAML` branch
+/// only refuses a non-empty source coming back with *zero* rows, not one
+/// missing *some*, so a NUL byte crossed, truncated, and `create()` still
+/// reported success. Both are guarded now, proven by a reproducing test in
+/// `NewSecretFileModelTests.swift` that failed against the unguarded code
+/// and passes against the fix.
+///
+/// This scanner still reports 4, unchanged, and that is correct rather than
+/// a gap this file is hiding: `readsAFile && reachesTheBridge` are both
+/// required *in the same function body* (see `everyCrossingPointIsGuarded`
+/// below), and neither `loadPlainYAML` nor `loadDotEnv` calls
+/// `SopsBridge.encryptYAML` itself — the encrypt happens later, in
+/// `SecretFileCreator.create`, a different type entirely, which in turn
+/// never reads a file (it receives an already-loaded `Source`). So this is
+/// the same structural limit the paragraph above already names for a new
+/// *indirection name*, one level further out: a multi-hop handoff through a
+/// stored property and a second call, not a same-body indirection, is
+/// exactly what a single-function-body scan cannot see, with or without
+/// `encryptYAML` in this list. `encryptYAML` stays in the sink list anyway —
+/// it now watches every *direct* same-body pairing of a file read with an
+/// encrypt call this codebase has today (there are none) or gains later, the
+/// identical guarantee the other four names already give.
 @Suite("Every Swift string built from file content is checked before it can cross into Go")
 struct CBoundaryGuardCoverageTests {
 
@@ -81,6 +101,7 @@ struct CBoundaryGuardCoverageTests {
     private static let sinkSignals = [
         "SopsBridge.decryptYAML(", "SopsBridge.decryptToRows(",
         "SopsBridge.recipients(in:", "SopsBridge.updateRecipients(",
+        "SopsBridge.encryptYAML(",
         "Self.decrypt(", "Self.applyChanges(",
         "readRecipients(", "rewrapRecipients(",
     ]
