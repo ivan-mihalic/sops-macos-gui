@@ -552,7 +552,16 @@ public struct ProjectHealthCheck: HealthCheck {
                 title: "\(project.name): recipients", status: .problem,
                 detail: detail,
                 remediation: Remediation(
-                    explanation: "Run updatekeys to re-wrap these files for the recipients .sops.yaml declares." + rotateNote,
+                    // Ticket #22, claim 4: this used to send the user to the
+                    // CLI with nowhere to go if they didn't have `sops`
+                    // installed. This app's own Project Access panel
+                    // (`ProjectAccessModel`) does the identical rewrap —
+                    // read the recipients, re-wrap the data key for exactly
+                    // the set `.sops.yaml` declares — entirely in memory,
+                    // without shelling out to the CLI at all.
+                    explanation: "Run updatekeys to re-wrap these files for the recipients .sops.yaml declares."
+                        + " This app's own \"Project Access…\" panel for this project does the same thing,"
+                        + " entirely in memory, without running the CLI." + rotateNote,
                     command: "sops updatekeys <file>"))
         }
 

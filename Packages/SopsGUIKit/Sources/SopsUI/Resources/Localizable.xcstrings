@@ -1873,6 +1873,17 @@
         }
       }
     },
+    "health.last-checked": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last checked"
+          }
+        }
+      }
+    },
     "health.nothing-checked": {
       "extractionState": "manual",
       "localizations": {

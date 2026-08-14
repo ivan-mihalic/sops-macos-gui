@@ -52,6 +52,16 @@ public struct HealthPanel: View {
                 if model.isRunning {
                     ProgressView().controlSize(.small)
                     Text(.healthChecking).foregroundStyle(.secondary)
+                } else if let lastRefreshedAt = model.lastRefreshedAt {
+                    // Ticket #22: the only signal on screen that these
+                    // findings might be stale. `.relative` keeps updating on
+                    // its own ("2 minutes ago" → "an hour ago") without this
+                    // view needing a timer.
+                    HStack(spacing: 4) {
+                        Text(.healthLastChecked)
+                        Text(lastRefreshedAt, style: .relative)
+                    }
+                    .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button(LocalizedKey.actionRerunChecks.text) {

@@ -34,6 +34,11 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // Shown when a completed report produced no findings at all. Deliberately
     // not the green "Everything checks out." — see OnboardingSummaryState.
     case healthNothingChecked = "health.nothing-checked"
+    // Ticket #22: findings carried no timestamp on screen, so a stale report
+    // looked identical to a current one. Paired with a relative-time `Text`
+    // (`Text(date, style: .relative)`), e.g. "Last checked 2 minutes ago" —
+    // see `HealthPanel`.
+    case healthLastChecked = "health.last-checked"
     case settingsTabHealth = "settings.tab.health"
     case settingsTabUpdates = "settings.tab.updates"
     case settingsTabKey = "settings.tab.key"

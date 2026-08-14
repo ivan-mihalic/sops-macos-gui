@@ -168,6 +168,30 @@ struct EngineFreshnessCheckTests {
         }
     }
 
+    // Ticket #22, claim 2: the outdated-engine warning had `remediation.command
+    // == nil` (correctly — no CLI command updates an embedded engine) but also
+    // never mentioned the app's own "Check for Updates…" action
+    // (`App/SopsGUIApp.swift:391,481-482`), even though that is exactly how a
+    // user would act on this finding without leaving the app.
+    @Test("an outdated engine's remediation points at the app's own Check for Updates action")
+    func outdatedRemediationMentionsCheckForUpdates() async {
+        let check = EngineFreshnessCheck(
+            embeddedSops: SemanticVersion(3, 12, 0),
+            embeddedAge: SemanticVersion(1, 3, 1),
+            upstream: FakeUpstream(releases: [
+                "getsops/sops": release(SemanticVersion(3, 13, 3)),
+                "FiloSottile/age": release(SemanticVersion(1, 3, 1)),
+            ]))
+        let sops = finding(await check.run(), "engine.sops")
+        #expect(sops.status == .warning)
+        // Still no command: nothing here can be run in a terminal — see the
+        // file's own header comment. The explanation names the in-app action
+        // instead.
+        #expect(sops.remediation?.command == nil)
+        #expect(sops.remediation?.explanation.lowercased().contains("check for updates") == true,
+                "\(sops.remediation?.explanation ?? "nil")")
+    }
+
     @Test("an embedded version ahead of the latest release is OK, not a warning")
     func aheadOfUpstreamIsOK() async {
         let check = EngineFreshnessCheck(
@@ -178,5 +202,37 @@ struct EngineFreshnessCheckTests {
                 "FiloSottile/age": release(SemanticVersion(1, 3, 1)),
             ]))
         #expect(finding(await check.run(), "engine.sops").status == .ok)
+    }
+
+    // Ticket #22, claim 3. The file's own header says "this is a version
+    // comparison, not CVE matching" — but that lived only in a source
+    // comment; no user-visible string said it. A green panel reads as "the
+    // engine is safe", which this check does not and cannot claim. Both
+    // branches that actually complete a comparison (`.ok` and `.warning`)
+    // must disclose that in the copy the user reads.
+    @Test("every completed comparison discloses that it is not a CVE verdict")
+    func discloseComparisonIsNotCVEMatching() async {
+        let upToDate = EngineFreshnessCheck(
+            embeddedSops: SemanticVersion(3, 13, 3),
+            embeddedAge: SemanticVersion(1, 3, 1),
+            upstream: FakeUpstream(releases: [
+                "getsops/sops": release(SemanticVersion(3, 13, 3)),
+                "FiloSottile/age": release(SemanticVersion(1, 3, 1)),
+            ]))
+        let outdated = EngineFreshnessCheck(
+            embeddedSops: SemanticVersion(3, 12, 0),
+            embeddedAge: SemanticVersion(1, 3, 1),
+            upstream: FakeUpstream(releases: [
+                "getsops/sops": release(SemanticVersion(3, 13, 3)),
+                "FiloSottile/age": release(SemanticVersion(1, 3, 1)),
+            ]))
+        for check in [upToDate, outdated] {
+            for finding in await check.run() {
+                #expect(finding.status == .ok || finding.status == .warning,
+                        "test fixture produced an unexpected status: \(finding.status)")
+                #expect(finding.detail.lowercased().contains("not cve matching"),
+                        "\(finding.id) reached a verdict without disclosing it isn't a CVE verdict: \(finding.detail)")
+            }
+        }
     }
 }
