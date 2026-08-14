@@ -1,5 +1,6 @@
 import Observation
 import SopsHealth
+import SopsProjects
 import SwiftUI
 
 /// Drives the file list for one project: runs `ProjectScanner.scan(root:)`
@@ -43,6 +44,36 @@ public final class FileListModel {
     /// about a directory the scan never got into, which is the one thing
     /// PROPOSAL §6 D says this app must never do.
     public private(set) var rootUnreadable = false
+    /// What `.sops.yaml` at the project root says would govern a **typical**
+    /// new file. `nil` until the first `refresh()` completes.
+    ///
+    /// `CreationPlanResolver.plan(forTarget:in:)` answers "what governs
+    /// *this specific file*" — it needs a target, and an empty project has
+    /// no file to hand it one. `refresh()` asks about a **probe** instead:
+    /// `Self.configProbeName` in the project root, a name this app never
+    /// creates or writes, exactly the technique
+    /// `ProjectHealthCheck.swift`'s own `.sops-health-check-probe` uses and
+    /// for the identical reason.
+    ///
+    /// Because of that substitution, **the result describes the probe path,
+    /// not the project as a whole.** A `.sops.yaml` whose only rule reads
+    /// `path_regex: ^secrets/` does not match a probe sitting at the project
+    /// root, so this comes back `.noRuleMatched` — the honest answer for a
+    /// file at *that* location, not evidence that the project has no usable
+    /// config. Anything that renders this value (Task 2's empty-state
+    /// wording, in particular) must keep that distinction: collapsing
+    /// `.noRuleMatched` into "this project has no config" would be exactly
+    /// the confident-but-wrong claim `ProjectScanner` and
+    /// `ProjectScopeAccountant` exist elsewhere in this app to prevent.
+    public private(set) var configState: CreationPlan?
+
+    /// The probe filename `configState` resolves against — never created,
+    /// never written to disk. Named for this call site rather than reusing
+    /// `ProjectHealthCheck`'s `.sops-health-check-probe` literally, so a
+    /// reader who finds one on disk (e.g. after a crash somewhere that does
+    /// write its probe) can tell which subsystem it came from; the technique
+    /// is shared, the name does not need to be.
+    private static let configProbeName = ".sops-file-list-config-probe"
 
     public init(projectRoot: URL) {
         self.projectRoot = projectRoot
@@ -51,7 +82,10 @@ public final class FileListModel {
     /// Walks the project tree and replaces every published property from the
     /// result in one pass, so a view observing this model never sees a
     /// half-updated combination (e.g. `incompleteScanReason` from the new
-    /// scan next to `files` from the old one).
+    /// scan next to `files` from the old one). `configState` is included in
+    /// that same pass even though it is not derived from `tree` — it is
+    /// still one observation about the project as of this `refresh()`, and a
+    /// view must never see it paired with `files` from a different scan.
     public func refresh() async {
         isScanning = true
         let tree = await ProjectScanner.scan(root: projectRoot)
@@ -71,8 +105,33 @@ public final class FileListModel {
         skippedDirectoryNames = tree.skippedDirectoryNames.sorted()
         rootMissing = tree.rootMissing
         rootUnreadable = tree.rootUnreadable
+        configState = Self.resolveConfigState(projectRoot: projectRoot)
         isScanning = false
         hasScanned = true
+    }
+
+    /// Resolves `configState` against `Self.configProbeName`, swallowing a
+    /// thrown `CreationPlanResolver.Error` into `nil` rather than letting it
+    /// escape `refresh()` — which is `async` without `throws`, called from
+    /// `.task`, and has nowhere to put a thrown error anyway.
+    ///
+    /// This is deliberately not the same thing as "the config is bad": every
+    /// case `CreationPlanResolver.Error` can throw is *this call's own
+    /// setup* being wrong — `projectRoot` not absolute, or gone missing
+    /// between project selection and this scan — not a problem with
+    /// `.sops.yaml` itself. A genuinely bad config already has its own
+    /// answer, `.configUnreadable`, which this call reaches normally. Mapping
+    /// a setup failure to `.noConfig` or `.configUnreadable` would tell the
+    /// user something false about a file they never even have a config
+    /// question about; `nil` — "no answer available" — is the only claim
+    /// this situation actually supports.
+    private static func resolveConfigState(projectRoot: URL) -> CreationPlan? {
+        let probe = projectRoot.appendingPathComponent(Self.configProbeName)
+        do {
+            return try CreationPlanResolver.plan(forTarget: probe, in: projectRoot)
+        } catch {
+            return nil
+        }
     }
 
     /// `url`'s path relative to `projectRoot`, for display. Falls back to the
@@ -161,6 +220,34 @@ public struct FileListView: View {
         .padding(8)
     }
 
+    /// Whether the walk found nothing to show *and* completed cleanly enough
+    /// that saying more than "nothing here" is honest — the exact branch
+    /// `ProjectStartHereView` (Task 2) owns. `rootMissing`, `rootUnreadable`
+    /// and a non-nil `incompleteScanReason` all fail this on purpose: none
+    /// of them is a real "this project is empty" — see `content`'s own doc
+    /// comment, "The three states below are about the *root*", and
+    /// `ProjectStartHereView`'s own doc comment for why collapsing
+    /// `.noRuleMatched` (or any of the other four `configState` values)
+    /// into that claim would be dishonest. `footnotes` reads this too, so
+    /// the two cannot disagree about which branch is showing.
+    ///
+    /// This condition says nothing about `model.configState` itself, on
+    /// purpose: `showsStartHere == true` picks the branch, but
+    /// `ProjectStartHereView` can still render its own `nil`-`configState`
+    /// paragraph blank. The ordinary way that happens: `FileListModel`
+    /// starts every instance with `configState = nil`, and this view's own
+    /// `.task(id:)` above (`FileListView.swift:189`) runs `refresh()` only
+    /// *after* the first body evaluation — so every project selection
+    /// renders `showsStartHere`'s branch over a `nil` `configState` for one
+    /// frame before `refresh()` resolves anything. Rarer, and separate: a
+    /// real (if rare) TOCTOU race in `FileListModel.resolveConfigState`.
+    /// See that view's own doc comment, "What each of the five configState
+    /// values shows", the `nil` paragraph, for the full account of why both
+    /// are an accepted gap rather than a regression.
+    private var showsStartHere: Bool {
+        model.files.isEmpty && model.incompleteScanReason == nil
+    }
+
     /// The three states below are about the *root* — nothing ran, so there is
     /// no list and no footnote to qualify. Everything after them is a real
     /// walk's result, and its footnotes belong to it whether or not it found
@@ -181,14 +268,23 @@ public struct FileListView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            if model.files.isEmpty {
-                // "No encrypted files found in this project." is a claim about
-                // the whole project. Over an incomplete walk it is not one this
-                // app is entitled to make, so the wording narrows to what was
-                // actually covered and the banner above says why.
-                statusPlaceholder(
-                    systemImage: "doc.text.magnifyingglass",
-                    title: model.incompleteScanReason == nil ? .filesEmptyTitle : .filesEmptyPartialTitle)
+            if showsStartHere {
+                // A complete scan that genuinely found nothing — the one
+                // case where this app can say more than "empty" and mean
+                // it. See `ProjectStartHereView`'s own doc comment for what
+                // each of `model.configState`'s five values shows here.
+                ProjectStartHereView(
+                    configState: model.configState, otherFormatCount: model.otherFormatCount,
+                    projectRoot: model.projectRoot, onNewFile: onNewFile)
+            } else if model.files.isEmpty {
+                // Reachable only over an incomplete walk now (`showsStartHere`
+                // above is false whenever `incompleteScanReason` is non-nil).
+                // "No encrypted files found in this project." is a claim
+                // about the whole project; over a walk that could not cover
+                // it, that claim is not one this app is entitled to make, so
+                // the wording narrows to what was actually covered and the
+                // banner above says why.
+                statusPlaceholder(systemImage: "doc.text.magnifyingglass", title: .filesEmptyPartialTitle)
             } else {
                 List(selection: $selection) {
                     ForEach(model.files, id: \.self) { url in
@@ -210,7 +306,13 @@ public struct FileListView: View {
     /// "something went wrong on this particular walk".
     @ViewBuilder
     private var footnotes: some View {
-        if model.otherFormatCount > 0 {
+        // `ProjectStartHereView` (Task 2) already carries this exact
+        // sentence itself when it is the one on screen — see its own
+        // `body`, the `otherFormatCount > 0` branch — so showing it again
+        // here would repeat the same note twice on one screen. Every other
+        // branch (the file `List`, and the incomplete-scan empty
+        // placeholder) still gets it from here, unchanged.
+        if model.otherFormatCount > 0 && !showsStartHere {
             footnote(String(format: LocalizedKey.filesOtherFormatNote.text, model.otherFormatCount))
         }
         // Previously rendered only inside the truncation banner, i.e. only on

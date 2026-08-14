@@ -800,7 +800,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "A rule in .sops.yaml governs this location → it will be encrypted for: %@"
+            "value": "A rule in .sops.yaml governs this location → it will be encrypted for: %@."
           }
         }
       }
@@ -1663,17 +1663,6 @@
         }
       }
     },
-    "files.empty.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No encrypted files found in this project."
-          }
-        }
-      }
-    },
     "files.no-project-selected": {
       "extractionState": "manual",
       "localizations": {
@@ -1692,6 +1681,39 @@
           "stringUnit": {
             "state": "translated",
             "value": "New File"
+          }
+        }
+      }
+    },
+    "start-here.probe-location": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This is about a new file at the top level of this project, not the whole project."
+          }
+        }
+      }
+    },
+    "start-here.no-rule-matched.reassurance": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That's not an error — a rule elsewhere in .sops.yaml may still cover files created in a different location."
+          }
+        }
+      }
+    },
+    "start-here.create-first-file-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create Your First File"
           }
         }
       }

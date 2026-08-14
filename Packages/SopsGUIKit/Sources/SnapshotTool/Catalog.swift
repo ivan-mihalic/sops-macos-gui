@@ -23,6 +23,7 @@ enum Catalog {
         snapshots += try projectSidebar()
         snapshots += try await secretEditor()
         snapshots += try await fileList()
+        snapshots += try projectStartHere()
         snapshots += dotEnvPreview()
         snapshots += try await newSecretFileSheet()
         // The guide's images. In the same catalog so one run can produce
@@ -427,6 +428,67 @@ enum Catalog {
             list("file-list-missing-root", missingRoot),
             list("file-list-incomplete-scan", incomplete),
             list("file-list-empty-partial-scan", emptyPartial),
+        ]
+    }
+
+    // MARK: - ProjectStartHereView
+    //
+    // `.configUnreadable`/`.unsupportedRule` get no snapshot here — those
+    // two states already render through `CreationFailurePresenter
+    // .message(forBlocking:)`, the identical failure banner other screens
+    // already snapshot. Task 2's brief named three entries, one per state
+    // that does get a sentence of its own on this screen (`.noConfig`,
+    // `.governedByRule`, `.noRuleMatched`); this function actually returns
+    // five, because `.governedByRule` gets two entries — with and without
+    // an `encrypted_regex` scoping the rule, see the `encryptedRegex`
+    // fixture's own comment below for why the second exists at all — plus
+    // one more covering `otherFormatCount` sharing the screen with
+    // `.noConfig`.
+    private static func projectStartHere() throws -> [Snapshot] {
+        let size = CGSize(width: 420, height: 320)
+        // A bare root for the two states with no recipients to label either
+        // way — see `Fixtures.startHereProjectRoot()`'s own doc comment.
+        let plainRoot = try Fixtures.startHereProjectRoot()
+        // Its own paired root, whose registry actually labels one of this
+        // plan's own recipients "Alice" — see
+        // `Fixtures.startHereGovernedFixture()`'s own doc comment for why
+        // the plan and the root cannot be mixed and matched.
+        let (governedPlan, governedRoot) = try Fixtures.startHereGovernedFixture()
+        // A third root/plan pair, whose rule additionally sets
+        // `encrypted_regex` — the one new output Important 1's fix produced
+        // (`NewSecretFileSheet.governedByRuleSentence`'s appended scoping
+        // disclosure) that this catalog had never rendered at all before
+        // the review caught it.
+        let (governedWithScopingPlan, governedWithScopingRoot) = try Fixtures.startHereGovernedFixture(
+            encryptedRegex: "^(data|stringData)$")
+        func startHere(
+            _ name: String, _ configState: CreationPlan, in projectRoot: URL, otherFormatCount: Int = 0
+        ) -> Snapshot {
+            Snapshot(name, size: size) {
+                ProjectStartHereView(
+                    configState: configState, otherFormatCount: otherFormatCount, projectRoot: projectRoot,
+                    onNewFile: {})
+            }
+        }
+        return [
+            startHere("start-here-no-config", Fixtures.startHereNoConfig, in: plainRoot),
+            // Proves the registry-label fix reaches the screen: the first
+            // recipient reads "Alice", the second still reads as a
+            // shortened key (deliberately unlabeled) — see
+            // `Fixtures.startHereGovernedFixture()`'s own doc comment.
+            startHere("start-here-governed-by-rule", governedPlan, in: governedRoot),
+            // The `encrypted_regex` disclosure, actually rendered and
+            // looked at — see this function's own comment above.
+            startHere(
+                "start-here-governed-by-rule-with-scoping", governedWithScopingPlan,
+                in: governedWithScopingRoot),
+            startHere("start-here-no-rule-matched", Fixtures.startHereNoRuleMatched, in: plainRoot),
+            // Task 2's own review question: whether a project that already
+            // holds other-format sops files still reads clearly when the
+            // guidance and that note share one screen.
+            startHere(
+                "start-here-no-config-other-formats", Fixtures.startHereNoConfig, in: plainRoot,
+                otherFormatCount: 3),
         ]
     }
 

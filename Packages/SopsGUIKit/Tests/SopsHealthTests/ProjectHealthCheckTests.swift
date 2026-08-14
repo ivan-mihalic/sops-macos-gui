@@ -92,7 +92,24 @@ struct ProjectHealthCheckTests {
         let root = try makeProject(sopsYAML: nil)
         let check = ProjectHealthCheck(source: FakeProjects(
             projects: [InspectedProject(name: "demo", rootPath: root)]))
-        #expect(finding(await check.run(), suffix: "sops-yaml").status == .warning)
+        let missing = finding(await check.run(), suffix: "sops-yaml")
+        #expect(missing.status == .warning)
+
+        // Amended, not replaced: this remediation used to say the app "does
+        // not have a .sops.yaml generator yet". That was true when it was
+        // written and stopped being true once SopsConfigGenerator shipped
+        // and RecipientPicker wired it into the New Secret File wizard — the
+        // *behaviour* changed, not this test's judgement that the warning's
+        // remediation text should be checked. So the assertion below still
+        // guards the same thing (does the sops-yaml warning tell the user
+        // something true?), just against the current claim instead of the
+        // retired one. Keeping the negative assertion means the retired
+        // phrase coming back — the wizard regressing away again — fails this
+        // test instead of going unnoticed.
+        let explanation = try #require(missing.remediation?.explanation)
+        #expect(!explanation.contains("does not have a .sops.yaml generator"))
+        #expect(explanation.contains("New File"))
+        #expect(explanation.contains("creation_rules"))
     }
 
     @Test("an unparseable .sops.yaml is a problem")

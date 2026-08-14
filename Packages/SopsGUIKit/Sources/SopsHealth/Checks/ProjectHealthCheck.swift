@@ -181,19 +181,40 @@ public struct ProjectHealthCheck: HealthCheck {
                 status: .warning,
                 detail: "No .sops.yaml in \(project.rootPath). Without it, sops has no rules for which keys to encrypt new files to.",
                 remediation: Remediation(
-                    // Was "Create one from the .sops.yaml wizard in this
-                    // app." — a real defect, caught only once this check ran
-                    // against a real project for the first time (this task):
-                    // no such wizard exists anywhere in this app. PROPOSAL.md
-                    // §5 lists one as a future Help feature; nothing in this
-                    // milestone or any earlier one builds it. Telling the
-                    // user to go use a tool that isn't there is exactly the
-                    // "claims more than it established" failure this app's
-                    // findings are held to — so until the wizard exists, say
-                    // what the user can actually do today: write the file by
-                    // hand. When the wizard ships, this remediation is where
-                    // it should point.
-                    explanation: "Add a .sops.yaml file at the project root with a creation_rules entry naming the age public keys new files should be encrypted to. This app does not have a .sops.yaml generator yet — see sops's own documentation for the file format.")), leak]
+                    // Three states this text has been through, in order —
+                    // not this text wobbling, but it being kept honest about
+                    // what the app could actually do at each point:
+                    //
+                    // 1. "Create one from the .sops.yaml wizard in this
+                    //    app." — a real defect, caught only once this check
+                    //    first ran against a real project (an earlier
+                    //    task): no such wizard existed anywhere in this app.
+                    //    PROPOSAL.md §5 listed one as a future Help feature;
+                    //    nothing built yet made the claim true. Telling the
+                    //    user to go use a tool that isn't there is exactly
+                    //    the "claims more than it established" failure this
+                    //    app's findings are held to.
+                    // 2. "This app does not have a .sops.yaml generator
+                    //    yet — see sops's own documentation for the file
+                    //    format." — the honest fallback while (1) was
+                    //    false: no in-app claim, just the hand-written path.
+                    // 3. Now: SopsConfigGenerator and its wiring into
+                    //    RecipientPicker inside the New Secret File wizard
+                    //    made the original claim in (1) true, so it comes
+                    //    back — pointed at what actually exists, not at the
+                    //    future Help feature (1) was still imagining. The
+                    //    hand-written path stays alongside it: a user who
+                    //    prefers to write the file themselves is not doing
+                    //    anything wrong, and this is the only place that
+                    //    tells them the shape.
+                    //
+                    // If a fourth state is ever needed, that is worth
+                    // pausing over — not because a fourth revision is
+                    // forbidden, but because each of the first three came
+                    // from finding a claim this app could not actually back
+                    // up yet, and the next one is worth holding to the same
+                    // standard before it lands.
+                    explanation: "Add a .sops.yaml file at the project root with a creation_rules entry naming the age public keys new files should be encrypted to. This app can propose one now: select this project, click the toolbar's New File button (or press ⌘N), add at least one recipient, then click Propose .sops.yaml — it shows the file before writing it, and writes it only once you confirm. Writing the file by hand is just as valid; see sops's own documentation for the file format.")), leak]
         }
 
         // Probe that the config itself loads under sops's own parser,

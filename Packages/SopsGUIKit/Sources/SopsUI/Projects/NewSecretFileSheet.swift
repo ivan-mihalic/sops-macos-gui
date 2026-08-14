@@ -305,33 +305,19 @@ public struct NewSecretFileSheet: View {
             guard !recipients.isEmpty else {
                 return CreationFailurePresenter.messageForRuleWithNoRecipients().detail
             }
-            let governed = String(format: LocalizedKey.newFileInfoGovernedByRule.text, recipientNames(recipients))
-            // `encrypted_regex` is the one scoping field `CreationPlanResolver`
-            // passes through as supported rather than refusing (see its own
-            // doc comment, decision order step 5), so a rule that sets it
-            // produces a file whose every *non*-matching value is written in
-            // plaintext. Naming only who can read the file, and saying
-            // nothing about how much of it is encrypted, is the silent half
-            // of an access change — spec §4.1 decision 4. Appended here
-            // rather than shown per source because this line is the one
-            // disclosure every source passes through: `nameSection` renders
-            // it for `.empty`, `.plainYAML`, `.dotEnv` and `.encryptedYAML`
-            // alike. `EncryptedImportPreview` deliberately does *not* repeat
-            // it beside its access diff — that view sits directly below this
-            // line, not on a second screen; see its own `diff(…)` doc
-            // comment for why the two cannot come apart.
-            //
-            // Named plainly rather than glossed over: joining two catalog
-            // sentences with a literal `" "` is composition, the one
-            // instance of it in this file. Each half is a whole, separately
-            // translatable sentence and neither is assembled from fragments,
-            // which is the rule `CreationFailurePresenter` exists to keep —
-            // but a language that punctuates or orders sentences differently
-            // gets only the separator from here, and that is worth knowing
-            // before a second one is added.
-            guard !encryptedRegex.isEmpty else { return governed }
-            return governed + " "
-                + String(format: LocalizedKey.newFileInfoEncryptedRegexScoping.text, encryptedRegex)
+            // Appended here rather than shown per source because this line
+            // is the one disclosure every source passes through:
+            // `nameSection` renders it for `.empty`, `.plainYAML`, `.dotEnv`
+            // and `.encryptedYAML` alike. `EncryptedImportPreview`
+            // deliberately does *not* repeat it beside its access diff —
+            // that view sits directly below this line, not on a second
+            // screen; see its own `diff(…)` doc comment for why the two
+            // cannot come apart. See `governedByRuleSentence(recipients:
+            // encryptedRegex:recipientNames:)`'s own doc comment for why the
+            // disclosure exists at all and why it is a second, joined
+            // sentence rather than one merged string.
+            return Self.governedByRuleSentence(
+                recipients: recipients, encryptedRegex: encryptedRegex, recipientNames: recipientNames)
         case .noConfig:
             return LocalizedKey.newFileInfoNoConfig.text
         case .noRuleMatched:
@@ -343,6 +329,60 @@ public struct NewSecretFileSheet: View {
             // words a failure itself, even a brief one.
             return CreationFailurePresenter.message(forBlocking: plan)?.detail
         }
+    }
+
+    /// The disclosure sentence for a `.governedByRule` plan that has at
+    /// least one recipient — who it will be encrypted for, plus, when the
+    /// rule sets `encrypted_regex`, a second sentence naming that the rule
+    /// also scopes which values get encrypted at all rather than encrypting
+    /// the whole file.
+    ///
+    /// Shared by this file's own ⓘ line (`infoLineText`, above) and
+    /// `ProjectStartHereView.presentation(for:recipientNames:)`, the
+    /// identical sentence for the identical `CreationPlan` case on the
+    /// empty-project entry screen. Extracted here — not duplicated — after
+    /// this task's review found a second, independently-maintained copy of
+    /// this exact guard-and-join on that screen: the two had already
+    /// drifted once (`ProjectStartHereView`'s copy dropped the
+    /// `encrypted_regex` disclosure entirely) and a fix that re-derives the
+    /// same text from one function, called from both places, is the only
+    /// version that cannot drift a second time by construction.
+    ///
+    /// **Callers keep their own empty-recipients guard** — this function
+    /// assumes `!recipients.isEmpty`, it does not check it. Sops admits a
+    /// creation rule with a matching `path_regex` and no key group at all
+    /// (`CreationPlanResolverTests
+    /// .ruleWithNoKeyGroupIsGovernedByRuleWithNoRecipients`), and what each
+    /// caller does about that differs: `infoLineText` falls back to
+    /// `CreationFailurePresenter.messageForRuleWithNoRecipients()`'s
+    /// `detail` alone, matching its own `String?` return type;
+    /// `ProjectStartHereView.presentation` falls back to the whole
+    /// `CreationFailureMessage`, so it can also suppress its "create first
+    /// file" button. Folding the guard in here would not simplify either
+    /// caller, only force one of the two shapes onto both.
+    ///
+    /// `encrypted_regex` is the one scoping field `CreationPlanResolver`
+    /// passes through as supported rather than refusing (see its own doc
+    /// comment, decision order step 5), so a rule that sets it produces a
+    /// file whose every *non*-matching value is written in plaintext.
+    /// Naming only who can read the file, and saying nothing about how much
+    /// of it is encrypted, is the silent half of an access change — spec
+    /// §4.1 decision 4.
+    ///
+    /// Joined with a literal `" "` when both sentences apply — named
+    /// plainly rather than glossed over: this is composition, not assembly
+    /// from fragments (the rule `CreationFailurePresenter` exists to keep).
+    /// Each half is a whole, separately translatable sentence; a language
+    /// that punctuates or orders sentences differently gets only the
+    /// separator from here, worth knowing before a third caller joins a
+    /// third sentence onto this pattern.
+    static func governedByRuleSentence(
+        recipients: [String], encryptedRegex: String, recipientNames: ([String]) -> String
+    ) -> String {
+        let governed = String(format: LocalizedKey.newFileInfoGovernedByRule.text, recipientNames(recipients))
+        guard !encryptedRegex.isEmpty else { return governed }
+        return governed + " "
+            + String(format: LocalizedKey.newFileInfoEncryptedRegexScoping.text, encryptedRegex)
     }
 
     /// `recipient`'s registry label when one exists, otherwise the public
