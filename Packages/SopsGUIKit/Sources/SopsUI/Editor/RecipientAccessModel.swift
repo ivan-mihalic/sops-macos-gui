@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import SopsEngine
+import SopsHealth
 import SopsProjects
 
 /// Which age recipients can decrypt the file this model was built for, and
@@ -110,6 +111,16 @@ public final class RecipientAccessModel {
     /// `currentRecipients` every time `load()`/`apply()` succeeds.
     public private(set) var stagedRecipients: [String] = []
     public private(set) var registryRecords: [RecipientRecord] = []
+    /// Rotation debt this app has already recorded for this file — see
+    /// `SopsHealth.RotationDebtSource`. Empty when `projectURL` is `nil`
+    /// (there is nowhere to read a ledger from) or when nothing is owed.
+    /// Populated in `load()` and refreshed by `acknowledgeRotationDebt(_:)`;
+    /// never touched by `apply()` re-recording a *new* debt, which reads
+    /// straight through to the ledger and does not update this in-memory
+    /// copy until the next load — the same "staged view can go stale, and
+    /// that is fine" contract `registryRecords` already has via
+    /// `reloadRegistry()`.
+    public private(set) var rotationDebtEntries: [RotationDebtEntry] = []
     /// The age recipients this file's SOPS metadata named **more than once**,
     /// each listed here exactly once.
     ///
@@ -304,6 +315,7 @@ public final class RecipientAccessModel {
             stagedRecipients = collapsed.distinct
             duplicatedRecipients = collapsed.duplicated
             registryRecords = projectURL.map(loadRegistry) ?? []
+            rotationDebtEntries = loadRotationDebtEntries()
             loadState = .loaded
         } catch let error as SopsBridgeError {
             reset()
@@ -326,11 +338,36 @@ public final class RecipientAccessModel {
         registryRecords = loadRegistry(projectURL)
     }
 
+    /// Tells this file's `RotationDebtLedger` entry that the user says the
+    /// rotation is done, and removes it from `rotationDebtEntries` on
+    /// success. Never verifies anything — see `RotationDebtEntry`'s and
+    /// `RotationDebtSource`'s doc comments for why this app cannot.
+    ///
+    /// Best-effort in the same direction `recordRotationDebtIfNeeded` is,
+    /// but the other way: a failure here (a read-only `.sops-gui`, a
+    /// concurrent writer) leaves the entry in place rather than hiding it
+    /// while the disk still disagrees, so the user sees it did not clear
+    /// and can try again — silently dropping it from the list on a failed
+    /// write would be the "confident, wrong" failure mode this app's
+    /// findings are held to everywhere else.
+    public func acknowledgeRotationDebt(_ id: UUID) {
+        guard let projectURL else { return }
+        guard (try? RotationDebtLedger.acknowledge(id, in: projectURL)) != nil else { return }
+        rotationDebtEntries.removeAll { $0.id == id }
+    }
+
+    private func loadRotationDebtEntries() -> [RotationDebtEntry] {
+        guard let projectURL else { return [] }
+        let path = Self.projectRelativePath(of: fileURL, in: projectURL)
+        return ((try? RotationDebtLedger.load(in: projectURL)) ?? []).filter { $0.path == path }
+    }
+
     private func reset() {
         currentRecipients = []
         stagedRecipients = []
         duplicatedRecipients = []
         registryRecords = []
+        rotationDebtEntries = []
         encryptedContents = nil
         loadedFingerprint = nil
     }
@@ -438,6 +475,11 @@ public final class RecipientAccessModel {
         defer { isApplying = false }
 
         let recipientsToApply = stagedRecipients
+        // Captured before anything below mutates `currentRecipients` — this
+        // is the only point in `apply()` that still holds both "what the
+        // file protected before" and "what it is about to protect after" at
+        // once. See `recordRotationDebtIfNeeded`.
+        let removedRecipients = Set(currentRecipients).subtracting(recipientsToApply)
         let applied: String?
         do {
             // `withKey` is `rethrows`: it returns `nil` without ever calling
@@ -471,7 +513,49 @@ public final class RecipientAccessModel {
         loadedFingerprint = written
         currentRecipients = recipientsToApply
         stagedRecipients = recipientsToApply
+        recordRotationDebtIfNeeded(removedRecipients: removedRecipients)
         return .applied
+    }
+
+    /// Records, in the project's `RotationDebtLedger`, that this file now
+    /// owes a rotation — called only after `apply()` has already re-wrapped
+    /// and written the file, and only when that rewrap actually dropped a
+    /// recipient who could therefore have already seen every value the file
+    /// held.
+    ///
+    /// Best-effort and silent on failure, deliberately: the access change
+    /// this follows has already succeeded and is already on disk, so a
+    /// ledger write failing (a read-only `.sops-gui`, a concurrent writer)
+    /// must never turn a successful `apply()` into a reported one — see
+    /// `RotationDebtLedger`'s own doc comment for why this record exists and
+    /// why an app that cannot verify a rotation happened records the debt
+    /// rather than trying to detect its resolution.
+    private func recordRotationDebtIfNeeded(removedRecipients: Set<String>) {
+        guard let projectURL, !removedRecipients.isEmpty else { return }
+        let path = Self.projectRelativePath(of: fileURL, in: projectURL)
+        try? RotationDebtLedger.record(path: path, reason: .recipientRemoved, in: projectURL)
+        // Reflected immediately rather than waiting for the next `load()` —
+        // a user who just removed a recipient and applied should see this
+        // file now owes a rotation without having to close and reopen the
+        // panel.
+        rotationDebtEntries = loadRotationDebtEntries()
+    }
+
+    /// `fileURL`'s path relative to `projectURL`, for the ledger entry's
+    /// `path` field — which must never be absolute (see
+    /// `RotationDebtEntry.path`'s doc comment). Falls back to the file's own
+    /// last component for a file this simple prefix comparison cannot place
+    /// under the project (a symlink resolving outside it); a debt recorded
+    /// under a less precise name is still a debt recorded, and this is a
+    /// narrower problem than `ProjectHealthCheck.relativeName` solves, in
+    /// the same way `CanonicalPath.of` is a narrower tool than
+    /// `.ofLeaf` — this module has no need of the leaf-preserving symlink
+    /// case that helper exists for.
+    private static func projectRelativePath(of fileURL: URL, in projectURL: URL) -> String {
+        let filePath = CanonicalPath.of(fileURL.path)
+        let rootPrefix = CanonicalPath.of(projectURL.path) + "/"
+        guard filePath.hasPrefix(rootPrefix) else { return fileURL.lastPathComponent }
+        return String(filePath.dropFirst(rootPrefix.count))
     }
 
     /// Runs a synchronous, blocking `body` on a dedicated OS thread instead

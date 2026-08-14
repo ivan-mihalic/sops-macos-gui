@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import SopsEngine
+import SopsHealth
 import SopsProjects
 
 /// Who can decrypt a whole project's secrets: what its `.sops.yaml` creation
@@ -381,6 +382,14 @@ public final class ProjectAccessModel {
         guard keyConfigured else { return .noKey }
         guard !isApplyingFiles else { return .alreadyRunning }
 
+        // Captured before the run against `configRecipients` — the set the
+        // governing rule declared when this was last loaded/planned — never
+        // against a per-file "did this file actually lose one", which
+        // `applyToOne` computes but does not expose. See
+        // `recordRotationDebtIfNeeded`'s doc comment for why that
+        // approximation is the honest one to make here.
+        let removedRecipients = Set(configRecipients).subtracting(stagedRecipients)
+
         isApplyingFiles = true
         fileResults = []
         notAttempted = []
@@ -405,7 +414,52 @@ public final class ProjectAccessModel {
         guard let run else { return .noKey }
         fileResults = run.results
         notAttempted = run.notAttempted
+        recordRotationDebtIfNeeded(removedRecipients: removedRecipients, results: run.results)
         return nil
+    }
+
+    /// Records, in this project's `RotationDebtLedger`, that every file this
+    /// run actually re-wrapped now owes a rotation — when a recipient was
+    /// staged for removal at all.
+    ///
+    /// One recipient set is shared by every file `applyToFiles()` touches,
+    /// so this cannot ask "did *this* file specifically lose a recipient" —
+    /// `ProjectRecipientApplier.applyToOne` knows that (it already compares
+    /// each file's own actual recipients against the requested set to
+    /// decide `.updated` vs `.unchanged`), but does not expose it on
+    /// `FileResult`. What this can say honestly is narrower but still
+    /// correct: a file this run left `.unchanged` already matched the
+    /// requested set, so it never held the removed recipient in the first
+    /// place and owes nothing; a file marked `.updated` changed to match a
+    /// set that no longer includes a recipient it previously declared to
+    /// this project's config, which is exactly the condition
+    /// `RotationDebtReason.recipientRemoved` describes. `.failed` files are
+    /// left alone — nothing was actually re-wrapped for them.
+    ///
+    /// Best-effort and silent on failure, for the same reason
+    /// `RecipientAccessModel.recordRotationDebtIfNeeded` is: the files this
+    /// follows have already been re-wrapped and written, and a ledger write
+    /// failing must never be reported as if the access change itself had.
+    private func recordRotationDebtIfNeeded(
+        removedRecipients: Set<String>, results: [ProjectRecipientApplier.FileResult]
+    ) {
+        guard !removedRecipients.isEmpty else { return }
+        for result in results where result.outcome == .updated {
+            let path = Self.projectRelativePath(of: result.url, in: projectRoot)
+            try? RotationDebtLedger.record(path: path, reason: .recipientRemoved, in: projectRoot)
+        }
+    }
+
+    /// `url`'s path relative to `projectRoot`, for the ledger entry's `path`
+    /// field — never absolute, see `RotationDebtEntry.path`'s doc comment.
+    /// Same shape and same fallback as
+    /// `RecipientAccessModel.projectRelativePath`, duplicated rather than
+    /// shared for the reason given there.
+    private static func projectRelativePath(of url: URL, in projectRoot: URL) -> String {
+        let filePath = CanonicalPath.of(url.path)
+        let rootPrefix = CanonicalPath.of(projectRoot.path) + "/"
+        guard filePath.hasPrefix(rootPrefix) else { return url.lastPathComponent }
+        return String(filePath.dropFirst(rootPrefix.count))
     }
 
     /// Runs `applyToFiles()` in a task this model can cancel. Cancellation is

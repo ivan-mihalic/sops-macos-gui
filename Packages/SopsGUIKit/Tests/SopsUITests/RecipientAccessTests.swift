@@ -2,6 +2,7 @@ import Foundation
 import ScratchCleanup
 import Testing
 import SopsEngine
+import SopsHealth
 import SopsProjects
 @testable import SopsUI
 
@@ -414,6 +415,136 @@ struct RecipientAccessRegistryTests {
         #expect(model.entries.count == 1)
         #expect(model.entries.first?.label == nil)
         #expect(model.entries.first?.ageRecipient == owner.public)
+    }
+
+    // MARK: - Rotation debt (ticket #3)
+
+    @Test("removing a recipient and applying records that this file now owes a rotation")
+    func applyingARemovalRecordsRotationDebt() async throws {
+        let owner = try AgeKeyPair.generate()
+        let removed = try AgeKeyPair.generate()
+        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [owner.public, removed.public])
+        let project = try makeProject()
+        let fileURL = project.appendingPathComponent("secrets/app.yaml")
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try encrypted.write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let keyStore = SessionKeyStore()
+        try keyStore.importKey(owner.private)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: project, keyStore: keyStore)
+        await model.load()
+        model.stageRemove(removed.public)
+
+        let outcome = await model.apply()
+        #expect(outcome == .applied)
+
+        let debt = try RotationDebtLedger.load(in: project)
+        #expect(debt.count == 1)
+        #expect(debt.first?.path == "secrets/app.yaml")
+        #expect(debt.first?.reason == .recipientRemoved)
+    }
+
+    @Test("adding a recipient without removing one records no rotation debt")
+    func applyingAnAdditionOnlyRecordsNoRotationDebt() async throws {
+        let owner = try AgeKeyPair.generate()
+        let added = try AgeKeyPair.generate()
+        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [owner.public])
+        let project = try makeProject()
+        let fileURL = project.appendingPathComponent("app.yaml")
+        try encrypted.write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let keyStore = SessionKeyStore()
+        try keyStore.importKey(owner.private)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: project, keyStore: keyStore)
+        await model.load()
+        model.stageAdd(added.public)
+
+        let outcome = await model.apply()
+        #expect(outcome == .applied)
+
+        #expect(try RotationDebtLedger.load(in: project).isEmpty)
+    }
+
+    @Test("a loaded panel shows the rotation debt already recorded for this exact file")
+    func loadShowsExistingRotationDebt() async throws {
+        let owner = try AgeKeyPair.generate()
+        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [owner.public])
+        let project = try makeProject()
+        let fileURL = project.appendingPathComponent("app.yaml")
+        try encrypted.write(to: fileURL, atomically: true, encoding: .utf8)
+        try RotationDebtLedger.record(path: "app.yaml", reason: .recipientRemoved, in: project)
+        // A debt recorded for a *different* file must not bleed into this one.
+        try RotationDebtLedger.record(path: "other.yaml", reason: .recipientRemoved, in: project)
+
+        let keyStore = SessionKeyStore()
+        try keyStore.importKey(owner.private)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: project, keyStore: keyStore)
+        await model.load()
+
+        #expect(model.rotationDebtEntries.map(\.path) == ["app.yaml"])
+    }
+
+    @Test("acknowledging a rotation debt clears it from the panel and the ledger")
+    func acknowledgeClearsDebt() async throws {
+        let owner = try AgeKeyPair.generate()
+        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [owner.public])
+        let project = try makeProject()
+        let fileURL = project.appendingPathComponent("app.yaml")
+        try encrypted.write(to: fileURL, atomically: true, encoding: .utf8)
+        try RotationDebtLedger.record(path: "app.yaml", reason: .recipientRemoved, in: project)
+
+        let keyStore = SessionKeyStore()
+        try keyStore.importKey(owner.private)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: project, keyStore: keyStore)
+        await model.load()
+        let id = try #require(model.rotationDebtEntries.first?.id)
+
+        model.acknowledgeRotationDebt(id)
+
+        #expect(model.rotationDebtEntries.isEmpty)
+        #expect(try RotationDebtLedger.load(in: project).isEmpty)
+    }
+
+    @Test("applying a removal makes the new rotation debt show up immediately, without reloading")
+    func applyRefreshesRotationDebtWithoutAReload() async throws {
+        let owner = try AgeKeyPair.generate()
+        let removed = try AgeKeyPair.generate()
+        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [owner.public, removed.public])
+        let project = try makeProject()
+        let fileURL = project.appendingPathComponent("app.yaml")
+        try encrypted.write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let keyStore = SessionKeyStore()
+        try keyStore.importKey(owner.private)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: project, keyStore: keyStore)
+        await model.load()
+        #expect(model.rotationDebtEntries.isEmpty)
+        model.stageRemove(removed.public)
+
+        #expect(await model.apply() == .applied)
+
+        #expect(model.rotationDebtEntries.map(\.path) == ["app.yaml"])
+    }
+
+    @Test("a file opened without a project records no rotation debt anywhere")
+    func removalWithoutAProjectRecordsNothing() async throws {
+        let owner = try AgeKeyPair.generate()
+        let removed = try AgeKeyPair.generate()
+        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [owner.public, removed.public])
+        let fileURL = try fixtureFile(encrypted)
+
+        let keyStore = SessionKeyStore()
+        try keyStore.importKey(owner.private)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore)
+        await model.load()
+        model.stageRemove(removed.public)
+
+        let outcome = await model.apply()
+        #expect(outcome == .applied)
+        // Nothing to assert against a ledger — there is no project to hold
+        // one. This test's job is only to prove `apply()` does not crash or
+        // throw when `projectURL` is nil.
     }
 }
 

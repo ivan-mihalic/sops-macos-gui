@@ -56,10 +56,22 @@ public struct ProjectHealthCheck: HealthCheck {
     /// reason `ExternalToolCheck` uses it — a GUI app launched from Finder has
     /// no useful process `PATH`.
     private let locator: any ToolLocating
+    /// Where a project's outstanding rotation debt is read from and recorded
+    /// to — see `RotationDebtSource`'s doc comment for why this is a
+    /// protocol rather than a direct call to `SopsProjects
+    /// .RotationDebtLedger`, which is what every real app build wires in
+    /// here. Defaults to `NoRotationDebt()`, matching `locator`'s and
+    /// `ProjectSourceProviding`'s own "every existing test keeps working
+    /// unless it opts in" shape.
+    private let rotationDebt: any RotationDebtSource
 
-    public init(source: any ProjectSourceProviding, locator: any ToolLocating = ToolLocator()) {
+    public init(
+        source: any ProjectSourceProviding, locator: any ToolLocating = ToolLocator(),
+        rotationDebt: any RotationDebtSource = NoRotationDebt()
+    ) {
         self.source = source
         self.locator = locator
+        self.rotationDebt = rotationDebt
     }
 
     public func run() async -> [HealthFinding] {
@@ -169,6 +181,12 @@ public struct ProjectHealthCheck: HealthCheck {
 
         let leak = gitignoreFinding(for: project, idScope: idScope, root: root,
                                     tree: tree, scope: scope, gitPath: gitPath)
+        // Computed after `leak`, not before: `gitignoreFinding` is what may
+        // just have recorded a fresh `.plaintextCommitted` entry for this
+        // very run (a tracked, unignored secret file found for the first
+        // time), and this finding has to read the ledger *after* that write
+        // to show it in the same run rather than only from the next one.
+        let debt = rotationDebtFinding(for: project, idScope: idScope, root: root, scope: scope)
 
         guard FileManager.default.fileExists(atPath: configURL.path) else {
             // The plaintext-leak finding is emitted even here. A project with
@@ -214,7 +232,7 @@ public struct ProjectHealthCheck: HealthCheck {
                     // from finding a claim this app could not actually back
                     // up yet, and the next one is worth holding to the same
                     // standard before it lands.
-                    explanation: "Add a .sops.yaml file at the project root with a creation_rules entry naming the age public keys new files should be encrypted to. This app can propose one now: select this project, click the toolbar's New File button (or press ⌘N), add at least one recipient, then click Propose .sops.yaml — it shows the file before writing it, and writes it only once you confirm. Writing the file by hand is just as valid; see sops's own documentation for the file format.")), leak]
+                    explanation: "Add a .sops.yaml file at the project root with a creation_rules entry naming the age public keys new files should be encrypted to. This app can propose one now: select this project, click the toolbar's New File button (or press ⌘N), add at least one recipient, then click Propose .sops.yaml — it shows the file before writing it, and writes it only once you confirm. Writing the file by hand is just as valid; see sops's own documentation for the file format.")), leak, debt]
         }
 
         // Probe that the config itself loads under sops's own parser,
@@ -244,7 +262,7 @@ public struct ProjectHealthCheck: HealthCheck {
                 status: .problem,
                 detail: "The .sops.yaml in \(project.rootPath) could not be parsed: \(error).",
                 remediation: Remediation(
-                    explanation: "Fix the YAML syntax, then re-run this check.")), leak]
+                    explanation: "Fix the YAML syntax, then re-run this check.")), leak, debt]
         }
 
         return [
@@ -255,6 +273,7 @@ public struct ProjectHealthCheck: HealthCheck {
             recipientFinding(for: project, idScope: idScope, root: root,
                              configPath: configURL.path, tree: tree, scope: scope),
             leak,
+            debt,
         ]
     }
 
@@ -800,6 +819,18 @@ public struct ProjectHealthCheck: HealthCheck {
             let exposedNames = exposed.map(relativeName).sorted()
             let trackedNames = exposed.filter { tracked.contains($0.path) }.map(relativeName).sorted()
 
+            // Ticket #3, claim 3: the debt this records must outlive the
+            // condition that discovered it. `git rm --cached` on one of
+            // these later makes `trackedNames` empty on the next run — this
+            // finding would stop mentioning it — but the secret was already
+            // in the repository's history the moment this ran, and nothing
+            // about removing the file from the index changes that. So the
+            // record goes to the ledger now, once, and stays until a user
+            // acknowledges it — see `RotationDebtSource`'s doc comment.
+            for name in trackedNames {
+                rotationDebt.record(path: name, reason: .plaintextCommitted, in: root)
+            }
+
             var detail = "These plaintext files under \(project.rootPath) are not gitignored: \(exposedNames.joined(separator: ", ")). Committing one publishes its contents to everyone with access to the repository's history, permanently."
             if !trackedNames.isEmpty {
                 detail += "\n\nAlready tracked by git, so they are in the repository now: \(trackedNames.joined(separator: ", ")). Adding a .gitignore line does not remove a file that is already tracked."
@@ -827,6 +858,54 @@ public struct ProjectHealthCheck: HealthCheck {
                 // string correct in both is one nobody can read before running.
                 remediation: Remediation(explanation: explanation, command: nil))
         }
+    }
+
+    /// Ticket #3: the durable half of the rotation-debt problem. Every place
+    /// in this app that removes a recipient (`RecipientAccessModel.apply`,
+    /// `ProjectAccessModel.applyToFiles`) or finds a plaintext secret
+    /// already tracked by git (`gitignoreFinding`, above) records the fact
+    /// through `rotationDebt`. This finding is the only place that fact is
+    /// ever surfaced back to the user, and it reads the ledger directly
+    /// rather than re-deriving anything from the current scan — that is the
+    /// whole point: the condition that first revealed the debt (a stale
+    /// recipient set, a tracked plaintext file) is allowed to clear without
+    /// the debt clearing with it.
+    ///
+    /// There is deliberately no path from here back to `.ok` other than a
+    /// user acknowledging each entry (`RotationDebtSource`/
+    /// `SopsProjects.RotationDebtLedger.acknowledge`) — this app cannot see
+    /// whether a value was actually rotated, only that removing it from the
+    /// ledger is what a user who says it happened does. The remediation
+    /// text below says exactly that, and never "verified" or "confirmed".
+    private func rotationDebtFinding(
+        for project: InspectedProject, idScope: String, root: URL, scope: ProjectScopeAccountant
+    ) -> ScopedFinding {
+        let findingID = "project.\(idScope).rotation-debt"
+        let title = "\(project.name): rotation debt"
+        let entries = rotationDebt.rotationDebt(in: root).sorted {
+            ($0.path, $0.recordedAt) < ($1.path, $1.recordedAt)
+        }
+
+        guard !entries.isEmpty else {
+            return scope.finding(
+                about: .theWholeTree,
+                id: findingID, title: title, status: .ok,
+                detail: "No file in \(project.rootPath) has a recorded rotation debt.")
+        }
+
+        let formatter = ISO8601DateFormatter()
+        let lines = entries.map { entry in
+            "\(entry.path) — \(RotationDebtDescription.sentence(for: entry)) Recorded \(formatter.string(from: entry.recordedAt))."
+        }
+        let detail = "This app recorded that the following owe a rotation of their secret values, and nothing since has told it otherwise:\n"
+            + lines.joined(separator: "\n")
+
+        return scope.finding(
+            about: .theWholeTree,
+            id: findingID, title: title, status: .problem,
+            detail: detail,
+            remediation: Remediation(
+                explanation: "This app cannot verify that a value was actually rotated — only you know that. Once you have changed the affected values at wherever issued them, mark each entry as settled from this file's Access panel. Until then this app keeps reminding you, even after the condition that first found it (a stale recipient, a tracked plaintext file) is gone."))
     }
 
     /// Characters `.gitignore` reads as syntax rather than as part of a name.

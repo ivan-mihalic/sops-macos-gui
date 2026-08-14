@@ -66,7 +66,14 @@ extension HealthReport {
         projects: any ProjectSourceProviding = NoProjects(),
         keyStore: any KeyStoreStatusProviding,
         biometry: any BiometryStatusProviding = SystemBiometry(),
-        appUpdates: any AppUpdateStatusProviding
+        appUpdates: any AppUpdateStatusProviding,
+        // Defaulted, unlike `keyStore`/`appUpdates` above: there is no
+        // milestone this is gating and no wrong-but-plausible stand-in to
+        // guard against forgetting — `NoRotationDebt()` is simply correct
+        // for every caller (almost every test in this package) that never
+        // records a debt in the first place. The real app wires in
+        // `SopsProjects.RotationDebtLedgerSource()`.
+        rotationDebt: any RotationDebtSource = NoRotationDebt()
     ) -> HealthReport {
         // Optional, never defaulted to a version number. An unreadable engine
         // version used to become 0.0.0, which loses every comparison — see
@@ -104,7 +111,7 @@ extension HealthReport {
                 // on macOS at all. See `AgeKeyFileLocations`.
                 legacyKeyFilePaths: legacyKeyFiles.paths,
                 legacyKeyFileProbeFailed: legacyKeyFiles.loginShellUnavailable),
-            ProjectHealthCheck(source: projects),
+            ProjectHealthCheck(source: projects, rotationDebt: rotationDebt),
         ])
     }
 }

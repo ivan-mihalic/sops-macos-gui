@@ -3594,6 +3594,28 @@
           }
         }
       }
+    },
+    "access.rotation-debt.heading": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rotation debt"
+          }
+        }
+      }
+    },
+    "access.rotation-debt.acknowledge-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mark rotation done"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

@@ -1,3 +1,4 @@
+import SopsHealth
 import SopsProjects
 import SwiftUI
 
@@ -205,6 +206,38 @@ public struct RecipientAccessView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if !model.rotationDebtEntries.isEmpty {
+                rotationDebtSection
+            }
+        }
+    }
+
+    /// Ticket #3: what this app already recorded about a rotation this file
+    /// still owes — see `RecipientAccessModel.rotationDebtEntries`. Shown
+    /// even when the condition that first found it (a stale recipient) has
+    /// long since cleared, which is the entire point of recording it at
+    /// all. The only control here is acknowledging it, never "verify" —
+    /// this app cannot see whether a value was actually rotated.
+    private var rotationDebtSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(.accessRotationDebtHeading)
+                .font(.caption.bold())
+                .foregroundStyle(.orange)
+            ForEach(model.rotationDebtEntries) { entry in
+                HStack(alignment: .top) {
+                    Text(verbatim: RotationDebtDescription.sentence(for: entry))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button(LocalizedKey.accessRotationDebtAcknowledgeButton.text) {
+                        model.acknowledgeRotationDebt(entry.id)
+                    }
+                    .font(.caption)
+                    .buttonStyle(.link)
+                }
             }
         }
     }

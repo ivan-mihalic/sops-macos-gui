@@ -372,7 +372,11 @@ struct SopsGUIApp: App {
                       // `.skipped` — is gone from the app; it survives as the
                       // package's default so `SopsGUIKit` still builds without
                       // Sparkle.
-                      appUpdates: updates)
+                      appUpdates: updates,
+                      // The real, persistent ledger — `.sops-gui/rotation-debt.json`
+                      // per project. `NoRotationDebt()`, the package default,
+                      // survives only in tests that do not care about this.
+                      rotationDebt: RotationDebtLedgerSource())
         }))
     }
 
