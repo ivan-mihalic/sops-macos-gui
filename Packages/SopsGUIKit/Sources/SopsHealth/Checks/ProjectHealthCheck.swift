@@ -56,10 +56,22 @@ public struct ProjectHealthCheck: HealthCheck {
     /// reason `ExternalToolCheck` uses it — a GUI app launched from Finder has
     /// no useful process `PATH`.
     private let locator: any ToolLocating
+    /// How many files `ProjectScanner.scan` should visit per project before
+    /// stopping. Ticket #25 claim 1: `maxScannedFiles` used to be a hardcoded
+    /// constant with nothing anywhere that could change it, so a monorepo
+    /// past it got a permanently `.unknown` report. A closure, not a
+    /// captured `Int`, for the same reason `HealthReport.standard`'s
+    /// `updateChecksEnabled` is one: the report is built once and re-run
+    /// many times, and a value captured at construction would freeze
+    /// whatever Settings › Scanning held then and ignore a change made
+    /// mid-session.
+    private let scanBudget: @Sendable () -> Int
 
-    public init(source: any ProjectSourceProviding, locator: any ToolLocating = ToolLocator()) {
+    public init(source: any ProjectSourceProviding, locator: any ToolLocating = ToolLocator(),
+                scanBudget: @escaping @Sendable () -> Int = { ScanBudgetSetting.current() }) {
         self.source = source
         self.locator = locator
+        self.scanBudget = scanBudget
     }
 
     public func run() async -> [HealthFinding] {
@@ -120,7 +132,7 @@ public struct ProjectHealthCheck: HealthCheck {
         let configURL = root.appendingPathComponent(".sops.yaml")
 
         // One walk of the tree feeds both findings below.
-        let tree = await ProjectScanner.scan(root: root)
+        let tree = await ProjectScanner.scan(root: root, maxScannedFiles: scanBudget())
         let scope = ProjectScopeAccountant(tree: tree, rootPath: project.rootPath)
 
         // The directory this project points to is gone — deleted, unmounted,

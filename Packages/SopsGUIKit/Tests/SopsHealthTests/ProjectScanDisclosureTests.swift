@@ -288,6 +288,25 @@ ScratchDirectoryRegistry.shared.register(src)
         #expect(!scope.contains("\n"), "the scope disclosure is one paragraph: \(scope)")
     }
 
+    /// Ticket #25 claim 1. The truncation clause used to name
+    /// `ProjectScanner.maxScannedFiles` — the static constant — regardless of
+    /// what budget the walk actually ran with. Once that budget became
+    /// user-editable (`ScanBudgetSetting`), a disclosure that kept naming the
+    /// constant would describe a number nobody's scan used any more. This
+    /// pins that the sentence names `tree.scanBudget`, not the constant.
+    @Test("the truncation clause names the budget the walk actually used, not the hard constant")
+    func truncationClauseNamesTheActualBudget() throws {
+        var tree = ScannedTree()
+        tree.limitations = [.budgetExhausted]
+        tree.scanBudget = 42
+
+        let scope = try #require(ProjectHealthCheck.scanScopeSentence(tree: tree))
+
+        #expect(scope.contains("scan budget of 42"))
+        #expect(!scope.contains("scan budget of \(ProjectScanner.maxScannedFiles)"),
+                "the sentence must not fall back to the hard constant once a real budget is known")
+    }
+
     /// A walk that covered everything says nothing — the disclosure must not
     /// become boilerplate that appears on findings it does not apply to.
     @Test("a complete walk discloses nothing")

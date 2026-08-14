@@ -147,7 +147,7 @@ struct ProjectScopeAccountant {
     /// declined would be both longer and less true. Everything else here *is* a
     /// specific place, so it is named by its path relative to the project root.
     static func scopeSentence(tree: ScannedTree, relativeTo rootPath: String?) -> String? {
-        let clauses = Self.clauses(for: tree.limitations, relativeTo: rootPath)
+        let clauses = Self.clauses(for: tree.limitations, scanBudget: tree.scanBudget, relativeTo: rootPath)
         guard !clauses.isEmpty else { return nil }
         return "\(leadIn): " + clauses.joined(separator: "; ")
             + ". Nothing above is a statement about what it did not reach."
@@ -159,7 +159,7 @@ struct ProjectScopeAccountant {
     /// The `switch` is exhaustive with no `default` on purpose. See
     /// `ScanLimitation`'s type-level comment: this is the point at which a new
     /// way of not looking at something stops compiling until it has a sentence.
-    private static func clauses(for limitations: [ScanLimitation],
+    private static func clauses(for limitations: [ScanLimitation], scanBudget: Int,
                                 relativeTo rootPath: String?) -> [String] {
         var excluded: [String] = []
         var truncated = false
@@ -176,7 +176,7 @@ struct ProjectScopeAccountant {
                 unreadableDirectories.append(Self.display(path, relativeTo: rootPath))
             case .unreadableFile(let path):
                 unreadableFiles.append(Self.display(path, relativeTo: rootPath))
-            case .directorySymlinkNotFollowed(let path):
+            case .directorySymlinkNotFollowed(let path, _):
                 unfollowedLinks.append(Self.display(path, relativeTo: rootPath))
             case .metadataBlockTooLarge(let path):
                 oversizedMetadata.append(Self.display(path, relativeTo: rootPath))
@@ -185,8 +185,9 @@ struct ProjectScopeAccountant {
 
         var clauses: [String] = []
         if truncated {
-            clauses.append("it stopped at its scan budget of \(ProjectScanner.maxScannedFiles) files, "
-                + "so an unknown number of the files past that point were never opened")
+            clauses.append("it stopped at its scan budget of \(scanBudget) files, "
+                + "so an unknown number of the files past that point were never opened — "
+                + "raise the limit in Settings \u{203A} Scanning to cover more")
         }
         if !excluded.isEmpty {
             let sorted = excluded.sorted()

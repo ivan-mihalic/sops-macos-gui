@@ -41,7 +41,7 @@ struct ProjectScopeDisclosureStructureTests {
         .budgetExhausted,
         .unreadableDirectory(path: "/root/vault"),
         .unreadableFile(path: "/root/locked.yaml"),
-        .directorySymlinkNotFollowed(path: "/root/linked"),
+        .directorySymlinkNotFollowed(path: "/root/linked", target: "/elsewhere/shared"),
         .metadataBlockTooLarge(path: "/root/enormous.yaml"),
     ]
     private static let sampleCount = 6
@@ -56,7 +56,7 @@ struct ProjectScopeDisclosureStructureTests {
         case .budgetExhausted: "scan budget of \(ProjectScanner.maxScannedFiles)"
         case .unreadableDirectory(let path): URL(fileURLWithPath: path).lastPathComponent
         case .unreadableFile(let path): URL(fileURLWithPath: path).lastPathComponent
-        case .directorySymlinkNotFollowed(let path): URL(fileURLWithPath: path).lastPathComponent
+        case .directorySymlinkNotFollowed(let path, _): URL(fileURLWithPath: path).lastPathComponent
         case .metadataBlockTooLarge(let path): URL(fileURLWithPath: path).lastPathComponent
         }
     }

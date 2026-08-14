@@ -780,6 +780,34 @@ enum Fixtures {
         return model
     }
 
+    /// Ticket #25 claim 2: a project holding a symlink to a directory
+    /// elsewhere on disk — a `secrets -> ../shared-secrets` layout, the
+    /// example the ticket itself names — so the "Add as Project" footnote
+    /// has something real to render. The target directory is deliberately
+    /// left outside `root`: were it inside, the walk would reach its files
+    /// through the ordinary tree traversal too, which would not prove the
+    /// footnote is what makes this content reachable at all.
+    static func fileListModelWithUnfollowedSymlink() async throws -> FileListModel {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("snapshot-files-symlink-" + UUID().uuidString)
+        let shared = FileManager.default.temporaryDirectory
+            .appendingPathComponent("snapshot-files-symlink-target-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: shared, withIntermediateDirectories: true)
+        try writeSopsLikeYAML(root, at: "services/billing/production.secrets.yaml")
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("shared-secrets"), withDestinationURL: shared)
+
+        let model = FileListModel(projectRoot: root)
+        await model.refresh()
+
+        guard !model.unfollowedDirectorySymlinks.isEmpty else {
+            throw FixtureFailure("the symlink was followed or not recorded — this snapshot would "
+                + "render the ordinary file-list state under a name claiming otherwise")
+        }
+        return model
+    }
+
     /// A project whose directory no longer exists — deleted or unmounted
     /// after being added. `rootMissing`, never a silent "found nothing".
     static func fileListModelMissingRoot() async -> FileListModel {

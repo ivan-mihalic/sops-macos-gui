@@ -42,9 +42,16 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case settingsTabHealth = "settings.tab.health"
     case settingsTabUpdates = "settings.tab.updates"
     case settingsTabKey = "settings.tab.key"
+    case settingsTabScanning = "settings.tab.scanning"
     case settingsUpdatesToggle = "settings.updates.toggle"
     case settingsUpdatesExplanation = "settings.updates.explanation"
     case settingsUpdatesPrivacy = "settings.updates.privacy"
+    // Ticket #25 claim 1: ProjectScanner.maxScannedFiles used to be a
+    // hardcoded ceiling nothing in the app could change — see
+    // ScanBudgetSetting.
+    case settingsScanningBudgetLabel = "settings.scanning.budget-label"
+    case settingsScanningBudgetFooter = "settings.scanning.budget-footer"
+    case settingsScanningResetButton = "settings.scanning.reset-button"
 
     case keyStatusConfigured = "key.status.configured"
     case keyStatusEmpty = "key.status.empty"
@@ -181,6 +188,10 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // Formatted with the count of sops files this build can't open (dotenv/
     // JSON/INI — YAML-only for v1) — see `FileListModel.otherFormatCount`.
     case filesOtherFormatNote = "files.other-format.note"
+    // Ticket #25 claim 2. Formatted with the symlink's own relative path and
+    // its resolved target — see `FileListView.unfollowedSymlinkFootnote`.
+    case filesUnfollowedSymlinkNote = "files.unfollowed-symlink.note"
+    case filesAddSymlinkTargetButton = "files.unfollowed-symlink.add-button"
 
     // MARK: Task 7 (F2) — reaching the new-file wizard from the file list
 

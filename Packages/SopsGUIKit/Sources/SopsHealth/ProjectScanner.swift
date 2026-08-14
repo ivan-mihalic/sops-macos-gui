@@ -70,6 +70,35 @@ public struct ScannedTree: Sendable {
             if case .excludedDirectoryName(let name) = $0 { name } else { nil }
         }
     }
+
+    /// A directory symlink this walk found and declined to follow, paired
+    /// with where it actually points. What `FileListView` reads to offer
+    /// "add `target` as its own project" (ticket #25 claim 2) — the lighter
+    /// of the two options the ticket named, chosen over following the link
+    /// with loop protection because `ProjectScanner.walk`'s own comment
+    /// names the real hazard a followed link can cause: escaping the
+    /// project entirely and walking the rest of the disk on the strength of
+    /// one `ln -s /`. Not following stays correct; this makes the
+    /// consequence actionable instead of only disclosed in prose.
+    public struct UnfollowedSymlink: Sendable, Equatable {
+        public let path: String
+        public let target: String
+    }
+
+    /// Deliberately excludes a symlink whose name matched
+    /// `ProjectScanner.skippedDirectoryNames` (a pnpm-style symlinked
+    /// `node_modules`, most commonly) — that one is disclosed as the
+    /// exclusion it is, via `skippedDirectoryNames` above, not offered as
+    /// something to add as a project.
+    public var unfollowedDirectorySymlinks: [UnfollowedSymlink] {
+        limitations.compactMap {
+            if case .directorySymlinkNotFollowed(let path, let target) = $0 {
+                UnfollowedSymlink(path: path, target: target)
+            } else {
+                nil
+            }
+        }
+    }
     /// `true` when `root` itself could not be found as a directory —
     /// deleted, unmounted, or renamed after the project was added to the
     /// store.
@@ -105,6 +134,28 @@ public struct ScannedTree: Sendable {
     /// finding with no scope paragraph at all, and no recipients finding
     /// whatsoever. The walk's own comment admitted this gap; no finding did.
     public var rootUnreadable = false
+
+    /// How many regular files this walk actually visited — every one it
+    /// decided to hand to the tail-read-and-classify phase, which becomes
+    /// `encrypted`/`encryptedInOtherFormats`/`plaintextCandidates` or
+    /// nothing at all, depending what that file turned out to be.
+    ///
+    /// Exists so a test can hold this walk to a fixture with a known file
+    /// count and catch a *new* `continue` in `ProjectScanner.walk` that
+    /// drops a file with no `ScanLimitation` at all — see
+    /// `ScanLimitation`'s own doc comment, "What is not enforced", and
+    /// `ProjectScanCoverageTests`. Not part of the finding-facing contract
+    /// `wasTruncated`/`skippedDirectoryNames`/`limitations` are; those say
+    /// *why* a file went unvisited, this says *how many* were.
+    public var filesVisited = 0
+
+    /// The `maxScannedFiles` this particular walk was actually run with —
+    /// `ProjectScanner.maxScannedFiles` unless the caller passed something
+    /// else (`ScanBudgetSetting`, ticket #25 claim 1). `ProjectScopeDisclosure`
+    /// reads this, not the static constant, so the truncation clause names
+    /// the number that actually applied rather than a value the user may
+    /// have already raised past.
+    public var scanBudget = ProjectScanner.maxScannedFiles
 
     /// Records one way this walk fell short, at most once. Deduplicated
     /// because the disclosure is a sentence a human reads: "it could not list
@@ -270,7 +321,14 @@ public struct ProjectScanner {
     /// is the same failure class as the vacuous "every file's key list
     /// matches" this check was rewritten to stop producing (see
     /// `ProjectHealthCheck`'s type-level doc comment).
-    static let maxScannedFiles = 20_000
+    ///
+    /// `public`, not `internal`, since ticket #25: it is `scan(root:
+    /// maxScannedFiles:)`'s default value, and a public function's default
+    /// argument expression must be at least as visible as the function
+    /// itself. Still the *default*, not a ceiling nothing can move past —
+    /// see `ScanBudgetSetting` for the user-editable override this value now
+    /// merely seeds.
+    public static let maxScannedFiles = 20_000
 
     /// How many per-file tail-read-and-classify units run at once. The walk
     /// itself (~1.0–1.3s across 20,000 files, measured) was never the
@@ -355,7 +413,15 @@ public struct ProjectScanner {
     /// order, so classification below iterates in the original walk order
     /// regardless of which read happened to finish first — the result never
     /// depends on completion order.
-    public static func scan(root: URL) async -> ScannedTree {
+    /// - Parameter maxScannedFiles: the ceiling `walk` stops at — defaults to
+    ///   `Self.maxScannedFiles`, the hard constant every call site used
+    ///   before ticket #25. A caller that wants the user's configured
+    ///   override passes `ScanBudgetSetting.current()` explicitly; this
+    ///   function has no `UserDefaults` opinion of its own; see
+    ///   `ScanBudgetSetting`'s doc comment for why that read belongs one
+    ///   layer up, where it can be a closure re-read on every run rather than
+    ///   a value this type would otherwise have to capture once.
+    public static func scan(root: URL, maxScannedFiles: Int = Self.maxScannedFiles) async -> ScannedTree {
         // The walk is synchronous, blocking work — `FileManager` directory
         // enumeration plus a `resourceValues` call per entry — and, like the
         // tail-read-and-classify phase below, it must not run directly on
@@ -366,16 +432,18 @@ public struct ProjectScanner {
         // the walk's own duration, it was that a synchronous ~1s of blocking
         // syscalls sitting directly in an `async` function's body pins a
         // cooperative-pool thread idle for that whole second. On a real
-        // project the walk visits at most `maxScannedFiles` (20,000) entries
-        // and is genuinely fast, so this rarely matters in isolation — but
-        // under Swift Testing's parallel test execution, several such scans
-        // running at once (one per test, this suite's own heavy fixtures
-        // included) can pin several cooperative-pool threads simultaneously,
-        // starving unrelated tiny tasks queued behind them. See
-        // `runOffCooperativePool` and the task-1b report's account of
+        // project the walk visits at most `maxScannedFiles` (20,000 by
+        // default) entries and is genuinely fast, so this rarely matters in
+        // isolation — but under Swift Testing's parallel test execution,
+        // several such scans running at once (one per test, this suite's own
+        // heavy fixtures included) can pin several cooperative-pool threads
+        // simultaneously, starving unrelated tiny tasks queued behind them.
+        // See `runOffCooperativePool` and the task-1b report's account of
         // Finding 3, which first fixed the classify phase alone and then
         // found the walk phase was still doing this.
-        var (tree, candidates) = await Self.runOffCooperativePool { Self.walk(root: root) }
+        var (tree, candidates) = await Self.runOffCooperativePool {
+            Self.walk(root: root, maxScannedFiles: maxScannedFiles)
+        }
 
         // Both the tail read *and* classifying what it found run inside the
         // same concurrent unit of work per file. An earlier version of this
@@ -592,7 +660,7 @@ public struct ProjectScanner {
     /// pass whose order `scan` preserves for classification. Returns the
     /// tree pre-populated with `skippedDirectoryNames`/`wasTruncated` and the
     /// list of regular-file URLs still needing a tail read.
-    private static func walk(root: URL) -> (tree: ScannedTree, candidates: [URL]) {
+    private static func walk(root: URL, maxScannedFiles: Int) -> (tree: ScannedTree, candidates: [URL]) {
         // Checked explicitly, before ever asking for an enumerator, so the
         // resulting `ScannedTree` can say *why* it's empty rather than just
         // being empty — see `ScannedTree.rootMissing`'s doc comment.
@@ -801,7 +869,13 @@ public struct ProjectScanner {
                             tree.note(.excludedDirectoryName(name))
                         }
                     } else {
-                        tree.note(.directorySymlinkNotFollowed(path: url.path))
+                        // The link's own resolved destination — already
+                        // proven to exist and be a directory by the `stat`
+                        // above, so this is a plain path computation, not a
+                        // second filesystem probe that could itself race or
+                        // fail.
+                        let target = url.resolvingSymlinksInPath().path
+                        tree.note(.directorySymlinkNotFollowed(path: url.path, target: target))
                     }
                     continue
                 }
@@ -839,7 +913,7 @@ public struct ProjectScanner {
             // The budget bounds how many files this walk *visits*, not just
             // how many it classifies — checked before any work is done on
             // this file, so the count reflects files actually looked at.
-            guard visitedFileCount < Self.maxScannedFiles else {
+            guard visitedFileCount < maxScannedFiles else {
                 tree.note(.budgetExhausted)
                 break
             }
@@ -862,6 +936,14 @@ public struct ProjectScanner {
             }
             tree.note(.unreadableDirectory(path: path))
         }
+        // Set from the same counter the budget guard above compares against
+        // — one number, not a second count that could drift from it. Equal
+        // to `candidates.count` by construction (every increment of
+        // `visitedFileCount` is paired with exactly one `candidates.append`),
+        // asserted rather than just trusted below.
+        assert(visitedFileCount == candidates.count)
+        tree.filesVisited = visitedFileCount
+        tree.scanBudget = maxScannedFiles
         return (tree, candidates)
     }
 

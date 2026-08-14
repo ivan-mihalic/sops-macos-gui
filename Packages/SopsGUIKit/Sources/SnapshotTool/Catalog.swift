@@ -20,6 +20,7 @@ enum Catalog {
         snapshots += settingsPane()
         snapshots += keyImportView()
         snapshots += updateSettingsPanel()
+        snapshots += scanSettingsPanel()
         snapshots += try projectSidebar()
         snapshots += try await secretEditor()
         snapshots += try await fileList()
@@ -280,6 +281,28 @@ enum Catalog {
         ]
     }
 
+    // MARK: - ScanSettingsPanel
+
+    /// Ticket #25 claim 1. Two states, the same pair `updateSettingsPanel()`
+    /// shows for its own toggle: an untouched default, and a value the user
+    /// has actually raised — so a reviewer can see both without reading the
+    /// footer text to know what changed.
+    private static func scanSettingsPanel() -> [Snapshot] {
+        let defaultDefaults = Fixtures.isolatedDefaults(prefix: "scanning-default")
+
+        let raisedDefaults = Fixtures.isolatedDefaults(prefix: "scanning-raised")
+        ScanBudgetSetting.set(50_000, in: raisedDefaults)
+
+        return [
+            Snapshot("scan-settings-default", size: CGSize(width: 520, height: 260)) {
+                ScanSettingsPanel(defaults: defaultDefaults)
+            },
+            Snapshot("scan-settings-raised", size: CGSize(width: 520, height: 260)) {
+                ScanSettingsPanel(defaults: raisedDefaults)
+            },
+        ]
+    }
+
     // MARK: - Project sidebar, with a worktree group
 
     /// Three snapshots, because the sidebar's overflow fade only means
@@ -414,6 +437,7 @@ enum Catalog {
         let missingRoot = await Fixtures.fileListModelMissingRoot()
         let incomplete = try await Fixtures.fileListModelIncompleteScan()
         let emptyPartial = try await Fixtures.fileListModelEmptyPartialScan()
+        let unfollowedSymlink = try await Fixtures.fileListModelWithUnfollowedSymlink()
 
         let size = CGSize(width: 320, height: 480)
         func list(_ name: String, _ model: FileListModel) -> Snapshot {
@@ -428,6 +452,7 @@ enum Catalog {
             list("file-list-missing-root", missingRoot),
             list("file-list-incomplete-scan", incomplete),
             list("file-list-empty-partial-scan", emptyPartial),
+            list("file-list-unfollowed-symlink", unfollowedSymlink),
         ]
     }
 

@@ -1741,6 +1741,28 @@
         }
       }
     },
+    "files.unfollowed-symlink.add-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add as Project"
+          }
+        }
+      }
+    },
+    "files.unfollowed-symlink.note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ is a symbolic link to a directory, %@, which this scan does not follow."
+          }
+        }
+      }
+    },
     "files.project-missing.title": {
       "extractionState": "manual",
       "localizations": {
@@ -3448,6 +3470,50 @@
           "stringUnit": {
             "state": "translated",
             "value": "Key"
+          }
+        }
+      }
+    },
+    "settings.scanning.budget-footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A very large project can exhaust this limit before every file has been examined; its findings then read as unknown rather than a false all-clear. Raise the limit if a scan is being truncated; lower it only if scanning itself feels slow."
+          }
+        }
+      }
+    },
+    "settings.scanning.budget-label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maximum files per scan"
+          }
+        }
+      }
+    },
+    "settings.scanning.reset-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reset to Default"
+          }
+        }
+      }
+    },
+    "settings.tab.scanning": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scanning"
           }
         }
       }
