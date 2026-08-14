@@ -735,6 +735,54 @@ struct ProjectAccessRunRecordTests {
         #expect(labels(in: host.nodes()).contains(expected),
                 "the panel must say the previous run left 2 files untouched")
     }
+
+    /// SOPS-33. `RegistryQuarantineWiringTests` already pins that this
+    /// model's `load()` routes through `loadOrQuarantine(in:)` and stores
+    /// whatever it returns; this is the other half — that a notice actually
+    /// reaches the screen, through the real `RegistryQuarantineBanner`
+    /// wired into `ProjectAccessView.loadedContent`, not just the model.
+    @Test("the panel actually shows the registry-quarantine banner when the registry was moved aside")
+    func thePanelRendersTheRegistryQuarantineBanner() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let (root, _) = try makeProject(owner: owner)
+        let notice = "Your recipient names at /fixture/.sops-gui/recipients.json could not be read, " +
+            "so the file has been moved aside to /fixture/.sops-gui/recipients-corrupt-x.json."
+
+        let model = ProjectAccessModel(
+            projectRoot: root, keyStore: SessionKeyStore(),
+            loadRegistry: { _ in ([], notice) })
+        let host = GatingHost(size: CGSize(width: 560, height: 620)) {
+            AnyView(ProjectAccessView(model: model, onClose: {}, onFilesApplied: {}))
+        }
+        defer { host.finish() }
+        await host.settle(until: { model.loadState == .loaded })
+
+        let seen = labels(in: host.nodes())
+        #expect(seen.contains(LocalizedKey.accessRegistryQuarantineTitle.text),
+                "the panel must show the registry-quarantine banner's title")
+        #expect(seen.contains(notice),
+                "the panel must show the notice text itself, not just the title")
+    }
+
+    /// The negative case: an ordinary load (`quarantineNotice == nil`, the
+    /// default seam) must render nothing extra. Without this, a banner that
+    /// renders unconditionally would still pass the positive test above.
+    @Test("an ordinary load shows no registry-quarantine banner")
+    func ordinaryLoadShowsNoRegistryQuarantineBanner() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let (root, _) = try makeProject(owner: owner)
+
+        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
+        let host = GatingHost(size: CGSize(width: 560, height: 620)) {
+            AnyView(ProjectAccessView(model: model, onClose: {}, onFilesApplied: {}))
+        }
+        defer { host.finish() }
+        await host.settle(until: { model.loadState == .loaded })
+
+        try #require(model.registryQuarantineNotice == nil, "precondition: nothing was quarantined")
+        #expect(!labels(in: host.nodes()).contains(LocalizedKey.accessRegistryQuarantineTitle.text),
+                "an ordinary load must not show the registry-quarantine banner")
+    }
 }
 
 @Suite("Project access gates")

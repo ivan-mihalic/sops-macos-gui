@@ -98,14 +98,37 @@ fi
 # invocations, so each batch prints its own `total` line. Summing every `total`
 # is the only way to get the real figure — taking `tail -1` reports the last
 # batch alone, which understated 120 GB as 1.4 GB when this was first written.
+#
+# A victim this process cannot read — an unrelated test's chmod 000 fixture
+# (FileListView, SecretFileCreator) still sitting there because the process
+# died before its own `defer` restored permissions — makes `du` exit non-zero
+# for that one batch. Under `pipefail`, that non-zero status is what the
+# `SIZE=$(...)` assignment sees; under `set -e`, an assignment that fails
+# aborts the script right there, before it prints anything at all. That is
+# SOPS-32: the backstop against a full disk quietly stops sweeping and looks
+# like it ran. The `|| true` below is scoped to exactly this one assignment —
+# `pipefail` stays on everywhere else, which is what makes the rest of this
+# script's exit status still worth trusting.
+#
+# `du`'s stderr on the failing entries is kept (not `2>/dev/null`'d away) and
+# parsed for the paths it named, so a skipped entry is reported, not assumed
+# swept.
+DU_ERR="$(mktemp)"
+trap 'rm -f "$DU_ERR"' EXIT
+
 SIZE=$(
     printf '%s\0' "${VICTIMS[@]}" \
-        | xargs -0 du -ck 2>/dev/null \
+        | xargs -0 du -ck 2>"$DU_ERR" \
         | awk '$2 == "total" { kb += $1 }
                END { if (kb >= 1048576) printf "%.1fG", kb/1048576;
                      else if (kb >= 1024) printf "%.0fM", kb/1024;
                      else printf "%dK", kb }'
-)
+) || true
+
+UNREADABLE=()
+while IFS= read -r path; do
+    UNREADABLE+=("$path")
+done < <(sed -n -E 's/^du: (.*): .*/\1/p' "$DU_ERR" | sort -u)
 
 if [[ $APPLY -eq 0 ]]; then
     echo "would remove ${#VICTIMS[@]} entries (${SIZE}) from $TMP"
@@ -113,9 +136,33 @@ if [[ $APPLY -eq 0 ]]; then
     echo "  sample:"
     printf '    %s\n' "${VICTIMS[@]:0:5}" | sed "s|$TMP/||"
     echo "  re-run with --apply to delete"
+    if [[ ${#UNREADABLE[@]} -gt 0 ]]; then
+        echo
+        echo "  ⚠️  could not fully read ${#UNREADABLE[@]} entrie(s) — size above may undercount them, and --apply may not be able to remove them either:"
+        printf '      %s\n' "${UNREADABLE[@]}" | sed "s|$TMP/||"
+        echo "  fix permissions by hand (chmod -R u+rwX <path>) and re-run, or remove it directly"
+    fi
     exit 0
 fi
 
-printf '%s\0' "${VICTIMS[@]}" | xargs -0 rm -rf
-echo "removed ${#VICTIMS[@]} entries (${SIZE}) from $TMP"
+# Same shape of failure is possible here: `rm -rf` exits non-zero for a
+# victim it cannot fully remove, and this is the last command in the script,
+# so under `set -e`/`pipefail` it would abort before the summary below ever
+# prints. `|| true` keeps the sweep going; what actually remains afterward is
+# then checked directly rather than assumed from the exit status.
+printf '%s\0' "${VICTIMS[@]}" | xargs -0 rm -rf || true
+
+REMAINING=()
+for entry in "${VICTIMS[@]}"; do
+    [[ -e "$entry" ]] && REMAINING+=("$entry")
+done
+removed=$(( ${#VICTIMS[@]} - ${#REMAINING[@]} ))
+
+echo "removed ${removed} entries (${SIZE}) from $TMP"
 echo "$TMP is now $(du -sh "$TMP" 2>/dev/null | cut -f1)"
+if [[ ${#REMAINING[@]} -gt 0 ]]; then
+    echo
+    echo "  ⚠️  could not remove ${#REMAINING[@]} entrie(s) — left in place:"
+    printf '      %s\n' "${REMAINING[@]}" | sed "s|$TMP/||"
+    echo "  fix permissions by hand (chmod -R u+rwX <path>) and re-run, or remove it directly"
+fi

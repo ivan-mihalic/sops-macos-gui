@@ -219,6 +219,7 @@ public struct ProjectAccessView: View {
     private var loadedContent: some View {
         VStack(alignment: .leading, spacing: 10) {
             previousIncompleteRunBanner
+            registryQuarantineBanner
             scope
             filesPreview
             configSection
@@ -292,6 +293,19 @@ public struct ProjectAccessView: View {
             .padding(8)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(.orange.opacity(0.12))
+        }
+    }
+
+    /// SOPS-33. `RegistryQuarantineBanner` (defined alongside
+    /// `RecipientAccessView`, which it is shared with) is the visible half of
+    /// what `ProjectAccessModel.registryQuarantineNotice`'s doc comment
+    /// describes — see that type and `RegistryQuarantineBanner`'s own
+    /// comment for why the three wizard steps that also read this notice
+    /// deliberately do not render it.
+    @ViewBuilder
+    private var registryQuarantineBanner: some View {
+        if let notice = model.registryQuarantineNotice {
+            RegistryQuarantineBanner(notice: notice)
         }
     }
 
