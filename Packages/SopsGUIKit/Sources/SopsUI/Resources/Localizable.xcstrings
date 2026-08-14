@@ -2242,7 +2242,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Optional, but the Help snippets rely on them."
+            "value": "Optional. Useful if you also work with these files outside this app."
           }
         }
       }
@@ -2264,7 +2264,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The next few screens check your machine anyway, because the snippets in Help run in your terminal and in CI, against the same files."
+            "value": "The next few screens check your machine anyway, in case you use these same files outside this app — in your own terminal or in CI."
           }
         }
       }

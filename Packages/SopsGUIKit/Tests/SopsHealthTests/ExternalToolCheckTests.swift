@@ -62,11 +62,20 @@ struct ExternalToolCheckTests {
         }
     }
 
-    @Test("an absent recommended tool warns and offers an install command")
-    func absentSopsWarns() async {
+    // Ticket #14: this check used to warn on every missing tool because the
+    // header framed all five as mattering for "the Help section" — a surface
+    // that does not exist anywhere in the app (no menu item, no view). With
+    // nowhere to send the user, a missing tool is not something they can act
+    // on from here, so it must not be able to degrade the report's headline
+    // status the way a real, actionable warning does. See
+    // `HealthReport.worstStatus` and `ExternalToolCheck`'s header comment.
+    @Test("an absent tool is informational, not a warning, because there is nowhere in the app to send the user")
+    func absentSopsIsInformational() async {
         let check = ExternalToolCheck(locator: FakeLocator(tools: [:]), embeddedSopsVersion: embedded)
         let sops = finding(await check.run(), "tool.sops")
-        #expect(sops.status == .warning)
+        if case .skipped = sops.status {} else {
+            Issue.record("sops absence should be skipped, got \(sops.status)")
+        }
         #expect(sops.remediation?.command == "brew install sops")
     }
 
@@ -109,8 +118,17 @@ struct ExternalToolCheckTests {
         #expect(finding(await check.run(), "tool.git").status == .warning)
     }
 
-    @Test("a missing git is never treated as less serious than an outdated one")
-    func absentGitIsNotLessSeriousThanOldGit() async {
+    // Ticket #14 reverses this on purpose. The original test (I5) guarded
+    // against a missing tool ranking *below* a stale one — written when
+    // absence was a `.warning`. Now absence is deliberately informational
+    // (see `absentSopsIsInformational`): there is no Help surface to point a
+    // user at, so "you don't have this at all" carries no actionable signal.
+    // A *present but outdated* tool is a different claim — if you do use it,
+    // running the app's own snippet-shaped commands against it may behave
+    // differently — and that stays a real `.warning`. So a stale git must now
+    // rank strictly *above* an absent one, not merely not-below it.
+    @Test("an outdated git is rated more serious than an absent one")
+    func oldGitOutranksAbsentGit() async {
         let absent = finding(
             await ExternalToolCheck(locator: FakeLocator(tools: [:]),
                                     embeddedSopsVersion: embedded).run(), "tool.git")
@@ -119,8 +137,8 @@ struct ExternalToolCheckTests {
                 locator: FakeLocator(tools: ["git": tool("git", SemanticVersion(2, 20, 0))]),
                 embeddedSopsVersion: embedded).run(), "tool.git")
 
-        #expect(absent.status.severity >= old.status.severity,
-                "absent git (\(absent.status)) ranks below outdated git (\(old.status))")
+        #expect(old.status.severity > absent.status.severity,
+                "outdated git (\(old.status)) should outrank absent git (\(absent.status))")
     }
 
     @Test("yq stays the only tool that can fail outright")
@@ -182,5 +200,38 @@ struct ExternalToolCheckTests {
         // The comparison did not happen, and the copy says so rather than
         // letting a silent pass read as a pass.
         #expect(sops.detail.lowercased().contains("could not determine"))
+    }
+
+    // Ticket #14, acceptance criterion 1: no combination of missing tools may
+    // degrade `HealthReport`'s headline. `ExternalToolCheck` can only inform
+    // that outcome by never handing back anything worse than `.skipped` for a
+    // tool that simply isn't there — this proves the whole check does exactly
+    // that when every one of the five is absent at once, which used to make
+    // the headline `.warning` on a machine with none of them installed.
+    @Test("every tool missing at once never produces a warning-or-worse headline")
+    func allToolsMissingNeverDegradesHeadline() async {
+        let check = ExternalToolCheck(locator: FakeLocator(tools: [:]), embeddedSopsVersion: embedded)
+        let findings = await check.run()
+        let headline = HealthReport.worstStatus(in: findings)
+        #expect(headline.severity < HealthStatus.warning.severity,
+                "headline over an all-missing tool set was \(headline)")
+    }
+
+    // Ticket #14: the check used to justify all five tools by pointing at
+    // "the Help section", which does not exist anywhere in the app yet (no
+    // menu item, no view — see the header comment's rewrite). Nothing this
+    // check produces may still make that claim.
+    @Test("no finding or purpose text points at a Help section that does not exist")
+    func noFindingMentionsHelp() async {
+        let check = ExternalToolCheck(
+            locator: FakeLocator(tools: [
+                "sops": tool("sops", SemanticVersion(3, 0, 0)),
+                "yq": tool("yq", SemanticVersion(3, 4, 1)),
+            ]),
+            embeddedSopsVersion: embedded)
+        for finding in await check.run() {
+            let text = (finding.detail + (finding.remediation?.explanation ?? "")).lowercased()
+            #expect(!text.contains("help"), "\(finding.id) still points at Help: \(text)")
+        }
     }
 }
