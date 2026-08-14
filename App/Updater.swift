@@ -240,9 +240,18 @@ private final class CanCheckForUpdates: NSObject, ObservableObject {
         // A renamed or misspelled key path makes `observeValue` silently never
         // fire, which leaves the menu item permanently greyed out — a failure
         // that looks like "updates are unavailable" rather than like a bug.
-        // `value(forKey:)` raises for an unknown key, so this trips in the
-        // first debug launch instead.
-        assert(updater.value(forKey: Self.keyPath) != nil)
+        // `value(forKey:)` raises for an unknown key, so this trips at the
+        // first launch — `precondition`, not `assert`: Swift strips an
+        // `assert`'s condition entirely in a `-O` release build (ticket #26
+        // item 2), which is exactly the build a signed, notarized release
+        // ships, so the renamed-property case this line exists to catch was
+        // unchecked precisely where it matters. `precondition` still traps in
+        // `-O`; only `-Ounchecked` — which this project's build settings
+        // never enable — would silence it too.
+        precondition(
+            updater.value(forKey: Self.keyPath) != nil,
+            "Sparkle's \"\(Self.keyPath)\" key path is missing or was renamed — "
+                + "\"Check for Updates…\" would silently stop enabling and disabling correctly")
         canCheck = updater.canCheckForUpdates
         updater.addObserver(self, forKeyPath: Self.keyPath, options: [.new], context: nil)
     }
