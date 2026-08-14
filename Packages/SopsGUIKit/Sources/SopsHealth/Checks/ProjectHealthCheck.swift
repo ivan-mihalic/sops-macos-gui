@@ -931,7 +931,7 @@ public struct ProjectHealthCheck: HealthCheck {
 
         return scope.finding(
             about: .theWholeTree, id: findingID, title: title, status: .warning,
-            detail: "These encrypted files under \(project.rootPath) are readable or writable by more than their owner: \(names.joined(separator: ", ")). Encryption still protects the contents from anyone who cannot decrypt it, but a loose mode lets every other account on this machine see who the file is encrypted to, its size, and when it last changed.",
+            detail: "These encrypted files under \(project.rootPath) are readable or writable by more than their owner: \(names.joined(separator: ", ")). Encryption still protects the contents, but a loose mode lets every other account on this machine see who the file is encrypted to, its size, and when it last changed.",
             remediation: Remediation(
                 explanation: "Narrow the file's permissions so only you can read or write it.",
                 command: command))
