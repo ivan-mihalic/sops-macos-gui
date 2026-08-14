@@ -408,7 +408,11 @@ struct SopsGUIApp: App {
                       // default: this names the TTL *this* running store
                       // enforces, the same reasoning `keyStore: keys.healthSource`
                       // already applies just above.
-                      sessionTTL: keys.ttlHealthSource)
+                      sessionTTL: keys.ttlHealthSource,
+                      // The real, persistent ledger — `.sops-gui/rotation-debt.json`
+                      // per project. `NoRotationDebt()`, the package default,
+                      // survives only in tests that do not care about this.
+                      rotationDebt: RotationDebtLedgerSource())
         }))
     }
 

@@ -386,6 +386,16 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // away without a word. See `RecipientAccessModel.duplicatedRecipients`.
     case accessDuplicateRecipients = "access.duplicate-recipients"
 
+    // Ticket #3: a recipient removal this panel already applied may have
+    // left this file owing a rotation of its values — see
+    // `RecipientAccessModel.rotationDebtEntries` and
+    // `SopsHealth.RotationDebtSource`. This app cannot verify a rotation
+    // happened, only record that one is owed and let the user say when it
+    // is done — the heading and button below must never claim more than
+    // that.
+    case accessRotationDebtHeading = "access.rotation-debt.heading"
+    case accessRotationDebtAcknowledgeButton = "access.rotation-debt.acknowledge-button"
+
     // MARK: Task 4 (recipient management) — project access panel
 
     case projectAccessButton = "project-access.button"

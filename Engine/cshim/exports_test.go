@@ -42,7 +42,7 @@ import (
 // exportedEntryPointCount is asserted rather than derived so that adding an
 // entry point is a deliberate act that updates this number, and cannot happen
 // by accident.
-const exportedEntryPointCount = 12
+const exportedEntryPointCount = 13
 
 // TestEveryExportedEntryPointRecoversFromPanics checks the real main.go.
 func TestEveryExportedEntryPointRecoversFromPanics(t *testing.T) {

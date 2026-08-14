@@ -77,6 +77,48 @@ ScratchDirectoryRegistry.shared.register(root)
         try SopsBridge.encryptYAML(plain, recipients: recipients)
     }
 
+    /// A genuinely sops-encrypted YAML document produced by the real `sops`
+    /// binary, not the in-process bridge — the compatibility oracle for the
+    /// cases where the two are expected to disagree (ticket #5: this app's
+    /// own save path refuses an `encryptedRegex` that cannot compile;
+    /// nothing stops the real CLI from writing one).
+    static func sopsCLIEncrypted(
+        _ plain: String, age publicKey: String, agePrivateKey: String,
+        encryptedRegex: String? = nil, unencryptedSuffix: String? = nil
+    ) throws -> String {
+        let dir = try makeDirectory("sops-cli-encrypt")
+        let plainURL = dir.appendingPathComponent("plain.yaml")
+        try plain.write(to: plainURL, atomically: true, encoding: .utf8)
+        let keyFile = dir.appendingPathComponent("key.txt")
+        try (agePrivateKey + "\n").write(to: keyFile, atomically: true, encoding: .utf8)
+
+        var arguments = ["--encrypt", "--age", publicKey]
+        if let encryptedRegex {
+            arguments += ["--encrypted-regex", encryptedRegex]
+        }
+        if let unencryptedSuffix {
+            arguments += ["--unencrypted-suffix", unencryptedSuffix]
+        }
+        arguments.append(plainURL.path)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: try toolPath("sops"))
+        process.arguments = arguments
+        process.environment = ProcessInfo.processInfo.environment
+            .merging(["SOPS_AGE_KEY_FILE": keyFile.path]) { _, new in new }
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let output = String(decoding: data, as: UTF8.self)
+        guard process.terminationStatus == 0 else {
+            throw FixtureError("sops \(arguments.joined(separator: " ")) exited \(process.terminationStatus): \(output)")
+        }
+        return output
+    }
+
     // MARK: - Process plumbing
 
     struct FixtureError: Error, CustomStringConvertible {

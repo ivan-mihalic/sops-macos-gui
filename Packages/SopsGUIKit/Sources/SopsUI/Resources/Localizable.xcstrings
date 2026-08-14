@@ -3706,6 +3706,28 @@
         }
       }
     },
+    "access.rotation-debt.acknowledge-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mark rotation done"
+          }
+        }
+      }
+    },
+    "access.rotation-debt.heading": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rotation debt"
+          }
+        }
+      }
+    },
     "key.import.legacy-chmod-unavailable": {
       "extractionState": "manual",
       "localizations": {

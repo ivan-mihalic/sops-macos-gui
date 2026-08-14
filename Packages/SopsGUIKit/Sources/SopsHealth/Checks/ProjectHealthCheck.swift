@@ -67,12 +67,24 @@ public struct ProjectHealthCheck: HealthCheck {
     /// whatever Settings › Scanning held then and ignore a change made
     /// mid-session.
     private let scanBudget: @Sendable () -> Int
+    /// Where a project's outstanding rotation debt is read from and recorded
+    /// to — see `RotationDebtSource`'s doc comment for why this is a
+    /// protocol rather than a direct call to `SopsProjects
+    /// .RotationDebtLedger`, which is what every real app build wires in
+    /// here. Defaults to `NoRotationDebt()`, matching `locator`'s and
+    /// `ProjectSourceProviding`'s own "every existing test keeps working
+    /// unless it opts in" shape.
+    private let rotationDebt: any RotationDebtSource
 
-    public init(source: any ProjectSourceProviding, locator: any ToolLocating = ToolLocator(),
-                scanBudget: @escaping @Sendable () -> Int = { ScanBudgetSetting.current() }) {
+    public init(
+        source: any ProjectSourceProviding, locator: any ToolLocating = ToolLocator(),
+        scanBudget: @escaping @Sendable () -> Int = { ScanBudgetSetting.current() },
+        rotationDebt: any RotationDebtSource = NoRotationDebt()
+    ) {
         self.source = source
         self.locator = locator
         self.scanBudget = scanBudget
+        self.rotationDebt = rotationDebt
     }
 
     public func run() async -> [HealthFinding] {
@@ -187,6 +199,17 @@ public struct ProjectHealthCheck: HealthCheck {
         // this app can parse the config governing it.
         let permissions = filePermissionsFinding(for: project, idScope: idScope, root: root,
                                                   tree: tree, scope: scope)
+        // Computed after `leak`, not before: `gitignoreFinding` is what may
+        // just have recorded a fresh `.plaintextCommitted` entry for this
+        // very run (a tracked, unignored secret file found for the first
+        // time), and this finding has to read the ledger *after* that write
+        // to show it in the same run rather than only from the next one.
+        let debt = rotationDebtFinding(for: project, idScope: idScope, root: root, scope: scope)
+        // Independent of .sops.yaml entirely — it reads only each
+        // encrypted file's own bytes — so it runs in every branch below,
+        // the same way `leak`, `permissions` and `debt` do.
+        let encryption = unencryptedLeavesFinding(
+            for: project, idScope: idScope, root: root, tree: tree, scope: scope)
 
         guard FileManager.default.fileExists(atPath: configURL.path) else {
             // The plaintext-leak finding is emitted even here. A project with
@@ -232,7 +255,7 @@ public struct ProjectHealthCheck: HealthCheck {
                     // from finding a claim this app could not actually back
                     // up yet, and the next one is worth holding to the same
                     // standard before it lands.
-                    explanation: "Add a .sops.yaml file at the project root with a creation_rules entry naming the age public keys new files should be encrypted to. This app can propose one now: select this project, click the toolbar's New File button (or press ⌘N), add at least one recipient, then click Propose .sops.yaml — it shows the file before writing it, and writes it only once you confirm. Writing the file by hand is just as valid; see sops's own documentation for the file format.")), leak, permissions]
+                    explanation: "Add a .sops.yaml file at the project root with a creation_rules entry naming the age public keys new files should be encrypted to. This app can propose one now: select this project, click the toolbar's New File button (or press ⌘N), add at least one recipient, then click Propose .sops.yaml — it shows the file before writing it, and writes it only once you confirm. Writing the file by hand is just as valid; see sops's own documentation for the file format.")), leak, permissions, debt, encryption]
         }
 
         // Probe that the config itself loads under sops's own parser,
@@ -262,7 +285,7 @@ public struct ProjectHealthCheck: HealthCheck {
                 status: .problem,
                 detail: "The .sops.yaml in \(project.rootPath) could not be parsed: \(error).",
                 remediation: Remediation(
-                    explanation: "Fix the YAML syntax, then re-run this check.")), leak, permissions]
+                    explanation: "Fix the YAML syntax, then re-run this check.")), leak, permissions, debt, encryption]
         }
 
         return [
@@ -274,6 +297,8 @@ public struct ProjectHealthCheck: HealthCheck {
                              configPath: configURL.path, tree: tree, scope: scope),
             leak,
             permissions,
+            debt,
+            encryption,
         ]
     }
 
@@ -819,6 +844,18 @@ public struct ProjectHealthCheck: HealthCheck {
             let exposedNames = exposed.map(relativeName).sorted()
             let trackedNames = exposed.filter { tracked.contains($0.path) }.map(relativeName).sorted()
 
+            // Ticket #3, claim 3: the debt this records must outlive the
+            // condition that discovered it. `git rm --cached` on one of
+            // these later makes `trackedNames` empty on the next run — this
+            // finding would stop mentioning it — but the secret was already
+            // in the repository's history the moment this ran, and nothing
+            // about removing the file from the index changes that. So the
+            // record goes to the ledger now, once, and stays until a user
+            // acknowledges it — see `RotationDebtSource`'s doc comment.
+            for name in trackedNames {
+                rotationDebt.record(path: name, reason: .plaintextCommitted, in: root)
+            }
+
             var detail = "These plaintext files under \(project.rootPath) are not gitignored: \(exposedNames.joined(separator: ", ")). Committing one publishes its contents to everyone with access to the repository's history, permanently."
             if !trackedNames.isEmpty {
                 detail += "\n\nAlready tracked by git, so they are in the repository now: \(trackedNames.joined(separator: ", ")). Adding a .gitignore line does not remove a file that is already tracked."
@@ -846,6 +883,235 @@ public struct ProjectHealthCheck: HealthCheck {
                 // string correct in both is one nobody can read before running.
                 remediation: Remediation(explanation: explanation, command: nil))
         }
+    }
+
+    /// Ticket #3: the durable half of the rotation-debt problem. Every place
+    /// in this app that removes a recipient (`RecipientAccessModel.apply`,
+    /// `ProjectAccessModel.applyToFiles`) or finds a plaintext secret
+    /// already tracked by git (`gitignoreFinding`, above) records the fact
+    /// through `rotationDebt`. This finding is the only place that fact is
+    /// ever surfaced back to the user, and it reads the ledger directly
+    /// rather than re-deriving anything from the current scan — that is the
+    /// whole point: the condition that first revealed the debt (a stale
+    /// recipient set, a tracked plaintext file) is allowed to clear without
+    /// the debt clearing with it.
+    ///
+    /// There is deliberately no path from here back to `.ok` other than a
+    /// user acknowledging each entry (`RotationDebtSource`/
+    /// `SopsProjects.RotationDebtLedger.acknowledge`) — this app cannot see
+    /// whether a value was actually rotated, only that removing it from the
+    /// ledger is what a user who says it happened does. The remediation
+    /// text below says exactly that, and never "verified" or "confirmed".
+    private func rotationDebtFinding(
+        for project: InspectedProject, idScope: String, root: URL, scope: ProjectScopeAccountant
+    ) -> ScopedFinding {
+        let findingID = "project.\(idScope).rotation-debt"
+        let title = "\(project.name): rotation debt"
+        let entries = rotationDebt.rotationDebt(in: root).sorted {
+            ($0.path, $0.recordedAt) < ($1.path, $1.recordedAt)
+        }
+
+        guard !entries.isEmpty else {
+            return scope.finding(
+                about: .theWholeTree,
+                id: findingID, title: title, status: .ok,
+                detail: "No file in \(project.rootPath) has a recorded rotation debt.")
+        }
+
+        let formatter = ISO8601DateFormatter()
+        let lines = entries.map { entry in
+            "\(entry.path) — \(RotationDebtDescription.sentence(for: entry)) Recorded \(formatter.string(from: entry.recordedAt))."
+        }
+        let detail = "This app recorded that the following owe a rotation of their secret values, and nothing since has told it otherwise:\n"
+            + lines.joined(separator: "\n")
+
+        return scope.finding(
+            about: .theWholeTree,
+            id: findingID, title: title, status: .problem,
+            detail: detail,
+            remediation: Remediation(
+                explanation: "This app cannot verify that a value was actually rotated — only you know that. Once you have changed the affected values at wherever issued them, mark each entry as settled from this file's Access panel. Until then this app keeps reminding you, even after the condition that first found it (a stale recipient, a tracked plaintext file) is gone."))
+    }
+
+    /// The whole file this app reads in full for `unencryptedLeavesFinding`
+    /// — 8 MiB, the same budget `ProjectScanner.maxEscalatedSniffBytes`
+    /// already spends on the rare file whose metadata sits further back
+    /// than the ordinary tail read reaches. Deliberately the same number
+    /// rather than a new one: this check's cost is already bounded by
+    /// `tree.encrypted`'s own size (which `ProjectScanner.maxScannedFiles`
+    /// bounds), so per file the only new cost is one more full read for
+    /// files under this cap — no worse an order of magnitude than the tail
+    /// read every one of them already paid, and files over the cap are
+    /// reported unverifiable rather than read at all. See this check's own
+    /// doc comment for why decrypting is never on the table here at any
+    /// size — this only ever parses, and only files this small.
+    static let maxLeafEncryptionCheckBytes = 8 * 1024 * 1024
+
+    /// Ticket #5, claim 1: whether an encrypted file's *values* are
+    /// actually ciphertext, which `recipientFinding` never asks — it only
+    /// compares recipient *sets*, so a file whose `encrypted_regex` never
+    /// compiled (sops discards that error and writes every value in
+    /// cleartext behind a complete, valid metadata block — reproduced
+    /// against the real CLI in `Engine/gobridge/leafencryption_test.go`)
+    /// passes that check silently. This is the only place that looks at the
+    /// leaves themselves.
+    ///
+    /// # What this is certain about
+    ///
+    /// `SopsBridge.inspectLeafEncryption` reports two facts about a file's
+    /// own metadata alongside the leaf counts — see `LeafEncryptionSummary`
+    /// (Swift) / `gobridge.LeafEncryptionSummary` (Go, the fuller account)
+    /// for the reasoning — and this method turns them into exactly two
+    /// certain shapes:
+    ///
+    /// 1. `uncompilableRuleDeclared`: the file's own metadata names a
+    ///    regex-shaped rule that does not compile under the same engine
+    ///    sops itself compiles it with. This is the ticket's own
+    ///    reproduction — `encrypted_regex: (unclosed` — and it is certain
+    ///    regardless of `narrowingDeclared`, because an uncompilable
+    ///    pattern can never match anything: sops's fallback is not a
+    ///    guess, it is what was measured.
+    /// 2. `!narrowingDeclared && encryptedLeafCount < leafCount`: no rule
+    ///    of any kind is declared, so sops's documented behaviour is to
+    ///    encrypt every leaf — any gap here is the file failing to be what
+    ///    its own metadata claims, not a design choice this app could be
+    ///    second-guessing.
+    ///
+    /// # What this deliberately does not claim
+    ///
+    /// `narrowingDeclared && !uncompilableRuleDeclared`, with a gap: this
+    /// app cannot tell "compiles and matches nothing in this document"
+    /// (a legitimate, if unusual, configuration — see
+    /// `TestEncryptAcceptsARuleThatMatchesSomeKeys` on the Go side) apart
+    /// from a rule that was simply written for other files in the project,
+    /// so this is reported unverifiable rather than guessed at. A wrong
+    /// `.problem` here is exactly the expensive false positive this whole
+    /// ticket warns against. A file larger than `maxLeafEncryptionCheckBytes`
+    /// is unverifiable for cost, not correctness — see that constant's doc
+    /// comment. Neither case is reported as `.ok`; both land in the same
+    /// "not checked" bucket `recipientFinding` already uses for its own
+    /// unreadable backends, and block an affirmative `.ok` the same way.
+    ///
+    /// # Ticket #5, claim 3
+    ///
+    /// `exposureledger.go`'s own doc comment says a comment losing MAC
+    /// protection is invisible both to this app's leaf walk and to sops's
+    /// integrity check — this app only guards against writing one itself
+    /// (`refuseUnusableEncryptionRule`'s sibling for the exposure ledger),
+    /// never against one that already exists. The scope for this ticket is
+    /// "at least name it", so a standing caveat is appended to this
+    /// finding's detail whenever there is at least one file to say it
+    /// about — never a per-comment detector, which would need exactly the
+    /// kind of arbitrary-YAML text scanning this codebase moved away from
+    /// for `.sops.yaml` after three rounds of silent-corruption bugs (see
+    /// this file's own type-level doc comment).
+    private func unencryptedLeavesFinding(
+        for project: InspectedProject, idScope: String, root: URL, tree: ScannedTree,
+        scope: ProjectScopeAccountant
+    ) -> ScopedFinding {
+        let findingID = "project.\(idScope).encryption"
+        let title = "\(project.name): encryption"
+
+        let rootPrefix = Self.canonicalPath(root.path) + "/"
+        func relativeName(_ url: URL) -> String {
+            let path = CanonicalPath.ofLeaf(url.path)
+            return path.hasPrefix(rootPrefix) ? String(path.dropFirst(rootPrefix.count)) : path
+        }
+
+        guard !tree.encrypted.isEmpty || !tree.encryptedInOtherFormats.isEmpty else {
+            guard !tree.wasTruncated else {
+                return scope.finding(
+                    about: .theWholeTree, id: findingID, title: title,
+                    status: .unknown(reason: "This project has more files than this app's scan budget, so part of the tree was never searched for encrypted files."),
+                    detail: "No sops-encrypted files turned up in the part of \(project.rootPath) this scan reached — but it did not reach all of it, so this app is not telling you there are none.")
+            }
+            return scope.finding(
+                about: .theWholeTree, id: findingID, title: title,
+                status: .skipped(reason: "No sops-encrypted files were found under \(project.rootPath)."),
+                detail: "There are no encrypted files yet, so there is nothing to check for genuine encryption.")
+        }
+
+        var problems: [String] = []
+        var unverifiable: [String] = []
+        var verifiedCount = 0
+
+        for url in tree.encryptedInOtherFormats {
+            unverifiable.append("\(relativeName(url)) is sops-encrypted in a format this app does not read yet — this build handles YAML only — so its values were not checked.")
+        }
+
+        for sniffed in tree.encrypted {
+            let relative = relativeName(sniffed.url)
+
+            guard let size = try? FileManager.default.attributesOfItem(atPath: sniffed.url.path)[.size] as? Int,
+                  size <= Self.maxLeafEncryptionCheckBytes else {
+                unverifiable.append("\(relative) is larger than this app is willing to read in full to check this, so its values were not checked.")
+                continue
+            }
+
+            guard let contents = try? String(contentsOf: sniffed.url, encoding: .utf8),
+                  contents.crossesCBoundaryIntact else {
+                unverifiable.append("\(relative) could not be read to check whether its values are genuinely encrypted.")
+                continue
+            }
+
+            do {
+                let summary = try SopsBridge.inspectLeafEncryption(in: contents)
+                let unencrypted = summary.leafCount - summary.encryptedLeafCount
+                if summary.uncompilableRuleDeclared, unencrypted > 0 {
+                    problems.append("\(relative)'s own metadata names an encryption rule that does not compile, and \(unencrypted) of its \(summary.leafCount) value(s) are not actually encrypted. sops discards a rule that cannot compile instead of refusing to save the file, so this file's valid recipient list and MAC describe the metadata, not the values.")
+                } else if !summary.narrowingDeclared, unencrypted > 0 {
+                    problems.append("\(relative) declares no rule narrowing which values it encrypts, but \(unencrypted) of its \(summary.leafCount) value(s) are not actually encrypted. This file's own metadata reports a valid recipient list and MAC — those describe the metadata, not the values, and a mismatch here is exactly what a file saved with a broken encryption rule looks like.")
+                } else if summary.narrowingDeclared, unencrypted > 0 {
+                    unverifiable.append("\(relative)'s own metadata narrows which values it encrypts (an encrypted_regex or similar rule that does compile), so an unencrypted value in it may be by design — this app did not check.")
+                } else {
+                    verifiedCount += 1
+                }
+            } catch {
+                unverifiable.append("\(relative): could not determine whether its values are genuinely encrypted (\(error)).")
+            }
+        }
+
+        let commentNote = " Separately: sops protects a comment's contents but does not include comments in its integrity check, so a comment cannot be verified as untampered by this app or by sops itself — never put a secret value in one."
+
+        if !problems.isEmpty {
+            var detail = problems.joined(separator: "\n")
+            if !unverifiable.isEmpty {
+                detail += "\n\nThis app also could not fully check:\n" + unverifiable.joined(separator: "\n")
+            }
+            return scope.finding(
+                about: .theWholeTree, id: findingID, title: title, status: .problem,
+                detail: detail + commentNote,
+                remediation: Remediation(
+                    explanation: "This file was very likely not saved by this app — it refuses to write an encryption rule that cannot compile. Re-encrypt it (with a working encryption rule, or none) using the sops CLI or by re-saving it here, then re-run this check. Because the old file was never actually protected, also rotate any secret values it held."))
+        }
+
+        guard unverifiable.isEmpty, !tree.wasTruncated else {
+            let verified = verifiedCount == 0
+                ? "No encrypted file's values could be checked here, so this app is not vouching for this project's encryption either way."
+                : verifiedCount == 1
+                    ? "Checked 1 encrypted file — its values are genuinely encrypted."
+                    : "Checked \(verifiedCount) encrypted files — their values are genuinely encrypted."
+            var detail = verified
+            if tree.wasTruncated {
+                detail += "\n\nThis project has more files than this app's scan budget, so part of the tree was never checked."
+            }
+            if !unverifiable.isEmpty {
+                detail += "\n\nDeliberately not checked:\n" + unverifiable.map { "• " + $0 }.joined(separator: "\n")
+            }
+            return scope.finding(
+                about: .theWholeTree, id: findingID, title: title,
+                status: .unknown(reason: tree.wasTruncated
+                    ? "This project has more files than this app's scan budget, so part of the tree was never checked."
+                    : "Part of this project's encryption could not be checked. This is not a verdict on it."),
+                detail: detail + commentNote)
+        }
+
+        let checked = verifiedCount == 1
+            ? "Checked 1 encrypted file — its values are genuinely encrypted, not just its metadata."
+            : "Checked \(verifiedCount) encrypted files — their values are genuinely encrypted, not just their metadata."
+        return scope.finding(
+            about: .theWholeTree, id: findingID, title: title, status: .ok,
+            detail: checked + commentNote)
     }
 
     /// Characters `.gitignore` reads as syntax rather than as part of a name.

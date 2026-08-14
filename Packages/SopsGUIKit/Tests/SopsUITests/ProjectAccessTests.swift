@@ -280,6 +280,58 @@ struct ProjectAccessApplySeparationTests {
         #expect(try String(contentsOf: root.appendingPathComponent(".sops.yaml"), encoding: .utf8) == config)
     }
 
+    @Test("re-wrapping files after staging a removal records rotation debt for the files actually rewrapped")
+    func fileApplyRecordsRotationDebtForRemovedRecipient() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let removed = try ProjectAgeKeyPair.generate()
+        let root = try projectScratchDirectory()
+        let config = """
+            creation_rules:
+              - path_regex: .*\\.yaml$
+                age:
+                  - \(owner.public)
+                  - \(removed.public)
+            """
+        try config.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let encrypted = try SopsBridge.encryptYAML(
+            projectPlainYAML, recipients: [owner.public, removed.public])
+        for name in ["a.yaml", "b.yaml"] {
+            try encrypted.write(to: root.appendingPathComponent(name), atomically: true, encoding: .utf8)
+        }
+
+        let keyStore = SessionKeyStore()
+        try keyStore.importKey(owner.private)
+        let model = ProjectAccessModel(projectRoot: root, keyStore: keyStore)
+        await model.load()
+        model.stageRemove(removed.public)
+        await model.refreshPlan()
+
+        #expect(await model.applyToFiles() == nil)
+        #expect(model.fileResults.allSatisfy { $0.outcome == .updated })
+
+        let debt = try RotationDebtLedger.load(in: root)
+        #expect(Set(debt.map(\.path)) == ["a.yaml", "b.yaml"])
+        #expect(debt.allSatisfy { $0.reason == .recipientRemoved })
+    }
+
+    @Test("re-wrapping files without staging any removal records no rotation debt")
+    func fileApplyWithoutRemovalRecordsNoRotationDebt() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let added = try ProjectAgeKeyPair.generate()
+        let (root, _) = try makeProject(owner: owner)
+
+        let keyStore = SessionKeyStore()
+        try keyStore.importKey(owner.private)
+        let model = ProjectAccessModel(projectRoot: root, keyStore: keyStore)
+        await model.load()
+        model.stageAdd(added.public)
+        await model.refreshPlan()
+
+        #expect(await model.applyToFiles() == nil)
+
+        #expect(try RotationDebtLedger.load(in: root).isEmpty)
+    }
+
     @Test("applying to files without a session key is refused before anything is read")
     func fileApplyWithoutAKeyIsRefused() async throws {
         let owner = try ProjectAgeKeyPair.generate()
