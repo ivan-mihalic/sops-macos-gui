@@ -75,6 +75,13 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // this is the moment the app can point at that advice, not invent its
     // own. See `KeyImportView`.
     case keyImportLegacySuccess = "key.import.legacy-success"
+    // Ticket #7: `AgeKeyFileLocations.protectCommand(for:)` returns nil for a
+    // path `ShellQuoting` refuses to represent as one safe shell word — a
+    // newline is the reachable case, and `SOPS_AGE_KEY_FILE` is user-settable.
+    // Before this existed the command block below `keyImportLegacySuccess`
+    // simply vanished with nothing in its place, so a user on exactly that
+    // path never learned there was still something to do.
+    case keyImportLegacyChmodUnavailable = "key.import.legacy-chmod-unavailable"
     case keyImportErrorTitle = "key.import.error-title"
     case keyErrorEmpty = "key.error.empty"
     case keyErrorNotAnAgeKey = "key.error.not-an-age-key"

@@ -60,6 +60,11 @@ ScratchDirectoryRegistry.shared.register(directory)
         defer { try? FileManager.default.removeItem(at: directory) }
         let keyFile = directory.appendingPathComponent("keys.txt")
         try "not a real key".write(to: keyFile, atomically: true, encoding: .utf8)
+        // Explicit rather than relying on this machine's umask: this test is
+        // about the failed-probe branch, not about permission severity
+        // (ticket #7), so it pins the mode that keeps the assertion below
+        // meaningful regardless of which one a bare write would have produced.
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyFile.path)
 
         let found = try #require(await finding(probeFailed: true, paths: [keyFile.path]))
         #expect(found.status == .warning,

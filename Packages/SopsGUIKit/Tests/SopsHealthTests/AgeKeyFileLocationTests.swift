@@ -140,6 +140,70 @@ ScratchDirectoryRegistry.shared.register(directory)
         #expect(AgeKeyFileLocations.protectCommand(for: ["/x/keys\n.txt"]) == nil)
     }
 
+    // MARK: - Permission mode (ticket #7)
+
+    /// `0600` — owner read/write, nothing for group or other — is the mode
+    /// `age-keygen` itself writes. Not "readable by others".
+    @Test("a mode-0600 file is not readable by group or other")
+    func mode0600IsOwnerOnly() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("perm-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(dir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("keys.txt")
+        try "irrelevant".write(to: file, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+
+        #expect(AgeKeyFileLocations.isReadableByGroupOrOther(file.path) == false)
+    }
+
+    /// `0644` — world-readable — is what a plain `.write(to:atomically:…)`
+    /// produces under this machine's default umask, and the shape of the
+    /// exposure ticket #7 exists to distinguish from `0600`.
+    @Test("a mode-0644 file is readable by other", arguments: [0o644, 0o640, 0o604, 0o606] as [Int])
+    func groupOrOtherReadableModesAreDetected(mode: Int) throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("perm-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(dir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("keys.txt")
+        try "irrelevant".write(to: file, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: file.path)
+
+        #expect(AgeKeyFileLocations.isReadableByGroupOrOther(file.path) == true,
+                "mode \(String(mode, radix: 8)) grants group or other read and must be detected")
+    }
+
+    /// Write access without read (`0620`) is not what this guards: the finding
+    /// is about who can *read* the key, and a mode that lets another account
+    /// overwrite the file but not read it is a different (and much rarer, and
+    /// arguably self-correcting — the owner would notice a corrupted key)
+    /// problem this ticket is not about.
+    @Test("write-only group/other bits are not read access")
+    func writeOnlyBitsAreNotReadAccess() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("perm-" + UUID().uuidString)
+        ScratchDirectoryRegistry.shared.register(dir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("keys.txt")
+        try "irrelevant".write(to: file, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o620], ofItemAtPath: file.path)
+
+        #expect(AgeKeyFileLocations.isReadableByGroupOrOther(file.path) == false)
+    }
+
+    /// A `stat` that fails (file vanished between the existence check and the
+    /// permission read, a bizarre ACL) must not read as "safe" — the whole
+    /// reason this app checks anything is to warn, and a check that goes
+    /// silent on failure is worse than one that never ran.
+    @Test("a permission read that cannot be answered reports nil, not false")
+    func unreadablePermissionsReportNil() {
+        #expect(AgeKeyFileLocations.isReadableByGroupOrOther("/nonexistent/\(UUID().uuidString)/keys.txt") == nil)
+    }
+
     // MARK: - What the finding says
 
     /// The defect this suite exists for. An all-clear that names nothing is
@@ -169,13 +233,16 @@ ScratchDirectoryRegistry.shared.register(directory)
 ScratchDirectoryRegistry.shared.register(library)
         let keyFile = library.appendingPathComponent("keys.txt")
         try "# created by age-keygen\n".write(to: keyFile, atomically: true, encoding: .utf8)
+        // Explicit rather than relying on this machine's umask (ticket #7:
+        // permission now changes the status this test asserts).
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: keyFile.path)
         defer { try? FileManager.default.removeItem(at: home) }
 
         let paths = AgeKeyFileLocations.candidates(
             environment: [:], homeDirectory: home.path, loginShellEnvironment: { [:] })
         let finding = legacyFinding(await check(paths).run())
 
-        #expect(finding.status == .warning)
+        #expect(finding.status == .problem)
         #expect(finding.detail.contains(keyFile.path))
         #expect(finding.remediation?.command?.contains("chmod 600") == true)
     }
@@ -193,6 +260,9 @@ ScratchDirectoryRegistry.shared.register(library)
 ScratchDirectoryRegistry.shared.register(directory)
             let keyFile = directory.appendingPathComponent("keys.txt")
             try "# created by age-keygen\n".write(to: keyFile, atomically: true, encoding: .utf8)
+            // Explicit rather than relying on this machine's umask (ticket
+            // #7: permission now changes the status this test asserts).
+            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: keyFile.path)
             written.append(keyFile.path)
         }
         defer { try? FileManager.default.removeItem(at: home) }
@@ -201,7 +271,7 @@ ScratchDirectoryRegistry.shared.register(directory)
             environment: [:], homeDirectory: home.path, loginShellEnvironment: { [:] })
         let finding = legacyFinding(await check(paths).run())
 
-        #expect(finding.status == .warning)
+        #expect(finding.status == .problem)
         for path in written { #expect(finding.detail.contains(path), "\(finding.detail)") }
         let command = try #require(finding.remediation?.command)
         for path in written { #expect(command.contains(path), "\(command)") }

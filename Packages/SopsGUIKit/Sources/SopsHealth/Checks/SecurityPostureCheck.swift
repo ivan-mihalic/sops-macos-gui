@@ -95,6 +95,12 @@ public struct SecurityPostureCheck: HealthCheck {
     /// The login shell could not be asked where else sops would look, so the
     /// path list below is short by an unknown amount.
     private let legacyKeyFileProbeFailed: Bool
+    /// Ticket #7. Injected for the same reason `AgeKeyFileLocations.existingFiles`
+    /// injects `isRegularFile`: a test that has to `chmod` a real file under a
+    /// real path is fine (and several tests here do exactly that), but the
+    /// default production behavior should be swappable without touching the
+    /// filesystem at all.
+    private let legacyKeyFilePermissionProbe: @Sendable (String) -> Bool?
     private let sessionTTL: any SessionTTLStatusProviding
 
     public init(osVersion: SemanticVersion,
@@ -104,6 +110,7 @@ public struct SecurityPostureCheck: HealthCheck {
                 appUpdates: any AppUpdateStatusProviding,
                 legacyKeyFilePaths: [String],
                 legacyKeyFileProbeFailed: Bool = false,
+                legacyKeyFilePermissionProbe: @escaping @Sendable (String) -> Bool? = AgeKeyFileLocations.isReadableByGroupOrOther,
                 sessionTTL: any SessionTTLStatusProviding = SystemSessionTTL()) {
         self.osVersion = osVersion
         self.minimumOSVersion = minimumOSVersion
@@ -112,6 +119,7 @@ public struct SecurityPostureCheck: HealthCheck {
         self.appUpdates = appUpdates
         self.legacyKeyFilePaths = legacyKeyFilePaths
         self.legacyKeyFileProbeFailed = legacyKeyFileProbeFailed
+        self.legacyKeyFilePermissionProbe = legacyKeyFilePermissionProbe
         self.sessionTTL = sessionTTL
     }
 
@@ -275,14 +283,51 @@ public struct SecurityPostureCheck: HealthCheck {
                     + Self.pathList(legacyKeyFilePaths) + ".")
         }
 
-        let command = AgeKeyFileLocations.protectCommand(for: found)
+        // Ticket #7: existence alone used to decide the whole finding, so a
+        // `keys.txt` at `0600` — already restricted to its owner, the one
+        // thing this app can ask the user to do without Keychain support —
+        // read exactly the same as one at `0644`, world-readable, with no
+        // way to tell the two apart from the health panel. `nil` (the probe
+        // itself failed) is folded in with "readable" rather than "safe":
+        // a check that cannot confirm a file is protected must not imply
+        // that it is.
+        let broadlyReadable = found.filter { legacyKeyFilePermissionProbe($0) != false }
+        let ownerOnly = found.filter { legacyKeyFilePermissionProbe($0) == false }
+
+        guard !broadlyReadable.isEmpty else {
+            // Every found file is already owner-only. Still a real finding —
+            // it is still an unencrypted key on disk — just not the same
+            // severity as one any other account on the Mac can read, and
+            // there is nothing left for a `chmod` command to fix.
+            return HealthFinding(
+                id: "security.legacy-key-file", title: "Plaintext key file", status: .warning,
+                detail: (found.count == 1
+                    ? "An age key file sits unencrypted at \(found[0])"
+                    : "Age key files sit unencrypted at \(Self.pathList(found))")
+                    + ", but its permissions already limit reading it to your own account. Anything"
+                    + " running as you — including any process you launch — can still read "
+                    + (found.count == 1 ? "it." : "them."),
+                remediation: Remediation(
+                    explanation: "This app can't import it into the Keychain yet — key management "
+                        + "arrives in a later update. Its permissions are already the safest an "
+                        + "unencrypted file on disk can be, so there is nothing further to run."))
+        }
+
+        let command = AgeKeyFileLocations.protectCommand(for: broadlyReadable)
+        let exposureSentence = (broadlyReadable.count == 1
+            ? "\(broadlyReadable[0]) can be read by any other account on this Mac, not just yours."
+            : "\(Self.pathList(broadlyReadable)) can be read by any other account on this Mac, not just yours.")
         return HealthFinding(
-            id: "security.legacy-key-file", title: "Plaintext key file", status: .warning,
+            id: "security.legacy-key-file", title: "Plaintext key file", status: .problem,
             detail: (found.count == 1
                 ? "An age key file sits unencrypted at \(found[0])."
                 : "Age key files sit unencrypted at \(Self.pathList(found)).")
                 + " Anything that can read your home directory — including any process you run — can read "
-                + (found.count == 1 ? "that key." : "those keys."),
+                + (found.count == 1 ? "that key." : "those keys.")
+                + " " + exposureSentence
+                + (ownerOnly.isEmpty ? "" : " " + (ownerOnly.count == 1
+                    ? "\(ownerOnly[0]) is already restricted to your own account."
+                    : "\(Self.pathList(ownerOnly)) are already restricted to your own account.")),
             // Was "Import it into the Keychain from the Keys section of this
             // app." — a sibling of the .sops.yaml wizard defect found
             // elsewhere in this task, and the more serious of the two: that
@@ -295,7 +340,20 @@ public struct SecurityPostureCheck: HealthCheck {
             // the user can do without this app's help is narrow who can
             // read the file in the meantime.
             remediation: Remediation(
-                explanation: "This app can't import it into the Keychain yet — key management arrives in a later update. Until then, make sure only you can read the file.",
+                explanation: command != nil
+                    ? "This app can't import it into the Keychain yet — key management arrives in "
+                        + "a later update. Until then, run the command below to make sure only you "
+                        + "can read the file."
+                    // `protectCommand` refuses a path `ShellQuoting` cannot
+                    // represent as one safe shell word (a newline is the
+                    // reachable case — `SOPS_AGE_KEY_FILE` is user-settable).
+                    // Before this branch existed, `command` was silently nil
+                    // and the explanation above still promised "the command
+                    // below" with nothing under it.
+                    : "This app can't import it into the Keychain yet, and it can't build a safe "
+                        + "one-line command for this exact path either — something in the name (most "
+                        + "likely a line break) can't be folded into a shell command honestly. Open "
+                        + "Terminal, navigate to the file by hand, and run chmod 600 on it yourself.",
                 command: command))
     }
 

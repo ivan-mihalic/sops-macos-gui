@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Where a plaintext age key file can actually be sitting on this Mac.
@@ -61,7 +62,9 @@ import Foundation
 /// never opens anything. Adding an environment check here would mean this type
 /// starts handling a variable whose *value* is a secret, which the never-log
 /// rule makes a decision to take deliberately rather than as a side effect. It
-/// is not checked today and nothing here implies it was.
+/// is not checked today and nothing here implies it was — see
+/// [ADR 0003](../../../../docs/adr/0003-never-read-sops-age-key-from-the-environment.md)
+/// for the reasoning and why this is permanent, not merely unimplemented.
 public enum AgeKeyFileLocations {
 
     public static let userConfigRelativePath = "sops/age/keys.txt"
@@ -284,6 +287,40 @@ public enum AgeKeyFileLocations {
         var isDirectory: ObjCBool = false
         return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
             && !isDirectory.boolValue
+    }
+
+    /// Whether `path`'s POSIX mode grants read access to its group or to
+    /// everyone — nil when the mode could not be read at all (the file
+    /// vanished between the existence check and this call, an ACL this
+    /// process cannot query), which is deliberately *not* the same as
+    /// `false`: a check that cannot answer must say so, not report the safe
+    /// answer by default. `SecurityPostureCheck` treats nil the same as
+    /// `true` for exactly that reason — see `legacyKeyFileFinding`.
+    ///
+    /// `age-keygen` itself writes `0600` — owner read/write, nothing for
+    /// group or other. Ticket #7: a `keys.txt` at `0644` (the mode a plain
+    /// `.write(to:atomically:…)` produces under this machine's default
+    /// umask) is readable by every account on the Mac, not just the one that
+    /// owns it, and the health check said the identical sentence about both
+    /// until this existed.
+    ///
+    /// Only the read bits (`S_IRGRP`/`S_IROTH`) are checked, not write or
+    /// execute: this finding is about who can *see* the key, and a mode that
+    /// lets another account write to or execute the file but not read it is
+    /// a different problem than the one this app warns about.
+    ///
+    /// `FileManager.attributesOfItem`, not `Data(contentsOf:)` or
+    /// `String(contentsOf:)`: this is a `stat`, exactly like
+    /// `isRegularFile` above, and needs no read permission on the file
+    /// itself — `SecurityPostureCheckTests.legacyKeyFileWarnsEvenWhenUnreadable`
+    /// proves the sibling check keeps that property under a mode-000 file,
+    /// and this call must keep it too.
+    public static func isReadableByGroupOrOther(_ path: String) -> Bool? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+              let posix = attributes[.posixPermissions] as? NSNumber
+        else { return nil }
+        let mode = mode_t(truncating: posix)
+        return (mode & (S_IRGRP | S_IROTH)) != 0
     }
 
     /// Which of `paths` currently hold a regular file, in the order given.
