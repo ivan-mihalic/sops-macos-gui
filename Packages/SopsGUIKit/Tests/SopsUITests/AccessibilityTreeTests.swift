@@ -81,6 +81,18 @@ enum AXProbe {
         var nodes: [Node] = []
         var seen: Set<ObjectIdentifier> = []
         walk(hosting, depth: 0, seen: &seen, into: &nodes)
+
+        // An empty tree is never a legitimate answer about a rendered view —
+        // every view this probe is ever pointed at has at least one
+        // accessible element. It is always a measurement failure: most
+        // likely `AXEnhancedUserInterface` was off for this walk (see the
+        // comment above), the process-wide switch that a concurrent probe's
+        // own `defer` can clear out from under this one (swift-testing runs
+        // suites in parallel). Asserted here, once, so every caller gets the
+        // right diagnosis for free instead of a confusing "expected string
+        // missing" that reads like a defect in the view under test.
+        #expect(!nodes.isEmpty,
+                "AXProbe.tree saw an empty accessibility tree — that is always a probe failure, never a valid result. AXEnhancedUserInterface was likely off for this walk (possibly cleared by a concurrent probe); this is not evidence about the view under test.")
         return nodes
     }
 

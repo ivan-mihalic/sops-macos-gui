@@ -245,6 +245,17 @@ private final class EditorHost {
         var found: [Node] = []
         var seen: Set<ObjectIdentifier> = []
         Self.walk(hosting, depth: 0, seen: &seen, into: &found)
+
+        // Same reasoning as `AccessibilityTreeTests.AXProbe.tree`: an empty
+        // tree is always a measurement failure, never a legitimate "this
+        // view renders nothing" — most likely `AXEnhancedUserInterface` was
+        // off for this walk. Asserted here, once, so `text()`,
+        // `rowsOnScreen()` and `valueFields()` — everything below that reads
+        // through `nodes()` — inherit the right diagnosis for free instead
+        // of a confusing "the row the test revealed is not actually
+        // revealed" that reads like a defect in reveal itself.
+        #expect(!found.isEmpty,
+                "EditorHost.nodes() saw an empty accessibility tree — that is always a probe failure, never a valid result. AXEnhancedUserInterface was likely off for this walk (possibly cleared by a concurrent probe); this is not evidence about the view under test.")
         return found
     }
 

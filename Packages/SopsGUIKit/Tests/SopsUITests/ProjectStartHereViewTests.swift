@@ -279,6 +279,14 @@ private enum StartHereAXProbe {
         var nodes: [Node] = []
         var seen: Set<ObjectIdentifier> = []
         walk(hosting, depth: 0, seen: &seen, into: &nodes)
+
+        // Same reasoning as `AXProbe.tree`: an empty tree is always a
+        // measurement failure (most likely AXEnhancedUserInterface was off
+        // for this walk), never a legitimate "this view renders nothing".
+        // Asserted here so it holds for every caller, not just the ones that
+        // remembered to write their own vacuity canary.
+        #expect(!nodes.isEmpty,
+                "StartHereAXProbe.tree saw an empty accessibility tree — that is always a probe failure, never a valid result. AXEnhancedUserInterface was likely off for this walk (possibly cleared by a concurrent probe); this is not evidence about the view under test.")
         return nodes
     }
 
