@@ -245,6 +245,27 @@ private final class EditorHost {
         var found: [Node] = []
         var seen: Set<ObjectIdentifier> = []
         Self.walk(hosting, depth: 0, seen: &seen, into: &found)
+
+        // Same reasoning as `AccessibilityTreeTests.AXProbe.tree`, corrected
+        // the same way — but `EditorHost` is one of the two probes (with
+        // `RecipientAccessGatingTests.GatingHost`) where
+        // `AXEnhancedUserInterface` really *is* measured to get cleared out
+        // from under a live walk: ~90 times across a full suite run, because
+        // this host is kept alive and re-walked while a concurrent probe's
+        // own `defer` can flip the process-wide flag off in between. That
+        // clearing turned out to cost nothing: a control walk, a walk
+        // cleared then relaid out, and a fresh walk all returned the
+        // identical 92 nodes on a 12-row `List` — only a walk built with the
+        // flag off from the very start undercounts (68, not 0). So even
+        // here, a non-empty tree is not evidence the flag stayed on — this
+        // assertion is not a diagnostic for that mechanism, just a minimal
+        // sanity check that nothing more total went wrong. Kept once, here,
+        // so `text()`, `rowsOnScreen()` and `valueFields()` — everything
+        // below that reads through `nodes()` — inherit it for free instead
+        // of failing on a confusing "the row the test revealed is not
+        // actually revealed" that reads like a defect in reveal itself.
+        #expect(!found.isEmpty,
+                "EditorHost.nodes() saw a completely empty accessibility tree — that is never a valid result for a rendered view (even a walk built with AXEnhancedUserInterface off from the start still returns most of the tree; see this function's comment). Something more total than the usual bug is wrong here.")
         return found
     }
 

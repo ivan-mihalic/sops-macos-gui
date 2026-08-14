@@ -279,6 +279,19 @@ private enum StartHereAXProbe {
         var nodes: [Node] = []
         var seen: Set<ObjectIdentifier> = []
         walk(hosting, depth: 0, seen: &seen, into: &nodes)
+
+        // Same reasoning as `AXProbe.tree` (`AccessibilityTreeTests.swift`),
+        // corrected the same way: an empty tree is never legitimate, but it
+        // is not evidence about `AXEnhancedUserInterface` being off. This is
+        // a one-shot probe — the flag is set synchronously right above with
+        // no suspension before the walk, so it is never actually observed
+        // cleared here — and even a walk built with it off from the start
+        // still returns most of the tree (measured: 68 of 92 nodes on a
+        // 12-row `List`, not 0). So non-empty proves nothing about the flag
+        // either way; this stays a minimal sanity check for a more total
+        // failure (the view never rendered, etc.), not a flag diagnostic.
+        #expect(!nodes.isEmpty,
+                "StartHereAXProbe.tree saw a completely empty accessibility tree — that is never a valid result for a rendered view (even a walk built with AXEnhancedUserInterface off from the start still returns most of the tree). Something more total than the usual bug is wrong here.")
         return nodes
     }
 
