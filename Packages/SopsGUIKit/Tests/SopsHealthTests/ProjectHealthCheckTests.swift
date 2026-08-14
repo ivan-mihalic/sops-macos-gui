@@ -203,6 +203,92 @@ struct ProjectHealthCheckTests {
         #expect(finding(await check.run(), suffix: "gitignore").status == .ok)
     }
 
+    // Ticket #8, claim 4: the `.problem` branch used to offer no command at
+    // all — only prose telling the user to hand-edit `.gitignore`. It now
+    // offers a `git check-ignore -v --` verification command, the same
+    // safely shell-quoted shape the `.undetermined` branch already used, so
+    // the user can confirm a manual edit actually took effect.
+    @Test("an ungitignored plaintext file's problem finding offers a verification command")
+    func ungitignoredPlaintextOffersVerificationCommand() async throws {
+        let root = try makeProject(
+            sopsYAML: "creation_rules:\n  - age: \(devKey)\n",
+            files: [".env": "API_KEY=sk-live-abc123\n"],
+            gitignore: "node_modules/\n")
+        let check = ProjectHealthCheck(source: FakeProjects(
+            projects: [InspectedProject(name: "demo", rootPath: root)]))
+
+        let leak = finding(await check.run(), suffix: "gitignore")
+        #expect(leak.status == .problem)
+        let command = try #require(leak.remediation?.command)
+        #expect(command == "git check-ignore -v -- '.env'")
+        // Never the value.
+        #expect(!command.contains("sk-live-abc123"))
+    }
+
+    // The escaping problem claim 4 exists for: a name gitignore reads as
+    // pattern syntax cannot get a generated `.gitignore` line (see
+    // `gitignoreFinding`'s doc comment), but the verification command still
+    // works, because `git check-ignore -v --` takes a literal path, not a
+    // pattern — only the shell layer needs to be correct, and `ShellQuoting`
+    // gets that right regardless of what gitignore would make of the name.
+    @Test("a name needing gitignore escaping still gets a working verification command")
+    func gitignoreSyntaxNameStillGetsAVerificationCommand() async throws {
+        let root = try makeProject(
+            sopsYAML: "creation_rules:\n  - age: \(devKey)\n",
+            files: ["prod[1].env": "API_KEY=sk-live-abc123\n"],
+            gitignore: "node_modules/\n")
+        let check = ProjectHealthCheck(source: FakeProjects(
+            projects: [InspectedProject(name: "demo", rootPath: root)]))
+
+        let leak = finding(await check.run(), suffix: "gitignore")
+        #expect(leak.status == .problem)
+        let command = try #require(leak.remediation?.command)
+        #expect(command == "git check-ignore -v -- 'prod[1].env'")
+        let explanation = try #require(leak.remediation?.explanation)
+        #expect(explanation.contains("pattern syntax"))
+    }
+
+    // Ticket #8, claim 2: a project with no git repository at all used to be
+    // stuck at `.unknown` forever on this finding — the least useful thing a
+    // security check can say to someone who has no git at all. It is now a
+    // definite, honest `.warning`: nothing here can be committed by
+    // accident, because there is no repository, but the files are still
+    // sitting on disk unencrypted.
+    @Test("a plaintext .env with no git repository at all is a warning, not stuck at unknown")
+    func noGitRepositoryIsAWarningNotUnknown() async throws {
+        let root = try ProjectFixture.makeDirectory("no-git-project")
+        try ProjectFixture.write("creation_rules:\n  - age: \(devKey)\n", to: root, at: ".sops.yaml")
+        try ProjectFixture.write("API_KEY=sk-live-abc123\n", to: root, at: ".env")
+
+        let check = ProjectHealthCheck(source: FakeProjects(
+            projects: [InspectedProject(name: "demo", rootPath: root.path)]))
+
+        let leak = finding(await check.run(), suffix: "gitignore")
+        #expect(leak.status == .warning)
+        #expect(leak.detail.contains(".env"))
+        #expect(leak.detail.contains("not inside a git repository"))
+        // The value must never appear in the finding.
+        #expect(!leak.detail.contains("sk-live-abc123"))
+        // This is not "could not be determined" — it is a definite fact
+        // about this project, so the finding must not use unknown's wording.
+        #expect(!leak.detail.lowercased().contains("could not"))
+    }
+
+    // A project with no candidate files at all, and no git repository, must
+    // still read as a plain OK — `.noRepository` only changes anything once
+    // there is something to say it about. Guards against a broader change
+    // accidentally downgrading the empty-candidate branch too.
+    @Test("no candidate files and no git repository is still OK")
+    func noCandidatesNoGitRepositoryIsStillOK() async throws {
+        let root = try ProjectFixture.makeDirectory("no-git-empty-project")
+        try ProjectFixture.write("creation_rules:\n  - age: \(devKey)\n", to: root, at: ".sops.yaml")
+
+        let check = ProjectHealthCheck(source: FakeProjects(
+            projects: [InspectedProject(name: "demo", rootPath: root.path)]))
+
+        #expect(finding(await check.run(), suffix: "gitignore").status == .ok)
+    }
+
     // The app has only public keys. It cannot prove a colleague can decrypt.
     @Test("the recipient finding says it checked the key list, not decryptability")
     func wordingIsHonestAboutWhatWasVerified() async throws {

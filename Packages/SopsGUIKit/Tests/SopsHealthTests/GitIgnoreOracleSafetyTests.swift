@@ -252,8 +252,10 @@ ScratchDirectoryRegistry.shared.register(dir)
     }
 
     /// The other side: a genuine "no" must still say so, or the fix would have
-    /// traded one wrong sentence for another.
-    @Test("a real 'not a repository' answer still says exactly that")
+    /// traded one wrong sentence for another. Ticket #8, claim 2: a genuine
+    /// "no" is now `.noRepository`, not `.undetermined` — a definite fact,
+    /// not a missing answer. See `GitIgnoreOracle.Verdict.noRepository`.
+    @Test("a real 'not a repository' answer is a definite noRepository, not undetermined")
     func genuineOutsideAnswerIsPreserved() throws {
         let git = try Self.makeFakeGit("echo false; exit 1")
         defer { try? FileManager.default.removeItem(at: git.deletingLastPathComponent()) }
@@ -261,11 +263,10 @@ ScratchDirectoryRegistry.shared.register(dir)
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
         let verdict = GitIgnoreOracle.classify(candidates: [], root: root, gitPath: git.path)
 
-        guard case .undetermined(let reason) = verdict else {
-            Issue.record("expected .undetermined, got \(verdict)")
+        guard case .noRepository = verdict else {
+            Issue.record("expected .noRepository, got \(verdict)")
             return
         }
-        #expect(reason.contains("not inside a git repository"))
     }
 
     /// The case where `outputComplete` is the only thing standing between a
@@ -375,14 +376,11 @@ ScratchDirectoryRegistry.shared.register(damaged)
         try? FileManager.default.removeItem(at: damaged.appendingPathComponent(".git/refs"))
         try? FileManager.default.removeItem(at: damaged.appendingPathComponent(".git/HEAD"))
 
-        guard case .undetermined(let plainReason) =
+        guard case .noRepository =
             GitIgnoreOracle.classify(candidates: [], root: plain, gitPath: git) else {
-            Issue.record("expected .undetermined for a plain directory")
+            Issue.record("expected .noRepository for a plain directory")
             return
         }
-        #expect(
-            plainReason.contains("not inside a git repository"),
-            "real git's canonical 'not a repository' message was read as a malfunction")
 
         guard case .undetermined(let damagedReason) =
             GitIgnoreOracle.classify(candidates: [], root: damaged, gitPath: git) else {
@@ -450,14 +448,11 @@ ScratchDirectoryRegistry.shared.register(project)
 ScratchDirectoryRegistry.shared.register(nested)
         defer { try? FileManager.default.removeItem(at: sandbox) }
 
-        guard case .undetermined(let reason) =
+        guard case .noRepository =
             GitIgnoreOracle.classify(candidates: [], root: nested, gitPath: git) else {
-            Issue.record("expected .undetermined for a plain nested directory")
+            Issue.record("expected .noRepository for a plain nested directory")
             return
         }
-        #expect(
-            reason.contains("not inside a git repository"),
-            "a directory under no repository at all was reported as a git malfunction")
     }
 
     private static func run(_ tool: String, _ arguments: [String]) {
@@ -514,7 +509,9 @@ ScratchDirectoryRegistry.shared.register(nested)
 
     /// The case iteration 10 made unreachable: an ordinary directory that is
     /// simply not in a repository. For a secrets GUI that is a common, normal
-    /// state, and it must read as itself rather than as a git malfunction.
+    /// state, and it must read as itself rather than as a git malfunction —
+    /// and, per ticket #8 claim 2, as a definite `.noRepository`, not an
+    /// "unknown" this app can never resolve for a project with no git at all.
     @Test("an ordinary non-repository directory is reported as exactly that")
     func plainDirectoryIsReportedAsOutside() throws {
         let git = try Self.fakeGit(
@@ -528,13 +525,10 @@ ScratchDirectoryRegistry.shared.register(root)
         defer { try? FileManager.default.removeItem(at: root) }
 
         let verdict = GitIgnoreOracle.classify(candidates: [], root: root, gitPath: git.path)
-        guard case .undetermined(let reason) = verdict else {
-            Issue.record("expected .undetermined, got \(verdict)")
+        guard case .noRepository = verdict else {
+            Issue.record("expected .noRepository, got \(verdict) — a plain directory was reported as git failing to answer, sending the user to debug a toolchain problem that does not exist")
             return
         }
-        #expect(
-            reason.contains("not inside a git repository"),
-            "a plain directory was reported as git failing to answer, sending the user to debug a toolchain problem that does not exist")
     }
 
     /// stdout complete, stderr held open by a grandchild: the answer was read
@@ -558,5 +552,75 @@ ScratchDirectoryRegistry.shared.register(root)
         if case .undetermined(let reason) = verdict {
             Issue.record("a fully-read 'true' was discarded: \(reason)")
         }
+    }
+}
+
+/// Ticket #8, claim 2: a project with no `.git` at all used to be
+/// `.undetermined` forever, both when git said so and when git was not even
+/// installed. These pin the `.noRepository` verdict on both routes there —
+/// through a real git binary, and through the pure-filesystem fallback that
+/// answers the same question without one.
+@Suite("A project with no git repository at all gets a definite answer")
+struct GitIgnoreOracleNoRepositoryTests {
+
+    /// The real git binary, if one is installed.
+    static let realGit: String? = ["/opt/homebrew/bin/git", "/usr/bin/git", "/usr/local/bin/git"]
+        .first { FileManager.default.isExecutableFile(atPath: $0) }
+
+    private static func makeDirectory(_ label: String) throws -> URL {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("\(label)-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        ScratchDirectoryRegistry.shared.register(root)
+        return root
+    }
+
+    /// The real git binary, on an ordinary directory with no `.git` anywhere
+    /// above it — the common case for anyone who has not yet run `git init`.
+    @Test("real git, no repository: noRepository, not undetermined",
+          .enabled(if: Self.realGit != nil, "git is required"))
+    func realGitNoRepository() throws {
+        let git = try #require(Self.realGit)
+        let root = try Self.makeDirectory("no-repo")
+
+        let verdict = GitIgnoreOracle.classify(candidates: [], root: root, gitPath: git)
+        guard case .noRepository = verdict else {
+            Issue.record("expected .noRepository, got \(verdict)")
+            return
+        }
+    }
+
+    /// No git binary at all, and no `.git` anywhere above `root` either — a
+    /// pure filesystem question this app can still answer honestly without
+    /// git installed. Before this, a machine with no git told every project
+    /// "git was not found … it never guesses", forever, even about a project
+    /// that plainly has no repository to guess about.
+    @Test("no git binary, no .git anywhere: noRepository, not 'git was not found'")
+    func noGitBinaryNoRepository() throws {
+        let root = try Self.makeDirectory("no-git-no-repo")
+
+        let verdict = GitIgnoreOracle.classify(candidates: [], root: root, gitPath: nil)
+        guard case .noRepository = verdict else {
+            Issue.record("expected .noRepository, got \(verdict)")
+            return
+        }
+    }
+
+    /// No git binary, but a `.git` genuinely exists above `root` — this app
+    /// cannot tell whether it is healthy, damaged, or even the right kind of
+    /// repository without git to ask, so this must stay `.undetermined`
+    /// rather than guessing either `.answered` or `.noRepository`.
+    @Test("no git binary, but a .git exists: still undetermined")
+    func noGitBinaryButRepositoryExists() throws {
+        let root = try Self.makeDirectory("no-git-has-repo")
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent(".git"), withIntermediateDirectories: true)
+
+        let verdict = GitIgnoreOracle.classify(candidates: [], root: root, gitPath: nil)
+        guard case .undetermined(let reason) = verdict else {
+            Issue.record("expected .undetermined, got \(verdict)")
+            return
+        }
+        #expect(reason.contains("git was not found"))
     }
 }
