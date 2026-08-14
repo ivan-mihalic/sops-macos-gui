@@ -971,6 +971,25 @@ public final class NewSecretFileModel {
             return
         }
 
+        // A raw NUL is valid UTF-8, so it survives the read above and would
+        // otherwise reach `withGoString`, where `utf8CString` ends the
+        // argument early and everything after it is silently gone — see
+        // `String.crossesCBoundaryIntact`'s own doc comment for the full
+        // account (`SecretDocumentViewModel.load()` and
+        // `RecipientAccessModel.load()` guard the identical hazard for a
+        // document already part of a project; this is the same file shape,
+        // read for the first time, on its way *into* one). Refusing here is
+        // the honest answer: importing half a source file into a brand-new
+        // secrets file with no sign the rest was ever dropped is worse than
+        // refusing to import it at all.
+        guard sourceText.crossesCBoundaryIntact else {
+            encryptedImportOutcome = Learned(
+                .failed(CreationFailurePresenter.message(
+                    forNULByteInSourceFile: chosenEncryptedFileURL.lastPathComponent)),
+                about: path)
+            return
+        }
+
         let decrypted: Result<String, Swift.Error>? = keyStore.withKey { key in
             do {
                 return .success(try SopsBridge.decryptYAML(sourceText, agePrivateKey: key))

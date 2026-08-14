@@ -385,6 +385,43 @@ struct EncryptedImportModelTests {
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("imported.yaml").path))
     }
 
+    /// The fourth C-boundary crossing point ticket #17 claim 4 found
+    /// unguarded — the other three
+    /// (`SecretDocumentViewModel.load`/`RecipientAccessModel.load`/
+    /// `ProjectRecipientApplier.applyToOne`) all check
+    /// `String.crossesCBoundaryIntact` before handing file content to the
+    /// bridge; `unlockChosenEncryptedFile()` read the chosen file straight
+    /// into `SopsBridge.decryptYAML`/`.recipients(in:)` with no check at all.
+    /// A raw NUL is valid UTF-8, so it survives the read and then ends the
+    /// argument at the C boundary — everything after it silently vanishes.
+    /// Here that would mean importing a source file's *first half* into a
+    /// brand-new secrets file with no indication the rest was ever dropped.
+    @Test("a chosen encrypted source carrying a NUL byte is refused, not silently truncated on import")
+    func nulBearingEncryptedSourceIsRefused() async throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        let keyStore = try makeKeyStore(importing: owner.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+        model.relativeName = "imported.yaml"
+
+        // A genuine encrypted fixture, then a NUL spliced into its bytes —
+        // exactly the shape `HostileFileRefusalTests.nulBearingDocumentIsRefused`
+        // exercises for the load path, applied to the import path instead.
+        let encrypted = try SopsBridge.encryptYAML("alpha: one\n", recipients: [owner.public])
+        let source = root.appendingPathComponent("source.yaml")
+        try (encrypted + "\u{0}trailer: two\n").write(to: source, atomically: true, encoding: .utf8)
+
+        model.sourceChoice = .encryptedYAML
+        model.chooseEncryptedFile(at: source)
+        await model.unlockChosenEncryptedFile()
+
+        guard case .unlockFailed(let message) = model.encryptedImport else {
+            Issue.record("expected .unlockFailed for a NUL-bearing source, got \(model.encryptedImport)")
+            return
+        }
+        #expect(message.detail.contains("NUL"), "the refusal does not say what is wrong: \(message.detail)")
+    }
+
     @Test("an unreadable source file is unlockFailed, not a crash, and names no path in the message")
     func unreadableSourceFileIsUnlockFailed() async throws {
         let owner = try AgeKeyPair.generate()
