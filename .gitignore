@@ -36,3 +36,6 @@ SopsGUI.xcodeproj/
 
 # Release artifacts (DMG/ZIP). Built locally by mac-release; never committed.
 dist/
+
+# Local backup left by the _ai-memory cutover — never belongs in the repo.
+CLAUDE.md.pre-aimem
