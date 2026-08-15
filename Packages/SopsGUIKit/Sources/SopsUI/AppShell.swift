@@ -49,6 +49,11 @@ public struct AppShell: View {
     /// Passed straight through to `AboutView`. `nil` in every test and
     /// snapshot, because Sparkle is not a dependency of this package.
     private let onCheckForUpdates: (@MainActor () -> Void)?
+    /// How the menu bar asks for a section — ⌘, and About are menu items, not
+    /// separate scenes, and this is the only way they can move the sidebar.
+    /// `nil` in tests and snapshots, which have no menu bar. See
+    /// `SectionRouter` for why a request rather than a binding.
+    private let router: SectionRouter?
 
     /// None of the three have defaults: the caller (`SopsGUIApp`) owns the
     /// single `ProjectStore`/`SessionKeyStore` instances the health check is
@@ -64,13 +69,15 @@ public struct AppShell: View {
                 unsavedChanges: UnsavedChangesTracker,
                 health: HealthViewModel,
                 onUpdateConsentChanged: @escaping @MainActor () -> Void = {},
-                onCheckForUpdates: (@MainActor () -> Void)? = nil) {
+                onCheckForUpdates: (@MainActor () -> Void)? = nil,
+                router: SectionRouter? = nil) {
         self.projects = projects
         self.keyStore = keyStore
         self.unsavedChanges = unsavedChanges
         self.health = health
         self.onUpdateConsentChanged = onUpdateConsentChanged
         self.onCheckForUpdates = onCheckForUpdates
+        self.router = router
     }
 
     public var body: some View {
@@ -169,6 +176,17 @@ public struct AppShell: View {
             } message: {
                 Text(sectionSaveErrorMessage ?? "")
             }
+            // A menu item asked for a section. It goes through
+            // `requestSectionSwitch` — the same call the sidebar's own
+            // binding makes — so ⌘, cannot leave a dirty document without
+            // the prompt a click would have raised. Cleared immediately, so
+            // asking for the section you are already on still works the next
+            // time rather than being swallowed as "no change".
+            .onChange(of: router?.requested) { _, requested in
+                guard let requested else { return }
+                requestSectionSwitch(to: requested)
+                router?.clear()
+            }
     }
 
     /// About and Settings: one page, no middle column.
@@ -195,7 +213,10 @@ public struct AppShell: View {
                 // window is free again — and a page that might not fit should
                 // scroll anyway, which is what a user with larger text or a
                 // short window needs from it.
-                ScrollView { AboutView(checkForUpdates: onCheckForUpdates) }
+                ScrollView {
+                    AboutView(checkForUpdates: onCheckForUpdates,
+                              onUpdateConsentChanged: onUpdateConsentChanged)
+                }
             case .settings:
                 SettingsPaneView(health: health, keyStore: keyStore,
                                  onUpdateConsentChanged: onUpdateConsentChanged)

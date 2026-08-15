@@ -262,7 +262,7 @@ enum Catalog {
         ]
     }
 
-    // MARK: - UpdateSettingsPanel
+    // MARK: - UpdateConsentToggle
 
     private static func updateSettingsPanel() -> [Snapshot] {
         let onDefaults = Fixtures.isolatedDefaults(prefix: "updates-on")
@@ -273,10 +273,10 @@ enum Catalog {
 
         return [
             Snapshot("update-settings-on", size: CGSize(width: 520, height: 260)) {
-                UpdateSettingsPanel(defaults: onDefaults)
+                UpdateConsentToggle(defaults: onDefaults)
             },
             Snapshot("update-settings-off", size: CGSize(width: 520, height: 260)) {
-                UpdateSettingsPanel(defaults: offDefaults)
+                UpdateConsentToggle(defaults: offDefaults)
             },
         ]
     }

@@ -11,7 +11,7 @@ import SopsHealth
 /// no lever to pull — the disclosure named the number in prose
 /// (`ProjectScopeDisclosure`) but nothing in the app let the user act on it.
 ///
-/// Same shape as `UpdateSettingsPanel`: the control writes straight to
+/// Same shape as `UpdateConsentToggle`: the control writes straight to
 /// `UserDefaults` through `ScanBudgetSetting`, which every scan reads live
 /// (`ProjectHealthCheck.scanBudget`, `FileListModel.refresh()`,
 /// `ProjectRecipientApplier`'s default `scanProject`), so raising the limit

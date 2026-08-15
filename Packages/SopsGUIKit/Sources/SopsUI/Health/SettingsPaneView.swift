@@ -3,11 +3,13 @@ import SwiftUI
 
 /// The settings panes, as content rather than as a window.
 ///
-/// PROPOSAL §4 pins Settings to the bottom of the sidebar, and a sidebar row
-/// that opens a separate window is a different interaction from every other
-/// row in that list. This is the same three tabs the `Settings` scene shows —
-/// one view, used in both places, so ⌘, and the sidebar row can never drift
-/// into showing different things.
+/// PROPOSAL §4 pins Settings to the bottom of the sidebar. Since 2026-08-15
+/// there is no separate Settings *scene* at all — ⌘, selects this row rather
+/// than opening a window of its own, so there is only one place this content
+/// can be, and nothing to keep in sync.
+///
+/// The Updates tab is gone from here: its single toggle moved to About, next
+/// to Check for Updates and the releases link. See `UpdateConsentToggle`.
 public struct SettingsPaneView: View {
     private let health: HealthViewModel
     private let keyStore: SessionKeyStore
@@ -29,8 +31,6 @@ public struct SettingsPaneView: View {
                 .tabItem { Label(.settingsTabKey, systemImage: "key") }
             ScanSettingsPanel()
                 .tabItem { Label(.settingsTabScanning, systemImage: "magnifyingglass") }
-            UpdateSettingsPanel(onConsentChanged: onUpdateConsentChanged)
-                .tabItem { Label(.settingsTabUpdates, systemImage: "arrow.down.circle") }
         }
         .padding(.top, 8)
     }

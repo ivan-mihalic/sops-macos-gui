@@ -493,7 +493,15 @@ struct DetailPageHeightTests {
         let source = try String(contentsOf: MainWindowSizeTests.repositoryRoot
             .appendingPathComponent("Packages/SopsGUIKit/Sources/SopsUI/AppShell.swift"),
             encoding: .utf8)
-        #expect(source.contains("ScrollView { AboutView("), Comment(rawValue: """
+        // Whitespace-insensitive between the two, because the literal
+        // one-liner this used to match broke the moment `AboutView` gained a
+        // second argument and the call wrapped — a formatting change that
+        // says nothing about whether the page still scrolls. The property is
+        // "AboutView is inside a ScrollView", not "these two tokens are on
+        // one line".
+        let collapsed = source.replacingOccurrences(
+            of: "[ \t\n]+", with: " ", options: .regularExpression)
+        #expect(collapsed.contains("ScrollView { AboutView("), Comment(rawValue: """
             AboutView sits directly in the detail column again — it pinned the window's \
             minimum height at 1382 pt the last time it did
             """))

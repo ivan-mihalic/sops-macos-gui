@@ -74,12 +74,23 @@ public struct AboutView: View {
     /// `nil` hides the control, which is what every snapshot and test gets.
     private let checkForUpdates: (@MainActor () -> Void)?
 
+    /// Where the update-consent toggle reads and writes. Injectable so a test
+    /// or a snapshot can drive it without touching `UserDefaults.standard`.
+    private let defaults: UserDefaults
+    /// Forwarded to `UpdateConsentToggle` — see its doc comment for why the
+    /// flag needs a callback rather than only a stored value.
+    private let onUpdateConsentChanged: @MainActor () -> Void
+
     public init(facts: AboutFacts = .read(),
                 icon: NSImage = NSApplication.shared.applicationIconImage,
-                checkForUpdates: (@MainActor () -> Void)? = nil) {
+                checkForUpdates: (@MainActor () -> Void)? = nil,
+                defaults: UserDefaults = .standard,
+                onUpdateConsentChanged: @escaping @MainActor () -> Void = {}) {
         self.facts = facts
         self.icon = icon
         self.checkForUpdates = checkForUpdates
+        self.defaults = defaults
+        self.onUpdateConsentChanged = onUpdateConsentChanged
     }
 
     private let iconSide: CGFloat = 96
@@ -146,6 +157,14 @@ public struct AboutView: View {
                 Button(LocalizedKey.actionCheckForUpdates.text) { checkForUpdates() }
                     .controlSize(.large)
             }
+
+            // Moved here from a Settings tab of its own (2026-08-15). Checking
+            // now and agreeing to check automatically are the same decision a
+            // moment apart, so they belong on the same page — and a whole tab
+            // for one switch made Settings look like it configured more than
+            // it does.
+            UpdateConsentToggle(defaults: defaults,
+                                onConsentChanged: onUpdateConsentChanged)
 
             Link(LocalizedKey.aboutReleasesLink.text,
                  destination: URL(string: "https://github.com/ivan-mihalic/sops-macos-gui-releases")!)

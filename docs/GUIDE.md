@@ -303,8 +303,13 @@ can read it* is Part 5.
 ![Settings](images/guide-15-settings.png)
 
 Reached from the sidebar or with ⌘, — the same pane either way, in the main
-window. Three tabs: **Health**, **Key**, **Updates**. Steps 16 and 17 are the
-other two.
+window. ⌘, does not open a window of its own; it selects this row. Three tabs:
+**Health**, **Key**, **Scanning**. Step 16 is the second; **Scanning** is one
+control, the ceiling on how many files a project scan visits before it stops
+and says so.
+
+The update switch used to be a fourth tab here. It lives in About now, next to
+**Check for Updates…** — see step 17.
 
 Health is the wizard's checks, grouped the same way and re-runnable at any time
 with **Re-run checks** at the bottom. Each finding is a status, what was found,
@@ -343,11 +348,13 @@ automatically.
 Once a key is imported the status line at the top says so, and a **Forget**
 button appears beside it. It clears the key immediately.
 
-### Step 17 · Settings › Updates
+### Step 17 · About › the update switch
 
 ![Updates](images/guide-17-updates.png)
 
-One switch, off by default, and off means no request is made at all.
+One switch, off by default, and off means no request is made at all. It sits in
+**About**, below Check for Updates — checking now and agreeing to check
+automatically are the same decision a moment apart.
 
 On, it does two things once a day: asks GitHub for the latest sops and age
 releases to compare against the versions built in, and looks for a newer version
@@ -357,7 +364,7 @@ installs until you press Install.
 
 These are the only network requests the app makes on its own, and they carry no
 identifier for you or your Mac. With the switch off you can still check by hand
-from the app menu, or from About.
+— **Check for Updates…**, in About or in the app menu.
 
 ### Step 18 · About
 
@@ -367,8 +374,12 @@ App version and build, the commit it was built from, and the sops and age
 versions actually compiled in — the last two are what step 2 compares your CLI
 against.
 
-**Check for Updates…** runs a check now, regardless of the switch in step 17.
-**Release notes and downloads** opens the releases page in your browser.
+**Check for Updates…** runs a check now, regardless of the switch below it —
+that switch is step 17, and this is the page it lives on. **Release notes and
+downloads** opens the releases page in your browser.
+
+**About** in the app menu comes here too, rather than opening the small panel
+macOS gives an app by default. One page, one version string, nothing to drift.
 
 The line at the bottom is the app's one-sentence summary of itself: *"This app
 decrypts in its own process. Nothing you open, and no key you import, is sent

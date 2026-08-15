@@ -274,7 +274,7 @@ enum Guide {
                     })
             },
             Snapshot("guide-17-updates", size: CGSize(width: 520, height: 240)) {
-                UpdateSettingsPanel(defaults: Fixtures.isolatedDefaults(prefix: "guide-updates"))
+                UpdateConsentToggle(defaults: Fixtures.isolatedDefaults(prefix: "guide-updates"))
             },
             Snapshot("guide-18-about", size: CGSize(width: 600, height: 480)) {
                 AboutView(

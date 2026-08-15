@@ -387,6 +387,11 @@ struct SopsGUIApp: App {
     /// yes" latch — see `QuitRequest`. Handed to `AppDelegate` in `onAppear`
     /// below, because `applicationShouldTerminate` is the only hook that sees
     /// all the ways this app can be told to quit.
+    /// How the menu bar's About and ⌘, items reach the sidebar. Both used to
+    /// be scenes of their own — AppKit's stock About panel and SwiftUI's
+    /// `Settings` window — which put content the sidebar already owns into
+    /// windows beside it. See `SectionRouter`.
+    @State private var sectionRouter = SectionRouter()
     @State private var quitRequest = QuitRequest()
     @State private var quitSaveErrorMessage: String?
 
@@ -428,7 +433,8 @@ struct SopsGUIApp: App {
                      // `SopsUI` because Sparkle is not a dependency there.
                      // Pressing it twice is harmless: Sparkle ignores the
                      // second while the first is running.
-                     onCheckForUpdates: { appUpdater.updater.checkForUpdates() })
+                     onCheckForUpdates: { appUpdater.updater.checkForUpdates() },
+                     router: sectionRouter)
                 .sheet(isPresented: $isShowingOnboarding) {
                     OnboardingWizard(health: health, state: onboarding)
                 }
@@ -519,7 +525,13 @@ struct SopsGUIApp: App {
         // root `.frame(minWidth:minHeight:)`.
         .windowResizability(.contentMinSize)
         .commands {
-            CommandGroup(after: .appInfo) {
+            // `replacing:` rather than `after:` — the stock item opens
+            // AppKit's own About panel, a second window showing a subset of
+            // what the sidebar's About row already shows, with its own copy
+            // of the version string to drift.
+            CommandGroup(replacing: .appInfo) {
+                Button(LocalizedKey.sidebarAbout.text) { show(.about) }
+                Divider()
                 CheckForUpdatesMenuItem(updater: appUpdater.updater)
                 Button(LocalizedKey.actionRunSetupCheck.text) {
                     onboarding.restart()
@@ -561,6 +573,14 @@ struct SopsGUIApp: App {
             // about the spec that `WindowGroup` did not honour. Making it true
             // is cheaper and less error-prone than making the tracker
             // per-window, and it is what the spec says the app is.
+            // ⌘, selects the sidebar row instead of opening the `Settings`
+            // scene this app no longer has. The shortcut is declared here
+            // because removing that scene removes the automatic binding with
+            // it — PROPOSAL §4 still requires ⌘,.
+            CommandGroup(replacing: .appSettings) {
+                Button(LocalizedKey.sidebarSettings.text) { show(.settings) }
+                    .keyboardShortcut(",", modifiers: .command)
+            }
             CommandGroup(replacing: .newItem) {}
             CommandGroup(replacing: .appTermination) {
                 Button(LocalizedKey.actionQuit.text) {
@@ -570,20 +590,27 @@ struct SopsGUIApp: App {
             }
         }
 
-        // ⌘, is wired automatically by the Settings scene (PROPOSAL.md §4).
-        Settings {
-            // The same view the sidebar's Settings row shows, so ⌘, and the
-            // row cannot drift into showing different content.
-            SettingsPaneView(health: health, keyStore: keyStore,
-                             onUpdateConsentChanged: { appUpdater.refreshConsent() })
-                // A range, not a fixed slab. It was `width: 620, height: 480`,
-                // which made ⌘, open a window that could not be resized at
-                // all — one more "this screen doesn't resize". The Health tab
-                // is a list of findings whose length depends on the machine,
-                // so a fixed height is exactly wrong for it.
-                .frame(minWidth: 560, idealWidth: 660,
-                       minHeight: 420, idealHeight: 520)
+    }
+
+    /// Shows a sidebar section in the main window, from a menu item.
+    ///
+    /// Activation first, and it is not decoration: both callers are menu
+    /// items, and a menu can be pulled down while the window is behind
+    /// another app or minimised. Setting the section without raising the
+    /// window would look like the menu item did nothing.
+    ///
+    /// The request itself goes through `SectionRouter` rather than touching
+    /// `AppShell.selection` — see that type for why the guarded path is the
+    /// only one either of these is allowed to take.
+    @MainActor
+    private func show(_ section: AppShell.Section) {
+        NSApp.activate()
+        for window in NSApp.windows where window.isVisible || window.isMiniaturized {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+            break
         }
+        sectionRouter.show(section)
     }
 
     /// "Save and Quit": saves the open document through the tracker (which
