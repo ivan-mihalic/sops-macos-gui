@@ -370,12 +370,32 @@ public struct ProjectSidebar: View {
         }
     }
 
-    private func presentOpenPanel() {
+    /// The Add Project panel, configured but not run.
+    ///
+    /// Separate from `presentOpenPanel()` so a test can look at it:
+    /// `runModal()` blocks on a real window, so a panel built inline in the
+    /// method that immediately runs it cannot be inspected at all — which is
+    /// how it went a whole release cycle without a New Folder button and
+    /// nothing noticed. See `ProjectOpenPanelTests`.
+    static func makeAddProjectPanel() -> NSOpenPanel {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
+        // `NSOpenPanel` defaults this to `false` — `NSSavePanel` is the one
+        // that defaults to `true`. So the New Folder button was missing
+        // because nobody asked for it, not because macOS withholds it from
+        // open panels. A project is a directory the user may not have made
+        // yet, and sending them to Finder to create one mid-flow is the kind
+        // of small dead end that makes an app feel like it is not on your
+        // side.
+        panel.canCreateDirectories = true
         panel.prompt = LocalizedKey.actionAddProject.text
+        return panel
+    }
+
+    private func presentOpenPanel() {
+        let panel = Self.makeAddProjectPanel()
         guard panel.runModal() == .OK, let url = panel.url else { return }
         model.addProject(path: url.path)
     }
