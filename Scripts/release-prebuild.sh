@@ -150,7 +150,20 @@ else
 $(git diff --name-only "$previous_tag".."$release_head" | sed 's/^/         /')
        If you mean to re-release anyway, run with ALLOW_UNCHANGED_BUNDLE=1."
     fi
-    note "${#shipping_changes[@]} shipping path(s) changed since $previous_tag"
+    # Named, not just counted, when there are few. The denylist below is
+    # deliberately permissive — a path nobody listed counts as shipping — so
+    # the number on its own can be reassuring about a release that ships
+    # nothing. Measured on the first real run after 0.1.14: the only change
+    # since the tag was an untracked local backup being removed, which is not
+    # on the list, so this said "1 shipping path" about a release that would
+    # have produced a byte-identical app. A count cannot show that; the path
+    # can.
+    if (( ${#shipping_changes[@]} <= 5 )); then
+        note "${#shipping_changes[@]} shipping path(s) changed since $previous_tag — check these are real:"
+        printf '         %s\n' "${shipping_changes[@]}"
+    else
+        note "${#shipping_changes[@]} shipping path(s) changed since $previous_tag"
+    fi
 fi
 
 # ── the engine build this hook has always done ───────────────────────────────
