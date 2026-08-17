@@ -32,6 +32,11 @@ public struct KeyImportView: View {
     /// "Copy" once pressed — the same defect `HealthFindingRow` carried, and
     /// unreachable from a test for the same reason. See `CopyFeedback`.
     @State private var copyFeedback = CopyFeedback()
+    /// The TTL control's own state. `SessionTTLPreference` shipped with the
+    /// mechanism and nothing that could set it — `PROPOSAL §4` lists this
+    /// control, and it belongs beside the key it governs rather than on a
+    /// screen that is not about the key.
+    @State private var ttl: SessionTTLSetting
 
     /// Re-run on every appearance, not resolved once and frozen: a user who
     /// reads the `security.legacy-key-file` finding, goes and `chmod`s or
@@ -44,9 +49,15 @@ public struct KeyImportView: View {
     /// three cases without creating files under the real `$HOME` — see
     /// `LegacyKeyFileImportOptions.resolve`, whose defaults are the only place
     /// the real machine is consulted.
+    /// `defaults` is injectable for the same reason `UpdateConsentToggle`'s is:
+    /// the snapshot tool renders this view, and `CLAUDE.md` requires fixtures to
+    /// stay off `UserDefaults.standard` entirely. A stepper bound to the real
+    /// domain would let a snapshot run change the machine owner's own TTL.
     public init(store: SessionKeyStore,
                 legacyKeyFiles: @escaping @Sendable () -> LegacyKeyFileImportOptions
-                    = { .resolve() }) {
+                    = { .resolve() },
+                defaults: UserDefaults = .standard) {
+        _ttl = State(initialValue: SessionTTLSetting(defaults: defaults))
         self.store = store
         self.resolveLegacyKeyFiles = legacyKeyFiles
         _legacyKeyFiles = State(initialValue: legacyKeyFiles())
@@ -101,6 +112,17 @@ public struct KeyImportView: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+            }
+
+            Section {
+                Stepper(value: $ttl.minutes, in: ttl.range, step: 5) {
+                    LabeledContent(LocalizedKey.keyTTLHeader.text,
+                                   value: String(format: LocalizedKey.keyTTLMinutes.text, ttl.minutes))
+                }
+            } footer: {
+                Text(.keyTTLFooter)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Section {
