@@ -215,8 +215,47 @@ public struct SecurityPostureCheck: HealthCheck {
                           // button will offer, and naming one it might not
                           // use is how the app told the user to look
                           // somewhere it was not looking.
+                          // The command is here because its absence was the one
+                          // dead end in the whole report. This finding is
+                          // `.problem` on every new install — nobody has
+                          // imported a key yet — and it told the user where to
+                          // put a key without saying how to have one. This app
+                          // cannot generate one, so somebody who has never run
+                          // `age-keygen` was finished at that sentence.
+                          //
+                          // Every other "you need X" finding here hands over
+                          // something to copy (`brew install sops`,
+                          // `chmod 600 …`); this was the only one that did not,
+                          // and it was the one standing between a new user and
+                          // using the app at all.
+                          //
+                          // Import still leads, because someone who already has
+                          // a key should not read past a generation recipe to
+                          // find that out. `age-keygen` prints two lines and
+                          // only one is paste-able, so the explanation says
+                          // which — a command whose output needs interpreting
+                          // is not self-serving.
+                          //
+                          // No `-o`, so no file: the key goes from the terminal
+                          // straight into the paste field. `-o keys.txt` was
+                          // written first and rejected for two reasons. It
+                          // trips `missingKeyRemediationNamesNoPath`, whose
+                          // rule — this check cannot know which key file
+                          // exists, so it must name none — is right even
+                          // though this filename would have been one the
+                          // command itself created. And it would leave a
+                          // plaintext private key sitting in whatever
+                          // directory the user happened to be in, which none
+                          // of this app's key-file findings would ever look
+                          // at. Telling someone to store it in a password
+                          // manager matches what this app actually does with
+                          // a key: holds it for the session and forgets it.
                           remediation: Remediation(
-                              explanation: "Import an existing age key in Settings › Key — paste it directly, or import it from a key file this app finds on disk."))
+                              explanation: "Import an existing age key in Settings › Key — paste it directly, or import it from a key file this app finds on disk. "
+                                         + "No key yet? Run age-keygen below. It prints two lines: a public age1… line to share with anyone whose files you want to read, "
+                                         + "and a secret AGE-SECRET-KEY-1… line to paste into Settings › Key. "
+                                         + "Keep your own copy of the secret line somewhere safe, such as a password manager — this app holds it for the session only, never on disk.",
+                              command: "age-keygen"))
         case .unavailable(let reason):
             // The row renders the skip reason and the detail back to back, so
             // printing the same sentence into both read as a stutter.

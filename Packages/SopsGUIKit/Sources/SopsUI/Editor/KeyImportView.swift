@@ -85,6 +85,22 @@ public struct KeyImportView: View {
                 Text(.keyPasteFooter)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                // Only while there is no key. Someone who has already imported
+                // one knows where theirs came from, and a standing recipe for
+                // making another would just be noise under the field.
+                //
+                // This says the same thing the `security.keystore` finding
+                // says, on purpose. They are two separate entrances to the
+                // same dead end — the editor sends a user straight here with
+                // "Add your age private key in Settings › Key", and that route
+                // never passes the health report — so closing only one leaves
+                // the other exactly as it was.
+                if store.state != .configured {
+                    Text(.keyPasteNoKeyYet)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Section {

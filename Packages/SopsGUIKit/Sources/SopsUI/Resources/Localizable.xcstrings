@@ -2082,6 +2082,17 @@
         }
       }
     },
+    "key.paste.no-key-yet": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Don't have one? Run age-keygen in a terminal. It prints a public age1… line to share, and a secret AGE-SECRET-KEY-1… line to paste above. Keep your own copy of the secret line somewhere safe — this app never writes it down."
+          }
+        }
+      }
+    },
     "key.paste.footer": {
       "extractionState": "manual",
       "localizations": {
