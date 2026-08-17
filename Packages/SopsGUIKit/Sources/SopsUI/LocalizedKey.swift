@@ -57,6 +57,7 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case keyStatusEmpty = "key.status.empty"
     case keyPasteHeader = "key.paste.header"
     case keyPasteFooter = "key.paste.footer"
+    case keyPasteNoKeyYet = "key.paste.no-key-yet"
     case keyImportPasteButton = "key.import.paste-button"
     case keyForgetButton = "key.forget-button"
     // The three shapes of the key-file import control, one per case of
