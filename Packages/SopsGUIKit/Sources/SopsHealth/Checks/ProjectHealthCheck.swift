@@ -974,13 +974,21 @@ public struct ProjectHealthCheck: HealthCheck {
         let lines = entries.map { entry in
             "\(entry.path) — \(RotationDebtDescription.sentence(for: entry)) Recorded \(formatter.string(from: entry.recordedAt))."
         }
+        // The closing sentence is in the *detail*, not only the remediation, and
+        // that placement is the fix rather than a duplication. This is the one
+        // finding that stays red after the condition that produced it is gone —
+        // gitignore the file, re-wrap the recipient, and it is still here,
+        // because this app cannot see whether a password was actually changed.
+        // A reader who did the work, re-ran the report and still sees red will
+        // otherwise conclude the scan is broken; the remediation says why, but it
+        // sits behind the disclosure and is not what they read at that moment.
         let detail = "This app recorded that the following owe a rotation of their secret values, and nothing since has told it otherwise:\n"
             + lines.joined(separator: "\n")
 
         return scope.finding(
             about: .theWholeTree,
             id: findingID, title: title, status: .problem,
-            detail: detail,
+            detail: detail + "\nThese stay listed until you mark each one settled — this app cannot tell that a value was rotated, so fixing what first caused the entry does not clear it.",
             remediation: Remediation(
                 explanation: "This app cannot verify that a value was actually rotated — only you know that. Once you have changed the affected values at wherever issued them, mark each entry as settled from this file's Access panel. Until then this app keeps reminding you, even after the condition that first found it (a stale recipient, a tracked plaintext file) is gone."))
     }

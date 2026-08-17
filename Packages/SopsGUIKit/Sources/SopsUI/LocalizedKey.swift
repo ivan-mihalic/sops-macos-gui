@@ -516,6 +516,7 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case projectAccessResultFailed = "project-access.result.failed"
     // Formatted with updated / unchanged / failed counts.
     case projectAccessResultsSummary = "project-access.results.summary"
+    case projectAccessResultsCommitNote = "project-access.results.commit-note"
     // Formatted with the count of files a cancelled run never reached.
     case projectAccessCancelledNote = "project-access.cancelled-note"
     case projectAccessApplyingLabel = "project-access.applying-label"

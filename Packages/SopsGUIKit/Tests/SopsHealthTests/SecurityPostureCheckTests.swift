@@ -71,10 +71,28 @@ struct SecurityPostureCheckTests {
         }
     }
 
-    @Test("biometry not enrolled is a warning, not a problem — a password still works")
-    func biometryNotEnrolledWarns() async {
+    /// Deliberately rewritten from asserting `.warning`, and the reason is the
+    /// point rather than a detail.
+    ///
+    /// A warning is a claim: *this is worth your attention now.* Nothing in
+    /// this build depends on an enrolled fingerprint — `evaluatePolicy` is
+    /// never called, so no key is gated on biometrics — which made the warning
+    /// part of the same overclaim as the wording beside it (`BiometryClaimTests`).
+    /// It also coloured the whole report's headline, since the headline is the
+    /// single worst finding.
+    ///
+    /// `.skipped` is what is true: the subject this would be about does not
+    /// exist yet. The remediation stays, so a user who wants to be ready for
+    /// Keychain storage still gets told where to enrol one.
+    @Test("biometry not enrolled is skipped — nothing here depends on it yet")
+    func biometryNotEnrolledIsSkipped() async {
         let biometry = finding(await makeCheck(biometry: .notEnrolled).run(), "security.biometry")
-        #expect(biometry.status == .warning)
+        guard case .skipped = biometry.status else {
+            Issue.record("expected .skipped, got \(biometry.status)")
+            return
+        }
+        // Still actionable: the user is told where to enrol a fingerprint.
+        #expect(biometry.remediation?.explanation.contains("System Settings") == true)
     }
 
     // The whole point of the Keychain model is that the key is not sitting in a

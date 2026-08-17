@@ -558,6 +558,19 @@ public struct ProjectAccessView: View {
                 )
                 .font(.caption).foregroundStyle(.secondary)
 
+                // Only when files were actually re-wrapped. A run that changed
+                // nothing has nothing to commit, and a reminder there would be
+                // the kind of instruction people learn to skip past.
+                //
+                // Writing .sops.yaml has said this since it shipped; this half
+                // did not, and it is the half that decides who can read the
+                // secrets already on disk — so it is the one the rest of the
+                // team most needs to receive.
+                if model.updatedFileCount > 0 {
+                    Text(.projectAccessResultsCommitNote)
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
                 if !model.notAttempted.isEmpty {
                     Text(
                         String(

@@ -137,20 +137,46 @@ public struct SecurityPostureCheck: HealthCheck {
                                 explanation: "Update macOS in System Settings › General › Software Update."))
     }
 
+    /// Reports whether Touch ID is set up on this Mac, and says plainly that
+    /// nothing here uses it yet.
+    ///
+    /// It used to say "Touch ID is available for unlocking your key", with the
+    /// other two branches matching. That was false: `LAContext` is used in one
+    /// place, to ask `canEvaluatePolicy`, and `evaluatePolicy` — the call that
+    /// would put a key behind Touch ID — is never made. The key is pasted into
+    /// memory each session and bounded by the TTL and the sleep hook, which is
+    /// what `sessionTTLFinding` below describes.
+    ///
+    /// It is the same overclaim `keyStoreFinding` was careful to avoid two
+    /// findings down, and it mattered more here: a reader could conclude their
+    /// key sat behind biometrics and decide whether to leave the Mac unlocked
+    /// on that basis. `BiometryClaimTests` holds the rule, with a tripwire
+    /// that fails when `evaluatePolicy` finally appears — at which point this
+    /// wording needs revisiting rather than inheriting.
+    ///
+    /// `.notEnrolled` reports `.skipped`, not `.warning`, and that is the same
+    /// correction rather than a softening. A warning is itself a claim — that
+    /// this is worth the user's attention now — and nothing in this build
+    /// depends on an enrolled fingerprint. `.skipped` says what is true: the
+    /// subject this would be about does not exist yet.
     private var biometryFinding: HealthFinding {
         switch biometry.state {
         case .available:
             HealthFinding(id: "security.biometry", title: "Touch ID", status: .ok,
-                          detail: "Touch ID is available for unlocking your key.")
+                          detail: "Touch ID is set up on this Mac. Nothing in this app uses it yet — "
+                                + "an imported age key is held in memory for the session, and Keychain "
+                                + "storage arrives in a later update.")
         case .notEnrolled:
-            HealthFinding(id: "security.biometry", title: "Touch ID", status: .warning,
-                          detail: "No fingerprint is enrolled, so unlocking will fall back to your password.",
+            HealthFinding(id: "security.biometry", title: "Touch ID",
+                          status: .skipped(reason: "No fingerprint is enrolled on this Mac."),
+                          detail: "Nothing in this app depends on that today. It will matter once an "
+                                + "imported key can be kept in the Keychain, which arrives in a later update.",
                           remediation: Remediation(
                               explanation: "Add a fingerprint in System Settings › Touch ID & Password."))
         case .unavailable(let reason):
             HealthFinding(id: "security.biometry", title: "Touch ID",
                           status: .skipped(reason: reason),
-                          detail: "Unlocking will use your password instead.")
+                          detail: "Nothing in this app depends on Touch ID today.")
         }
     }
 
