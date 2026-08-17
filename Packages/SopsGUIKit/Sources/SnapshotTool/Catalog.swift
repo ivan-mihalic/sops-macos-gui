@@ -248,7 +248,8 @@ enum Catalog {
                        _ store: SessionKeyStore,
                        _ options: LegacyKeyFileImportOptions) -> Snapshot {
             Snapshot(name, size: CGSize(width: 560, height: 460)) {
-                KeyImportView(store: store, legacyKeyFiles: { options })
+                KeyImportView(store: store, legacyKeyFiles: { options },
+                              defaults: Fixtures.isolatedDefaults(prefix: "key-import"))
             }
         }
 

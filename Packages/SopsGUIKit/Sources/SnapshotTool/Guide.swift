@@ -271,7 +271,8 @@ enum Guide {
                     store: SessionKeyStore(),
                     legacyKeyFiles: {
                         .one("/Users/example/Library/Application Support/sops/age/keys.txt")
-                    })
+                    },
+                    defaults: Fixtures.isolatedDefaults(prefix: "guide-key-import"))
             },
             Snapshot("guide-17-updates", size: CGSize(width: 520, height: 240)) {
                 UpdateConsentToggle(defaults: Fixtures.isolatedDefaults(prefix: "guide-updates"))

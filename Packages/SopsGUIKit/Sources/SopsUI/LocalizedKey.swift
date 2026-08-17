@@ -57,6 +57,9 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case keyStatusEmpty = "key.status.empty"
     case keyPasteHeader = "key.paste.header"
     case keyPasteFooter = "key.paste.footer"
+    case keyTTLHeader = "key.ttl.header"
+    case keyTTLFooter = "key.ttl.footer"
+    case keyTTLMinutes = "key.ttl.minutes"
     case keyPasteNoKeyYet = "key.paste.no-key-yet"
     case keyImportPasteButton = "key.import.paste-button"
     case keyForgetButton = "key.forget-button"
@@ -271,6 +274,7 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case editorNeedsKeyTitle = "editor.needs-key.title"
     case editorNeedsKeyBody = "editor.needs-key.body"
     case editorLoadFailedTitle = "editor.load-failed.title"
+    case editorLoadFailedWrongKey = "editor.load-failed.wrong-key"
     // Deliberately distinct from `.editorLoadFailedTitle`: a `.loaded`
     // document with zero rows is what `sops -e` on `{}` produces — a
     // legitimate, ordinary file, not a failure. See `SecretEditorView`'s

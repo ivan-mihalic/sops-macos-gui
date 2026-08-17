@@ -371,6 +371,32 @@ public final class SecretDocumentViewModel {
         }
     }
 
+    /// Turns a bridge failure into what the editor shows.
+    ///
+    /// Everything except one case is passed through untouched. Not rewording
+    /// the engine is a standing policy here and a good one: whatever age or
+    /// sops actually said is the authoritative account, and a friendlier
+    /// paraphrase invented on this side would be a guess presented as a
+    /// diagnosis.
+    ///
+    /// The exception is the single most likely reason a file will not open —
+    /// the session's key is not among the file's recipients. That is not
+    /// inferred from the message text; the bridge classifies it Go-side and
+    /// hands over `Kind.noMatchingIdentity`, so this is reporting a fact the
+    /// engine already established rather than pattern-matching prose.
+    ///
+    /// The explanation goes *first* and the engine's own words stay beneath
+    /// it. A user who picked the wrong key needs to know what to do; a user
+    /// filing a bug still needs what the engine said, and dropping it to make
+    /// the screen tidier would trade a real diagnostic for a friendly guess.
+    ///
+    /// A free function so a test can ask it directly — the decrypt path it
+    /// serves goes through the real bridge and has no seam.
+    nonisolated static func loadFailureMessage(for error: SopsBridgeError) -> String {
+        guard error.kind == .noMatchingIdentity else { return error.description }
+        return LocalizedKey.editorLoadFailedWrongKey.text + "\n\n" + error.description
+    }
+
     /// Clears everything a previous successful load left behind: `rows`,
     /// `baselineValues`, `isDirty`, and — the part that matters even though
     /// nothing can reach it today — `encryptedContents`.
@@ -441,7 +467,7 @@ public final class SecretDocumentViewModel {
             do {
                 return .success(try SopsBridge.decryptToRows(contents, agePrivateKey: key))
             } catch let error as SopsBridgeError {
-                return .failure(error.description)
+                return .failure(loadFailureMessage(for: error))
             } catch {
                 return .failure("this file could not be decrypted")
             }
