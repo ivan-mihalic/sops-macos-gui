@@ -260,7 +260,8 @@ final class GatingHost {
     /// half-built view rather than against anything the view got wrong.
     /// Polling costs nothing when the condition is already true and does not
     /// pretend to know how long a scan takes on a loaded machine.
-    func settle(until condition: @MainActor () -> Bool, timeout: Duration = .seconds(10)) async {
+    func settle(until condition: @MainActor () -> Bool, timeout: Duration = .seconds(10),
+                location: SourceLocation = #_sourceLocation) async {
         // The condition is about the *model*, which advances on its own — so
         // the wait must not relayout on every tick. An earlier version did,
         // and a synchronous `NSHostingView` layout+display every 20 ms is real
@@ -272,6 +273,32 @@ final class GatingHost {
         while !condition(), ContinuousClock.now - started < timeout {
             try? await Task.sleep(for: .milliseconds(20))
         }
+
+        // Say so when the wait ran out. Without this the helper returns the
+        // same way whether the condition held or never did, and the caller
+        // fails at its next assertion — which then describes something else.
+        //
+        // Measured twice: a full-suite run reported
+        // `(model.plan?.governingRuleIdentified → nil) == false` in
+        // `ProjectAccessTests`, which reads as "the panel computed the wrong
+        // thing". The panel had computed nothing; this wait had given up on a
+        // loaded machine and told nobody. `SecretDocumentViewModelTests` hit
+        // the same shape two days later.
+        //
+        // One definition serves about thirty call sites, so the silence was
+        // thirty chances to read a slow machine as a broken view.
+        // `#filePath`/`#line` are the caller's, so the report points at the
+        // wait that ran out rather than at this line.
+        if !condition() {
+            Issue.record("""
+                waited \(timeout) for a condition that never became true. Whatever this \
+                test asserts next is about a view that never finished setting up — treat \
+                a failure below as a consequence of this, not a separate defect. On a \
+                loaded machine this is usually contention rather than a real fault; \
+                confirm by running this suite on its own.
+                """, sourceLocation: location)
+        }
+
         settle()
         try? await Task.sleep(for: .milliseconds(50))
         settle()

@@ -83,7 +83,25 @@ struct CopyFeedbackTests {
             try await Task.sleep(for: .milliseconds(10))
         }
 
-        #expect(feedback.label(for: "tool.age") == .actionCopy)
+        // Two different failures, reported as two different things. Before
+        // this, both arrived as `label == .actionCopy` failing, which reads as
+        // "the expiry produced the wrong label" — and this test has spent a
+        // long time being called a flake on the strength of that sentence.
+        //
+        // What actually happens under a full run is the second case: the
+        // expiry's continuation is queued behind a saturated main actor and
+        // has not landed when the deadline passes. That is contention, not a
+        // defect in `CopyFeedback`, and saying so is the difference between a
+        // report someone can act on and one they learn to ignore.
+        if feedback.label(for: "tool.age") != .actionCopy {
+            Issue.record("""
+                the confirmation had not expired 20s after a copy. A broken expiry never \
+                fires at all, so this is more likely the resumption after \
+                `Task.sleep` queued behind a busy main actor than a fault in \
+                CopyFeedback — every suite in this target shares one. Run this suite on \
+                its own to tell the two apart; if it passes alone, this was load.
+                """)
+        }
     }
 
     /// A second copy of the *same* row restarts the clock rather than
