@@ -844,7 +844,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "I understand I may not be able to open this file again in this app."
+            "value": "Create it anyway. This app won't check the contents afterwards, because it can't open the file back — so I may not be able to open it again either."
           }
         }
       }
@@ -2853,6 +2853,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Updated"
+          }
+        }
+      }
+    },
+    "project-access.results.commit-note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Commit the re-wrapped files so the rest of your team can read them too."
           }
         }
       }
