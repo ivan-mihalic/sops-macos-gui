@@ -4,15 +4,16 @@
 
 ## Worktrees
 
-Git worktrees live in **`.worktrees/<branch-name>`** at the repository root.
-The directory is gitignored. Create them there and nowhere else:
+Git worktrees live **outside the repo** in `~/Development/_worktrees/sops-macos-gui/<name>`
+(PRX-15). Create them only with `wt` (`wt --help`), never with raw `git worktree add`;
+`wt path <name>` prints the location:
 
 ```bash
-git worktree add .worktrees/<branch-name> -b <branch-name>
+wt create <branch-name>        # existing branch → checkout, otherwise a new one
 ```
 
-Do not use a harness-native worktree tool that picks its own location — it puts
-the worktree outside the repo where it is easy to lose track of.
+Claude Code's own worktree tool (`EnterWorktree`, `claude -w`) is routed to the same
+place via a hook, so it is fine to use.
 
 ## Where things live
 
