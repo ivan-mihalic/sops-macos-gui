@@ -25,7 +25,7 @@ struct RecipientAccessHostileFileRefusalTests {
         url: URL = URL(fileURLWithPath: "/dev/null/hostile-access.yaml")
     ) -> RecipientAccessModel {
         RecipientAccessModel(
-            fileURL: url, projectURL: nil, keyStore: SessionKeyStore(),
+            fileURL: url, projectURL: nil, keyStore: SessionKeyStore(), format: .yaml,
             readFile: { _ in contents }, fingerprintFile: fingerprint)
     }
 

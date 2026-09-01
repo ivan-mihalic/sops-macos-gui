@@ -355,7 +355,7 @@ struct RecipientLabelEditorWiringTests {
 
         let model = RecipientAccessModel(
             fileURL: root.appendingPathComponent("a.yaml"), projectURL: root,
-            keyStore: SessionKeyStore())
+            keyStore: SessionKeyStore(), format: .yaml)
         let host = GatingHost(size: CGSize(width: 460, height: 520)) {
             AnyView(RecipientAccessView(model: model, onClose: {}, onApplied: {}))
         }
@@ -374,7 +374,7 @@ struct RecipientLabelEditorWiringTests {
 
         let model = RecipientAccessModel(
             fileURL: URL(fileURLWithPath: "/dev/null/no-project.yaml"), projectURL: nil,
-            keyStore: SessionKeyStore(), readFile: { _ in encrypted })
+            keyStore: SessionKeyStore(), format: .yaml, readFile: { _ in encrypted })
         let host = GatingHost(size: CGSize(width: 460, height: 520)) {
             AnyView(RecipientAccessView(model: model, onClose: {}, onApplied: {}))
         }
@@ -418,7 +418,7 @@ struct RecipientLabelEditorWiringTests {
 
         let model = RecipientAccessModel(
             fileURL: root.appendingPathComponent("a.yaml"), projectURL: root,
-            keyStore: SessionKeyStore())
+            keyStore: SessionKeyStore(), format: .yaml)
         await model.load()
         model.stageAdd(added.public)
         let stagedBefore = model.stagedRecipients

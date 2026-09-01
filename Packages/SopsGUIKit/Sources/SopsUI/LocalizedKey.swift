@@ -319,6 +319,12 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // metadata; a document that misuses either cannot be read back at all.
     // Mirrors `refuseReservedKey` in the bridge — see `AddRowRefusal`.
     case editorAddReservedKey = "editor.add.reserved-key"
+    // SOPS-38 fix-wave C1: a dotenv document's own store reads a value back
+    // by splitting on the first `=` and treating a leading `#` as a comment,
+    // so a key using either character (or an embedded newline) saves without
+    // error and can never be decrypted again. Mirrors `refuseInvalidDotenvKey`
+    // in the bridge — see `AddRowRefusal.invalidDotenvKey`.
+    case editorAddInvalidDotenvKey = "editor.add.invalid-dotenv-key"
     // Shown instead of a padlock on a row added in this session — see
     // `SecretEditorView`'s doc comment for why neither padlock would be true.
     case editorNewRowBadge = "editor.new-row-badge"

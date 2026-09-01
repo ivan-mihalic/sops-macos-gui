@@ -105,7 +105,7 @@ struct FileAccessDuplicateRecipientTests {
 
         let model = RecipientAccessModel(
             fileURL: URL(fileURLWithPath: "/dev/null/duplicate.yaml"), projectURL: nil,
-            keyStore: SessionKeyStore(), readFile: { _ in encrypted })
+            keyStore: SessionKeyStore(), format: .yaml, readFile: { _ in encrypted })
         await model.load()
 
         #expect(model.currentRecipients == [owner.public, other.public])
@@ -136,7 +136,7 @@ struct FileAccessDuplicateRecipientTests {
 
         let keyStore = SessionKeyStore()
         try keyStore.importKey(owner.private)
-        let model = RecipientAccessModel(fileURL: file, projectURL: nil, keyStore: keyStore)
+        let model = RecipientAccessModel(fileURL: file, projectURL: nil, keyStore: keyStore, format: .yaml)
         await model.load()
         model.stageAdd(added.public)
 
@@ -155,7 +155,7 @@ struct FileAccessDuplicateRecipientTests {
 
         let model = RecipientAccessModel(
             fileURL: URL(fileURLWithPath: "/dev/null/duplicate-disclosure.yaml"), projectURL: nil,
-            keyStore: SessionKeyStore(), readFile: { _ in encrypted })
+            keyStore: SessionKeyStore(), format: .yaml, readFile: { _ in encrypted })
         let host = GatingHost(size: CGSize(width: 460, height: 520)) {
             AnyView(RecipientAccessView(model: model, onClose: {}, onApplied: {}))
         }

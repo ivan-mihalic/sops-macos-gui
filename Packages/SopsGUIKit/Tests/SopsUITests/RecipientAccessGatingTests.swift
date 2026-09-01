@@ -369,7 +369,8 @@ struct AccessButtonWiringTests {
             SecretEditorView(
                 viewModel: model, fileName: "production.secrets.yaml", unsavedChanges: UnsavedChangesTracker(),
                 recipientAccess: SecretEditorView.RecipientAccessContext(
-                    fileURL: URL(fileURLWithPath: "/dev/null/access-gating.yaml"), keyStore: SessionKeyStore()))
+                    fileURL: URL(fileURLWithPath: "/dev/null/access-gating.yaml"), keyStore: SessionKeyStore(),
+                    format: .yaml))
         }
 
         let accessButton = nodes.first { $0.label == LocalizedKey.accessToolbarButton.text }
@@ -388,7 +389,8 @@ struct AccessButtonWiringTests {
             SecretEditorView(
                 viewModel: model, fileName: "production.secrets.yaml", unsavedChanges: UnsavedChangesTracker(),
                 recipientAccess: SecretEditorView.RecipientAccessContext(
-                    fileURL: URL(fileURLWithPath: "/dev/null/access-gating.yaml"), keyStore: SessionKeyStore()))
+                    fileURL: URL(fileURLWithPath: "/dev/null/access-gating.yaml"), keyStore: SessionKeyStore(),
+                    format: .yaml))
         }
 
         let accessButton = nodes.first { $0.label == LocalizedKey.accessToolbarButton.text }
@@ -413,7 +415,7 @@ struct RecipientAccessRowLabelTests {
         try store.importKey(owner.private)
         let model = RecipientAccessModel(
             fileURL: URL(fileURLWithPath: "/dev/null/access-row-labels.yaml"), projectURL: nil, keyStore: store,
-            readFile: { _ in encrypted })
+            format: .yaml, readFile: { _ in encrypted })
 
         // Rendered on an unloaded model, exactly as the real toolbar button
         // does it — `RecipientAccessView`'s own `.task { await model.load() }`
@@ -470,7 +472,7 @@ struct RecipientAccessRegistryQuarantineTests {
         let model = RecipientAccessModel(
             fileURL: URL(fileURLWithPath: "/dev/null/access-registry-quarantine.yaml"),
             projectURL: URL(fileURLWithPath: "/dev/null/never-read-project"), keyStore: store,
-            readFile: { _ in encrypted },
+            format: .yaml, readFile: { _ in encrypted },
             loadRegistry: { _ in ([], notice) })
 
         let host = GatingHost(size: CGSize(width: 480, height: 360)) {
@@ -502,7 +504,7 @@ struct RecipientAccessRegistryQuarantineTests {
         let model = RecipientAccessModel(
             fileURL: URL(fileURLWithPath: "/dev/null/access-registry-quarantine-clean.yaml"),
             projectURL: URL(fileURLWithPath: "/dev/null/never-read-project"), keyStore: store,
-            readFile: { _ in encrypted },
+            format: .yaml, readFile: { _ in encrypted },
             loadRegistry: { _ in ([], nil) })
 
         let host = GatingHost(size: CGSize(width: 480, height: 360)) {

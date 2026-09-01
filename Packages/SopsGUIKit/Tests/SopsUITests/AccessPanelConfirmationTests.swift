@@ -250,10 +250,10 @@ struct ApplyingSpinnerAccessibilityTests {
         try keyStore.importKey(owner.private)
         let gate = RewrapGate()
         let model = RecipientAccessModel(
-            fileURL: file, projectURL: nil, keyStore: keyStore,
-            rewrapRecipients: { contents, recipients, key in
+            fileURL: file, projectURL: nil, keyStore: keyStore, format: .yaml,
+            rewrapRecipients: { contents, format, recipients, key in
                 await gate.enter()
-                return try SopsBridge.updateRecipients(contents, format: .yaml, to: recipients, agePrivateKey: key)
+                return try SopsBridge.updateRecipients(contents, format: format, to: recipients, agePrivateKey: key)
             })
 
         let host = GatingHost(size: CGSize(width: 460, height: 520)) {

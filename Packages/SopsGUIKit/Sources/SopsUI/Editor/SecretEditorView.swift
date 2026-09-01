@@ -131,11 +131,19 @@ public struct SecretEditorView: View {
         let fileURL: URL
         let keyStore: SessionKeyStore
         let projectURL: URL?
+        /// This file's on-disk shape, so `RecipientAccessModel` reads and
+        /// re-wraps it as what it actually is rather than as YAML always —
+        /// see `RecipientAccessModel.init`'s doc comment (SOPS-38 fix-wave
+        /// I1). No default: every call site names it explicitly, the same
+        /// house rule `SecretDocumentViewModel`'s own `format` parameter
+        /// follows.
+        let format: SopsFileFormat
 
-        public init(fileURL: URL, keyStore: SessionKeyStore, projectURL: URL? = nil) {
+        public init(fileURL: URL, keyStore: SessionKeyStore, projectURL: URL? = nil, format: SopsFileFormat) {
             self.fileURL = fileURL
             self.keyStore = keyStore
             self.projectURL = projectURL
+            self.format = format
         }
     }
 
@@ -390,7 +398,8 @@ public struct SecretEditorView: View {
                     let model = RecipientAccessModel(
                         fileURL: recipientAccess.fileURL,
                         projectURL: recipientAccess.projectURL,
-                        keyStore: recipientAccess.keyStore)
+                        keyStore: recipientAccess.keyStore,
+                        format: recipientAccess.format)
                     accessRequest = AccessRequest(model: model)
                 } label: {
                     Label(.accessToolbarButton, systemImage: "person.2.badge.key")
@@ -1034,6 +1043,7 @@ public struct EditorAddRowSheet: View {
         switch refusal {
         case .duplicateKey: .editorAddDuplicateKey
         case .reservedKey: .editorAddReservedKey
+        case .invalidDotenvKey: .editorAddInvalidDotenvKey
         case .emptyKey, .notLoaded, .unsupportedKind, .unsupportedForFormat, .saveInProgress: nil
         }
     }

@@ -124,7 +124,7 @@ struct RecipientAccessStagingTests {
         let keyStore = SessionKeyStore()
         try keyStore.importKey(owner.private)
 
-        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore, format: .yaml)
         await model.load()
         #expect(model.loadState == .loaded)
         #expect(Set(model.currentRecipients) == Set([owner.public, kept.public]))
@@ -155,7 +155,7 @@ struct RecipientAccessStagingTests {
 
         let keyStore = SessionKeyStore()
         try keyStore.importKey(owner.private)
-        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore, format: .yaml)
         await model.load()
 
         let stranger = try AgeKeyPair.generate()
@@ -176,7 +176,7 @@ struct RecipientAccessStagingTests {
 
         let keyStore = SessionKeyStore()
         try keyStore.importKey(owner.private)
-        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore, format: .yaml)
         await model.load()
 
         #expect(model.stageAdd(owner.public) == .duplicate)
@@ -187,7 +187,8 @@ struct RecipientAccessStagingTests {
     func stageAddBeforeLoadIsRefused() {
         let keyStore = SessionKeyStore()
         let model = RecipientAccessModel(
-            fileURL: URL(fileURLWithPath: "/dev/null/never-loaded.yaml"), projectURL: nil, keyStore: keyStore)
+            fileURL: URL(fileURLWithPath: "/dev/null/never-loaded.yaml"), projectURL: nil, keyStore: keyStore,
+            format: .yaml)
         #expect(model.stageAdd("age1anything") == .notLoaded)
     }
 
@@ -213,7 +214,7 @@ struct RecipientAccessStagingTests {
 
         let keyStore = SessionKeyStore()
         try keyStore.importKey(owner.private)
-        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore, format: .yaml)
         await model.load()
         #expect(model.currentRecipients == [owner.public, kept.public])
 
@@ -252,7 +253,7 @@ struct RecipientAccessPendingRemovalsTests {
 
         let keyStore = SessionKeyStore()
         try keyStore.importKey(owner.private)
-        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore, format: .yaml)
         await model.load()
 
         // Nothing staged yet: nothing pending removal.
@@ -287,7 +288,7 @@ struct RecipientAccessApplyTests {
 
         let keyStore = SessionKeyStore()
         try keyStore.importKey(owner.private)
-        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore, format: .yaml)
         await model.load()
 
         model.stageAdd(added.public)
@@ -310,7 +311,7 @@ struct RecipientAccessApplyTests {
 
         // A fresh read reports exactly the applied set, proving this is real
         // metadata on disk and not just in-memory bookkeeping.
-        let reloaded = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore)
+        let reloaded = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore, format: .yaml)
         await reloaded.load()
         #expect(Set(reloaded.currentRecipients) == Set([owner.public, kept.public, added.public]))
     }
@@ -324,7 +325,7 @@ struct RecipientAccessApplyTests {
 
         let keyStore = SessionKeyStore()
         try keyStore.importKey(owner.private)
-        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore, format: .yaml)
         await model.load()
 
         model.stageRemove(owner.public)
@@ -348,7 +349,7 @@ struct RecipientAccessApplyTests {
 
         // No key imported at all.
         let keyStore = SessionKeyStore()
-        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore, format: .yaml)
         await model.load()
 
         #expect(model.loadState == .loaded)
@@ -389,7 +390,7 @@ struct RecipientAccessRegistryTests {
 
         let keyStore = SessionKeyStore()
         try keyStore.importKey(known.private)
-        let model = RecipientAccessModel(fileURL: fileURL, projectURL: project, keyStore: keyStore)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: project, keyStore: keyStore, format: .yaml)
         await model.load()
 
         let knownEntry = model.entries.first { $0.ageRecipient == known.public }
@@ -419,7 +420,7 @@ struct RecipientAccessRegistryTests {
 
         let keyStore = SessionKeyStore()
         try keyStore.importKey(known.private)
-        let model = RecipientAccessModel(fileURL: fileURL, projectURL: project, keyStore: keyStore)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: project, keyStore: keyStore, format: .yaml)
         await model.load()
 
         #expect(model.registryQuarantineNotice != nil)
@@ -437,7 +438,7 @@ struct RecipientAccessRegistryTests {
 
         let keyStore = SessionKeyStore()
         try keyStore.importKey(owner.private)
-        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore, format: .yaml)
         await model.load()
 
         #expect(model.entries.count == 1)
@@ -460,7 +461,7 @@ struct RecipientAccessRegistryTests {
 
         let keyStore = SessionKeyStore()
         try keyStore.importKey(owner.private)
-        let model = RecipientAccessModel(fileURL: fileURL, projectURL: project, keyStore: keyStore)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: project, keyStore: keyStore, format: .yaml)
         await model.load()
         model.stageRemove(removed.public)
 
@@ -484,7 +485,7 @@ struct RecipientAccessRegistryTests {
 
         let keyStore = SessionKeyStore()
         try keyStore.importKey(owner.private)
-        let model = RecipientAccessModel(fileURL: fileURL, projectURL: project, keyStore: keyStore)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: project, keyStore: keyStore, format: .yaml)
         await model.load()
         model.stageAdd(added.public)
 
@@ -507,7 +508,7 @@ struct RecipientAccessRegistryTests {
 
         let keyStore = SessionKeyStore()
         try keyStore.importKey(owner.private)
-        let model = RecipientAccessModel(fileURL: fileURL, projectURL: project, keyStore: keyStore)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: project, keyStore: keyStore, format: .yaml)
         await model.load()
 
         #expect(model.rotationDebtEntries.map(\.path) == ["app.yaml"])
@@ -524,7 +525,7 @@ struct RecipientAccessRegistryTests {
 
         let keyStore = SessionKeyStore()
         try keyStore.importKey(owner.private)
-        let model = RecipientAccessModel(fileURL: fileURL, projectURL: project, keyStore: keyStore)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: project, keyStore: keyStore, format: .yaml)
         await model.load()
         let id = try #require(model.rotationDebtEntries.first?.id)
 
@@ -545,7 +546,7 @@ struct RecipientAccessRegistryTests {
 
         let keyStore = SessionKeyStore()
         try keyStore.importKey(owner.private)
-        let model = RecipientAccessModel(fileURL: fileURL, projectURL: project, keyStore: keyStore)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: project, keyStore: keyStore, format: .yaml)
         await model.load()
         #expect(model.rotationDebtEntries.isEmpty)
         model.stageRemove(removed.public)
@@ -564,7 +565,7 @@ struct RecipientAccessRegistryTests {
 
         let keyStore = SessionKeyStore()
         try keyStore.importKey(owner.private)
-        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore, format: .yaml)
         await model.load()
         model.stageRemove(removed.public)
 
@@ -603,8 +604,9 @@ struct RecipientAccessSeamTests {
         recipients: [String],
         readFile: ((URL) throws -> String)? = nil,
         writeFile: @escaping (String, URL, FileFingerprint?) throws -> FileFingerprint? = { _, _, _ in nil },
-        rewrapRecipients: @escaping (String, [String], String) async throws -> String = { contents, recipients, key in
-            try await RecipientAccessModel.defaultRewrap(contents, recipients, key)
+        rewrapRecipients: @escaping (String, SopsFileFormat, [String], String) async throws -> String = {
+            contents, format, recipients, key in
+            try await RecipientAccessModel.defaultRewrap(contents, format, recipients, key)
         },
         loadRegistry: @escaping (URL) -> (records: [RecipientRecord], quarantineNotice: String?) = { _ in ([], nil) },
         keyStore: SessionKeyStore
@@ -624,6 +626,7 @@ struct RecipientAccessSeamTests {
             fileURL: URL(fileURLWithPath: "/dev/null/access-seam-\(UUID().uuidString).yaml"),
             projectURL: URL(fileURLWithPath: "/dev/null/never-read-project"),
             keyStore: keyStore,
+            format: .yaml,
             readFile: resolvedReadFile,
             writeFile: writeFile,
             loadRegistry: loadRegistry,
@@ -642,12 +645,12 @@ struct RecipientAccessSeamTests {
         try keyStore.importKey(owner.private)
         let model = try fakeModel(
             recipients: [owner.public, kept.public, removed.public],
-            rewrapRecipients: { contents, recipients, key in
+            rewrapRecipients: { contents, format, recipients, key in
                 // Invoked on `@MainActor` — the default implementation is
                 // the only thing that hops off it — so this plain, mutable
                 // capture is sound without a lock.
                 calls.append((contents, recipients, key))
-                return try await RecipientAccessModel.defaultRewrap(contents, recipients, key)
+                return try await RecipientAccessModel.defaultRewrap(contents, format, recipients, key)
             },
             keyStore: keyStore)
         await model.load()
@@ -675,9 +678,9 @@ struct RecipientAccessSeamTests {
                 writeCalls += 1
                 return nil
             },
-            rewrapRecipients: { contents, recipients, key in
+            rewrapRecipients: { contents, format, recipients, key in
                 rewrapCalls += 1
-                return try await RecipientAccessModel.defaultRewrap(contents, recipients, key)
+                return try await RecipientAccessModel.defaultRewrap(contents, format, recipients, key)
             },
             keyStore: keyStore)
         await model.load()
@@ -704,7 +707,7 @@ struct RecipientAccessSeamTests {
                 writeCalls += 1
                 return nil
             },
-            rewrapRecipients: { _, _, _ in throw RewrapBoom() },
+            rewrapRecipients: { _, _, _, _ in throw RewrapBoom() },
             keyStore: keyStore)
         await model.load()
         model.stageAdd(added.public)
@@ -738,9 +741,9 @@ struct RecipientAccessSeamTests {
         let model = try fakeModel(
             recipients: [owner.public],
             writeFile: { _, _, _ in throw AtomicFileWriter.Error.destinationChangedOnDisk(path: "fixture.yaml") },
-            rewrapRecipients: { contents, recipients, key in
+            rewrapRecipients: { contents, format, recipients, key in
                 rewrapCalls += 1
-                return try await RecipientAccessModel.defaultRewrap(contents, recipients, key)
+                return try await RecipientAccessModel.defaultRewrap(contents, format, recipients, key)
             },
             keyStore: keyStore)
         await model.load()
@@ -819,7 +822,7 @@ struct RecipientAccessSeamTests {
 
         let keyStore = SessionKeyStore()
         try keyStore.importKey(owner.private)
-        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore, format: .yaml)
         await model.load()
         model.stageAdd(added.public)
 
@@ -844,5 +847,93 @@ struct RecipientAccessSeamTests {
         #expect(try SopsBridge.recipients(in: onDisk, format: .yaml) == [owner.public])
         #expect(model.currentRecipients == [owner.public])
         #expect(model.stagedRecipients == [owner.public, added.public], "the staged edit must survive the refusal")
+    }
+}
+
+// MARK: - SOPS-38 fix-wave I1: the per-file Access panel over a dotenv document
+//
+// `RecipientAccessModel` used to call `SopsBridge.recipients`/
+// `SopsBridge.updateRecipients` with `format: .yaml` unconditionally
+// (`load()` and `defaultRewrap`), so opening the Access button on a dotenv
+// file failed with a message naming the wrong problem — the document's own
+// format, already known to `SecretDocumentViewModel`, was simply never
+// threaded through `SecretEditorView.RecipientAccessContext` into this
+// model. `dotenvListsAndAppliesRewrap` proves the fix over a real dotenv
+// fixture, verified the same way `RecipientAccessTests` verifies every other
+// apply here: not just that `apply()` returns `.applied`, but that the
+// rewrapped bytes actually decrypt for the new recipient and no longer
+// decrypt for the dropped one. `yamlBehaviorUnaffected` is the discriminating
+// half — the same model, over a YAML fixture, must behave exactly as
+// `RecipientAccessStagingTests`/`RecipientAccessApplyTests` above already
+// established.
+
+@Suite("RecipientAccessModel — dotenv format (SOPS-38 fix-wave I1)")
+@MainActor
+struct RecipientAccessDotenvTests {
+
+    private let plainDotenv = "DB_URL=postgres://x\nAPI_KEY=secret\n"
+
+    @Test("recipients list and a rewrap applies for a dotenv document")
+    func dotenvListsAndAppliesRewrap() async throws {
+        let owner = try AgeKeyPair.generate()
+        let kept = try AgeKeyPair.generate()
+        let added = try AgeKeyPair.generate()
+
+        let encrypted = try SopsBridge.encrypt(
+            plainDotenv, format: .dotenv, recipients: [owner.public, kept.public])
+        let dir = try scratchDirectory("recipient-access-dotenv")
+        let fileURL = dir.appendingPathComponent("secret.env")
+        try encrypted.write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let keyStore = SessionKeyStore()
+        try keyStore.importKey(owner.private)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore, format: .dotenv)
+        await model.load()
+
+        #expect(model.loadState == .loaded)
+        #expect(Set(model.currentRecipients) == Set([owner.public, kept.public]))
+
+        model.stageAdd(added.public)
+        model.stageRemove(kept.public)
+        let outcome = await model.apply()
+        #expect(outcome == .applied)
+
+        let onDisk = try String(contentsOf: fileURL, encoding: .utf8)
+        // The rewrapped document lists exactly the new set...
+        #expect(Set(try SopsBridge.recipients(in: onDisk, format: .dotenv)) == Set([owner.public, added.public]))
+
+        // ...and only a key in that new set can actually read the content
+        // back — the claim this test exists to make, not just that
+        // `apply()` returned `.applied` without throwing.
+        let decrypted = try SopsBridge.decrypt(onDisk, format: .dotenv, agePrivateKey: added.private)
+        #expect(decrypted.contains("DB_URL=postgres://x"))
+        #expect(decrypted.contains("API_KEY=secret"))
+
+        // The dropped recipient can no longer decrypt.
+        #expect(throws: (any Error).self) {
+            try SopsBridge.decrypt(onDisk, format: .dotenv, agePrivateKey: kept.private)
+        }
+    }
+
+    @Test("YAML behavior is unaffected by dotenv format-threading through the same model")
+    func yamlBehaviorUnaffected() async throws {
+        let owner = try AgeKeyPair.generate()
+        let added = try AgeKeyPair.generate()
+        let encrypted = try SopsBridge.encrypt(plainYAML, format: .yaml, recipients: [owner.public])
+        let fileURL = try fixtureFile(encrypted)
+
+        let keyStore = SessionKeyStore()
+        try keyStore.importKey(owner.private)
+        let model = RecipientAccessModel(fileURL: fileURL, projectURL: nil, keyStore: keyStore, format: .yaml)
+        await model.load()
+        #expect(model.currentRecipients == [owner.public])
+
+        model.stageAdd(added.public)
+        let outcome = await model.apply()
+        #expect(outcome == .applied)
+
+        let onDisk = try String(contentsOf: fileURL, encoding: .utf8)
+        let decrypted = try SopsBridge.decrypt(onDisk, format: .yaml, agePrivateKey: added.private)
+        #expect(decrypted.contains("correct-horse-battery-staple"))
     }
 }

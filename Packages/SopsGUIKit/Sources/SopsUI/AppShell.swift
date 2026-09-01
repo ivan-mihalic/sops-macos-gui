@@ -664,7 +664,8 @@ private struct ProjectWorkspaceView: View {
                 unsavedChanges: unsavedChanges,
                 recipientAccess: SecretEditorView.RecipientAccessContext(
                     fileURL: selectedFileURL, keyStore: keyStore,
-                    projectURL: recipientRegistryProjectRoot))
+                    projectURL: recipientRegistryProjectRoot,
+                    format: documentViewModel.format))
         } else {
             centeredPlaceholder(.editorNoFileSelected)
         }

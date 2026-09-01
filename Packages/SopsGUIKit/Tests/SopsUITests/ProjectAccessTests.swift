@@ -1550,7 +1550,7 @@ struct RecipientKindDisplayTests {
 
         let model = RecipientAccessModel(
             fileURL: root.appendingPathComponent("a.yaml"), projectURL: root,
-            keyStore: SessionKeyStore())
+            keyStore: SessionKeyStore(), format: .yaml)
         let host = GatingHost(size: CGSize(width: 460, height: 520)) {
             AnyView(RecipientAccessView(model: model, onClose: {}, onApplied: {}))
         }

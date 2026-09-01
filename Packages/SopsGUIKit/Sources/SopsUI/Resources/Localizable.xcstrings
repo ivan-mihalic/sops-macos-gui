@@ -3849,6 +3849,17 @@
           }
         }
       }
+    },
+    "editor.add.invalid-dotenv-key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This key cannot be saved in a dotenv file: it contains “=”, starts with “#”, or has a line break, and this format would read it back differently — or not at all. Choose a different name."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

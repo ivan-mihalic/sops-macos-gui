@@ -625,6 +625,18 @@ public final class SecretDocumentViewModel {
         /// side refuses this today, so this guard is what keeps the picker
         /// from ever offering a choice this format cannot actually save.
         case unsupportedForFormat
+        /// This document is dotenv, and the name does not fit dotenv's own
+        /// key grammar (`DotEnvParser.isValidKey`, `[\w.-]+`, ASCII-only).
+        /// The bridge's own `refuseInvalidDotenvKey`
+        /// (`Engine/gobridge/documentchanges.go`) is the authority — this
+        /// mirrors it, the same relationship `reservedKey` has to
+        /// `refuseReservedKey` — because a key with `=`, a leading `#`, or an
+        /// embedded newline saves to disk without any error and can never be
+        /// decrypted again: sops's own dotenv store reads a value back by
+        /// splitting on the first `=` and treating a `#`-prefixed line as a
+        /// comment, so the key that would come out on the next read is not
+        /// the one just typed, or the whole entry disappears silently.
+        case invalidDotenvKey
         /// A save is in flight. See `save()`.
         case saveInProgress
     }
@@ -765,6 +777,12 @@ public final class SecretDocumentViewModel {
         if name.isEmpty { return .emptyKey }
         if name == Self.yamlMergeKey { return .reservedKey }
         if name == Self.sopsMetadataKey && destination.parent.isEmpty { return .reservedKey }
+        // Only dotenv has this narrower charset — a YAML key can be anything
+        // a map key can be. Checked with the parser's own rule
+        // (`DotEnvParser.isValidKey`) rather than a second, hand-copied one —
+        // see that function's doc comment — so this can never drift from
+        // what a real dotenv file can actually hold.
+        if format == .dotenv, !DotEnvParser.isValidKey(name) { return .invalidDotenvKey }
 
         let candidate = destination.parent + [name]
         let taken = rows.contains { row in

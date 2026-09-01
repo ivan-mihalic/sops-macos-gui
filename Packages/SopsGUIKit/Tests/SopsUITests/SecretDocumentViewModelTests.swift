@@ -1851,6 +1851,42 @@ struct SecretDocumentDotenvTests {
         #expect(vm.isDirty)
     }
 
+    // MARK: - SOPS-38 fix-wave C1: dotenv key grammar
+
+    /// sops's own dotenv store (`stores/dotenv/store.go`) writes `key=value`
+    /// with the key emitted verbatim and reads a file back by splitting each
+    /// line on the FIRST `=`, treating a `#`-prefixed line as a comment. A key
+    /// containing `=` or starting with `#` therefore saves without error and
+    /// can never be decrypted again — the exact corruption this refusal
+    /// exists to stop before it ever reaches disk. Mirrors
+    /// `TestDotenvApplyChangesRefusesKeyContainingEqualsSign`/
+    /// `...RefusesKeyStartingWithHash` in `Engine/gobridge/dotenv_test.go`.
+    @Test("adding a key with dotenv-breaking characters is refused before any write")
+    func dotenvRefusesInvalidKeyGrammar() async throws {
+        let (vm, _, fileURL) = try await loadedDotenv("FOO=bar\n")
+        let onDiskBefore = try String(contentsOf: fileURL, encoding: .utf8)
+        let root = vm.addDestination(forSelectedRowID: nil)
+
+        #expect(vm.addRow(in: root, key: "FOO=BAR", kind: .string, value: "v") == .refused(.invalidDotenvKey))
+        #expect(vm.addRow(in: root, key: "#X", kind: .string, value: "v") == .refused(.invalidDotenvKey))
+        #expect(!vm.isDirty, "a refused addition must not dirty the document")
+
+        // Nothing was ever staged, so the file on disk must be exactly what
+        // it was before either call — the refusal happens before any write,
+        // not as a rollback after one.
+        let onDiskAfter = try String(contentsOf: fileURL, encoding: .utf8)
+        #expect(onDiskAfter == onDiskBefore)
+    }
+
+    /// A key made only of dotenv's own charset (`[\w.-]+`) is unaffected by
+    /// the new grammar guard — the discriminating half of the test above.
+    @Test("a key that already satisfies dotenv's grammar is unaffected by the new guard")
+    func dotenvAcceptsGrammaticalKey() async throws {
+        let (vm, _, _) = try await loadedDotenv("FOO=bar\n")
+        let root = vm.addDestination(forSelectedRowID: nil)
+        #expect(vm.refusalForAdding("DB.URL-2", in: root) == nil)
+    }
+
     @Test("open, edit and save round-trips a dotenv document through the bridge")
     func dotenvRoundTrip() async throws {
         let (vm, key, fileURL) = try await loadedDotenv("FOO=bar\nBAZ=qux\n")
