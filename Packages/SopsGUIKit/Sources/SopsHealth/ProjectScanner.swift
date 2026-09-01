@@ -699,20 +699,39 @@ public struct ProjectScanner {
         return nil
     }
 
-    /// Whether a tail looks like the *inside* of a sops YAML metadata block
-    /// whose opening `sops:` key lies further back than this read reached.
+    /// Whether a tail looks like the *inside* of a sops YAML **or JSON**
+    /// metadata block whose opening key (YAML's `sops:`, JSON's own opening
+    /// `{`) lies further back than this read reached.
     ///
     /// Byte-level and cheap, and gated by the caller on "the read was truncated
     /// and nothing else matched", so in a real project it runs on almost
     /// nothing. `lastmodified`, `mac` and `version` are written by every sops
-    /// YAML document unconditionally and sort after `age`, so they are exactly
-    /// the part of an oversized block that stays inside a 64 KiB tail. All
-    /// three are required together because any one of them alone is an ordinary
-    /// word to find in an arbitrary 64 KiB of text.
+    /// document unconditionally (in both stores) and sort after `age`, so they
+    /// are exactly the part of an oversized block that stays inside a 64 KiB
+    /// tail. All three are required together, per style, because any one of
+    /// them alone is an ordinary word to find in an arbitrary 64 KiB of text.
+    ///
+    /// JSON's own markers were added alongside `SopsMetadataShape
+    /// .isJSONMetadata`'s move to a real `JSONSerialization` parse (SOPS-38
+    /// phase F2 task 3 review): that parse honestly fails on a tail that
+    /// starts mid-document — a JSON document is one value, and half of one
+    /// does not parse — so without a JSON-shaped trigger here, a legitimately
+    /// oversized encrypted JSON file would have silently stopped being
+    /// escalated to a wider read at all, the exact false-negative direction
+    /// `SopsMetadataShape`'s own doc comment says is the dangerous one. INI
+    /// needs no equivalent: its own structural check
+    /// (`SopsMetadataShape.isINIMetadata`) already worked line-by-line from
+    /// whatever `[sops]` header the tail happens to contain, the same way
+    /// YAML's does, so a truncated INI tail was never the gap JSON's
+    /// parse-the-whole-value approach newly created.
     private static func looksLikeTruncatedSopsBlock(_ tail: Data) -> Bool {
-        tail.range(of: Self.lastModifiedMarker) != nil
+        let yamlShaped = tail.range(of: Self.lastModifiedMarker) != nil
             && tail.range(of: Self.macKeyMarker) != nil
             && tail.range(of: Self.versionKeyMarker) != nil
+        let jsonShaped = tail.range(of: Self.jsonLastModifiedMarker) != nil
+            && tail.range(of: Self.jsonMacKeyMarker) != nil
+            && tail.range(of: Self.jsonVersionKeyMarker) != nil
+        return yamlShaped || jsonShaped
     }
 
     /// The synchronous directory walk: decides which directories are
@@ -1212,6 +1231,12 @@ public struct ProjectScanner {
     private static let lastModifiedMarker = Data("lastmodified: ".utf8)
     private static let macKeyMarker = Data("mac: ".utf8)
     private static let versionKeyMarker = Data("version: ".utf8)
+    // JSON's own equivalents — quoted keys, `": "` rather than `: ` — for
+    // `looksLikeTruncatedSopsBlock`'s JSON-shaped branch. See that
+    // function's doc comment for why these exist alongside the YAML three.
+    private static let jsonLastModifiedMarker = Data("\"lastmodified\": ".utf8)
+    private static let jsonMacKeyMarker = Data("\"mac\": ".utf8)
+    private static let jsonVersionKeyMarker = Data("\"version\": ".utf8)
 
     /// Drops a leading UTF-8 byte-order mark, if present, from a tail read.
     /// See `classify`'s doc comment for why this has to happen before any

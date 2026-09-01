@@ -173,6 +173,69 @@ struct SopsMetadataShapeTests {
         #expect(tree.encryptedInOtherFormats.isEmpty)
     }
 
+    /// SOPS-38 phase F2 task 3 review finding: `isJSONMetadata` used to check
+    /// only "does `mac` appear anywhere, does `version` appear anywhere, does
+    /// `sops` appear anywhere followed by `{` anywhere" — three independent
+    /// substring searches with no requirement that `mac`/`version` actually
+    /// sit *inside* that `sops` object. An ordinary JSON document that
+    /// happens to have its own top-level `mac`/`version` fields (a device
+    /// inventory record is a completely ordinary shape for that) alongside
+    /// an unrelated top-level `sops` object satisfied all three independently
+    /// and was classified as an encrypted file — the exact class of bug
+    /// `SopsMetadataShape`'s own doc comment already names for YAML and Go
+    /// map literals, just not yet closed for JSON. Once classified, this
+    /// task's own scanner change routes it into `tree.encrypted`, so the app
+    /// would show it as an openable secrets file that fails to decrypt.
+    @Test("an ordinary JSON document with its own top-level mac/version fields is not an encrypted file")
+    func deviceInventoryJSONIsNotEncrypted() async throws {
+        let tree = try await scanOne(
+            "device.json",
+            """
+            {"mac": "00:11:22:33:44:55", "version": "1.0", "sops": {"foo": "bar"}}
+            """)
+
+        #expect(tree.encrypted.isEmpty,
+                "an ordinary record with sibling mac/version/sops fields must not be offered as an openable encrypted file")
+        #expect(tree.encryptedInOtherFormats.isEmpty)
+        #expect(SopsMetadataShape.nonYAMLKind("""
+            {"mac": "00:11:22:33:44:55", "version": "1.0", "sops": {"foo": "bar"}}
+            """) == nil)
+    }
+
+    /// The decision this task's review asked to be made explicit: a JSON
+    /// tail that cannot even be parsed — the shape a truncated read produces
+    /// when a document's own sops metadata sits past `maxSniffedFileBytes`
+    /// and the wider re-read in `ProjectScanner.classify` still doesn't
+    /// reach far enough back to include the opening `{` — is honestly *not*
+    /// detected as JSON metadata, rather than guessed at from whatever
+    /// substrings happen to survive the cut. This is the same "cannot verify
+    /// structurally, so do not guess" posture `isYAMLMetadata` already takes
+    /// (a document that ends mid-block fails its own `mac`/`version`
+    /// requirement) — the two now agree, even though YAML's own structural
+    /// check can partially work on a tail that starts mid-document (it only
+    /// ever looks at lines from `sops:` onward) while JSON's cannot (a
+    /// document is one value, and half of one does not parse). The real
+    /// mitigation for the false negative this implies is
+    /// `ProjectScanner.looksLikeTruncatedSopsBlock` now recognising JSON's
+    /// own near-tail shape too, so a legitimately oversized encrypted JSON
+    /// file gets the same wider-read chance YAML already had — see
+    /// `oversizedJSONMetadataBlockIsNotInvisible` below for the case that
+    /// exercises this end to end, and `ProjectScanner.classify`'s own doc
+    /// comment for how a still-truncated result becomes
+    /// `.metadataBlockTooLarge` rather than silence.
+    @Test("a JSON tail truncated before its own opening brace is not detected as metadata, not guessed at")
+    func truncatedJSONTailIsNotMetadata() {
+        // The tail end of a real document — starts mid-string, never opens
+        // the top-level object at all. Carries `"mac":`/`"version":` inside
+        // the `sops` object, exactly as a real file would; the only thing
+        // missing is the document's own opening `{`.
+        let truncatedTail = """
+            some-trailing-plaintext-value","sops":{"age":[{"recipient":"age1x","enc":"..."}],"mac":"ENC[...]","version":"3.13.3"}}
+            """
+        #expect(SopsMetadataShape.nonYAMLKind(truncatedTail) == nil,
+                "a tail that cannot parse as JSON at all must not be guessed at from its surviving substrings")
+    }
+
     /// The sniffer flagging its own source. This is the literal line from
     /// `ProjectScanner`'s marker table.
     @Test("the scanner's own marker table is not an encrypted file")

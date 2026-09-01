@@ -128,31 +128,49 @@ enum SopsMetadataShape {
         return sawMAC && sawVersion
     }
 
-    /// JSON: `"sops"` names an *object*, so the token after the colon is `{`.
-    /// Every false positive in this repository was a dictionary or map literal
-    /// in some other language — `["sops": tool(…)]` in Swift,
-    /// `{"sops": sopsVersion}` in Go — where the value is an identifier or a
-    /// call, never a brace. The `mac`/`version` requirement is the same
-    /// belt-and-braces as the YAML case.
+    /// JSON: a top-level `sops` key whose value is an object carrying `mac`
+    /// and `version` fields *of its own* — nested inside that object, not
+    /// merely present somewhere in the document. Checked with a real
+    /// `JSONSerialization` parse, not a substring scan.
     ///
-    /// The whitespace skipped between the colon and the brace is
-    /// `Character.isWhitespace`, not an explicit `" "`/`"\t"`/`"\n"`/`"\r"`
-    /// list. The explicit list had the CRLF blind spot this file's `lines(of:)`
-    /// was already written to avoid: `"\r\n"` is one `Character` equal to
-    /// neither `"\n"` nor `"\r"`, so a CRLF-converted JSON file with the brace
-    /// on the next line stopped the skip dead and the store went unrecognised
-    /// — a false *negative*, the direction this type's doc comment names as
-    /// the worse one, because an unrecognised encrypted `.env`/`.json` becomes
-    /// a plaintext-leak alarm about a file that is not leaking anything.
+    /// The substring version this replaced — "does `\"mac\":` appear
+    /// anywhere, does `\"version\":` appear anywhere, does `\"sops\":`
+    /// appear anywhere followed by `{`" — checked three things independently
+    /// and had no way to tell an object's *own* `mac`/`version` apart from
+    /// sibling top-level fields of the same name. SOPS-38 phase F2 task 3
+    /// review: an entirely ordinary device-inventory-shaped record —
+    /// `{"mac": "00:11:22:33:44:55", "version": "1.0", "sops": {"foo":
+    /// "bar"}}`, a MAC address and a schema version next to an unrelated
+    /// `sops` object — satisfied all three independently and was classified
+    /// as an encrypted file, the exact class of bug this type's own doc
+    /// comment already names for a Swift dictionary literal and a Go map
+    /// literal, just not yet closed for this one field pairing. See
+    /// `SopsMetadataShapeTests.deviceInventoryJSONIsNotEncrypted` for the
+    /// fixture.
+    ///
+    /// A parse failure — most often a truncated tail that starts mid-
+    /// document and so never opens the top-level object at all — is
+    /// honestly treated as "not this shape", never guessed at from whichever
+    /// substrings happen to survive the cut: a document is one JSON value,
+    /// and half of one does not parse. That is a real, accepted
+    /// false-negative direction on its own (a huge encrypted JSON file whose
+    /// metadata block sits past the tail-read budget could briefly go
+    /// undetected) — mitigated the same way YAML's identical oversized case
+    /// already is, not left as a silent gap:
+    /// `ProjectScanner.looksLikeTruncatedSopsBlock` recognises JSON's own
+    /// near-tail shape too, so `ProjectScanner.classify` re-reads a wider
+    /// tail before giving up, and a still-too-large document becomes
+    /// `.metadataBlockTooLarge` rather than silence. See
+    /// `SopsMetadataShapeTests.truncatedJSONTailIsNotMetadata` for the
+    /// decision pinned directly, and
+    /// `ProjectScanUndisclosedScopeTests.oversizedJSONMetadataBlockIsNotInvisible`
+    /// for the case that exercises the mitigation end to end.
     private static func isJSONMetadata(_ text: String) -> Bool {
-        guard text.contains("\"mac\":"), text.contains("\"version\":") else { return false }
-        var remainder = text[...]
-        while let match = remainder.range(of: "\"sops\":") {
-            let afterColon = remainder[match.upperBound...].drop(while: \.isWhitespace)
-            if afterColon.first == "{" { return true }
-            remainder = remainder[match.upperBound...]
-        }
-        return false
+        guard let data = text.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let sops = object["sops"] as? [String: Any]
+        else { return false }
+        return sops["mac"] != nil && sops["version"] != nil
     }
 
     /// INI: a `[sops]` section header on a line of its own, with `mac` and
