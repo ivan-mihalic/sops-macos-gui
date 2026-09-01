@@ -77,7 +77,18 @@ enum SopsMetadataShape {
             // sops-written document; see the doc comment above.
             guard line.hasPrefix(" ") || line.hasPrefix("\t") else { return false }
             switch Self.yamlKey(of: line) {
-            case "mac": sawMAC = true
+            case "mac":
+                // SOPS-38 phase F3 task 4 (F2 review M4): the `mac` *key*
+                // being present is not enough — a plaintext document that
+                // merely hand-writes or quotes a `sops:` block with an
+                // ordinary `mac: ...` value satisfied this before. sops's
+                // own serializer always writes `mac: ENC[AES256_GCM,…]`
+                // (verified against a real bridge-encrypted fixture; see
+                // `SopsMetadataShapeMACAnchorTests`'s own doc comment), so
+                // anchoring on that prefix is free of false negatives.
+                // Never truncated when this line is reached at all — see
+                // that same doc comment, "No truncation hazard".
+                sawMAC = Self.yamlValue(of: line).hasPrefix("ENC[")
             case "version": sawVersion = true
             default: break
             }
@@ -122,7 +133,15 @@ enum SopsMetadataShape {
         var sawMAC = false
         var sawVersion = false
         for line in lines {
-            if line.hasPrefix("sops_mac=") { sawMAC = true }
+            // SOPS-38 phase F3 task 4 (F2 review M4): the `sops_mac=` prefix
+            // alone is not enough — see `isYAMLMetadata`'s identical change
+            // and `SopsMetadataShapeMACAnchorTests`'s own doc comment for
+            // the real-bridge-verified `sops_mac=ENC[…]` shape this anchors
+            // on, and why the value is never truncated when this line is
+            // reached at all.
+            if line.hasPrefix("sops_mac=") {
+                sawMAC = line.dropFirst("sops_mac=".count).hasPrefix("ENC[")
+            }
             if line.hasPrefix("sops_version=") { sawVersion = true }
         }
         return sawMAC && sawVersion
@@ -170,7 +189,15 @@ enum SopsMetadataShape {
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let sops = object["sops"] as? [String: Any]
         else { return false }
-        return sops["mac"] != nil && sops["version"] != nil
+        // SOPS-38 phase F3 task 4 (F2 review M4): `sops["mac"] != nil` alone
+        // is not enough — see `isYAMLMetadata`'s identical change and
+        // `SopsMetadataShapeMACAnchorTests`'s own doc comment for the
+        // real-bridge-verified `"mac": "ENC[…]"` shape this anchors on. A
+        // parse failure already returns `false` above, and a *successful*
+        // parse means the whole document — mac value included — was intact
+        // in this tail, so there is no truncation case to guard here either.
+        guard let mac = sops["mac"] as? String, mac.hasPrefix("ENC[") else { return false }
+        return sops["version"] != nil
     }
 
     /// INI: a `[sops]` section header on a line of its own, with `mac` and
@@ -189,7 +216,14 @@ enum SopsMetadataShape {
             // The next section header ends the sops section.
             if trimmed.hasPrefix("["), trimmed.hasSuffix("]") { break }
             switch Self.iniKey(of: line) {
-            case "mac": sawMAC = true
+            case "mac":
+                // SOPS-38 phase F3 task 4 (F2 review M4): the `mac` *key*
+                // being present is not enough — see `isYAMLMetadata`'s
+                // identical change and `SopsMetadataShapeMACAnchorTests`'s
+                // own doc comment for the real-bridge-verified
+                // `mac = ENC[…]` shape this anchors on, and why the value
+                // is never truncated when this line is reached at all.
+                sawMAC = Self.iniValue(of: line).hasPrefix("ENC[")
             case "version": sawVersion = true
             default: break
             }
@@ -230,9 +264,27 @@ enum SopsMetadataShape {
         return line[line.startIndex..<colon].trimmingCharacters(in: .whitespaces)
     }
 
+    /// The value of a `key: value` YAML line, trimmed of its leading space —
+    /// `yamlKey`'s mirror image, added for `isYAMLMetadata`'s `mac` value
+    /// check (SOPS-38 phase F3 task 4). Returns `""` for a line with no
+    /// colon, which starts nothing.
+    private static func yamlValue(of line: Substring) -> String {
+        guard let colon = line.firstIndex(of: ":") else { return "" }
+        return line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+    }
+
     /// The key of a `key = value` INI line, trimmed of its padding.
     private static func iniKey(of line: Substring) -> String {
         guard let equals = line.firstIndex(of: "=") else { return "" }
         return line[line.startIndex..<equals].trimmingCharacters(in: .whitespaces)
+    }
+
+    /// The value of a `key = value` INI line, trimmed of its padding —
+    /// `iniKey`'s mirror image, added for `isINIMetadata`'s `mac` value
+    /// check (SOPS-38 phase F3 task 4). Returns `""` for a line with no
+    /// `=`, which starts nothing.
+    private static func iniValue(of line: Substring) -> String {
+        guard let equals = line.firstIndex(of: "=") else { return "" }
+        return line[line.index(after: equals)...].trimmingCharacters(in: .whitespaces)
     }
 }
