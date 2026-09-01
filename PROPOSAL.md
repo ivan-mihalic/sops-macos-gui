@@ -425,6 +425,11 @@ with a reason until their milestone lands.
   opened, edited, created and access-managed exactly like YAML, verified byte-compatible
   against the real CLI the same way YAML was. JSON and INI remain future work; a sops file
   in either is still counted-but-not-listed rather than hidden.
+  **Overturned in full (2026-09-01, SOPS-38 F2):** JSON and INI are first-class formats too,
+  opened, edited, created and access-managed exactly like YAML and dotenv, verified
+  byte-compatible against the real CLI the same way. All four sops text stores — YAML,
+  dotenv, JSON, INI — are supported; BINARY remains out of scope and is the only shape the
+  counted-but-not-listed footnote still covers.
 - **Minimum macOS?** 26.0 (2026-08-07), matching §3 and §4's "HIG for macOS 26+ including
   Liquid Glass". The build had sat at 14.0, which was chosen only to silence linker warnings
   and contradicted the spec.

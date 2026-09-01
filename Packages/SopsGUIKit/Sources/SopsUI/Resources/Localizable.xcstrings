@@ -2852,7 +2852,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "No sops-encrypted YAML or dotenv files were found in this project."
+            "value": "No sops-encrypted files were found in this project."
           }
         }
       }
