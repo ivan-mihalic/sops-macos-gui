@@ -28,14 +28,14 @@ import Foundation
 /// compile until it says what the new case means, rather than silently
 /// falling through a `default:`.
 ///
-/// `.json` and `.ini` are not yet reachable from `forDestinationName` below
-/// (that is F2 task 5) — a new file of either format still cannot be
-/// *created* from this app. Both are fully reachable everywhere else: the
-/// health scanner's classification (F2 task 3) and the editor's own
-/// per-format capability matrix (`SecretDocumentViewModel.AddCapabilities`,
-/// F2 task 4) both treat them as first-class formats. This task (F2 task 2)
-/// only made the wire value exist and prove itself through the bridge;
-/// every compile site it touched to get there is documented at that site.
+/// `.json` and `.ini` are now reachable from `forDestinationName` below
+/// (F2 task 5) — a new file of either format can be created from this app,
+/// the same way `.dotenv` already could. Both were already fully reachable
+/// everywhere else: the health scanner's classification (F2 task 3) and the
+/// editor's own per-format capability matrix (`SecretDocumentViewModel
+/// .AddCapabilities`, F2 task 4) both already treated them as first-class
+/// formats — this task is the last piece, closing the one place that still
+/// could not name either.
 public enum SopsFileFormat: String, Sendable, Codable {
     case yaml
     case dotenv
@@ -43,13 +43,13 @@ public enum SopsFileFormat: String, Sendable, Codable {
     case ini
 
     /// Which format a not-yet-created file at `name` should be written in —
-    /// `.dotenv` when `name` ends `.env` (case-insensitively; `.sops.env`
-    /// qualifies exactly like `secrets.env` does, since the decision looks
-    /// only at the trailing four characters, not at how many dots come
-    /// before them), `.yaml` for everything else, `.json`/`.ini` included —
-    /// this build does not write either yet (see this type's own doc
-    /// comment), so a name suggesting one of them still gets `.yaml` rather
-    /// than a format nothing here can produce.
+    /// `.dotenv` when `name` ends `.env`, `.json` when it ends `.json`,
+    /// `.ini` when it ends `.ini` (all case-insensitive; `.sops.env`/
+    /// `.sops.json`/`.sops.ini` qualify exactly like `secrets.env`/
+    /// `secrets.json`/`secrets.ini` do, since the decision looks only at the
+    /// trailing characters, not at how many dots come before them), `.yaml`
+    /// for everything else — no extension at all, or one this app does not
+    /// recognise.
     ///
     /// This is the **one place** the app decides a new file's format from
     /// its *name* alone (task SOPS-38). It is a genuinely different question
@@ -70,6 +70,10 @@ public enum SopsFileFormat: String, Sendable, Codable {
     /// guess at the same answer would be the one way this could ever
     /// disagree with what gets written.
     public static func forDestinationName(_ name: String) -> SopsFileFormat {
-        name.lowercased().hasSuffix(".env") ? .dotenv : .yaml
+        let lowered = name.lowercased()
+        if lowered.hasSuffix(".env") { return .dotenv }
+        if lowered.hasSuffix(".json") { return .json }
+        if lowered.hasSuffix(".ini") { return .ini }
+        return .yaml
     }
 }

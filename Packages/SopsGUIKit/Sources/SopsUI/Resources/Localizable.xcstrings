@@ -3850,6 +3850,28 @@
         }
       }
     },
+    "new-file.target-format.json": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Will be created as a JSON file."
+          }
+        }
+      }
+    },
+    "new-file.target-format.ini": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Will be created as an INI file."
+          }
+        }
+      }
+    },
     "editor.add.invalid-dotenv-key": {
       "extractionState": "manual",
       "localizations": {

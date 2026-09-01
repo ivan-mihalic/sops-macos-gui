@@ -312,6 +312,223 @@ struct SecretFileCreatorTests {
         #expect(tree.encryptedInOtherFormats.isEmpty)
     }
 
+    // MARK: - JSON/INI-format destinations (task SOPS-38 phase F2 task 5)
+    //
+    // `SopsFileFormat.forDestinationName(_:)` now also recognises `.json` and
+    // `.ini` — the same mechanism the dotenv tests above already prove, just
+    // for the two remaining formats sops itself supports. `.empty`'s sentinel
+    // differs per format (see `SecretFileCreator.plaintext(for:format:)`'s
+    // own doc comment): JSON needs `"{}\n"`, the same reason YAML does; INI
+    // needs none at all.
+
+    @Test("a .sops.json destination is written as a genuine JSON document, not YAML text")
+    func jsonTargetIsGenuineJSON() throws {
+        let owner = try AgeKeyPair.generate()
+        let (_, project) = try makeProject()
+        let destination = project.appendingPathComponent(".sops.json")
+
+        // `.verbatimYAML` is handed straight to the bridge unchanged — see
+        // `SecretFileCreator.plaintext(for:format:)`'s own doc comment for
+        // why this must be genuine JSON, not YAML's `key: value` shape: the
+        // JSON store's own parser is what actually reads this, and it is not
+        // a YAML parser. JSON's own syntax happens to be a subset of YAML's,
+        // so this text would also work if the destination were `.yaml` —
+        // that overlap is the reason a source/target format mismatch here
+        // cannot be caught structurally the way the dotEnv-into-json/ini
+        // guard catches its own mismatch.
+        let receipt = try SecretFileCreator.create(
+            .verbatimYAML("{\"database\": {\"password\": \"\(sentinelValue)\"}}\n"),
+            plan: plan([owner.public]), at: destination, in: project, sessionKey: owner.private)
+
+        #expect(receipt.destination.path == destination.path)
+        let encrypted = try String(contentsOf: destination, encoding: .utf8)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .json, agePrivateKey: owner.private)
+        #expect(!rows.isEmpty)
+        #expect(rows.first { $0.path == ["database", "password"] }?.value == sentinelValue)
+    }
+
+    /// The empty-document sentinel `.empty` needs for a `.json` target:
+    /// `"{}\n"`, the same one YAML needs — `Engine/gobridge/json_test.go`'s
+    /// `TestJSONEncryptRefusesEmptyDocument` (F2 task 1) pins that a genuine
+    /// zero-byte JSON document is refused by the store itself, so unlike
+    /// dotenv/INI this format cannot use `""`. This is that claim proved end
+    /// to end through `create()`.
+    @Test("an empty source into a .sops.json destination creates a readable, empty JSON document")
+    func emptySourceIntoJSONTargetCreatesReadableFile() throws {
+        let owner = try AgeKeyPair.generate()
+        let (_, project) = try makeProject()
+        let destination = project.appendingPathComponent(".sops.json")
+
+        let receipt = try SecretFileCreator.create(
+            .empty, plan: plan([owner.public]), at: destination, in: project,
+            sessionKey: owner.private)
+
+        #expect(receipt.destination.path == destination.path)
+        let encrypted = try String(contentsOf: destination, encoding: .utf8)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .json, agePrivateKey: owner.private)
+        #expect(rows.isEmpty)
+    }
+
+    @Test("a freshly created .sops.json scans back as .json, ready for the editor to open")
+    func createdJSONFileScansAsJSON() async throws {
+        let owner = try AgeKeyPair.generate()
+        let (_, project) = try makeProject()
+        let destination = project.appendingPathComponent(".sops.json")
+
+        _ = try SecretFileCreator.create(
+            .verbatimYAML("{\"api_key\": \"\(sentinelValue)\"}\n"), plan: plan([owner.public]),
+            at: destination, in: project, sessionKey: owner.private)
+
+        let tree = await ProjectScanner.scan(root: project)
+
+        #expect(
+            tree.encrypted.count == 1,
+            "got: encrypted=\(tree.encrypted.count) other=\(tree.encryptedInOtherFormats.count)")
+        #expect(tree.encrypted.first?.url.lastPathComponent == destination.lastPathComponent)
+        #expect(tree.encrypted.first?.format == .json)
+        #expect(tree.encryptedInOtherFormats.isEmpty)
+    }
+
+    @Test("a .sops.ini destination is written as a genuine INI document, not YAML text")
+    func iniTargetIsGenuineINI() throws {
+        let owner = try AgeKeyPair.generate()
+        let (_, project) = try makeProject()
+        let destination = project.appendingPathComponent(".sops.ini")
+
+        // `.verbatimYAML` is handed straight to the bridge unchanged — this
+        // must be genuine INI syntax (`key = value`), not YAML's `key:
+        // value`, for the identical reason `jsonTargetIsGenuineJSON` above
+        // uses genuine JSON text: the INI store's own parser reads this, not
+        // a YAML parser.
+        let receipt = try SecretFileCreator.create(
+            .verbatimYAML("[db]\npassword = \(sentinelValue)\n"), plan: plan([owner.public]),
+            at: destination, in: project, sessionKey: owner.private)
+
+        #expect(receipt.destination.path == destination.path)
+        let encrypted = try String(contentsOf: destination, encoding: .utf8)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .ini, agePrivateKey: owner.private)
+        #expect(rows.first { $0.path == ["db", "password"] }?.value == sentinelValue)
+    }
+
+    /// INI's `.empty` sentinel is `""`, not `"{}\n"` — unlike YAML/JSON,
+    /// `gopkg.in/ini.v1`'s `LoadPlainFile` always produces an implicit
+    /// `DEFAULT` section, even for a genuinely zero-byte document
+    /// (`Engine/gobridge/ini_test.go`'s
+    /// `TestINILoadAlwaysCarriesAnImplicitDefaultSection`, F2 task 1, and
+    /// probed directly against the real bridge for this exact zero-byte case
+    /// while writing this task), so there is nothing here for a sentinel to
+    /// work around. The row that comes back is that implicit section itself
+    /// — `["DEFAULT"]`, `Kind.emptyMap` — the same shape
+    /// `SopsBridgeINITests.decryptToRowsReturnsSectionKeyPaths` already pins
+    /// for a non-empty document with content before its first `[section]`
+    /// header.
+    @Test("an empty source into a .sops.ini destination creates a readable, empty INI document")
+    func emptySourceIntoINITargetCreatesReadableFile() throws {
+        let owner = try AgeKeyPair.generate()
+        let (_, project) = try makeProject()
+        let destination = project.appendingPathComponent(".sops.ini")
+
+        let receipt = try SecretFileCreator.create(
+            .empty, plan: plan([owner.public]), at: destination, in: project,
+            sessionKey: owner.private)
+
+        #expect(receipt.destination.path == destination.path)
+        let encrypted = try String(contentsOf: destination, encoding: .utf8)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .ini, agePrivateKey: owner.private)
+        #expect(rows.count == 1)
+        #expect(rows.first?.path == ["DEFAULT"])
+        #expect(rows.first?.kind == .emptyMap)
+    }
+
+    @Test("a freshly created .sops.ini scans back as .ini, ready for the editor to open")
+    func createdINIFileScansAsINI() async throws {
+        let owner = try AgeKeyPair.generate()
+        let (_, project) = try makeProject()
+        let destination = project.appendingPathComponent(".sops.ini")
+
+        _ = try SecretFileCreator.create(
+            .verbatimYAML("[db]\napi_key = \(sentinelValue)\n"), plan: plan([owner.public]),
+            at: destination, in: project, sessionKey: owner.private)
+
+        let tree = await ProjectScanner.scan(root: project)
+
+        #expect(
+            tree.encrypted.count == 1,
+            "got: encrypted=\(tree.encrypted.count) other=\(tree.encryptedInOtherFormats.count)")
+        #expect(tree.encrypted.first?.url.lastPathComponent == destination.lastPathComponent)
+        #expect(tree.encrypted.first?.format == .ini)
+        #expect(tree.encryptedInOtherFormats.isEmpty)
+    }
+
+    // MARK: - .dotEnv source refused for a .json/.ini destination
+    //
+    // Per spec: import targets stay dotenv/YAML only. Without this guard, a
+    // `.dotEnv` source into a `.json`/`.ini`-named destination would fall
+    // through `plaintext(for:format:)` to `FlatYAMLEmitter`'s YAML-shaped
+    // output, encrypted under the `.json`/`.ini` label — a format nobody
+    // asked for, not a clean refusal (see `Failure
+    // .dotEnvSourceIncompatibleWithFormat`'s own doc comment). This
+    // combination *is* reachable through the real UI: `NewSecretFileModel
+    // .sourceChoice` and `.relativeName` are independent fields, so a user
+    // can pick a `.env` source and type a `.json`/`.ini`-named destination in
+    // either order — this is not a theoretical input this type refuses out
+    // of caution.
+
+    @Test("a .env source into a .json-named destination is refused before anything is written")
+    func dotEnvSourceIntoJSONTargetIsRefused() throws {
+        let owner = try AgeKeyPair.generate()
+        let (root, project) = try makeProject()
+        let destination = project.appendingPathComponent("secret.json")
+        let before = fileTreeSnapshot(root)
+
+        let entries = [DotEnvEntry(key: "API_KEY", value: sentinelValue, line: 1)]
+
+        #expect(throws: SecretFileCreator.Failure.dotEnvSourceIncompatibleWithFormat(.json)) {
+            try SecretFileCreator.create(
+                .dotEnv(entries), plan: plan([owner.public]), at: destination, in: project,
+                sessionKey: owner.private)
+        }
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+        #expect(fileTreeSnapshot(root) == before, "nothing on disk changed")
+    }
+
+    @Test("a .env source into a .ini-named destination is refused before anything is written")
+    func dotEnvSourceIntoINITargetIsRefused() throws {
+        let owner = try AgeKeyPair.generate()
+        let (root, project) = try makeProject()
+        let destination = project.appendingPathComponent("secret.ini")
+        let before = fileTreeSnapshot(root)
+
+        let entries = [DotEnvEntry(key: "API_KEY", value: sentinelValue, line: 1)]
+
+        #expect(throws: SecretFileCreator.Failure.dotEnvSourceIncompatibleWithFormat(.ini)) {
+            try SecretFileCreator.create(
+                .dotEnv(entries), plan: plan([owner.public]), at: destination, in: project,
+                sessionKey: owner.private)
+        }
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+        #expect(fileTreeSnapshot(root) == before, "nothing on disk changed")
+    }
+
+    /// The positive control this refusal exists alongside: a `.dotEnv`
+    /// source into a `.yaml`-named destination is unaffected — the
+    /// pre-existing `FlatYAMLEmitter` behaviour, unchanged.
+    @Test("a .env source into a plain .yaml destination is unaffected by the json/ini guard")
+    func dotEnvSourceIntoYAMLTargetStillWorks() throws {
+        let owner = try AgeKeyPair.generate()
+        let (_, project) = try makeProject()
+        let destination = project.appendingPathComponent("secret.yaml")
+
+        let entries = [DotEnvEntry(key: "API_KEY", value: sentinelValue, line: 1)]
+        _ = try SecretFileCreator.create(
+            .dotEnv(entries), plan: plan([owner.public]), at: destination, in: project,
+            sessionKey: owner.private)
+
+        let encrypted = try String(contentsOf: destination, encoding: .utf8)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
+        #expect(rows.first { $0.path == ["API_KEY"] }?.value == sentinelValue)
+    }
+
     @Test("a target under a not-yet-existing directory creates it, mode 0700")
     func missingIntermediateDirectoryIsCreated() throws {
         let owner = try AgeKeyPair.generate()

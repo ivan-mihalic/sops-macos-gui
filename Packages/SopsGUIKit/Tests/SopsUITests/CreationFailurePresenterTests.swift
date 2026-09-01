@@ -120,6 +120,8 @@ struct CreationFailurePresenterTests {
             .engine("bridge text"),
             .couldNotCreateDirectory(path: "/p/secrets", reason: "Permission denied"),
             .write(.destinationExists(path: "/p/a.yaml")),
+            .dotEnvSourceIncompatibleWithFormat(.json),
+            .dotEnvSourceIncompatibleWithFormat(.ini),
         ]
         for failure in all {
             let message = CreationFailurePresenter.message(for: failure)
@@ -253,12 +255,32 @@ struct CreationFailurePresenterTests {
             .wouldBeUnreadable,
             .engine("bridge text"),
             .couldNotCreateDirectory(path: "/p/secrets", reason: "Permission denied"),
+            .dotEnvSourceIncompatibleWithFormat(.json),
+            .dotEnvSourceIncompatibleWithFormat(.ini),
         ]
         for failure in others {
             #expect(
                 CreationFailurePresenter.message(for: failure).recovery != nil,
                 "\(failure) has no recovery")
         }
+    }
+
+    // MARK: - .dotEnv source into a .json/.ini destination (SOPS-38 phase F2 task 5)
+
+    /// The message names the actual target format the guard refused, rather
+    /// than a hand-written "JSON or INI" that could silently drift from what
+    /// `SecretFileCreator.create`'s own guard checks.
+    @Test("a .env source refused for a JSON or INI target names that format, not a generic one")
+    func dotEnvIncompatibleFormatNamesTheActualFormat() {
+        let json = CreationFailurePresenter.message(
+            for: SecretFileCreator.Failure.dotEnvSourceIncompatibleWithFormat(.json))
+        #expect(json.detail.localizedCaseInsensitiveContains("json"))
+        #expect(!json.detail.localizedCaseInsensitiveContains("ini"))
+
+        let ini = CreationFailurePresenter.message(
+            for: SecretFileCreator.Failure.dotEnvSourceIncompatibleWithFormat(.ini))
+        #expect(ini.detail.localizedCaseInsensitiveContains("ini"))
+        #expect(!ini.detail.localizedCaseInsensitiveContains("json"))
     }
 
     // MARK: - CreationPlan's two blocking outcomes

@@ -146,6 +146,24 @@ struct TargetFormatTextTests {
         #expect(text == LocalizedKey.newFileTargetFormatDotEnv.text)
         #expect(text != NewSecretFileSheet.targetFormatText(for: .yaml))
     }
+
+    @Test("a JSON target names JSON, distinctly from every other format's sentence (SOPS-38 phase F2 task 5)")
+    func jsonFormatRendersJSONSentence() {
+        let text = NewSecretFileSheet.targetFormatText(for: .json)
+        #expect(text == LocalizedKey.newFileTargetFormatJSON.text)
+        #expect(text != NewSecretFileSheet.targetFormatText(for: .yaml))
+        #expect(text != NewSecretFileSheet.targetFormatText(for: .dotenv))
+        #expect(text != NewSecretFileSheet.targetFormatText(for: .ini))
+    }
+
+    @Test("an INI target names INI, distinctly from every other format's sentence (SOPS-38 phase F2 task 5)")
+    func iniFormatRendersINISentence() {
+        let text = NewSecretFileSheet.targetFormatText(for: .ini)
+        #expect(text == LocalizedKey.newFileTargetFormatINI.text)
+        #expect(text != NewSecretFileSheet.targetFormatText(for: .yaml))
+        #expect(text != NewSecretFileSheet.targetFormatText(for: .dotenv))
+        #expect(text != NewSecretFileSheet.targetFormatText(for: .json))
+    }
 }
 
 @Suite("NewSecretFileSheet.shouldResolve — the debounce's own guard")

@@ -750,6 +750,11 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // is a whole, separately translatable sentence.
     case newFileTargetFormatYAML = "new-file.target-format.yaml"
     case newFileTargetFormatDotEnv = "new-file.target-format.dotenv"
+    // F2 task 5: `.json`/`.ini` are now reachable from `forDestinationName`
+    // too — see `NewSecretFileSheet.targetFormatText(for:)`'s own doc
+    // comment for why these two used to render `nil`.
+    case newFileTargetFormatJSON = "new-file.target-format.json"
+    case newFileTargetFormatINI = "new-file.target-format.ini"
 
     // The `ⓘ` line's shapes: one per `CreationPlan` case, plus resolving.
     // `.unsupportedRule`/`.configUnreadable` reuse `CreationFailurePresenter

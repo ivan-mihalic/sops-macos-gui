@@ -46,10 +46,58 @@ struct SopsFileFormatDestinationNameTests {
         #expect(SopsFileFormat.forDestinationName("environment.yaml") == .yaml)
     }
 
-    @Test("json and ini names fall back to yaml — this build writes neither yet")
-    func unimplementedFormatsFallBackToYAML() {
-        #expect(SopsFileFormat.forDestinationName("secret.json") == .yaml)
-        #expect(SopsFileFormat.forDestinationName("secret.ini") == .yaml)
+    @Test("a plain .json name is json")
+    func plainJSON() {
+        #expect(SopsFileFormat.forDestinationName("secret.json") == .json)
+    }
+
+    @Test("a .sops.json name is json, same as any other .json name")
+    func sopsJSON() {
+        #expect(SopsFileFormat.forDestinationName(".sops.json") == .json)
+    }
+
+    @Test("a named .json file, with a directory-shaped prefix, is json")
+    func namedJSONWithPrefix() {
+        #expect(SopsFileFormat.forDestinationName("secrets/production.json") == .json)
+    }
+
+    @Test("json matching is case-insensitive")
+    func jsonCaseInsensitive() {
+        #expect(SopsFileFormat.forDestinationName("PRODUCTION.JSON") == .json)
+        #expect(SopsFileFormat.forDestinationName("Secrets.Json") == .json)
+    }
+
+    @Test("a name that merely contains \"json\" without the dot is not json")
+    func containsJSONWithoutDot() {
+        #expect(SopsFileFormat.forDestinationName("foo.msjson") == .yaml)
+        #expect(SopsFileFormat.forDestinationName("jsonfile.yaml") == .yaml)
+    }
+
+    @Test("a plain .ini name is ini")
+    func plainINI() {
+        #expect(SopsFileFormat.forDestinationName("secret.ini") == .ini)
+    }
+
+    @Test("a .sops.ini name is ini, same as any other .ini name")
+    func sopsINI() {
+        #expect(SopsFileFormat.forDestinationName(".sops.ini") == .ini)
+    }
+
+    @Test("a named .ini file, with a directory-shaped prefix, is ini")
+    func namedINIWithPrefix() {
+        #expect(SopsFileFormat.forDestinationName("secrets/production.ini") == .ini)
+    }
+
+    @Test("ini matching is case-insensitive")
+    func iniCaseInsensitive() {
+        #expect(SopsFileFormat.forDestinationName("PRODUCTION.INI") == .ini)
+        #expect(SopsFileFormat.forDestinationName("Secrets.Ini") == .ini)
+    }
+
+    @Test("a name that merely contains \"ini\" without the dot is not ini")
+    func containsINIWithoutDot() {
+        #expect(SopsFileFormat.forDestinationName("foo.mini") == .yaml)
+        #expect(SopsFileFormat.forDestinationName("initial.yaml") == .yaml)
     }
 
     @Test("an empty name is yaml")

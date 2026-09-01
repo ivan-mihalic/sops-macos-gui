@@ -661,6 +661,110 @@ struct ProjectRecipientApplierMixedFormatTests {
             try SopsBridge.decrypt(dotenvBytes, format: .dotenv, agePrivateKey: added.private)
                 == "DB_PASSWORD=hunter2\n")
     }
+
+    /// SOPS-38 phase F2 task 5: the JSON/INI sibling of
+    /// `mixedProjectRewrapsBothFormats` above, now that `ProjectScanner`
+    /// classifies both as `.encrypted` (F2 task 3) — all four sops stores
+    /// this app supports in one project, one staged recipient, one `apply`
+    /// call. `ProjectRecipientApplier`/`RecipientAccessModel` needed no code
+    /// change for this to work: both have been format-generic since F1,
+    /// iterating `tree.encrypted`/`plan.filesInScope` by `ScopedFile.format`
+    /// rather than assuming YAML — this test is the proof that claim holds
+    /// for the two formats added most recently, not just for dotenv.
+    ///
+    /// Same ablation logic as the two-format test above: if either the JSON
+    /// or the INI branch were silently dropped from `filesInScope` (the
+    /// shape a regression would take — e.g. a future `ScopedFile` filter that
+    /// forgot the two newest formats), the corresponding
+    /// `Set(...recipients...)` assertion below would still read
+    /// `[owner.public]`, never gaining `added.public`, and `plan.filesInScope
+    /// .count` would read 3, not 4.
+    @Test("a project with all four sops formats re-wraps every file for a staged recipient")
+    func mixedProjectRewrapsAllFourFormats() async throws {
+        let owner = try AgeKeyPair.generate()
+        let added = try AgeKeyPair.generate()
+        let root = try applierScratchDirectory("four-format-apply")
+
+        try """
+            creation_rules:
+              - path_regex: .*
+                age: \(owner.public)
+
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+
+        let yamlEncrypted = try SopsBridge.encrypt(
+            applierPlainYAML, format: .yaml, recipients: [owner.public])
+        let yamlURL = root.appendingPathComponent("secret.yaml")
+        try yamlEncrypted.write(to: yamlURL, atomically: true, encoding: .utf8)
+
+        let dotenvEncrypted = try SopsBridge.encrypt(
+            "DB_PASSWORD=hunter2\n", format: .dotenv, recipients: [owner.public])
+        let dotenvURL = root.appendingPathComponent(".env")
+        try dotenvEncrypted.write(to: dotenvURL, atomically: true, encoding: .utf8)
+
+        // Genuine JSON — the JSON store's own parser (`encoding/json`), not
+        // YAML's, is what reads this on encrypt.
+        let jsonPlain = "{\"api_key\": \"json-secret-value\"}\n"
+        let jsonEncrypted = try SopsBridge.encrypt(jsonPlain, format: .json, recipients: [owner.public])
+        let jsonURL = root.appendingPathComponent("secret.json")
+        try jsonEncrypted.write(to: jsonURL, atomically: true, encoding: .utf8)
+
+        // Genuine INI — `key = value`, not YAML's `key: value`.
+        let iniPlain = "[db]\npassword = ini-secret-value\n"
+        let iniEncrypted = try SopsBridge.encrypt(iniPlain, format: .ini, recipients: [owner.public])
+        let iniURL = root.appendingPathComponent("secret.ini")
+        try iniEncrypted.write(to: iniURL, atomically: true, encoding: .utf8)
+
+        let applier = ProjectRecipientApplier()
+        let plan = await applier.plan(projectRoot: root, recipients: [owner.public, added.public])
+
+        #expect(plan.configError == nil)
+        #expect(plan.configRefusal == nil)
+        #expect(plan.filesInScope.count == 4)
+        let scopedFormats = Set(plan.filesInScope.map(\.format))
+        #expect(scopedFormats == Set([.yaml, .dotenv, .json, .ini]))
+
+        let run = await applier.apply(
+            files: plan.filesInScope, recipients: [owner.public, added.public],
+            agePrivateKey: owner.private)
+
+        #expect(run.results.count == 4)
+        #expect(run.results.allSatisfy { $0.outcome == .updated })
+        #expect(run.results.filter { if case .failed = $0.outcome { true } else { false } }.isEmpty)
+
+        // Every file, re-wrapped and decryptable by the newly added
+        // recipient — checked through the engine for each format, not by
+        // trusting the outcome enum.
+        let yamlBytes = try String(contentsOf: yamlURL, encoding: .utf8)
+        #expect(
+            Set(try SopsBridge.recipients(in: yamlBytes, format: .yaml))
+                == Set([owner.public, added.public]))
+        #expect(
+            try SopsBridge.decrypt(yamlBytes, format: .yaml, agePrivateKey: added.private)
+                == applierPlainYAML)
+
+        let dotenvBytes = try String(contentsOf: dotenvURL, encoding: .utf8)
+        #expect(
+            Set(try SopsBridge.recipients(in: dotenvBytes, format: .dotenv))
+                == Set([owner.public, added.public]))
+        #expect(
+            try SopsBridge.decrypt(dotenvBytes, format: .dotenv, agePrivateKey: added.private)
+                == "DB_PASSWORD=hunter2\n")
+
+        let jsonBytes = try String(contentsOf: jsonURL, encoding: .utf8)
+        #expect(
+            Set(try SopsBridge.recipients(in: jsonBytes, format: .json))
+                == Set([owner.public, added.public]))
+        let jsonRows = try SopsBridge.decryptToRows(jsonBytes, format: .json, agePrivateKey: added.private)
+        #expect(jsonRows.first { $0.path == ["api_key"] }?.value == "json-secret-value")
+
+        let iniBytes = try String(contentsOf: iniURL, encoding: .utf8)
+        #expect(
+            Set(try SopsBridge.recipients(in: iniBytes, format: .ini))
+                == Set([owner.public, added.public]))
+        let iniRows = try SopsBridge.decryptToRows(iniBytes, format: .ini, agePrivateKey: added.private)
+        #expect(iniRows.first { $0.path == ["db", "password"] }?.value == "ini-secret-value")
+    }
 }
 
 @Suite("ProjectRecipientApplier — writing the config is its own step")
