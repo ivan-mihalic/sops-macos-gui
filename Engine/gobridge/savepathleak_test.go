@@ -56,8 +56,7 @@ func TestSaveNeverWritesAPreviouslyEncryptedValueInCleartext(t *testing.T) {
 		t.Fatalf("precondition failed: the CLI did not encrypt db_password, so this test proves nothing")
 	}
 
-	saved, err := ApplyChangesAndEncrypt(
-		onDisk, ChangeSet{Removes: []Removal{{Path: []string{"endpoint"}}}}, key.Private)
+	saved, err := ApplyChangesAndEncrypt(onDisk, FormatYAML, ChangeSet{Removes: []Removal{{Path: []string{"endpoint"}}}}, key.Private)
 	if err != nil {
 		// A refusal is the correct outcome. It must name the key at risk so the
 		// user can act, and must not echo the value.
@@ -81,8 +80,7 @@ func TestSaveOfAnUnaffectedDocumentStillSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	saved, err := ApplyChangesAndEncrypt(
-		encrypted,
+	saved, err := ApplyChangesAndEncrypt(encrypted, FormatYAML,
 		ChangeSet{Sets: []Edit{{Path: []string{"db", "password"}, Value: "rotated-fixture-value", Kind: "string"}}},
 		key.Private)
 	if err != nil {
@@ -102,8 +100,7 @@ func TestSaveCanRemoveAnEncryptedRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ApplyChangesAndEncrypt(
-		encrypted, ChangeSet{Removes: []Removal{{Path: []string{"db", "password"}}}}, key.Private); err != nil {
+	if _, err := ApplyChangesAndEncrypt(encrypted, FormatYAML, ChangeSet{Removes: []Removal{{Path: []string{"db", "password"}}}}, key.Private); err != nil {
 		t.Fatalf("removing an encrypted row was refused: %v", err)
 	}
 }
@@ -152,8 +149,7 @@ func TestSaveRefusesAnEncryptedRegexThatCannotCompile(t *testing.T) {
 		t.Fatalf("premise wrong — the CLI did not write sops metadata:\n%s", onDisk)
 	}
 
-	saved, err := ApplyChangesAndEncrypt(
-		onDisk,
+	saved, err := ApplyChangesAndEncrypt(onDisk, FormatYAML,
 		ChangeSet{Sets: []Edit{{Path: []string{"host"}, Value: "db.internal", Kind: "string"}}},
 		key.Private)
 	if err == nil {

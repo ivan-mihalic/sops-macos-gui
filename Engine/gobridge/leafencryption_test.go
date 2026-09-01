@@ -24,7 +24,7 @@ func TestLeafEncryptionSummaryOnAFullyEncryptedDocument(t *testing.T) {
 		t.Fatalf("Encrypt: %v", err)
 	}
 
-	summary, err := InspectLeafEncryption(encrypted)
+	summary, err := InspectLeafEncryption(encrypted, FormatYAML)
 	if err != nil {
 		t.Fatalf("InspectLeafEncryption: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestLeafEncryptionSummaryDefaultSuffixIsNotNarrowing(t *testing.T) {
 		t.Fatalf("test premise not met: sops did not write the default suffix; output:\n%s", encrypted)
 	}
 
-	summary, err := InspectLeafEncryption(encrypted)
+	summary, err := InspectLeafEncryption(encrypted, FormatYAML)
 	if err != nil {
 		t.Fatalf("InspectLeafEncryption: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestLeafEncryptionSummaryCustomUnencryptedSuffixIsNarrowing(t *testing.T) {
 	encrypted := runSopsCLI(t, key, nil,
 		"--encrypt", "--age", key.Public, "--unencrypted-suffix", "_do_not_encrypt", in)
 
-	summary, err := InspectLeafEncryption(encrypted)
+	summary, err := InspectLeafEncryption(encrypted, FormatYAML)
 	if err != nil {
 		t.Fatalf("InspectLeafEncryption: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestLeafEncryptionSummaryDetectsARegexThatFailedToCompile(t *testing.T) {
 	encrypted := runSopsCLI(t, key, nil,
 		"--encrypt", "--age", key.Public, "--encrypted-regex", "(unclosed", in)
 
-	summary, err := InspectLeafEncryption(encrypted)
+	summary, err := InspectLeafEncryption(encrypted, FormatYAML)
 	if err != nil {
 		t.Fatalf("InspectLeafEncryption: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestLeafEncryptionSummaryOnAPartiallyEncryptedDocument(t *testing.T) {
 		t.Fatalf("Encrypt: %v", err)
 	}
 
-	summary, err := InspectLeafEncryption(encrypted)
+	summary, err := InspectLeafEncryption(encrypted, FormatYAML)
 	if err != nil {
 		t.Fatalf("InspectLeafEncryption: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestLeafEncryptionSummaryOnAnEmptyDocument(t *testing.T) {
 		t.Fatalf("Encrypt: %v", err)
 	}
 
-	summary, err := InspectLeafEncryption(encrypted)
+	summary, err := InspectLeafEncryption(encrypted, FormatYAML)
 	if err != nil {
 		t.Fatalf("InspectLeafEncryption: %v", err)
 	}
@@ -191,13 +191,13 @@ func TestLeafEncryptionSummaryNeedsNoIdentity(t *testing.T) {
 
 	// No identity anywhere in this test — InspectLeafEncryption's signature
 	// takes only the document bytes, which is the point.
-	if _, err := InspectLeafEncryption(encrypted); err != nil {
+	if _, err := InspectLeafEncryption(encrypted, FormatYAML); err != nil {
 		t.Fatalf("InspectLeafEncryption should need no key: %v", err)
 	}
 }
 
 func TestLeafEncryptionSummaryRefusesANonSopsDocument(t *testing.T) {
-	if _, err := InspectLeafEncryption([]byte(plainYAML)); err == nil {
+	if _, err := InspectLeafEncryption([]byte(plainYAML), FormatYAML); err == nil {
 		t.Fatalf("expected an error for a document with no sops metadata")
 	}
 }

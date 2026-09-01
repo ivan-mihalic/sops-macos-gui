@@ -49,8 +49,7 @@ func TestSaveGuardSurvivesListRenumbering(t *testing.T) {
 		t.Fatalf("precondition failed: the CLI left the secret in plaintext:\n%s", onDisk)
 	}
 
-	saved, err := ApplyChangesAndEncrypt(
-		onDisk, ChangeSet{Removes: []Removal{{Path: []string{"items", "1"}}}}, key.Private)
+	saved, err := ApplyChangesAndEncrypt(onDisk, FormatYAML, ChangeSet{Removes: []Removal{{Path: []string{"items", "1"}}}}, key.Private)
 	if err != nil {
 		return // a refusal is the correct outcome
 	}
@@ -72,8 +71,7 @@ func TestSaveGuardCoversNonStringScalars(t *testing.T) {
 		t.Fatalf("precondition failed: the CLI left the pin in plaintext:\n%s", onDisk)
 	}
 
-	saved, err := ApplyChangesAndEncrypt(
-		onDisk, ChangeSet{Removes: []Removal{{Path: []string{"endpoint"}}}}, key.Private)
+	saved, err := ApplyChangesAndEncrypt(onDisk, FormatYAML, ChangeSet{Removes: []Removal{{Path: []string{"endpoint"}}}}, key.Private)
 	if err != nil {
 		return
 	}
@@ -96,8 +94,7 @@ func TestSaveGuardCoversEncryptedComments(t *testing.T) {
 		t.Fatalf("precondition failed: the CLI left the comment in plaintext:\n%s", onDisk)
 	}
 
-	saved, err := ApplyChangesAndEncrypt(
-		onDisk, ChangeSet{Removes: []Removal{{Path: []string{"endpoint"}}}}, key.Private)
+	saved, err := ApplyChangesAndEncrypt(onDisk, FormatYAML, ChangeSet{Removes: []Removal{{Path: []string{"endpoint"}}}}, key.Private)
 	if err != nil {
 		return
 	}
@@ -123,8 +120,7 @@ func TestSaveGuardDoesNotRefuseAValueThatWasAlreadyInTheClear(t *testing.T) {
 		t.Fatalf("precondition failed: `secret` should have been encrypted:\n%s", onDisk)
 	}
 
-	if _, err := ApplyChangesAndEncrypt(
-		onDisk,
+	if _, err := ApplyChangesAndEncrypt(onDisk, FormatYAML,
 		ChangeSet{Sets: []Edit{{Path: []string{"note"}, Value: "changed", Kind: "string"}}},
 		key.Private); err != nil {
 		t.Errorf("FALSE REFUSAL: editing an unrelated key was refused because a plaintext row "+
@@ -140,8 +136,7 @@ func TestSaveGuardDoesNotCollideCommonScalars(t *testing.T) {
 		"creation_rules:\n  - age: "+key.Public+"\n    encrypted_regex: '^secret_flag$'\n",
 		"secret_flag: true\nverbose: true\ndebug: true\nretries: 1\nnote: something\n")
 
-	if _, err := ApplyChangesAndEncrypt(
-		onDisk,
+	if _, err := ApplyChangesAndEncrypt(onDisk, FormatYAML,
 		ChangeSet{Sets: []Edit{{Path: []string{"note"}, Value: "changed", Kind: "string"}}},
 		key.Private); err != nil {
 		t.Errorf("FALSE REFUSAL: a document full of ordinary booleans was refused: %v", err)

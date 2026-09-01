@@ -35,8 +35,7 @@ func TestGuardAcceptsTogglingAnUnrelatedBoolean(t *testing.T) {
 		"creation_rules:\n  - age: "+key.Public+"\n    encrypted_regex: '^secret_flag$'\n",
 		"secret_flag: true\nverbose: false\n")
 
-	saved, err := ApplyChangesAndEncrypt(
-		onDisk,
+	saved, err := ApplyChangesAndEncrypt(onDisk, FormatYAML,
 		ChangeSet{Sets: []Edit{{Path: []string{"verbose"}, Value: "true", Kind: "bool"}}},
 		key.Private)
 	if err != nil {
@@ -60,8 +59,7 @@ func TestGuardAcceptsAddingAPlaintextBoolean(t *testing.T) {
 		"creation_rules:\n  - age: "+key.Public+"\n    encrypted_regex: '^secret_flag$'\n",
 		"secret_flag: true\nname: app\n")
 
-	if _, err := ApplyChangesAndEncrypt(
-		onDisk,
+	if _, err := ApplyChangesAndEncrypt(onDisk, FormatYAML,
 		ChangeSet{Adds: []Add{{Parent: nil, Key: "verbose", Value: "true", Kind: "bool"}}},
 		key.Private); err != nil {
 		t.Fatalf("FALSE REFUSAL: adding a plaintext boolean was refused: %v", err)
@@ -81,8 +79,7 @@ func TestGuardAcceptsAddingAPlaintextSmallInteger(t *testing.T) {
 		"creation_rules:\n  - age: "+key.Public+"\n    encrypted_regex: '^secret_count$'\n",
 		"secret_count: 1\nname: app\n")
 
-	if _, err := ApplyChangesAndEncrypt(
-		onDisk,
+	if _, err := ApplyChangesAndEncrypt(onDisk, FormatYAML,
 		ChangeSet{Adds: []Add{{Parent: nil, Key: "retries", Value: "1", Kind: "int"}}},
 		key.Private); err != nil {
 		t.Fatalf("FALSE REFUSAL: adding a plaintext integer was refused: %v", err)
@@ -102,8 +99,7 @@ func TestGuardAcceptsWritingAWordThatMatchesAnEncryptedValue(t *testing.T) {
 		"creation_rules:\n  - age: "+key.Public+"\n    encrypted_regex: '^secret$'\n",
 		"secret: shared-fixture-text\nnote: something\n")
 
-	if _, err := ApplyChangesAndEncrypt(
-		onDisk,
+	if _, err := ApplyChangesAndEncrypt(onDisk, FormatYAML,
 		ChangeSet{Sets: []Edit{
 			{Path: []string{"note"}, Value: "shared-fixture-text", Kind: "string"}}},
 		key.Private); err != nil {
@@ -124,8 +120,7 @@ func TestGuardStillCatchesAnUntouchedLeafLosingItsProtection(t *testing.T) {
 		t.Fatalf("precondition failed: the CLI did not encrypt db_password")
 	}
 
-	saved, err := ApplyChangesAndEncrypt(
-		onDisk, ChangeSet{Removes: []Removal{{Path: []string{"endpoint"}}}}, key.Private)
+	saved, err := ApplyChangesAndEncrypt(onDisk, FormatYAML, ChangeSet{Removes: []Removal{{Path: []string{"endpoint"}}}}, key.Private)
 	if err != nil {
 		return // refusal is correct
 	}
@@ -148,8 +143,7 @@ func TestGuardCatchesAnExposureHiddenBehindAnExplicitEdit(t *testing.T) {
 		t.Fatalf("precondition failed: the CLI did not encrypt db_password")
 	}
 
-	saved, err := ApplyChangesAndEncrypt(
-		onDisk,
+	saved, err := ApplyChangesAndEncrypt(onDisk, FormatYAML,
 		ChangeSet{
 			Sets:    []Edit{{Path: []string{"note"}, Value: "fixture-value-alpha", Kind: "string"}},
 			Removes: []Removal{{Path: []string{"endpoint"}}},

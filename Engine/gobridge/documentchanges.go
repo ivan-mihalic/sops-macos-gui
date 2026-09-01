@@ -173,8 +173,8 @@ func addLabel(a Add) string {
 // the file's own encryption rules its key puts it — sops decides that per key
 // when the tree is re-encrypted, from the rules the document arrived with.
 // Nothing here reads `.sops.yaml`.
-func ApplyChangesAndEncrypt(encrypted []byte, changes ChangeSet, agePrivateKey string) ([]byte, error) {
-	doc, err := loadAndDecrypt(encrypted, agePrivateKey)
+func ApplyChangesAndEncrypt(encrypted []byte, format Format, changes ChangeSet, agePrivateKey string) ([]byte, error) {
+	doc, err := loadAndDecrypt(encrypted, format, agePrivateKey)
 	if err != nil {
 		return nil, err
 	}
@@ -775,7 +775,7 @@ func branchIndex(branch sops.TreeBranch, key string) int {
 
 // ApplyChangesJSON is ApplyChangesAndEncrypt with the change set carried as
 // JSON across the C boundary.
-func ApplyChangesJSON(encrypted []byte, changesJSON []byte, agePrivateKey string) ([]byte, error) {
+func ApplyChangesJSON(encrypted []byte, format Format, changesJSON []byte, agePrivateKey string) ([]byte, error) {
 	var changes ChangeSet
 	if len(changesJSON) > 0 {
 		decoder := json.NewDecoder(strings.NewReader(string(changesJSON)))
@@ -786,7 +786,7 @@ func ApplyChangesJSON(encrypted []byte, changesJSON []byte, agePrivateKey string
 			return nil, fmt.Errorf("the list of changes was not valid JSON")
 		}
 	}
-	return ApplyChangesAndEncrypt(encrypted, changes, agePrivateKey)
+	return ApplyChangesAndEncrypt(encrypted, format, changes, agePrivateKey)
 }
 
 // refuseUnusableEncryptionRule rejects a document whose `encrypted_regex`

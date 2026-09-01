@@ -21,8 +21,7 @@ func TestSaveGuardCoversASecretShapedLikeCiphertext(t *testing.T) {
 		"db_password: '"+decoy+"'\n"+
 			"# PUBLIC — this endpoint is not a secret\nendpoint: https://example.invalid\n")
 
-	saved, err := ApplyChangesAndEncrypt(
-		onDisk, ChangeSet{Removes: []Removal{{Path: []string{"endpoint"}}}}, key.Private)
+	saved, err := ApplyChangesAndEncrypt(onDisk, FormatYAML, ChangeSet{Removes: []Removal{{Path: []string{"endpoint"}}}}, key.Private)
 	if err != nil {
 		return // a refusal is the correct outcome
 	}
@@ -88,8 +87,7 @@ func TestNullEditCarryingAValueIsRefusedNotDiscarded(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	saved, err := ApplyChangesAndEncrypt(
-		encrypted,
+	saved, err := ApplyChangesAndEncrypt(encrypted, FormatYAML,
 		ChangeSet{Sets: []Edit{
 			{Path: []string{"db", "password"}, Value: "typed-into-null-EXAMPLE", Kind: "null"},
 			{Path: []string{"db", "host"}, Value: "changed", Kind: "string"},
@@ -114,8 +112,7 @@ func TestNullEditWithNoValueStillWorks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ApplyChangesAndEncrypt(
-		encrypted,
+	if _, err := ApplyChangesAndEncrypt(encrypted, FormatYAML,
 		ChangeSet{Sets: []Edit{{Path: []string{"db", "password"}, Value: "", Kind: "null"}}},
 		key.Private); err != nil {
 		t.Fatalf("clearing a value to null was refused: %v", err)

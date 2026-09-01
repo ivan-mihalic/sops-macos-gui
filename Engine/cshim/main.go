@@ -171,7 +171,7 @@ func sops_decrypt_yaml(encrypted *C.char, agePrivateKey *C.char, out **C.char) C
 //export sops_recipients
 func sops_recipients(encrypted *C.char, out **C.char) C.int {
 	payload, err := gobridge.Guard(gobridge.OpReading, func() ([]byte, error) {
-		return gobridge.RecipientsJSON([]byte(C.GoString(encrypted)))
+		return gobridge.RecipientsJSON([]byte(C.GoString(encrypted)), gobridge.FormatYAML)
 	})
 	return result(out, payload, err)
 }
@@ -183,8 +183,7 @@ func sops_recipients(encrypted *C.char, out **C.char) C.int {
 //export sops_update_recipients
 func sops_update_recipients(encrypted *C.char, recipientsJSON *C.char, agePrivateKey *C.char, out **C.char) C.int {
 	payload, err := gobridge.Guard(gobridge.OpSaving, func() ([]byte, error) {
-		return gobridge.UpdateRecipientsJSON(
-			[]byte(C.GoString(encrypted)),
+		return gobridge.UpdateRecipientsJSON([]byte(C.GoString(encrypted)), gobridge.FormatYAML,
 			[]byte(C.GoString(recipientsJSON)),
 			C.GoString(agePrivateKey),
 		)
@@ -259,8 +258,7 @@ func sops_update_config_recipients(
 //export sops_decrypt_to_rows
 func sops_decrypt_to_rows(encrypted *C.char, agePrivateKey *C.char, out **C.char) C.int {
 	payload, err := gobridge.Guard(gobridge.OpReading, func() ([]byte, error) {
-		return gobridge.DecryptToRowsJSON(
-			[]byte(C.GoString(encrypted)),
+		return gobridge.DecryptToRowsJSON([]byte(C.GoString(encrypted)), gobridge.FormatYAML,
 			C.GoString(agePrivateKey),
 		)
 	})
@@ -279,8 +277,7 @@ func sops_decrypt_to_rows(encrypted *C.char, agePrivateKey *C.char, out **C.char
 //export sops_apply_edits
 func sops_apply_edits(encrypted *C.char, editsJSON *C.char, agePrivateKey *C.char, out **C.char) C.int {
 	payload, err := gobridge.Guard(gobridge.OpSaving, func() ([]byte, error) {
-		return gobridge.ApplyEditsJSON(
-			[]byte(C.GoString(encrypted)),
+		return gobridge.ApplyEditsJSON([]byte(C.GoString(encrypted)), gobridge.FormatYAML,
 			[]byte(C.GoString(editsJSON)),
 			C.GoString(agePrivateKey),
 		)
@@ -305,8 +302,7 @@ func sops_apply_edits(encrypted *C.char, editsJSON *C.char, agePrivateKey *C.cha
 //export sops_apply_changes
 func sops_apply_changes(encrypted *C.char, changesJSON *C.char, agePrivateKey *C.char, out **C.char) C.int {
 	payload, err := gobridge.Guard(gobridge.OpSaving, func() ([]byte, error) {
-		return gobridge.ApplyChangesJSON(
-			[]byte(C.GoString(encrypted)),
+		return gobridge.ApplyChangesJSON([]byte(C.GoString(encrypted)), gobridge.FormatYAML,
 			[]byte(C.GoString(changesJSON)),
 			C.GoString(agePrivateKey),
 		)
@@ -323,7 +319,7 @@ func sops_apply_changes(encrypted *C.char, changesJSON *C.char, agePrivateKey *C
 //export sops_leaf_encryption_summary
 func sops_leaf_encryption_summary(encrypted *C.char, out **C.char) C.int {
 	payload, err := gobridge.Guard(gobridge.OpReading, func() ([]byte, error) {
-		return gobridge.InspectLeafEncryptionJSON([]byte(C.GoString(encrypted)))
+		return gobridge.InspectLeafEncryptionJSON([]byte(C.GoString(encrypted)), gobridge.FormatYAML)
 	})
 	return result(out, payload, err)
 }

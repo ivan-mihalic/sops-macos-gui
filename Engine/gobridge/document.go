@@ -147,7 +147,7 @@ type loadedDocument struct {
 }
 
 // loadAndDecrypt performs the read half that both entry points share.
-func loadAndDecrypt(encrypted []byte, agePrivateKey string) (*loadedDocument, error) {
+func loadAndDecrypt(encrypted []byte, format Format, agePrivateKey string) (*loadedDocument, error) {
 	// Validated before the document is even looked at, so the refusal can
 	// never depend on how far parsing got. See parseDecryptionIdentities:
 	// upstream treats "no identities" as an invitation to read the
@@ -157,7 +157,7 @@ func loadAndDecrypt(encrypted []byte, agePrivateKey string) (*loadedDocument, er
 		return nil, err
 	}
 
-	sf, err := FormatYAML.toSopsFormat()
+	sf, err := format.toSopsFormat()
 	if err != nil {
 		return nil, err
 	}
@@ -731,15 +731,15 @@ func parseEditValue(e Edit) (interface{}, error) {
 	}
 }
 
-// DecryptToRows decrypts a SOPS YAML document and returns its values as an
+// DecryptToRows decrypts a SOPS document and returns its values as an
 // ordered list of rows, using the caller-supplied age identity
 // (AGE-SECRET-KEY-1…) and nothing else.
 //
 // The plaintext never leaves this list: the caller holds values to display
 // them and hands them back through ApplyEditsAndEncrypt. The document itself
 // is never re-parsed outside Go.
-func DecryptToRows(encrypted []byte, agePrivateKey string) ([]Row, error) {
-	doc, err := loadAndDecrypt(encrypted, agePrivateKey)
+func DecryptToRows(encrypted []byte, format Format, agePrivateKey string) ([]Row, error) {
+	doc, err := loadAndDecrypt(encrypted, format, agePrivateKey)
 	if err != nil {
 		return nil, err
 	}
@@ -786,8 +786,8 @@ func DecryptToRows(encrypted []byte, agePrivateKey string) ([]Row, error) {
 // same refusals it always did. Structural changes go through
 // ApplyChangesAndEncrypt, which this delegates to — one implementation, so
 // the two can never drift on metadata handling or error hygiene.
-func ApplyEditsAndEncrypt(encrypted []byte, edits []Edit, agePrivateKey string) ([]byte, error) {
-	return ApplyChangesAndEncrypt(encrypted, ChangeSet{Sets: edits}, agePrivateKey)
+func ApplyEditsAndEncrypt(encrypted []byte, format Format, edits []Edit, agePrivateKey string) ([]byte, error) {
+	return ApplyChangesAndEncrypt(encrypted, format, ChangeSet{Sets: edits}, agePrivateKey)
 }
 
 // setValueAtPath resolves a path against the tree and replaces one value.
@@ -869,8 +869,8 @@ func isContainer(value interface{}) bool {
 // DecryptToRowsJSON is DecryptToRows encoded for the C boundary. The row list
 // is always a JSON array, never null, so the Swift side has no empty-versus-
 // missing case to get wrong.
-func DecryptToRowsJSON(encrypted []byte, agePrivateKey string) ([]byte, error) {
-	rows, err := DecryptToRows(encrypted, agePrivateKey)
+func DecryptToRowsJSON(encrypted []byte, format Format, agePrivateKey string) ([]byte, error) {
+	rows, err := DecryptToRows(encrypted, format, agePrivateKey)
 	if err != nil {
 		return nil, err
 	}
@@ -884,7 +884,7 @@ func DecryptToRowsJSON(encrypted []byte, agePrivateKey string) ([]byte, error) {
 }
 
 // ApplyEditsJSON is ApplyEditsAndEncrypt with the edit list carried as JSON.
-func ApplyEditsJSON(encrypted []byte, editsJSON []byte, agePrivateKey string) ([]byte, error) {
+func ApplyEditsJSON(encrypted []byte, format Format, editsJSON []byte, agePrivateKey string) ([]byte, error) {
 	var edits []Edit
 	if len(editsJSON) > 0 {
 		decoder := json.NewDecoder(strings.NewReader(string(editsJSON)))
@@ -895,5 +895,5 @@ func ApplyEditsJSON(encrypted []byte, editsJSON []byte, agePrivateKey string) ([
 			return nil, fmt.Errorf("the list of edits was not valid JSON")
 		}
 	}
-	return ApplyEditsAndEncrypt(encrypted, edits, agePrivateKey)
+	return ApplyEditsAndEncrypt(encrypted, format, edits, agePrivateKey)
 }

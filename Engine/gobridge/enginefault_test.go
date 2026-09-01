@@ -69,13 +69,13 @@ var unguardedProbes = map[string]func(key ageKeyPair, doc string) (interface{}, 
 		return Decrypt([]byte(doc), FormatYAML, key.Private)
 	},
 	"DecryptToRows": func(key ageKeyPair, doc string) (interface{}, error) {
-		return DecryptToRows([]byte(doc), key.Private)
+		return DecryptToRows([]byte(doc), FormatYAML, key.Private)
 	},
 	"ApplyEditsAndEncrypt": func(key ageKeyPair, doc string) (interface{}, error) {
-		return ApplyEditsAndEncrypt([]byte(doc), nil, key.Private)
+		return ApplyEditsAndEncrypt([]byte(doc), FormatYAML, nil, key.Private)
 	},
 	"ApplyChangesJSON": func(key ageKeyPair, doc string) (interface{}, error) {
-		return ApplyChangesJSON([]byte(doc), []byte(`{"sets":[]}`), key.Private)
+		return ApplyChangesJSON([]byte(doc), FormatYAML, []byte(`{"sets":[]}`), key.Private)
 	},
 }
 
@@ -154,7 +154,7 @@ func TestGuardTurnsTheHostileDocumentIntoAnError(t *testing.T) {
 	hostile := hostileDocument(t, key)
 
 	payload, err := Guard(OpReading, func() ([]byte, error) {
-		return DecryptToRowsJSON([]byte(hostile), key.Private)
+		return DecryptToRowsJSON([]byte(hostile), FormatYAML, key.Private)
 	})
 
 	if err == nil {
@@ -182,7 +182,7 @@ func TestNoCanaryReachesTheCaller(t *testing.T) {
 
 	t.Run("hostile document", func(t *testing.T) {
 		_, err := Guard(OpReading, func() ([]byte, error) {
-			return DecryptToRowsJSON([]byte(hostile), key.Private)
+			return DecryptToRowsJSON([]byte(hostile), FormatYAML, key.Private)
 		})
 		if err == nil {
 			t.Fatal("expected a failure")
@@ -257,7 +257,7 @@ func TestGuardPassesOrdinaryFailuresThrough(t *testing.T) {
 	healthy := healthyDocument(t, key)
 
 	_, err := Guard(OpReading, func() ([]byte, error) {
-		return DecryptToRowsJSON([]byte(healthy), other.Private)
+		return DecryptToRowsJSON([]byte(healthy), FormatYAML, other.Private)
 	})
 	if err == nil {
 		t.Fatal("decrypting with the wrong identity succeeded")
@@ -280,13 +280,13 @@ func TestBridgeStillWorksAfterAFault(t *testing.T) {
 
 	for round := 1; round <= 3; round++ {
 		if _, err := Guard(OpReading, func() ([]byte, error) {
-			return DecryptToRowsJSON([]byte(hostile), key.Private)
+			return DecryptToRowsJSON([]byte(hostile), FormatYAML, key.Private)
 		}); err == nil {
 			t.Fatalf("round %d: the hostile document did not fail", round)
 		}
 
 		rows, err := Guard(OpReading, func() ([]byte, error) {
-			return DecryptToRowsJSON([]byte(healthy), key.Private)
+			return DecryptToRowsJSON([]byte(healthy), FormatYAML, key.Private)
 		})
 		if err != nil {
 			t.Fatalf("round %d: a healthy document failed after a fault: %v", round, err)
@@ -297,7 +297,7 @@ func TestBridgeStillWorksAfterAFault(t *testing.T) {
 
 		// The write path too, since it is the one that touches the user's file.
 		if _, err := Guard(OpSaving, func() ([]byte, error) {
-			return ApplyEditsJSON([]byte(healthy), []byte(`[]`), key.Private)
+			return ApplyEditsJSON([]byte(healthy), FormatYAML, []byte(`[]`), key.Private)
 		}); err != nil {
 			t.Fatalf("round %d: saving failed after a fault: %v", round, err)
 		}
@@ -362,9 +362,9 @@ func TestGuardIsTransparentToACleanCall(t *testing.T) {
 	key := newAgeKeyPair(t)
 	healthy := healthyDocument(t, key)
 
-	direct, directErr := DecryptToRowsJSON([]byte(healthy), key.Private)
+	direct, directErr := DecryptToRowsJSON([]byte(healthy), FormatYAML, key.Private)
 	guarded, guardedErr := Guard(OpReading, func() ([]byte, error) {
-		return DecryptToRowsJSON([]byte(healthy), key.Private)
+		return DecryptToRowsJSON([]byte(healthy), FormatYAML, key.Private)
 	})
 	if directErr != nil || guardedErr != nil {
 		t.Fatalf("healthy document failed: direct=%v guarded=%v", directErr, guardedErr)
