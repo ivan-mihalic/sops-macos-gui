@@ -205,6 +205,12 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // its resolved target — see `FileListView.unfollowedSymlinkFootnote`.
     case filesUnfollowedSymlinkNote = "files.unfollowed-symlink.note"
     case filesAddSymlinkTargetButton = "files.unfollowed-symlink.add-button"
+    // SOPS-38 phase F3: shown next to a row whenever `ListedFile.isReadOnly`
+    // is true — a hint only, never a claim this app is entitled to more than
+    // conservatively (see that property's own doc comment). The accessibility
+    // label doubles as the tooltip, the same "icon-only control" idiom
+    // `filesNewFileButton` already uses.
+    case filesReadOnlyBadge = "files.read-only-badge"
 
     // MARK: Task 7 (F2) — reaching the new-file wizard from the file list
 
@@ -301,6 +307,24 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case editorKindEmptyMap = "editor.kind.empty-map"
     case editorKindEmptyList = "editor.kind.empty-list"
 
+    // MARK: SOPS-38 phase F3 — the real read-only ciphertext view
+
+    // `CiphertextReadOnlyView`'s framing chrome around `LoadState
+    // .readOnlyCiphertext`'s own `reason` — that string is bridge prose
+    // (the same wrong-key sentence `.failed` used to carry,
+    // `editorLoadFailedWrongKey`) and is rendered verbatim, never through
+    // this catalog. This title is deliberately distinct from
+    // `editorLoadFailedTitle`: the file *did* open, as ciphertext — it is
+    // not "couldn't be opened" the way a damaged file or bad MAC is.
+    case editorReadOnlyCiphertextTitle = "editor.read-only-ciphertext.title"
+    case editorReadOnlyCiphertextRecipientsHeading = "editor.read-only-ciphertext.recipients-heading"
+    // Shown instead of the recipient list when `recipients` came back empty —
+    // `LoadState.readOnlyCiphertext`'s own doc comment: that is "this app
+    // could not read the file's own metadata", not "this file has no
+    // recipients at all", so the sentence must not claim either.
+    case editorReadOnlyCiphertextRecipientsUnknown = "editor.read-only-ciphertext.recipients-unknown"
+    case editorReadOnlyCiphertextContentsHeading = "editor.read-only-ciphertext.contents-heading"
+
     // MARK: Task 8b — adding and removing rows
 
     case actionAdd = "action.add"
@@ -365,6 +389,14 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // finding this closes: applying a recipient change reloads the open
     // document, which discards anything mid-edit and never saved.
     case accessDisabledUnsavedChanges = "access.disabled-unsaved-changes"
+    // SOPS-38 phase F3: shown instead of `accessDisabledUnsavedChanges` when
+    // the open document is `LoadState.readOnlyCiphertext` — that document has
+    // no unsaved edits to save first, and saying so would be false. Applying
+    // a recipient change needs to decrypt and re-wrap the file, which is
+    // exactly what this state cannot do — see `SecretEditorView
+    // .canOpenAccessPanel`, whose `loadState == .loaded` half already
+    // disables the button here; this only makes the *reason* honest.
+    case accessDisabledReadOnlyCiphertext = "access.disabled-read-only-ciphertext"
     case accessTitle = "access.title"
     case accessLoadFailedTitle = "access.load-failed.title"
     case accessAddRecipientField = "access.add-recipient-field"

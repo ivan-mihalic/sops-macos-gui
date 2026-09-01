@@ -357,6 +357,7 @@ enum Catalog {
         let empty = try await Fixtures.editorEmptyDocumentViewModel()
         let needsKey = await Fixtures.editorNeedsKeyViewModel()
         let failed = try await Fixtures.editorLoadFailedViewModel()
+        let readOnlyCiphertext = try await Fixtures.editorReadOnlyCiphertextViewModel()
         let (pending, pendingSelection) = try await Fixtures.editorPendingChangesViewModel()
         let (revealed, revealedRowIDs) = try await Fixtures.editorRevealedRowViewModel()
         let dotenv = try await Fixtures.editorDotenvViewModel()
@@ -407,7 +408,11 @@ enum Catalog {
             },
             editor("editor-empty-document", empty, fileName: "empty.secrets.yaml"),
             editor("editor-needs-key", needsKey, fileName: "needs-key.secrets.yaml"),
-            editor("editor-load-failed", failed, fileName: "wrong-key.secrets.yaml"),
+            editor("editor-load-failed", failed, fileName: "damaged.secrets.yaml"),
+            // SOPS-38 phase F3: the real read-only ciphertext view — raw
+            // ciphertext, the file's own (unregistered) recipient, and the
+            // wrong-key reason. See `CiphertextReadOnlyView`.
+            editor("editor-readonly-ciphertext", readOnlyCiphertext, fileName: "wrong-key.secrets.yaml"),
             // Task 8b: the +/- affordance live, a row added in this session,
             // and a row removed — the state that did not exist before.
             Snapshot("editor-pending-changes", size: editorSize) {

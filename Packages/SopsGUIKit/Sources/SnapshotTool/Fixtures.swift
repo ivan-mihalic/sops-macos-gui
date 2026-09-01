@@ -638,10 +638,53 @@ enum Fixtures {
             onAdd: { _, _, _ in })
     }
 
+    /// A genuinely damaged file — not a wrong key at all.
+    ///
+    /// This used to encrypt for one identity and import a *different* real
+    /// one, the "wrong key" shape — until SOPS-38 phase F3 gave that its own
+    /// `LoadState.readOnlyCiphertext` (see `editorReadOnlyCiphertextViewModel`
+    /// below), which made that scenario the wrong fixture for this snapshot:
+    /// unchanged, it silently stopped showing `.failed` at all. The correct
+    /// key is imported here, so `SecretDocumentViewModel.load()` can only
+    /// reach `.failed` from the corruption itself, never from
+    /// `.noMatchingIdentity` — the same retyped-`ENC[...,type:...]` tag
+    /// technique `SecretDocumentViewModelTests
+    /// .genuinelyDamagedFileStillReportsFailed` proves reliably fails
+    /// decryption for a reason that is not a missing identity.
+    static func editorLoadFailedViewModel() async throws -> SecretDocumentViewModel {
+        let owner = try SnapshotAgeKeyPair.generate()
+        let rawEncrypted = try SopsBridge.encrypt(
+            "database:\n    password: hunter2-EXAMPLE\n", format: .yaml, recipients: [owner.public])
+        // `LineEndings.lines(of:)`, not `.components(separatedBy: "\n")` — see
+        // that type's own doc comment for why a `"\n"` literal is blind to a
+        // CRLF file. Rejoining with `"\n"` is fine (writing a line ending,
+        // not reading one), matching `SnapshotAgeKeyPair.generate()`'s own
+        // idiom just above.
+        var lines = LineEndings.lines(of: rawEncrypted)
+        guard let index = lines.firstIndex(where: { $0.hasPrefix("    password: ENC[") }) else {
+            throw SnapshotFixtureError("fixture has no encrypted password to corrupt")
+        }
+        lines[index] = Substring(lines[index].replacingOccurrences(of: ",type:str]", with: ",type:int]"))
+        let encrypted = lines.joined(separator: "\n")
+
+        let store = SessionKeyStore()
+        try store.importKey(owner.private)
+        let model = SecretDocumentViewModel(
+            fileURL: URL(fileURLWithPath: "/dev/null/snapshot-load-failed.yaml"),
+            format: .yaml,
+            keyStore: store,
+            readFile: { _ in encrypted })
+        await model.load()
+        return model
+    }
+
     /// Real ciphertext, but the session holds a *different* real identity —
     /// the same "wrong key" shape `SopsDocumentTests` covers at the bridge
-    /// layer, one level up: this is what the editor shows for it.
-    static func editorLoadFailedViewModel() async throws -> SecretDocumentViewModel {
+    /// layer, one level up. SOPS-38 phase F3: this is what
+    /// `CiphertextReadOnlyView` shows for it — the raw on-disk bytes and the
+    /// file's own recipient (`owner.public`, unregistered, so it renders as
+    /// its raw key rather than a name).
+    static func editorReadOnlyCiphertextViewModel() async throws -> SecretDocumentViewModel {
         let owner = try SnapshotAgeKeyPair.generate()
         let intruder = try SnapshotAgeKeyPair.generate()
         let encrypted = try SopsBridge.encrypt(

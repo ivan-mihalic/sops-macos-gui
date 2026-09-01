@@ -1,6 +1,7 @@
 import ScratchCleanup
 import AppKit
 import SopsHealth
+import SopsProjects
 import SwiftUI
 import Testing
 @testable import SopsUI
@@ -199,5 +200,46 @@ ScratchDirectoryRegistry.shared.register(root)
 
         #expect(text(of: model).contains("config/secrets.json"),
                 "a json sops file must appear in the rendered file list, not behind a note about a format nothing here produces any more")
+    }
+
+    // MARK: - SOPS-38 phase F3: the read-only badge
+
+    /// `FileListModelTests` proves `ListedFile.isReadOnly` itself — this is
+    /// the view half `FileListViewWiringTests`' own header exists to catch:
+    /// a flag the model computes and the view never shows is invisible to a
+    /// user, and the whole suite stays green either way.
+    @Test("a file this session's key cannot decrypt shows a read-only badge")
+    func readOnlyBadgeIsShown() async throws {
+        let root = try project("read-only-badge")
+        try writeSopsLike(root, at: "config/secrets.yaml")
+        let stranger = try AgeKeyPairForTests.generate()
+        let store = SessionKeyStore()
+        try store.importKey(stranger.private)
+
+        let model = FileListModel(projectRoot: root, keyStore: store)
+        await model.refresh()
+        try #require(model.files.first?.isReadOnly == true,
+                     "precondition: the model itself must flag this file read-only")
+
+        #expect(text(of: model).contains(LocalizedKey.filesReadOnlyBadge.text),
+                "the model flagged the file read-only and the view never said so")
+    }
+
+    /// The negative case a hardcoded badge would sail past: the same
+    /// sops-shaped file, over a model with no key store at all —
+    /// `ListedFile.isReadOnly`'s own conservative default. Without this, a
+    /// badge shown unconditionally would still pass the positive test above.
+    @Test("a model with no session key configured shows no read-only badge")
+    func noBadgeWithoutASessionKey() async throws {
+        let root = try project("no-key-no-badge")
+        try writeSopsLike(root, at: "config/secrets.yaml")
+
+        let model = FileListModel(projectRoot: root)
+        await model.refresh()
+        try #require(model.files.first?.isReadOnly == false,
+                     "precondition: no key store means the model itself must not claim read-only")
+
+        #expect(!text(of: model).contains(LocalizedKey.filesReadOnlyBadge.text),
+                "a model with no session key must not show the read-only badge")
     }
 }

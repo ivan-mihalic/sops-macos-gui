@@ -178,6 +178,34 @@ public struct SecretEditorView: View {
         loadState == .loaded && UnsavedWorkGate.isClear(isDirty: isDirty, isSaving: isSaving)
     }
 
+    /// The Access button's help text — its tooltip when enabled, and its
+    /// *reason* for being disabled otherwise. `canOpenAccessPanel` collapses
+    /// several distinct reasons into one boolean (not loaded, dirty,
+    /// saving); this is honest about the one of them worth naming
+    /// separately.
+    ///
+    /// SOPS-38 phase F3 finding: before this existed, a `.readOnlyCiphertext`
+    /// document's Access button was disabled — correctly, `loadState !=
+    /// .loaded` already refuses it — but explained itself with
+    /// `accessDisabledUnsavedChanges` ("Save your changes before managing
+    /// access."), which is false here: this document was never decrypted, so
+    /// there is nothing to save, and no amount of saving would make Access
+    /// reachable. A disabled control with an honest reason ("you can't change
+    /// access to a file you can't decrypt") beats a vanished one, which is
+    /// why this state hides nothing — see `CiphertextReadOnlyView`'s own doc
+    /// comment for why there genuinely is no path from that view to a
+    /// recipient change.
+    ///
+    /// Pulled out as a pure function — mirroring `canOpenAccessPanel` and
+    /// this module's other `WorkspaceSwitchDecision`/`QuitRequest`-shaped
+    /// helpers — so the distinction is directly testable without rendering
+    /// this view.
+    static func accessButtonHelpText(loadState: LoadState, canOpenAccess: Bool) -> LocalizedKey {
+        guard !canOpenAccess else { return .accessToolbarButton }
+        if case .readOnlyCiphertext = loadState { return .accessDisabledReadOnlyCiphertext }
+        return .accessDisabledUnsavedChanges
+    }
+
     /// - Parameters:
     ///   - initiallySelectedRowID: which row starts selected. The app leaves
     ///     this `nil`; it exists because the toolbar's `-` is enabled only
@@ -405,9 +433,7 @@ public struct SecretEditorView: View {
                     Label(.accessToolbarButton, systemImage: "person.2.badge.key")
                 }
                 .disabled(!canOpenAccess)
-                .help(canOpenAccess
-                    ? LocalizedKey.accessToolbarButton.text
-                    : LocalizedKey.accessDisabledUnsavedChanges.text)
+                .help(Self.accessButtonHelpText(loadState: viewModel.loadState, canOpenAccess: canOpenAccess).text)
             }
 
             Button {
@@ -524,30 +550,15 @@ public struct SecretEditorView: View {
                         .textSelection(.enabled)
                 }
             }
-        case .readOnlyCiphertext(let reason, _, _):
-            // SOPS-38 phase F3: placeholder only — this state exists so
-            // `SecretDocumentViewModel.load()` can distinguish "someone
-            // else's key" from a genuinely broken file (`.failed`, above);
-            // the real read-only ciphertext view (rendering `rawCiphertext`/
-            // `recipients` from this case) is a following task's own scope,
-            // not this one's. Reuses `.failed`'s exact layout so a wrong-key
-            // file is never worse-explained than it was before this case
-            // existed, while making unmistakably clear here that this is a
-            // stand-in.
-            centered {
-                VStack(spacing: 8) {
-                    Image(systemName: "lock.doc.fill")
-                        .font(.largeTitle)
-                        .foregroundStyle(.secondary)
-                    Text(.editorLoadFailedTitle)
-                        .font(.headline)
-                    Text(reason)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .textSelection(.enabled)
-                }
-            }
+        case .readOnlyCiphertext(let reason, let rawCiphertext, let recipients):
+            // SOPS-38 phase F3: the real view — raw ciphertext, this file's
+            // own recipients (labelled where the registry knows them), and
+            // the wrong-key explanation `.failed` used to carry. See
+            // `CiphertextReadOnlyView`'s own doc comment for why there is no
+            // path from here back to decrypt/save/addRow/updateRecipients.
+            CiphertextReadOnlyView(
+                reason: reason, rawCiphertext: rawCiphertext, recipients: recipients,
+                projectURL: recipientAccess?.projectURL)
         case .loaded:
             if viewModel.rows.isEmpty {
                 centered {

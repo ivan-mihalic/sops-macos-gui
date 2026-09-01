@@ -3904,6 +3904,72 @@
           }
         }
       }
+    },
+    "editor.read-only-ciphertext.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You can't decrypt this file"
+          }
+        }
+      }
+    },
+    "editor.read-only-ciphertext.recipients-heading": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Who can decrypt it"
+          }
+        }
+      }
+    },
+    "editor.read-only-ciphertext.recipients-unknown": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This file's recipients couldn't be read from its metadata."
+          }
+        }
+      }
+    },
+    "editor.read-only-ciphertext.contents-heading": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Encrypted contents"
+          }
+        }
+      }
+    },
+    "access.disabled-read-only-ciphertext": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You can't change access to a file you can't decrypt."
+          }
+        }
+      }
+    },
+    "files.read-only-badge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You don't have access to decrypt this file"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

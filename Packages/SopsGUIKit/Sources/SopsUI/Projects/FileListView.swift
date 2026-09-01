@@ -419,10 +419,25 @@ public struct FileListView: View {
             } else {
                 List(selection: $selection) {
                     ForEach(model.files) { file in
-                        Text(model.relativePath(for: file.url))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .tag(file.url)
+                        HStack(spacing: 4) {
+                            Text(model.relativePath(for: file.url))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            if file.isReadOnly {
+                                // SOPS-38 phase F3: a hint only — see
+                                // `ListedFile.isReadOnly`'s own doc comment
+                                // for why this must never be read as "this
+                                // file cannot be opened". Subtle on purpose
+                                // (secondary style, caption size) so it reads
+                                // as a badge, not a warning.
+                                Image(systemName: "lock.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .accessibilityLabel(LocalizedKey.filesReadOnlyBadge.text)
+                                    .help(LocalizedKey.filesReadOnlyBadge.text)
+                            }
+                        }
+                        .tag(file.url)
                     }
                 }
                 .listStyle(.sidebar)
