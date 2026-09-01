@@ -17,6 +17,21 @@ public struct SniffedFile: Sendable {
     public let url: URL
     let tail: String
     public let format: SopsFileFormat
+
+    /// The native age public keys this file is wrapped for, read straight
+    /// from its own `sops:` metadata — no decryption, no private identity
+    /// needed. A thin public wrapper around
+    /// `EncryptedFileMetadata.recipients(inEncryptedFile:)` for callers
+    /// outside this module (SOPS-38 phase F3: the file list, detecting
+    /// read-only ciphertext) that need the derived recipient list but have
+    /// no business holding the raw tail text itself — `tail` stays internal,
+    /// only what is actually needed crosses the module boundary.
+    ///
+    /// Empty for a file this app cannot parse as any of the four known
+    /// shapes, or one that declares no age recipients at all (a PGP/KMS-only
+    /// file, or metadata this scan could not read) — a caller must treat
+    /// empty as "unknown", never as "this file protects nobody".
+    public var recipients: [String] { EncryptedFileMetadata.recipients(inEncryptedFile: tail) }
 }
 
 /// What one walk of a project tree found.

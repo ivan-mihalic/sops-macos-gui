@@ -35,7 +35,15 @@ let package = Package(
         .testTarget(name: "SopsEngineTests", dependencies: ["SopsEngine", "ScratchCleanup"]),
         .target(name: "SopsHealth", dependencies: ["SopsEngine"]),
         .testTarget(name: "SopsHealthTests", dependencies: ["SopsHealth", "SopsEngine", "ScratchCleanup"]),
-        .target(name: "SopsProjects", dependencies: ["SopsHealth"]),
+        // `SopsEngine` is an explicit dependency, not a transitive one through
+        // `SopsHealth` (which already depends on it), because SwiftPM module
+        // visibility follows a target's own declared dependency list, not the
+        // whole graph reachable through it — the same reason
+        // `SopsProjectsTests` below states it explicitly. SOPS-38 phase F3:
+        // `SessionKeyStore` derives the session's own age public key via
+        // `SopsBridge.agePublicKey(forPrivateKey:)`, so this target needs
+        // `SopsEngine` for its own production code now, not only its tests.
+        .target(name: "SopsProjects", dependencies: ["SopsHealth", "SopsEngine"]),
         // `SopsEngine` is an explicit dependency, not a transitive one, because
         // `ProjectRecipientApplierTests` builds its fixtures with the real
         // in-process bridge (`SopsBridge.encryptYAML`/`decryptYAML`) rather

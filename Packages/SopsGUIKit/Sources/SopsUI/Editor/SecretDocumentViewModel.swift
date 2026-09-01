@@ -21,14 +21,44 @@ public enum LoadState: Equatable, Sendable {
     /// even attempted, so this is not a claim about the file being unreadable.
     case needsKey
     /// The file could not be decrypted with the identity that is configured:
-    /// a wrong key, a MAC mismatch, a damaged value, or a document sops does
-    /// not recognise as its own.
+    /// a MAC mismatch, a damaged value, or a document sops does not
+    /// recognise as its own. **Never** a wrong key — that is
+    /// `.readOnlyCiphertext` below, as of SOPS-38 phase F3.
     ///
     /// The associated text is `SopsBridgeError.description` verbatim — sops's
     /// own classified message. `Engine/gobridge` (Task 7) guarantees it never
     /// contains a value from the document: only fixed English and, where
     /// relevant, a key path.
     case failed(String)
+    /// The session's configured identity is not among this file's
+    /// recipients — `SopsBridgeError.Kind.noMatchingIdentity`, the bridge's
+    /// own classification, not a guess from message text. SOPS-38 phase F3:
+    /// distinguished from `.failed` so a view can render this file as
+    /// read-only ciphertext (Task 2) rather than a bare error, since a
+    /// missing recipient is an ordinary, expected state for a project shared
+    /// across several people's keys — not a broken file.
+    ///
+    /// Reached the same way `.failed` is: after a real decrypt attempt fails
+    /// with that specific classification. This case never itself causes a
+    /// decrypt, an apply, or an `updateRecipients` call — `reason` is the
+    /// same wrong-key message `loadFailureMessage(for:)` already builds for
+    /// `.failed`, and `recipients` comes from `SopsBridge.recipients(in:
+    /// format:)`, which needs no identity at all.
+    ///
+    /// - Parameters:
+    ///   - reason: `loadFailureMessage(for:)`'s wrong-key sentence — the
+    ///     same text `.failed` would have carried before this case existed.
+    ///   - rawCiphertext: The file's own encrypted bytes, exactly as read
+    ///     from disk for this load attempt (`load()`'s own `contents`) —
+    ///     never decrypted, never re-derived. What Task 2's view shows in
+    ///     place of editable rows.
+    ///   - recipients: This file's own native age recipient list, read from
+    ///     its metadata without any identity. Empty when that read itself
+    ///     failed (a non-native backend, unreadable metadata) — a view must
+    ///     treat that the same way `FileListModel`'s own conservative
+    ///     `isReadOnly` does: as "unknown", never as "this file has no
+    ///     recipients".
+    case readOnlyCiphertext(reason: String, rawCiphertext: String, recipients: [String])
 }
 
 /// The result of `SecretDocumentViewModel.save()`.
@@ -48,6 +78,19 @@ public enum SaveOutcome: Equatable, Sendable {
 private enum Outcome<Success: Sendable>: Sendable {
     case success(Success)
     case failure(String)
+}
+
+/// `Self.decrypt`'s own result — `Outcome<[SecretRow]>` with one more thing
+/// attached to a failure: the bridge's classification, when it has one.
+/// SOPS-38 phase F3 needs to know *which* failure this is (a wrong key,
+/// specifically) to route it to `.readOnlyCiphertext` instead of `.failed`,
+/// and `Outcome<Success>` is shared with `save()`'s `applyChanges` path,
+/// which has no equivalent distinction to make — a second, purpose-built
+/// type here is cheaper than teaching the generic one a case only one caller
+/// uses.
+private enum DecryptOutcome: Sendable {
+    case success([SecretRow])
+    case failure(message: String, kind: SopsBridgeError.Kind?)
 }
 
 /// Loads one SOPS document into editable rows, tracks which values the user
@@ -490,7 +533,7 @@ public final class SecretDocumentViewModel {
         // `body` receives the key and immediately hops off this actor itself
         // (`Self.decrypt`, below) — the key is never copied out into a local
         // variable here. See `SessionKeyStore.withKey(_:)`'s async overload.
-        let decrypted: Outcome<[SecretRow]>? = await keyStore.withKey { key in
+        let decrypted: DecryptOutcome? = await keyStore.withKey { key in
             await Self.decrypt(contents, format: format, agePrivateKey: key)
         }
 
@@ -508,7 +551,23 @@ public final class SecretDocumentViewModel {
             loadedFingerprint = fingerprint
             adoptBaseline(newRows)
             loadState = .loaded
-        case .failure(let message):
+        case .failure(let message, .noMatchingIdentity):
+            // SOPS-38 phase F3: a wrong key is not a broken file — see
+            // `LoadState.readOnlyCiphertext`'s own doc comment. `resetToEmpty`
+            // still runs first: this state carries `rawCiphertext`/
+            // `recipients` of its own rather than reusing `encryptedContents`,
+            // and a document in this state is never `.loaded`, so `save()`'s
+            // `loadState == .loaded` guard already refuses it without any
+            // further gating here.
+            resetToEmpty()
+            // Read-only, metadata-only, and best-effort: recipients() needs
+            // no identity, but a failure reading them (a non-native backend,
+            // unreadable metadata) must not turn a real wrong-key finding
+            // into a bare crash or a different error — an empty list is the
+            // same honest "unknown" `FileListModel.isReadOnly` already uses.
+            let recipients = (try? SopsBridge.recipients(in: contents, format: format)) ?? []
+            loadState = .readOnlyCiphertext(reason: message, rawCiphertext: contents, recipients: recipients)
+        case .failure(let message, _):
             resetToEmpty()
             loadState = .failed(message)
         }
@@ -607,14 +666,14 @@ public final class SecretDocumentViewModel {
     /// this function returning.
     private static func decrypt(
         _ contents: String, format: SopsFileFormat, agePrivateKey key: String
-    ) async -> Outcome<[SecretRow]> {
+    ) async -> DecryptOutcome {
         await runOffCooperativePool {
             do {
                 return .success(try SopsBridge.decryptToRows(contents, format: format, agePrivateKey: key))
             } catch let error as SopsBridgeError {
-                return .failure(loadFailureMessage(for: error))
+                return .failure(message: loadFailureMessage(for: error), kind: error.kind)
             } catch {
-                return .failure("this file could not be decrypted")
+                return .failure(message: "this file could not be decrypted", kind: nil)
             }
         }
     }
@@ -1317,13 +1376,23 @@ public final class SecretDocumentViewModel {
     /// disk. The document simply can no longer be shown, and saying so is
     /// more honest than leaving a stale editor open over it.
     private func adoptSavedDocument(_ newEncrypted: String) async {
-        let reloaded: Outcome<[SecretRow]>? = await keyStore.withKey { key in
+        let reloaded: DecryptOutcome? = await keyStore.withKey { key in
             await Self.decrypt(newEncrypted, format: format, agePrivateKey: key)
         }
         switch reloaded {
         case .success(let newRows)?:
             adoptBaseline(newRows)
-        case .failure(let message)?:
+        case .failure(let message, _)?:
+            // Not routed through `.readOnlyCiphertext` even for a
+            // `.noMatchingIdentity` kind: the save this reload follows just
+            // succeeded *with the currently configured key*, so that key was
+            // among the recipients a moment ago. This app has no
+            // `updateRecipients` call on the ordinary save path (only
+            // `ProjectAccessModel`/`RecipientAccessModel` do that, entirely
+            // separately), so this branch is not reachable in practice today
+            // — kept as `.failed` rather than silently swallowing the
+            // distinction, so a future path that *can* reach it is not
+            // handed a wrong assumption.
             resetToEmpty()
             loadState = .failed(message)
         case nil:

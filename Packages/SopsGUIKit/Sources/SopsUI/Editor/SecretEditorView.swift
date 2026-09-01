@@ -524,6 +524,30 @@ public struct SecretEditorView: View {
                         .textSelection(.enabled)
                 }
             }
+        case .readOnlyCiphertext(let reason, _, _):
+            // SOPS-38 phase F3: placeholder only — this state exists so
+            // `SecretDocumentViewModel.load()` can distinguish "someone
+            // else's key" from a genuinely broken file (`.failed`, above);
+            // the real read-only ciphertext view (rendering `rawCiphertext`/
+            // `recipients` from this case) is a following task's own scope,
+            // not this one's. Reuses `.failed`'s exact layout so a wrong-key
+            // file is never worse-explained than it was before this case
+            // existed, while making unmistakably clear here that this is a
+            // stand-in.
+            centered {
+                VStack(spacing: 8) {
+                    Image(systemName: "lock.doc.fill")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                    Text(.editorLoadFailedTitle)
+                        .font(.headline)
+                    Text(reason)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .textSelection(.enabled)
+                }
+            }
         case .loaded:
             if viewModel.rows.isEmpty {
                 centered {

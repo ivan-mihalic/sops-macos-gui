@@ -67,6 +67,11 @@ const (
 	OpUpdatingConfig    = "updating the project configuration"
 	OpReportingVersions = "reporting its versions"
 	OpReleasing         = "releasing memory"
+	// SOPS-38 phase F3: deriving the session's own public key from its
+	// imported private identity, so read-only ciphertext can be detected by
+	// comparing public keys — never by decrypting. See
+	// AgePublicKey (recipients.go's neighbour, agepublickey.go).
+	OpDerivingPublicKey = "deriving your public key"
 )
 
 // Guard runs fn and converts any panic escaping it into an ordinary error.

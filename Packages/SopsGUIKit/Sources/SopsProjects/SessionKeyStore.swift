@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import SopsEngine
 import SopsHealth
 
 /// Holds the user's age decryption identity for the lifetime of the running
@@ -120,6 +121,32 @@ public final class SessionKeyStore {
     private static let agePrivateKeyPrefix = "AGE-SECRET-KEY-1"
 
     private var key: String?
+    /// The public age recipient ("age1…") `key` corresponds to, derived once
+    /// by `importKey` via `SopsBridge.agePublicKey(forPrivateKey:)` — never
+    /// re-derived on every read, and never itself sufficient to decrypt
+    /// anything.
+    ///
+    /// SOPS-38 phase F3: this is what lets a caller (the file list, the
+    /// editor's load path) detect that a file is read-only ciphertext — its
+    /// recipients do not include this session's key — by comparing public
+    /// keys against a file's own metadata, without ever attempting a
+    /// decrypt. `NEUKLÁDAT privátní klíč nikam navíc`: only this derived
+    /// *public* value is cached alongside `key`; nothing new is added that
+    /// widens where the private identity itself lives.
+    ///
+    /// `nil` when no key is imported, when the key has expired (cleared
+    /// alongside `key` by `expireIfNeeded()`), or — defensively, not expected
+    /// for any key `importKey` already accepted the *shape* of — when
+    /// derivation itself failed. That last case matters for tests more than
+    /// production: `looksLikeACompleteAgeKey` only checks length and
+    /// alphabet, not a real Bech32 checksum, so a shape-valid synthetic key
+    /// used in a test fixture can still fail real derivation. `importKey`
+    /// must not fail because of that — it never asserted the key was
+    /// genuine, only that it looked like one — so a derivation failure here
+    /// is swallowed rather than thrown, and every caller of `publicKey`
+    /// already has to handle `nil` as "not known" rather than "definitely not
+    /// read-only" (see that property's own doc comment).
+    private var publicKey: String?
     /// The wall-clock instant at which `key` stops being usable, or nil when
     /// no key is imported. Compared against `now()` on every `state` read and
     /// every `withKey` call — see "Why expiry is a comparison, not a timer"
@@ -170,12 +197,28 @@ public final class SessionKeyStore {
     private func expireIfNeeded() {
         guard let expiresAt, now() >= expiresAt else { return }
         key = nil
+        publicKey = nil
         self.expiresAt = nil
     }
 
     public var state: KeyStoreState {
         expireIfNeeded()
         return key == nil ? .empty : .configured
+    }
+
+    /// The session's own age public key ("age1…"), derived once at import
+    /// time from the private identity `importKey` accepted. See `publicKey`
+    /// (the backing storage)'s own doc comment for what `nil` does and does
+    /// not mean here — in particular, `nil` is "not known", never a claim
+    /// that no key is configured or that a file is or is not read-only.
+    ///
+    /// SOPS-38 phase F3: this is the seam the file list and the editor's
+    /// load path both use to detect read-only ciphertext — a file whose own
+    /// `sops.age[].recipient` metadata does not include this value — without
+    /// ever calling `withKey` or attempting a decrypt.
+    public var sessionPublicKey: String? {
+        expireIfNeeded()
+        return publicKey
     }
 
     /// Validates and stores `text` as the session's decryption identity.
@@ -232,6 +275,11 @@ public final class SessionKeyStore {
         guard Self.looksLikeACompleteAgeKey(trimmed) else { throw Error.notAnAgeKey }
 
         key = trimmed
+        // Best-effort, and deliberately never allowed to fail this import —
+        // see `publicKey`'s own doc comment for why a shape-valid key can
+        // still fail real derivation (most concretely, in this app's own
+        // tests) and why that must not change what `importKey` promises.
+        publicKey = try? SopsBridge.agePublicKey(forPrivateKey: trimmed)
         // `ttlMinutes()` is called here, not stashed at `init`, so a value
         // the user changes in Settings between imports takes effect on the
         // next one — see the property's own doc comment.
@@ -341,6 +389,7 @@ public final class SessionKeyStore {
     /// control.
     public func forget() {
         key = nil
+        publicKey = nil
         expiresAt = nil
     }
 

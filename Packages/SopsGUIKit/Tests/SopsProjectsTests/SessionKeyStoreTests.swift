@@ -127,6 +127,61 @@ struct SessionKeyStoreTests {
         #expect(store.withKey { $0 } == nil)
     }
 
+    // MARK: - Session public key (SOPS-38 phase F3)
+
+    @Test("sessionPublicKey is nil before any key is imported")
+    func sessionPublicKeyStartsNil() {
+        let store = SessionKeyStore()
+        #expect(store.sessionPublicKey == nil)
+    }
+
+    /// The whole point: a caller that only ever sees the private identity a
+    /// user pasted in (`withKey`'s lend-for-one-call surface) can still learn
+    /// the *public* key it corresponds to, so a file's own recipient metadata
+    /// can be compared against it without ever decrypting anything.
+    @Test("importing a real age identity exposes the public key it corresponds to")
+    func importingARealKeyExposesItsPublicKey() throws {
+        let pair = try AgeKeyPair.generate()
+        let store = SessionKeyStore()
+
+        try store.importKey(pair.private)
+
+        #expect(store.sessionPublicKey == pair.public)
+    }
+
+    @Test("forget() clears the derived public key alongside the private one")
+    func forgetClearsThePublicKeyToo() throws {
+        let pair = try AgeKeyPair.generate()
+        let store = SessionKeyStore()
+        try store.importKey(pair.private)
+        #expect(store.sessionPublicKey != nil)
+
+        store.forget()
+
+        #expect(store.sessionPublicKey == nil)
+    }
+
+    /// `validKey` above has the *shape* `looksLikeACompleteAgeKey` checks —
+    /// length and Bech32 alphabet — but is not a real, checksummed age
+    /// identity, so real derivation (`SopsBridge.agePublicKey`) fails on it.
+    /// That must not make `importKey` itself fail: it never promised the key
+    /// was genuine, only that it looked like one (see that function's own
+    /// doc comment), and `validKeyIsAccepted` above already pins that this
+    /// exact string is accepted. `sessionPublicKey` reporting `nil` here is
+    /// the honest "not known" a caller must already handle — never mistaken
+    /// for "this session has no key at all" (`state` still reports
+    /// `.configured`) or for "every file is read-only" (list/editor callers
+    /// treat a `nil` public key as unknown, not as a positive read-only
+    /// verdict — see `FileListModelTests`/`SecretDocumentViewModelTests`).
+    @Test("a shape-valid but non-genuine key imports normally with no derivable public key")
+    func shapeValidNonGenuineKeyHasNoPublicKey() throws {
+        let store = SessionKeyStore()
+        try store.importKey(validKey)
+
+        #expect(store.state == .configured)
+        #expect(store.sessionPublicKey == nil)
+    }
+
     // MARK: - TTL (ticket #4)
 
     /// A controllable clock, so expiry is provable without a test ever
@@ -167,6 +222,19 @@ struct SessionKeyStoreTests {
 
         #expect(store.state == .empty)
         #expect(store.withKey { $0 } == nil)
+    }
+
+    @Test("the derived public key expires alongside the private key")
+    func sessionPublicKeyExpiresWithTTL() throws {
+        let pair = try AgeKeyPair.generate()
+        let clock = FakeClock()
+        let store = SessionKeyStore(now: clock.now, ttlMinutes: { 15 })
+        try store.importKey(pair.private)
+        #expect(store.sessionPublicKey == pair.public)
+
+        clock.advance(minutes: 15)
+
+        #expect(store.sessionPublicKey == nil)
     }
 
     @Test("the async withKey overload also honours the TTL")

@@ -251,6 +251,28 @@ public enum SopsBridge {
         }
     }
 
+    /// Derives the native age public key ("age1…") that corresponds to
+    /// `privateKey`, without decrypting anything.
+    ///
+    /// SOPS-38 phase F3: detecting a read-only ciphertext file — one whose
+    /// recipients do not include the session's own key — needs the session's
+    /// *public* key to compare against a file's own recipient metadata
+    /// (`EncryptedFileMetadata`), and `SessionKeyStore` holds only the
+    /// private identity a user pasted in. This is the one call that turns
+    /// that into the public key it corresponds to; it is no more sensitive
+    /// than the "# public key: …" line `age-keygen` itself prints alongside
+    /// a freshly generated identity.
+    ///
+    /// Throws when `privateKey` is not a valid age identity — never a panic,
+    /// and the message never echoes what was supplied.
+    public static func agePublicKey(forPrivateKey privateKey: String) throws -> String {
+        try call { out in
+            privateKey.withGoString { keyPtr in
+                sops_age_public_key(keyPtr, out)
+            }
+        }
+    }
+
     /// Resolves which creation rule in the `.sops.yaml` at `configPath`
     /// governs `targetFilePath`, via sops's own config parser end to end.
     /// `targetFilePath` must be absolute — sops matches each rule's

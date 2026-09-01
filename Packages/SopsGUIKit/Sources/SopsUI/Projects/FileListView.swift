@@ -20,11 +20,32 @@ import SwiftUI
 public struct ListedFile: Identifiable, Equatable, Sendable {
     public let url: URL
     public let format: SopsFileFormat
+    /// Whether this file's own recipient metadata is known and does **not**
+    /// include the session's own public key — SOPS-38 phase F3.
+    ///
+    /// This is a cheap, metadata-only signal (`SniffedFile.recipients`
+    /// compared against `SessionKeyStore.sessionPublicKey`), computed once
+    /// per `FileListModel.refresh()` and deliberately conservative:
+    /// `false` whenever the session's public key is not known, or the
+    /// file's own recipients could not be read, or came back empty — the
+    /// list is never entitled to claim read-only over metadata it could not
+    /// actually parse. See `FileListModel.refresh()`'s own comment for the
+    /// exact rule.
+    ///
+    /// **This never blocks opening the file**, and no view may treat it as
+    /// though it did — `false` here is not "this file is definitely
+    /// writable", only "this app did not detect otherwise from metadata
+    /// alone". The only true answer is what `SecretDocumentViewModel.load()`
+    /// finds when it actually tries: `LoadState.readOnlyCiphertext` is
+    /// ground truth, this badge is a hint that can be conservatively wrong
+    /// in the "not flagged" direction and must never be wrong in the other.
+    public let isReadOnly: Bool
     public var id: URL { url }
 
-    public init(url: URL, format: SopsFileFormat) {
+    public init(url: URL, format: SopsFileFormat, isReadOnly: Bool = false) {
         self.url = url
         self.format = format
+        self.isReadOnly = isReadOnly
     }
 }
 
@@ -41,6 +62,14 @@ public struct ListedFile: Identifiable, Equatable, Sendable {
 public final class FileListModel {
 
     public let projectRoot: URL
+    /// Where `ListedFile.isReadOnly` reads the session's own public key from
+    /// — SOPS-38 phase F3. `nil` (the default) keeps every existing call
+    /// site — snapshots, tests that predate this feature — compiling and
+    /// behaving exactly as before: with no key store, `isReadOnly` is
+    /// `false` for every file, which is the conservative default this
+    /// property's own doc comment requires anyway when the session's public
+    /// key is not known.
+    private let keyStore: SessionKeyStore?
     public private(set) var files: [ListedFile] = []
     public private(set) var otherFormatCount = 0
     public private(set) var isScanning = false
@@ -109,8 +138,9 @@ public final class FileListModel {
     /// is shared, the name does not need to be.
     private static let configProbeName = ".sops-file-list-config-probe"
 
-    public init(projectRoot: URL) {
+    public init(projectRoot: URL, keyStore: SessionKeyStore? = nil) {
         self.projectRoot = projectRoot
+        self.keyStore = keyStore
     }
 
     /// Walks the project tree and replaces every published property from the
@@ -143,8 +173,17 @@ public final class FileListModel {
         // 0 for every project this build can classify at all. It stays a
         // real field rather than being removed: see
         // `ScannedTree.encryptedInOtherFormats`'s own doc comment for why.
+        // Read once per refresh, not once per file — `sessionPublicKey`
+        // already re-checks TTL expiry on every access, and there is no
+        // reason for that check to run once per encrypted file in the
+        // project when the answer cannot change between them.
+        let sessionPublicKey = keyStore?.sessionPublicKey
         files = tree.encrypted
-            .map { ListedFile(url: $0.url, format: $0.format) }
+            .map { sniffed in
+                ListedFile(
+                    url: sniffed.url, format: sniffed.format,
+                    isReadOnly: Self.isReadOnly(sniffed, sessionPublicKey: sessionPublicKey))
+            }
             .sorted { relativePath(for: $0.url) < relativePath(for: $1.url) }
         otherFormatCount = tree.encryptedInOtherFormats.count
         incompleteScanReason = tree.incompleteScanReason
@@ -179,6 +218,39 @@ public final class FileListModel {
         } catch {
             return nil
         }
+    }
+
+    /// Whether `sniffed` counts as read-only ciphertext for the list badge —
+    /// SOPS-38 phase F3. Deliberately conservative in both directions this
+    /// app must never claim more than it knows about:
+    ///
+    /// - `sessionPublicKey == nil` (no key imported, the key expired, or —
+    ///   see `SessionKeyStore.publicKey`'s own doc comment — real derivation
+    ///   failed for a shape-valid key): **not** read-only. This app has no
+    ///   public key to compare against, so it says nothing rather than
+    ///   guess.
+    /// - `sniffed.recipients.isEmpty`: **not** read-only either. An empty
+    ///   list here means "this app could not read this file's own recipient
+    ///   metadata" (an unrecognised shape, a non-age-only file, a read that
+    ///   failed) at least as often as it could mean "this file genuinely
+    ///   lists no age recipients" — either way, claiming read-only over
+    ///   metadata this app could not actually establish is exactly the
+    ///   vacuous verdict `ProjectHealthCheck.recipientFinding`'s own doc
+    ///   comment exists to prevent, applied here to a UI badge instead of a
+    ///   health finding.
+    /// - Otherwise: read-only exactly when the session's public key is
+    ///   genuinely absent from the file's own recipient list — a real,
+    ///   positive fact read straight from the file, never inferred.
+    ///
+    /// This is a hint only. The list badge must never block opening a file
+    /// it flags — see `ListedFile.isReadOnly`'s own doc comment — and the
+    /// only true answer is whatever `SecretDocumentViewModel.load()` finds
+    /// when it actually tries.
+    private static func isReadOnly(_ sniffed: SniffedFile, sessionPublicKey: String?) -> Bool {
+        guard let sessionPublicKey else { return false }
+        let recipients = sniffed.recipients
+        guard !recipients.isEmpty else { return false }
+        return !recipients.contains(sessionPublicKey)
     }
 
     /// `url`'s path relative to `projectRoot`, for display. Falls back to the

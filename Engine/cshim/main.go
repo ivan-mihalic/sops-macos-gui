@@ -339,6 +339,26 @@ func sops_leaf_encryption_summary(encrypted *C.char, format *C.char, out **C.cha
 	return result(out, payload, err)
 }
 
+// sops_age_public_key derives the native age public key ("age1…") that
+// corresponds to privateKey, without decrypting anything — SOPS-38 phase F3.
+// Detecting a read-only ciphertext file (one whose recipients do not include
+// the session's own key) needs the session's *public* key to compare against
+// a file's own recipient metadata, and the Swift side holds only the private
+// identity a user pasted in. This is the one call that turns that into the
+// public key it corresponds to.
+//
+//export sops_age_public_key
+func sops_age_public_key(agePrivateKey *C.char, out **C.char) C.int {
+	payload, err := gobridge.Guard(gobridge.OpDerivingPublicKey, func() ([]byte, error) {
+		public, err := gobridge.AgePublicKey(C.GoString(agePrivateKey))
+		if err != nil {
+			return nil, err
+		}
+		return []byte(public), nil
+	})
+	return result(out, payload, err)
+}
+
 // sops_free releases a string one of the entry points above returned.
 //
 // # The guard here protects nothing, and saying so is the point

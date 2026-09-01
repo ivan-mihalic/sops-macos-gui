@@ -358,8 +358,45 @@ struct SecretDocumentViewModelTests {
         #expect(!vm.isDirty)
     }
 
-    @Test("a file that fails to decrypt reports failed and renders nothing editable")
-    func failedDecryptReportsFailedWithNoRows() async throws {
+    /// SOPS-38 phase F3: a wrong key used to fold into `.failed` — the same
+    /// bucket as a damaged file or a bad MAC. That conflated "someone else's
+    /// project, working as designed" with "this file is broken", so it now
+    /// reaches its own state instead. See `LoadState.readOnlyCiphertext`'s
+    /// own doc comment.
+    @Test("a file this session's key cannot decrypt reports readOnlyCiphertext, never failed")
+    func wrongKeyReportsReadOnlyCiphertextWithNoRows() async throws {
+        let owner = try AgeKeyPair.generate()
+        let stranger = try AgeKeyPair.generate()
+        let fileURL = try encryptedFixture(sampleYAML, key: owner)
+        let onDiskCiphertext = try String(contentsOf: fileURL, encoding: .utf8)
+
+        let store = SessionKeyStore()
+        try store.importKey(stranger.private)
+
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
+        await vm.load()
+
+        guard case .readOnlyCiphertext(let reason, let rawCiphertext, let recipients) = vm.loadState else {
+            Issue.record("expected .readOnlyCiphertext, got \(vm.loadState)")
+            return
+        }
+        #expect(reason.contains("none of the keys"), Comment(rawValue: reason))
+        // The raw bytes handed to the view are exactly what is on disk —
+        // never decrypted, never re-derived from anything this app computed.
+        #expect(rawCiphertext == onDiskCiphertext)
+        // Read from the file's own metadata, no identity needed: the
+        // stranger's key is absent and the owner's is present.
+        #expect(recipients == [owner.public])
+        #expect(vm.rows.isEmpty, "a read-only ciphertext load must render nothing editable")
+        #expect(!vm.isDirty)
+    }
+
+    /// The message text itself must still lead with the wrong-key
+    /// explanation and keep the engine's own diagnostic underneath — this
+    /// state carries the exact same `reason` `.failed` used to, just under a
+    /// different case name.
+    @Test("readOnlyCiphertext's reason leads with the wrong-key explanation")
+    func readOnlyCiphertextReasonExplainsTheWrongKey() async throws {
         let owner = try AgeKeyPair.generate()
         let stranger = try AgeKeyPair.generate()
         let fileURL = try encryptedFixture(sampleYAML, key: owner)
@@ -370,13 +407,40 @@ struct SecretDocumentViewModelTests {
         let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         await vm.load()
 
-        guard case .failed(let message) = vm.loadState else {
-            Issue.record("expected .failed, got \(vm.loadState)")
+        guard case .readOnlyCiphertext(let reason, _, _) = vm.loadState else {
+            Issue.record("expected .readOnlyCiphertext, got \(vm.loadState)")
             return
         }
-        #expect(message.contains("none of the keys"), Comment(rawValue: message))
-        #expect(vm.rows.isEmpty, "a failed load must render nothing editable")
-        #expect(!vm.isDirty)
+        #expect(reason.hasPrefix(LocalizedKey.editorLoadFailedWrongKey.text))
+    }
+
+    /// A genuinely damaged file — not a wrong key at all — must still reach
+    /// `.failed`, never `.readOnlyCiphertext`. Reuses the same retyped-tag
+    /// corruption `noErrorStringCarriesARowValue` below already proves
+    /// reliably fails decryption for a reason that is not a missing
+    /// identity: the *correct* key is imported here, so any failure can only
+    /// come from the corruption, never from `.noMatchingIdentity`.
+    @Test("a damaged file that is not a wrong-key problem still reports failed")
+    func genuinelyDamagedFileStillReportsFailed() async throws {
+        let owner = try AgeKeyPair.generate()
+        let fileURL = try encryptedFixture("api_key: retyped\nother: fine\n", key: owner)
+        var lines = try String(contentsOf: fileURL, encoding: .utf8).components(separatedBy: "\n")
+        guard let index = lines.firstIndex(where: { $0.hasPrefix("api_key: ENC[") }) else {
+            throw FixtureError("fixture has no encrypted api_key")
+        }
+        lines[index] = lines[index].replacingOccurrences(of: ",type:str]", with: ",type:int]")
+        try lines.joined(separator: "\n").write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let store = SessionKeyStore()
+        try store.importKey(owner.private)
+
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
+        await vm.load()
+
+        guard case .failed = vm.loadState else {
+            Issue.record("expected .failed for a damaged (non-wrong-key) file, got \(vm.loadState)")
+            return
+        }
     }
 
     // MARK: Loading
@@ -833,7 +897,13 @@ struct SecretDocumentViewModelTests {
         }
     }
 
-    @Test("save() right after a failed load fails rather than claiming saved")
+    /// SOPS-38 phase F3: a wrong key now reaches `.readOnlyCiphertext`, not
+    /// `.failed` (see `LoadState.readOnlyCiphertext`'s own doc comment) —
+    /// but `save()`'s own guard (`loadState == .loaded`) does not care which
+    /// non-`.loaded` state it is looking at, so the outcome this test is
+    /// really about, "a save from a non-loaded document still refuses",
+    /// holds exactly as before.
+    @Test("save() right after a read-only-ciphertext load fails rather than claiming saved")
     func saveAfterFailedLoadFails() async throws {
         let owner = try AgeKeyPair.generate()
         let stranger = try AgeKeyPair.generate()
@@ -843,8 +913,8 @@ struct SecretDocumentViewModelTests {
 
         let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         await vm.load()
-        guard case .failed = vm.loadState else {
-            Issue.record("expected the wrong key to fail the load")
+        guard case .readOnlyCiphertext = vm.loadState else {
+            Issue.record("expected the wrong key to reach .readOnlyCiphertext, got \(vm.loadState)")
             return
         }
         #expect(!vm.isDirty)
@@ -852,7 +922,7 @@ struct SecretDocumentViewModelTests {
         let outcome = await vm.save()
 
         guard case .failed = outcome else {
-            Issue.record("expected .failed after a failed load, got \(outcome)")
+            Issue.record("expected .failed after a readOnlyCiphertext load, got \(outcome)")
             return
         }
     }
@@ -881,13 +951,17 @@ struct SecretDocumentViewModelTests {
         try store.importKey(stranger.private)
         await vm.load()
 
-        guard case .failed = vm.loadState else {
-            Issue.record("expected the reload with the wrong key to fail, got \(vm.loadState)")
+        // SOPS-38 phase F3: this is now `.readOnlyCiphertext`, not `.failed`
+        // — see `LoadState.readOnlyCiphertext`'s own doc comment. The
+        // property this test is actually pinning is unchanged either way:
+        // no stale rows, and `save()` still refuses.
+        guard case .readOnlyCiphertext = vm.loadState else {
+            Issue.record("expected the reload with the wrong key to reach .readOnlyCiphertext, got \(vm.loadState)")
             return
         }
-        // The never-an-empty-form property: a failed reload must not leave
-        // the previous load's rows sitting around looking like a live,
-        // savable document.
+        // The never-an-empty-form property: a reload that lands here must
+        // not leave the previous load's rows sitting around looking like a
+        // live, savable document.
         #expect(vm.rows.isEmpty)
         #expect(!vm.isDirty)
 
@@ -895,7 +969,7 @@ struct SecretDocumentViewModelTests {
         // worse, the stale in-memory state) over the file.
         let outcome = await vm.save()
         guard case .failed = outcome else {
-            Issue.record("expected .failed after a failed reload, got \(outcome)")
+            Issue.record("expected .failed after a readOnlyCiphertext reload, got \(outcome)")
             return
         }
 
