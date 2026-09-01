@@ -357,9 +357,12 @@ enum Catalog {
         let empty = try await Fixtures.editorEmptyDocumentViewModel()
         let needsKey = await Fixtures.editorNeedsKeyViewModel()
         let failed = try await Fixtures.editorLoadFailedViewModel()
+        let readOnlyCiphertext = try await Fixtures.editorReadOnlyCiphertextViewModel()
         let (pending, pendingSelection) = try await Fixtures.editorPendingChangesViewModel()
         let (revealed, revealedRowIDs) = try await Fixtures.editorRevealedRowViewModel()
         let dotenv = try await Fixtures.editorDotenvViewModel()
+        let json = try await Fixtures.editorJSONViewModel()
+        let ini = try await Fixtures.editorINIViewModel()
 
         let editorSize = CGSize(width: 760, height: 560)
         func editor(_ name: String, _ model: SecretDocumentViewModel, fileName: String) -> Snapshot {
@@ -405,7 +408,11 @@ enum Catalog {
             },
             editor("editor-empty-document", empty, fileName: "empty.secrets.yaml"),
             editor("editor-needs-key", needsKey, fileName: "needs-key.secrets.yaml"),
-            editor("editor-load-failed", failed, fileName: "wrong-key.secrets.yaml"),
+            editor("editor-load-failed", failed, fileName: "damaged.secrets.yaml"),
+            // SOPS-38 phase F3: the real read-only ciphertext view — raw
+            // ciphertext, the file's own (unregistered) recipient, and the
+            // wrong-key reason. See `CiphertextReadOnlyView`.
+            editor("editor-readonly-ciphertext", readOnlyCiphertext, fileName: "wrong-key.secrets.yaml"),
             // Task 8b: the +/- affordance live, a row added in this session,
             // and a row removed — the state that did not exist before.
             Snapshot("editor-pending-changes", size: editorSize) {
@@ -439,6 +446,17 @@ enum Catalog {
             // legitimate there.
             Snapshot("editor-add-sheet-dotenv", size: CGSize(width: 460, height: 330)) {
                 Fixtures.addRowSheetDotenv()
+            },
+            // SOPS-38 phase F2 task 4: the real per-format capability matrix
+            // for json and ini — json renders exactly like YAML (nested map,
+            // list); ini shows two sections, and its own add sheet at the
+            // root state shows the message this app gives instead of a dead
+            // end, since sops's INI store requires every root entry to be a
+            // section and this app's Add API can never create one.
+            editor("editor-json", json, fileName: "production.secrets.json"),
+            editor("editor-ini", ini, fileName: "production.secrets.ini"),
+            Snapshot("editor-add-sheet-ini-root-refused", size: CGSize(width: 460, height: 330)) {
+                Fixtures.addRowSheetINIRootRefused()
             },
         ]
     }

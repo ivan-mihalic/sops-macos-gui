@@ -284,4 +284,56 @@ struct ProjectScanUndisclosedScopeTests {
             Issue.record("reported no encrypted files over a directory that has one: \(reason)")
         }
     }
+
+    /// SOPS-38 phase F2 task 3 review: `SopsMetadataShape.isJSONMetadata`
+    /// moved from a substring scan to a real `JSONSerialization` parse (to
+    /// close a false-positive on an ordinary JSON document with its own
+    /// top-level `mac`/`version` fields — see
+    /// `SopsMetadataShapeTests.deviceInventoryJSONIsNotEncrypted`). That
+    /// parse honestly fails on a tail truncated mid-document — a JSON
+    /// document is one value, half of one does not parse — which on its own
+    /// would have made a real, oversized encrypted JSON file silently
+    /// invisible, the same defect the YAML sibling test above pins for YAML.
+    /// `ProjectScanner.looksLikeTruncatedSopsBlock` was taught JSON's own
+    /// near-tail shape to close that gap; this proves the whole mitigation
+    /// end to end: escalate to a wider read, parse the now-complete
+    /// document, classify it.
+    ///
+    /// Cheaper than the YAML sibling's 200 real age recipients: one
+    /// recipient and one oversized *plaintext* field push the file past
+    /// `maxSniffedFileBytes` just as well, because sops always writes its
+    /// own metadata block *after* every plaintext key — the block itself
+    /// stays small; it's what precedes it that is oversized. Sized to also
+    /// stay under `maxEscalatedSniffBytes`, so the second, wider read
+    /// captures the whole file (offset 0) and this pins the escalation path
+    /// specifically, not a coincidental pass through some other branch.
+    @Test("an encrypted JSON file whose metadata block is bigger than the tail read is not reported as absent")
+    func oversizedJSONMetadataBlockIsNotInvisible() async throws {
+        let root = try ProjectFixture.makeDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try ProjectFixture.gitInit(root)
+
+        let key = try ProjectFixture.ageKeyPair()
+        try ProjectFixture.write("creation_rules:\n  - age: \(key.public)\n", to: root, at: ".sops.yaml")
+
+        let padding = String(repeating: "x", count: 100_000)
+        let body = try ProjectFixture.encryptedJSON("{\"padding\": \"\(padding)\"}", to: [key.public])
+        try ProjectFixture.write(body, to: root, at: "secrets.json")
+
+        let size = body.utf8.count
+        print("······ padded JSON sops file is \(size) bytes; tail read is \(ProjectScanner.maxSniffedFileBytes)")
+        #expect(size > ProjectScanner.maxSniffedFileBytes,
+                "test setup bug: the fixture must exceed the tail read to prove anything")
+        #expect(size < ProjectScanner.maxEscalatedSniffBytes,
+                "test setup bug: the fixture must fit inside the escalated read, or this proves nothing about that path specifically")
+
+        let findings = await run(root)
+        dump("oversized JSON metadata block", findings)
+
+        let recipientFinding = try #require(recipients(findings))
+        #expect(!recipientFinding.detail.contains("padding"))
+        if case .skipped(let reason) = recipientFinding.status {
+            Issue.record("reported no encrypted files over a directory that has one: \(reason)")
+        }
+    }
 }

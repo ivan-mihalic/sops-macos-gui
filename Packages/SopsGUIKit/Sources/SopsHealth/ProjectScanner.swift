@@ -7,29 +7,51 @@ import SopsEngine
 /// re-read the file a second time after `encryptedFiles(under:)` already
 /// paid that cost once.
 ///
-/// `format` names which on-disk shape `tail` decoded from — `.yaml` or
-/// `.dotenv`, the two serializations this build can read recipients out of
-/// (`EncryptedFileMetadata`) and, for YAML today, edit. JSON and INI sops
-/// documents never produce a `SniffedFile` at all — see
-/// `ScannedTree.encryptedInOtherFormats` — so `format` here is never
-/// anything else. `SopsFileFormat` has no default anywhere in this app (see
-/// its own doc comment), and this is no exception: every `SniffedFile` states
-/// which shape it is, rather than a caller assuming YAML.
+/// `format` names which on-disk shape `tail` decoded from — `.yaml`,
+/// `.dotenv`, `.json` or `.ini`, all four serializations this build can read
+/// recipients out of (`EncryptedFileMetadata`) and, for YAML today, edit.
+/// `SopsFileFormat` has no default anywhere in this app (see its own doc
+/// comment), and this is no exception: every `SniffedFile` states which
+/// shape it is, rather than a caller assuming YAML.
 public struct SniffedFile: Sendable {
     public let url: URL
     let tail: String
     public let format: SopsFileFormat
+
+    /// The native age public keys this file is wrapped for, read straight
+    /// from its own `sops:` metadata — no decryption, no private identity
+    /// needed. A thin public wrapper around
+    /// `EncryptedFileMetadata.recipients(inEncryptedFile:)` for callers
+    /// outside this module (SOPS-38 phase F3: the file list, detecting
+    /// read-only ciphertext) that need the derived recipient list but have
+    /// no business holding the raw tail text itself — `tail` stays internal,
+    /// only what is actually needed crosses the module boundary.
+    ///
+    /// Empty for a file this app cannot parse as any of the four known
+    /// shapes, or one that declares no age recipients at all (a PGP/KMS-only
+    /// file, or metadata this scan could not read) — a caller must treat
+    /// empty as "unknown", never as "this file protects nobody".
+    public var recipients: [String] { EncryptedFileMetadata.recipients(inEncryptedFile: tail) }
 }
 
 /// What one walk of a project tree found.
 public struct ScannedTree: Sendable {
     /// Files carrying sops metadata this build can read recipients out of —
-    /// a YAML `sops:` metadata block or a dotenv `sops_`-prefixed one. See
-    /// `SniffedFile.format` for which.
+    /// a YAML `sops:` metadata block, a dotenv `sops_`-prefixed one, a JSON
+    /// `sops` object, or an INI `[sops]` section. See `SniffedFile.format`
+    /// for which. All four of sops's own stores land here as of SOPS-38
+    /// phase F2 task 3 — see `encryptedInOtherFormats` below for what, if
+    /// anything, is left.
     public var encrypted: [SniffedFile] = []
-    /// Files carrying sops metadata in some other serialization (JSON, INI).
-    /// Recorded, not ignored: they are reported as unverifiable rather than
-    /// quietly left out of the count.
+    /// Files carrying sops metadata this build does not recognise as any of
+    /// the four shapes above — reserved for a future sops store this app
+    /// has not been taught yet, since sops itself has no fifth one today.
+    /// In practice this is empty for every project this build can classify
+    /// at all; it stays a real field rather than being removed so a future
+    /// format is a case to add here, not a silent misclassification.
+    /// Recorded, not ignored, on the rare chance it is not: a file landing
+    /// here is reported as unverifiable rather than quietly left out of the
+    /// count.
     public var encryptedInOtherFormats: [URL] = []
     /// Files whose *names* conventionally hold plaintext secrets and
     /// which carry no sops metadata at all.
@@ -662,43 +684,69 @@ public struct ProjectScanner {
             // `nonYAMLKind` is the same structural confirmation
             // `isNonYAMLMetadata` used to collapse into a bare `Bool` — now
             // it also says *which* non-YAML store wrote it, which is what
-            // lets dotenv take a different branch than JSON/INI below.
+            // lets each one carry its own `SopsFileFormat` into
+            // `tree.encrypted` rather than all three sharing one case.
+            //
+            // Dotenv, JSON and INI are, as of SOPS-38 phase F2 task 3, all
+            // three formats this build can actually read recipients out of
+            // (`EncryptedFileMetadata`, taught the JSON `sops` object's
+            // shape and the INI `[sops]` section's flattened keys alongside
+            // this task, mirroring the dotenv shape it already knew) — so
+            // every one of them belongs in `tree.encrypted`, verified,
+            // rather than `encryptedInOtherFormats`, unverifiable.
             switch SopsMetadataShape.nonYAMLKind(text) {
             case .dotenv:
-                // Dotenv is the second format this build can actually read
-                // recipients out of (`EncryptedFileMetadata`, taught the
-                // `sops_age__list_N__map_recipient=` shape alongside this
-                // task) — so it belongs in `tree.encrypted`, verified,
-                // rather than `encryptedInOtherFormats`, unverifiable. JSON
-                // and INI stay unverifiable: nothing on the Swift side reads
-                // their metadata shape yet.
                 return .encrypted(SniffedFile(url: url, tail: text, format: .dotenv))
-            case .json, .ini:
-                return .otherFormat(url)
+            case .json:
+                return .encrypted(SniffedFile(url: url, tail: text, format: .json))
+            case .ini:
+                return .encrypted(SniffedFile(url: url, tail: text, format: .ini))
             case nil:
                 // The byte-level marker matched, but nothing sops actually
                 // wrote confirmed it structurally — the same "merely
                 // mentions it" case the YAML branch above guards against.
+                // Nothing routes to `.otherFormat` here any more — see
+                // `ScannedTree.encryptedInOtherFormats`'s doc comment for
+                // why that case still exists in the model.
                 break
             }
         }
         return nil
     }
 
-    /// Whether a tail looks like the *inside* of a sops YAML metadata block
-    /// whose opening `sops:` key lies further back than this read reached.
+    /// Whether a tail looks like the *inside* of a sops YAML **or JSON**
+    /// metadata block whose opening key (YAML's `sops:`, JSON's own opening
+    /// `{`) lies further back than this read reached.
     ///
     /// Byte-level and cheap, and gated by the caller on "the read was truncated
     /// and nothing else matched", so in a real project it runs on almost
     /// nothing. `lastmodified`, `mac` and `version` are written by every sops
-    /// YAML document unconditionally and sort after `age`, so they are exactly
-    /// the part of an oversized block that stays inside a 64 KiB tail. All
-    /// three are required together because any one of them alone is an ordinary
-    /// word to find in an arbitrary 64 KiB of text.
+    /// document unconditionally (in both stores) and sort after `age`, so they
+    /// are exactly the part of an oversized block that stays inside a 64 KiB
+    /// tail. All three are required together, per style, because any one of
+    /// them alone is an ordinary word to find in an arbitrary 64 KiB of text.
+    ///
+    /// JSON's own markers were added alongside `SopsMetadataShape
+    /// .isJSONMetadata`'s move to a real `JSONSerialization` parse (SOPS-38
+    /// phase F2 task 3 review): that parse honestly fails on a tail that
+    /// starts mid-document — a JSON document is one value, and half of one
+    /// does not parse — so without a JSON-shaped trigger here, a legitimately
+    /// oversized encrypted JSON file would have silently stopped being
+    /// escalated to a wider read at all, the exact false-negative direction
+    /// `SopsMetadataShape`'s own doc comment says is the dangerous one. INI
+    /// needs no equivalent: its own structural check
+    /// (`SopsMetadataShape.isINIMetadata`) already worked line-by-line from
+    /// whatever `[sops]` header the tail happens to contain, the same way
+    /// YAML's does, so a truncated INI tail was never the gap JSON's
+    /// parse-the-whole-value approach newly created.
     private static func looksLikeTruncatedSopsBlock(_ tail: Data) -> Bool {
-        tail.range(of: Self.lastModifiedMarker) != nil
+        let yamlShaped = tail.range(of: Self.lastModifiedMarker) != nil
             && tail.range(of: Self.macKeyMarker) != nil
             && tail.range(of: Self.versionKeyMarker) != nil
+        let jsonShaped = tail.range(of: Self.jsonLastModifiedMarker) != nil
+            && tail.range(of: Self.jsonMacKeyMarker) != nil
+            && tail.range(of: Self.jsonVersionKeyMarker) != nil
+        return yamlShaped || jsonShaped
     }
 
     /// The synchronous directory walk: decides which directories are
@@ -1175,10 +1223,10 @@ public struct ProjectScanner {
     /// *candidate*, confirmed structurally and disambiguated by
     /// `SopsMetadataShape.nonYAMLKind` — on its own this matches any file
     /// that happens to contain the bytes, including this very file. Which of
-    /// the three it actually is (and therefore whether the caller routes it
-    /// to `tree.encrypted` or `tree.encryptedInOtherFormats`) is decided
-    /// after this filter, not by it — this stays one shared cheap filter
-    /// for all three rather than three separate per-file byte scans.
+    /// the three it actually is (and therefore which `SopsFileFormat` the
+    /// resulting `SniffedFile` carries) is decided after this filter, not by
+    /// it — this stays one shared cheap filter for all three rather than
+    /// three separate per-file byte scans.
     ///
     /// Operates on raw bytes, not a decoded `String` — see `classify`'s doc
     /// comment for why.
@@ -1198,6 +1246,12 @@ public struct ProjectScanner {
     private static let lastModifiedMarker = Data("lastmodified: ".utf8)
     private static let macKeyMarker = Data("mac: ".utf8)
     private static let versionKeyMarker = Data("version: ".utf8)
+    // JSON's own equivalents — quoted keys, `": "` rather than `: ` — for
+    // `looksLikeTruncatedSopsBlock`'s JSON-shaped branch. See that
+    // function's doc comment for why these exist alongside the YAML three.
+    private static let jsonLastModifiedMarker = Data("\"lastmodified\": ".utf8)
+    private static let jsonMacKeyMarker = Data("\"mac\": ".utf8)
+    private static let jsonVersionKeyMarker = Data("\"version\": ".utf8)
 
     /// Drops a leading UTF-8 byte-order mark, if present, from a tail read.
     /// See `classify`'s doc comment for why this has to happen before any

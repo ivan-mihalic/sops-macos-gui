@@ -332,6 +332,90 @@ struct ProjectAccessApplySeparationTests {
         #expect(try RotationDebtLedger.load(in: root).isEmpty)
     }
 
+    /// SOPS-38 phase F2 task 5: `ProjectAccessModel`/`RecipientAccessModel`
+    /// and `ProjectRecipientApplier` beneath it have been format-generic
+    /// since F1 — they iterate `plan.filesInScope` by each file's own
+    /// `ScopedFile.format`, never assuming YAML — so this is a regression
+    /// test, not new plumbing: nothing in either type changed for this test
+    /// to pass. It proves the claim at the layer a user actually drives
+    /// (stage a recipient, `applyToFiles()`), covering all four sops
+    /// formats this app supports in one project, mirroring
+    /// `ProjectRecipientApplierTests.mixedProjectRewrapsAllFourFormats`
+    /// (`SopsProjectsTests`) one layer up, through the real UI model instead
+    /// of the applier directly.
+    @Test("re-wrapping a project with all four sops formats re-wraps every file, decryptable by the newly added recipient")
+    func fileApplyRewrapsAllFourFormats() async throws {
+        let owner = try ProjectAgeKeyPair.generate()
+        let added = try ProjectAgeKeyPair.generate()
+        let root = try projectScratchDirectory()
+
+        try """
+            creation_rules:
+              - path_regex: .*
+                age: \(owner.public)
+
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+
+        let yamlEncrypted = try SopsBridge.encrypt(
+            projectPlainYAML, format: .yaml, recipients: [owner.public])
+        try yamlEncrypted.write(
+            to: root.appendingPathComponent("secret.yaml"), atomically: true, encoding: .utf8)
+
+        let dotenvEncrypted = try SopsBridge.encrypt(
+            "DB_PASSWORD=hunter2\n", format: .dotenv, recipients: [owner.public])
+        try dotenvEncrypted.write(
+            to: root.appendingPathComponent(".env"), atomically: true, encoding: .utf8)
+
+        // Genuine JSON/INI syntax — each format's own store parser reads
+        // this on encrypt, not a YAML parser (see
+        // `ProjectRecipientApplierTests.mixedProjectRewrapsAllFourFormats`'s
+        // own comment for the measured reason this matters).
+        let jsonEncrypted = try SopsBridge.encrypt(
+            "{\"api_key\": \"json-secret-value\"}\n", format: .json, recipients: [owner.public])
+        try jsonEncrypted.write(
+            to: root.appendingPathComponent("secret.json"), atomically: true, encoding: .utf8)
+
+        let iniEncrypted = try SopsBridge.encrypt(
+            "[db]\npassword = ini-secret-value\n", format: .ini, recipients: [owner.public])
+        try iniEncrypted.write(
+            to: root.appendingPathComponent("secret.ini"), atomically: true, encoding: .utf8)
+
+        let keyStore = SessionKeyStore()
+        try keyStore.importKey(owner.private)
+        let model = ProjectAccessModel(projectRoot: root, keyStore: keyStore)
+        await model.load()
+        model.stageAdd(added.public)
+        await model.refreshPlan()
+
+        #expect(model.plan?.filesInScope.count == 4)
+        #expect(Set(model.plan?.filesInScope.map(\.format) ?? []) == Set([.yaml, .dotenv, .json, .ini]))
+
+        #expect(await model.applyToFiles() == nil)
+
+        #expect(model.fileResults.count == 4)
+        #expect(model.fileResults.allSatisfy { $0.outcome == .updated })
+
+        let yamlBytes = try String(contentsOf: root.appendingPathComponent("secret.yaml"), encoding: .utf8)
+        #expect(Set(try SopsBridge.recipients(in: yamlBytes, format: .yaml)) == Set([owner.public, added.public]))
+        #expect(try SopsBridge.decrypt(yamlBytes, format: .yaml, agePrivateKey: added.private) == projectPlainYAML)
+
+        let dotenvBytes = try String(contentsOf: root.appendingPathComponent(".env"), encoding: .utf8)
+        #expect(Set(try SopsBridge.recipients(in: dotenvBytes, format: .dotenv)) == Set([owner.public, added.public]))
+        #expect(
+            try SopsBridge.decrypt(dotenvBytes, format: .dotenv, agePrivateKey: added.private)
+                == "DB_PASSWORD=hunter2\n")
+
+        let jsonBytes = try String(contentsOf: root.appendingPathComponent("secret.json"), encoding: .utf8)
+        #expect(Set(try SopsBridge.recipients(in: jsonBytes, format: .json)) == Set([owner.public, added.public]))
+        let jsonRows = try SopsBridge.decryptToRows(jsonBytes, format: .json, agePrivateKey: added.private)
+        #expect(jsonRows.first { $0.path == ["api_key"] }?.value == "json-secret-value")
+
+        let iniBytes = try String(contentsOf: root.appendingPathComponent("secret.ini"), encoding: .utf8)
+        #expect(Set(try SopsBridge.recipients(in: iniBytes, format: .ini)) == Set([owner.public, added.public]))
+        let iniRows = try SopsBridge.decryptToRows(iniBytes, format: .ini, agePrivateKey: added.private)
+        #expect(iniRows.first { $0.path == ["db", "password"] }?.value == "ini-secret-value")
+    }
+
     @Test("applying to files without a session key is refused before anything is read")
     func fileApplyWithoutAKeyIsRefused() async throws {
         let owner = try ProjectAgeKeyPair.generate()

@@ -87,7 +87,7 @@ import (
 // exportedEntryPointCount is asserted rather than derived so that adding an
 // entry point is a deliberate act that updates this number, and cannot happen
 // by accident.
-const exportedEntryPointCount = 13
+const exportedEntryPointCount = 14
 
 // TestEveryExportedEntryPointRecoversFromPanics checks the real main.go.
 func TestEveryExportedEntryPointRecoversFromPanics(t *testing.T) {
@@ -339,6 +339,152 @@ func TestDotenvFormatReachesGobridgeThroughDecryptToRowsAndUpdateRecipients(t *t
 	}
 	if !strings.Contains(string(dec), "DB_URL=postgres://x") || !strings.Contains(string(dec), "API_KEY=secret") {
 		t.Fatalf("rewrapped dotenv document lost content: %s", dec)
+	}
+}
+
+// TestJSONAndINIFormatsReachGobridgeThroughDecryptToRowsAndUpdateRecipients is
+// the JSON/INI sibling of
+// TestDotenvFormatReachesGobridgeThroughDecryptToRowsAndUpdateRecipients
+// (SOPS-38 phase F2, task 2): format="json" and format="ini" must each
+// select their own store through the //export functions, not merely avoid
+// crashing (TestBogusFormatFailsCleanlyAcrossEveryFormatTakingExport already
+// covers that). Task 1 (Engine/gobridge/json_test.go, ini_test.go) proved the
+// two-case toSopsFormat addition from the Go side; sops_decrypt_to_rows and
+// sops_update_recipients do not branch on format themselves — it is passed
+// straight through as gobridge.Format(C.GoString(format)) (main.go) — so
+// this is the same claim proved through the C-shaped entry points Swift
+// actually calls, not read off the source.
+//
+// # The discriminator is not format="yaml"
+//
+// TestDotenvFormatReachesGobridgeThroughDecryptToRowsAndUpdateRecipients uses
+// format="yaml" as its negative case, because a dotenv document's on-disk
+// shape is not valid YAML. That does not hold for JSON: a sops JSON document
+// is, byte for byte, also valid YAML (JSON is a syntactic subset of YAML
+// 1.2), and measured directly against this build (throwaway probe against
+// gobridge.DecryptToRows, deleted before this commit) format="yaml" against
+// a genuinely JSON-encrypted document **succeeds silently** and returns the
+// same rows — nothing here or in gobridge refuses it. So the negative case
+// for JSON is format="ini" (fails: gopkg.in/ini.v1 cannot parse a JSON
+// document's sops metadata block), and for INI, format="yaml" continues to
+// work as a negative case (an INI document is not valid YAML either) — both
+// verified against this exact build in the same probe, not assumed from one
+// format's behaviour applying to the other.
+func TestJSONAndINIFormatsReachGobridgeThroughDecryptToRowsAndUpdateRecipients(t *testing.T) {
+	owner, ownerPrivate := newTestAgeKey(t)
+
+	cases := []struct {
+		name        string
+		formatName  string
+		goFormat    gobridge.Format
+		plain       string
+		wrongFormat string // proven above to fail for this format's on-disk shape
+		wantPath    []string
+		wantValue   string
+	}{
+		{
+			name:        "json",
+			formatName:  "json",
+			goFormat:    gobridge.FormatJSON,
+			plain:       `{"db":{"url":"postgres://x"}}`,
+			wrongFormat: "ini",
+			wantPath:    []string{"db", "url"},
+			wantValue:   "postgres://x",
+		},
+		{
+			name:        "ini",
+			formatName:  "ini",
+			goFormat:    gobridge.FormatINI,
+			plain:       "[db]\nurl = postgres://x\n",
+			wrongFormat: "yaml",
+			wantPath:    []string{"db", "url"},
+			wantValue:   "postgres://x",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			encryptedBytes, err := gobridge.Encrypt([]byte(tc.plain), tc.goFormat,
+				gobridge.EncryptOpts{AgeRecipients: []string{owner}})
+			if err != nil {
+				t.Fatalf("seed fixture: gobridge.Encrypt: %v", err)
+			}
+
+			encrypted := goToCString(string(encryptedBytes))
+			format := goToCString(tc.formatName)
+			wrongFormat := goToCString(tc.wrongFormat)
+			key := goToCString(ownerPrivate)
+
+			// format=<own> on <own>'s document succeeds and finds the row this
+			// fixture seeded — proving the string actually selected a store
+			// that parsed real content, not merely "did not crash".
+			var rowsOut *_Ctype_char
+			status := sops_decrypt_to_rows(encrypted, format, key, &rowsOut)
+			if status != statusOK {
+				t.Fatalf("sops_decrypt_to_rows(format=%s) failed: %s", tc.formatName, cToGoString(rowsOut))
+			}
+			rowsJSON := cToGoString(rowsOut)
+			sops_free(rowsOut)
+
+			var rows []struct {
+				Path  []string `json:"path"`
+				Value string   `json:"value"`
+			}
+			if err := json.Unmarshal([]byte(rowsJSON), &rows); err != nil {
+				t.Fatalf("rows JSON did not decode: %v\n%s", err, rowsJSON)
+			}
+			found := false
+			for _, row := range rows {
+				if len(row.Path) != len(tc.wantPath) {
+					continue
+				}
+				match := true
+				for i := range row.Path {
+					if row.Path[i] != tc.wantPath[i] {
+						match = false
+						break
+					}
+				}
+				if match && row.Value == tc.wantValue {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("%s rows did not contain path %v = %q: %s", tc.formatName, tc.wantPath, tc.wantValue, rowsJSON)
+			}
+
+			// The discriminating half: the same bytes, a format proven above
+			// not to parse this document's on-disk shape. See this test's own
+			// doc comment for why that is not "yaml" for every case.
+			var wrongFormatOut *_Ctype_char
+			status = sops_decrypt_to_rows(encrypted, wrongFormat, key, &wrongFormatOut)
+			if status != statusFailure {
+				t.Fatalf("sops_decrypt_to_rows(format=%s) on a %s document unexpectedly succeeded: "+
+					"the format parameter is not reaching gobridge (status=%v)", tc.wrongFormat, tc.formatName, status)
+			}
+			sops_free(wrongFormatOut)
+
+			// sops_update_recipients: format must both read and re-emit its
+			// own store, and the result must decrypt under the new recipient.
+			newRecipient, newPrivate := newTestAgeKey(t)
+			recipientsJSON := goToCString(mustJSONString(t, []string{newRecipient}))
+
+			var updatedOut *_Ctype_char
+			status = sops_update_recipients(encrypted, format, recipientsJSON, key, &updatedOut)
+			if status != statusOK {
+				t.Fatalf("sops_update_recipients(format=%s) failed: %s", tc.formatName, cToGoString(updatedOut))
+			}
+			rewrapped := cToGoString(updatedOut)
+			sops_free(updatedOut)
+
+			dec, err := gobridge.Decrypt([]byte(rewrapped), tc.goFormat, newPrivate)
+			if err != nil {
+				t.Fatalf("re-decrypting the rewrapped document with the new recipient failed: %v", err)
+			}
+			if !strings.Contains(string(dec), tc.wantValue) {
+				t.Fatalf("rewrapped %s document lost content: %s", tc.formatName, dec)
+			}
+		})
 	}
 }
 

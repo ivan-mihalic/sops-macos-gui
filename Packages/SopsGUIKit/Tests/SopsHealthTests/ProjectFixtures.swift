@@ -85,6 +85,24 @@ ScratchDirectoryRegistry.shared.register(root)
         try SopsBridge.encrypt(plain, format: .dotenv, recipients: recipients)
     }
 
+    /// A genuinely sops-encrypted JSON document, produced by the same
+    /// in-process bridge the shipping app uses (SOPS-38 phase F2 task 2) —
+    /// never a hand-typed `"sops": {...}` object. `plain` must already be a
+    /// valid JSON document.
+    static func encryptedJSON(_ plain: String, to recipients: [String]) throws -> String {
+        try SopsBridge.encrypt(plain, format: .json, recipients: recipients)
+    }
+
+    /// A genuinely sops-encrypted INI document, produced by the same
+    /// in-process bridge the shipping app uses (SOPS-38 phase F2 task 2) —
+    /// never a hand-typed `[sops]` section. `plain` must already be a valid
+    /// INI document (the INI store's root must stay sections, so a bare
+    /// top-level key without a `[section]` above it is not something this
+    /// store can round-trip).
+    static func encryptedINI(_ plain: String, to recipients: [String]) throws -> String {
+        try SopsBridge.encrypt(plain, format: .ini, recipients: recipients)
+    }
+
     /// A genuinely sops-encrypted YAML document produced by the real `sops`
     /// binary, not the in-process bridge — the compatibility oracle for the
     /// cases where the two are expected to disagree (ticket #5: this app's

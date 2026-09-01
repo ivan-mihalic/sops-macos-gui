@@ -440,8 +440,8 @@ struct LocalizationTests {
     func pluralsResolve() {
         let one = String(format: LocalizedKey.filesOtherFormatNote.text, 1)
         let many = String(format: LocalizedKey.filesOtherFormatNote.text, 3)
-        #expect(one.hasPrefix("1 file uses a sops format"), "one-file footnote reads: \(one)")
-        #expect(many.hasPrefix("3 files use a sops format"), "many-file footnote reads: \(many)")
+        #expect(one.hasPrefix("1 file is sops-encrypted in a format"), "one-file footnote reads: \(one)")
+        #expect(many.hasPrefix("3 files are sops-encrypted in a format"), "many-file footnote reads: \(many)")
         #expect(!one.contains("%"), "unexpanded format specifier in: \(one)")
 
         let oneMore = String(format: LocalizedKey.projectsErrorDropPartial.text, "That folder isn't readable.", 1)

@@ -241,6 +241,19 @@ public enum CreationFailurePresenter {
                 title: .creationFailureTitle,
                 detail: "Could not create the folder \(path): \(reason)",
                 recovery: .creationRecoveryCheckFolderPermissions)
+        case .dotEnvSourceIncompatibleWithFormat(let format):
+            // `format` is always `.json` or `.ini` here — `create()`'s own
+            // guard never throws this case for `.yaml`/`.dotenv` (see
+            // `SecretFileCreator.Failure.dotEnvSourceIncompatibleWithFormat`'s
+            // own doc comment). Named anyway by its actual value rather than
+            // hand-writing "JSON or INI", so this sentence cannot drift from
+            // what the guard really checked.
+            return CreationFailureMessage(
+                title: .creationFailureTitle,
+                detail: "A .env import can only become a dotenv (.env) or YAML file, not "
+                    + "\(format.rawValue.uppercased()). Choose a destination name ending .env or .yaml, "
+                    + "or choose a different source for this file.",
+                recovery: .creationRecoveryChooseAnotherName)
         case .write(let error):
             // `error.description` is already a complete, situation-specific
             // sentence — for several `AtomicFileWriter.Error` cases it

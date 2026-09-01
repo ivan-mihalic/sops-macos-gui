@@ -3,12 +3,6 @@ import Testing
 import SopsEngine
 @testable import SopsHealth
 
-private let sopsBinary = ["/opt/homebrew/bin/sops", "/usr/local/bin/sops", "/usr/bin/sops"]
-    .first { FileManager.default.isExecutableFile(atPath: $0) }
-
-private let needsSopsCLI = Comment(
-    rawValue: "needs the real sops binary: the JSON and INI stores are not reachable through this app's bridge (YAML and dotenv only, as of Task 5/SOPS-38), so the only honest fixture for them is output the shipping sops actually wrote")
-
 /// PROPOSAL.md §3 metadata sniffing, second finding of the Task 14 brief.
 ///
 /// `ProjectScanner` finds encrypted files by searching every file's tail for a
@@ -37,17 +31,6 @@ struct SopsMetadataShapeTests {
         try ProjectFixture.write(contents, to: root, at: name)
         defer { try? FileManager.default.removeItem(at: root) }
         return await ProjectScanner.scan(root: root)
-    }
-
-    /// `sops -e` on a document of the given format, as text.
-    private func sopsEncrypted(_ plain: String, extension ext: String) throws -> String {
-        let sops = try #require(sopsBinary)
-        let dir = try ProjectFixture.makeDirectory("sops-cli")
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let file = dir.appendingPathComponent("doc.\(ext)")
-        try plain.write(to: file, atomically: true, encoding: .utf8)
-        let key = try ProjectFixture.ageKeyPair()
-        return try ProjectFixture.run(sops, ["-e", "--age", key.public, file.path])
     }
 
     // MARK: - Nothing sops wrote may stop being recognised
@@ -106,22 +89,41 @@ struct SopsMetadataShapeTests {
         #expect(tree.plaintextCandidates.isEmpty, "an encrypted .env is not a plaintext leak")
     }
 
-    @Test("a real sops JSON file is recognised", .enabled(if: sopsBinary != nil, needsSopsCLI))
+    /// SOPS-38 phase F2 task 3: JSON now reaches the real in-process bridge
+    /// (F2 task 2), and `EncryptedFileMetadata` learned its metadata shape
+    /// alongside this scanner change — so a JSON sops file is now
+    /// *verifiable*, `tree.encrypted`, not `tree.encryptedInOtherFormats`.
+    /// Mirrors `realDotenvIsRecognised` above; the CLI-only fixture this
+    /// test used before F2 task 3 is retired in favour of the bridge, the
+    /// same real-fixture standard the rest of this suite already holds
+    /// dotenv to.
+    @Test("a real sops JSON file is recognised as encrypted, not as another format")
     func realJSONIsRecognised() async throws {
-        let cipherText = try sopsEncrypted("{\"db\": \"hunter2\"}", extension: "json")
+        let key = try ProjectFixture.ageKeyPair()
+        let cipherText = try ProjectFixture.encryptedJSON("{\"db\": \"hunter2\"}", to: [key.public])
 
         let tree = try await scanOne("secrets.json", cipherText)
 
-        #expect(tree.encryptedInOtherFormats.count == 1)
+        #expect(tree.encrypted.count == 1,
+                "got: encrypted=\(tree.encrypted.count) other=\(tree.encryptedInOtherFormats.count)")
+        #expect(tree.encrypted.first?.format == .json)
+        #expect(tree.encryptedInOtherFormats.isEmpty)
+        #expect(EncryptedFileMetadata.recipients(inEncryptedFile: tree.encrypted[0].tail) == [key.public])
     }
 
-    @Test("a real sops INI file is recognised", .enabled(if: sopsBinary != nil, needsSopsCLI))
+    /// See `realJSONIsRecognised`'s doc comment — same change, INI side.
+    @Test("a real sops INI file is recognised as encrypted, not as another format")
     func realINIIsRecognised() async throws {
-        let cipherText = try sopsEncrypted("[db]\npassword=hunter2\n", extension: "ini")
+        let key = try ProjectFixture.ageKeyPair()
+        let cipherText = try ProjectFixture.encryptedINI("[db]\npassword=hunter2\n", to: [key.public])
 
         let tree = try await scanOne("secrets.ini", cipherText)
 
-        #expect(tree.encryptedInOtherFormats.count == 1)
+        #expect(tree.encrypted.count == 1,
+                "got: encrypted=\(tree.encrypted.count) other=\(tree.encryptedInOtherFormats.count)")
+        #expect(tree.encrypted.first?.format == .ini)
+        #expect(tree.encryptedInOtherFormats.isEmpty)
+        #expect(EncryptedFileMetadata.recipients(inEncryptedFile: tree.encrypted[0].tail) == [key.public])
     }
 
     // MARK: - Nothing that merely mentions sops may be recognised
@@ -169,6 +171,69 @@ struct SopsMetadataShapeTests {
 
         #expect(tree.encrypted.isEmpty)
         #expect(tree.encryptedInOtherFormats.isEmpty)
+    }
+
+    /// SOPS-38 phase F2 task 3 review finding: `isJSONMetadata` used to check
+    /// only "does `mac` appear anywhere, does `version` appear anywhere, does
+    /// `sops` appear anywhere followed by `{` anywhere" — three independent
+    /// substring searches with no requirement that `mac`/`version` actually
+    /// sit *inside* that `sops` object. An ordinary JSON document that
+    /// happens to have its own top-level `mac`/`version` fields (a device
+    /// inventory record is a completely ordinary shape for that) alongside
+    /// an unrelated top-level `sops` object satisfied all three independently
+    /// and was classified as an encrypted file — the exact class of bug
+    /// `SopsMetadataShape`'s own doc comment already names for YAML and Go
+    /// map literals, just not yet closed for JSON. Once classified, this
+    /// task's own scanner change routes it into `tree.encrypted`, so the app
+    /// would show it as an openable secrets file that fails to decrypt.
+    @Test("an ordinary JSON document with its own top-level mac/version fields is not an encrypted file")
+    func deviceInventoryJSONIsNotEncrypted() async throws {
+        let tree = try await scanOne(
+            "device.json",
+            """
+            {"mac": "00:11:22:33:44:55", "version": "1.0", "sops": {"foo": "bar"}}
+            """)
+
+        #expect(tree.encrypted.isEmpty,
+                "an ordinary record with sibling mac/version/sops fields must not be offered as an openable encrypted file")
+        #expect(tree.encryptedInOtherFormats.isEmpty)
+        #expect(SopsMetadataShape.nonYAMLKind("""
+            {"mac": "00:11:22:33:44:55", "version": "1.0", "sops": {"foo": "bar"}}
+            """) == nil)
+    }
+
+    /// The decision this task's review asked to be made explicit: a JSON
+    /// tail that cannot even be parsed — the shape a truncated read produces
+    /// when a document's own sops metadata sits past `maxSniffedFileBytes`
+    /// and the wider re-read in `ProjectScanner.classify` still doesn't
+    /// reach far enough back to include the opening `{` — is honestly *not*
+    /// detected as JSON metadata, rather than guessed at from whatever
+    /// substrings happen to survive the cut. This is the same "cannot verify
+    /// structurally, so do not guess" posture `isYAMLMetadata` already takes
+    /// (a document that ends mid-block fails its own `mac`/`version`
+    /// requirement) — the two now agree, even though YAML's own structural
+    /// check can partially work on a tail that starts mid-document (it only
+    /// ever looks at lines from `sops:` onward) while JSON's cannot (a
+    /// document is one value, and half of one does not parse). The real
+    /// mitigation for the false negative this implies is
+    /// `ProjectScanner.looksLikeTruncatedSopsBlock` now recognising JSON's
+    /// own near-tail shape too, so a legitimately oversized encrypted JSON
+    /// file gets the same wider-read chance YAML already had — see
+    /// `oversizedJSONMetadataBlockIsNotInvisible` below for the case that
+    /// exercises this end to end, and `ProjectScanner.classify`'s own doc
+    /// comment for how a still-truncated result becomes
+    /// `.metadataBlockTooLarge` rather than silence.
+    @Test("a JSON tail truncated before its own opening brace is not detected as metadata, not guessed at")
+    func truncatedJSONTailIsNotMetadata() {
+        // The tail end of a real document — starts mid-string, never opens
+        // the top-level object at all. Carries `"mac":`/`"version":` inside
+        // the `sops` object, exactly as a real file would; the only thing
+        // missing is the document's own opening `{`.
+        let truncatedTail = """
+            some-trailing-plaintext-value","sops":{"age":[{"recipient":"age1x","enc":"..."}],"mac":"ENC[...]","version":"3.13.3"}}
+            """
+        #expect(SopsMetadataShape.nonYAMLKind(truncatedTail) == nil,
+                "a tail that cannot parse as JSON at all must not be guessed at from its surviving substrings")
     }
 
     /// The sniffer flagging its own source. This is the literal line from
@@ -313,6 +378,180 @@ struct SopsMetadataShapeTests {
         #expect(SopsMetadataShape.isNonYAMLMetadata(dotenv))
         #expect(!SopsMetadataShape.isNonYAMLMetadata(yaml))
         #expect(!SopsMetadataShape.isNonYAMLMetadata("just prose\n"))
+    }
+}
+
+/// SOPS-38 phase F3 task 4 (F2 review M4): `isYAMLMetadata`/`isINIMetadata`
+/// (and, for symmetry, the JSON and dotenv readings inside `nonYAMLKind`)
+/// used to require only that a `mac` *key* be present, never that its
+/// *value* carry the shape sops's own MAC actually has. A plaintext file
+/// that merely quotes or hand-writes a `[sops]`/`sops:` section with
+/// ordinary-looking `mac`/`version` entries — not a real sops document —
+/// satisfied every check this file already had and was classified as
+/// encrypted.
+///
+/// F3 context for why this matters now, not merely in principle: F3's new
+/// read-only "ciphertext" editor view (`ReadOnlyCiphertextDetector`) trusts
+/// this classification to decide whether a file opens in that view at all.
+/// A false positive here does not just mislabel a row in the file list —
+/// it opens a plaintext file in a view that confidently tells the user it
+/// is looking at ciphertext.
+///
+/// The fix anchors every format's `mac` check on the one shape sops's own
+/// serializer writes unconditionally in every store: the value always
+/// starts with `ENC[` (`ENC[AES256_GCM,data:…,iv:…,tag:…,type:str]` in
+/// every store this app produces or reads). Verified against the real
+/// in-process bridge for all four formats, captured once by hand against
+/// `SopsBridge.encrypt` for each `SopsFileFormat`:
+/// ```
+/// YAML:   mac: ENC[AES256_GCM,data:…]
+/// dotenv: sops_mac=ENC[AES256_GCM,data:…]
+/// JSON:   "mac": "ENC[AES256_GCM,data:…]"
+/// INI:    mac                         = ENC[AES256_GCM,data:…]
+/// ```
+///
+/// No truncation hazard: `ProjectScanner.tailBytes(of:maxBytes:)` always
+/// reads a *suffix* of the file ending at its true end-of-file
+/// (`offset = size - readSize`), never a middle slice. Every one of these
+/// four checks only asks about the `mac` line/entry *after* it has already
+/// located the block's own header (YAML's `sops:` line, the INI `[sops]`
+/// header, JSON's `sops` key, dotenv's `sops_mac=` prefix) — and once that
+/// header is found inside the tail, everything from there to the file's
+/// real end is present in full, because the tail read never stops short of
+/// EOF. So whenever any of these four checks decides a `mac` key is
+/// present at all, that key's *value* is guaranteed complete too — the
+/// widened re-read `ProjectScanner.classify`/`looksLikeTruncatedSopsBlock`
+/// already perform for an oversized block (see `SopsMetadataShape`'s own
+/// doc comment) exists to get the block's *header* into view, not to
+/// protect a `mac` value that was already at risk of being cut off midway;
+/// it never was.
+@Suite("sops metadata mac value is anchored on ENC[, not merely present")
+struct SopsMetadataShapeMACAnchorTests {
+
+    private func scanOne(_ name: String, _ contents: String) async throws -> ScannedTree {
+        let root = try ProjectFixture.makeDirectory("mac-anchor")
+        try ProjectFixture.write(contents, to: root, at: name)
+        defer { try? FileManager.default.removeItem(at: root) }
+        return await ProjectScanner.scan(root: root)
+    }
+
+    // MARK: - Reproducing: a plaintext sops-shaped section with an
+    // ordinary-looking (non-ENC[) mac must not classify, in any format
+
+    @Test("a plaintext YAML sops: block with an ordinary mac value is not classified")
+    func plaintextYAMLWithOrdinaryMACIsNotClassified() async throws {
+        let doc = """
+            db_password: not-actually-encrypted
+            sops:
+                age:
+                    - recipient: age1exampleexampleexampleexampleexampleexampleexampleexamplex
+                lastmodified: "2026-08-09T00:00:00Z"
+                mac: not-a-real-mac-value
+                version: 3.13.2
+            """
+        let tree = try await scanOne("plain.yaml", doc)
+
+        #expect(tree.encrypted.isEmpty,
+                "a mac value that is not sops's own ENC[…] shape must not be classified as encrypted")
+        #expect(tree.encryptedInOtherFormats.isEmpty)
+        #expect(!SopsMetadataShape.isYAMLMetadata(doc))
+    }
+
+    @Test("a plaintext INI [sops] section with an ordinary mac value is not classified")
+    func plaintextINIWithOrdinaryMACIsNotClassified() async throws {
+        let doc = """
+            [data]
+            password = not-actually-encrypted
+
+            [sops]
+            age__list_0__map_recipient = age1exampleexampleexampleexampleexampleexampleexampleexamplex
+            lastmodified                = 2026-08-09T00:00:00Z
+            mac                         = not-a-real-mac-value
+            version                     = 3.13.2
+            """
+        let tree = try await scanOne("plain.ini", doc)
+
+        #expect(tree.encrypted.isEmpty,
+                "a mac value that is not sops's own ENC[…] shape must not be classified as encrypted")
+        #expect(tree.encryptedInOtherFormats.isEmpty)
+        #expect(SopsMetadataShape.nonYAMLKind(doc) == nil)
+    }
+
+    @Test("a plaintext JSON sops object with an ordinary mac value is not classified")
+    func plaintextJSONWithOrdinaryMACIsNotClassified() async throws {
+        let doc = """
+            {"db_password": "not-actually-encrypted", "sops": {"mac": "not-a-real-mac-value", "version": "3.13.2"}}
+            """
+        let tree = try await scanOne("plain.json", doc)
+
+        #expect(tree.encrypted.isEmpty,
+                "a mac value that is not sops's own ENC[…] shape must not be classified as encrypted")
+        #expect(tree.encryptedInOtherFormats.isEmpty)
+        #expect(SopsMetadataShape.nonYAMLKind(doc) == nil)
+    }
+
+    @Test("a plaintext dotenv sops_ block with an ordinary mac value is not classified")
+    func plaintextDotenvWithOrdinaryMACIsNotClassified() async throws {
+        let doc = """
+            DB_PASSWORD=not-actually-encrypted
+            sops_age__list_0__map_recipient=age1exampleexampleexampleexampleexampleexampleexampleexamplex
+            sops_lastmodified=2026-08-09T00:00:00Z
+            sops_mac=not-a-real-mac-value
+            sops_version=3.13.2
+            """
+        let tree = try await scanOne(".env.plain", doc)
+
+        #expect(tree.encrypted.isEmpty,
+                "a mac value that is not sops's own ENC[…] shape must not be classified as encrypted")
+        #expect(tree.encryptedInOtherFormats.isEmpty)
+        #expect(SopsMetadataShape.nonYAMLKind(doc) == nil)
+    }
+
+    // MARK: - Nothing sops actually wrote may stop being recognised — the
+    // real bridge fixture, all four formats, must still classify after the
+    // anchor is added. (Mirrors `realYAMLIsStillEncrypted` /
+    // `realDotenvIsRecognised` / `realJSONIsRecognised` / `realINIIsRecognised`
+    // above; kept here too as a direct regression pin right next to the
+    // change that could break them.)
+
+    @Test("a real bridge-encrypted file in every format still classifies as encrypted")
+    func realBridgeFixturesStillClassifyInEveryFormat() async throws {
+        let key = try ProjectFixture.ageKeyPair()
+
+        let yaml = try ProjectFixture.encrypted("db_password: hunter2\n", to: [key.public])
+        let dotenv = try ProjectFixture.encryptedDotenv("FOO=bar\n", to: [key.public])
+        let json = try ProjectFixture.encryptedJSON("{\"db\": \"hunter2\"}", to: [key.public])
+        let ini = try ProjectFixture.encryptedINI("[db]\npassword=hunter2\n", to: [key.public])
+
+        #expect(SopsMetadataShape.isYAMLMetadata(yaml))
+        #expect(SopsMetadataShape.nonYAMLKind(dotenv) == .dotenv)
+        #expect(SopsMetadataShape.nonYAMLKind(json) == .json)
+        #expect(SopsMetadataShape.nonYAMLKind(ini) == .ini)
+
+        let yamlTree = try await scanOne("secrets.yaml", yaml)
+        let dotenvTree = try await scanOne(".env", dotenv)
+        let jsonTree = try await scanOne("secrets.json", json)
+        let iniTree = try await scanOne("secrets.ini", ini)
+        #expect(yamlTree.encrypted.count == 1)
+        #expect(dotenvTree.encrypted.count == 1)
+        #expect(jsonTree.encrypted.count == 1)
+        #expect(iniTree.encrypted.count == 1)
+    }
+
+    // MARK: - The predicate directly, boundary cases
+
+    @Test("isYAMLMetadata requires the mac value itself to start with ENC[, not merely the key to be present")
+    func yamlMACValueMustStartWithENC() {
+        #expect(!SopsMetadataShape.isYAMLMetadata(
+            "sops:\n    mac: not-a-real-mac\n    version: 3.13.3\n"))
+        #expect(SopsMetadataShape.isYAMLMetadata(
+            "sops:\n    mac: ENC[AES256_GCM,data:x]\n    version: 3.13.3\n"))
+    }
+
+    @Test("a mac value that merely contains ENC[ later in the string does not satisfy the anchor")
+    func yamlMACValueMustStartNotContainENC() {
+        #expect(!SopsMetadataShape.isYAMLMetadata(
+            "sops:\n    mac: not-really-ENC[fake]\n    version: 3.13.3\n"))
     }
 }
 

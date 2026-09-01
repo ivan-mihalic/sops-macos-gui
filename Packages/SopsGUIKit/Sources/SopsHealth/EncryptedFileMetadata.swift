@@ -36,12 +36,21 @@ enum EncryptedFileMetadata {
     /// The full set of backend field names getsops/sops v3.13.3 itself
     /// writes for a non-age key (`stores.metadata` in `stores/stores.go`):
     /// `pgp`, `kms`, `gcp_kms`, `hckms`, `azure_kv`, `hc_vault`,
-    /// `key_groups`. Shared between the YAML and dotenv readers below —
-    /// both scan for the same field names, just flattened differently on
-    /// disk. See `nonAgeBackends(inEncryptedFile:)`'s doc comment for what
-    /// finding one means.
-    private static let nonAgeBackendKeys: Set<String> =
+    /// `key_groups`. Shared between the YAML, dotenv, JSON and INI readers
+    /// below — all four scan for the same field names, just flattened (or
+    /// not) differently on disk. See `nonAgeBackends(inEncryptedFile:)`'s
+    /// doc comment for what finding one means.
+    ///
+    /// Ordered, not a bare `Set`: the JSON and INI readers iterate this list
+    /// to build `found` (a `[String: Any]`/an unordered flattened-key scan
+    /// has no natural on-disk order of its own the way YAML's/dotenv's line
+    /// order does), and `Set`'s iteration order is not guaranteed stable —
+    /// a nondeterministic result here would make a multi-backend fixture's
+    /// test flaky for a reason that has nothing to do with the code under
+    /// test.
+    private static let nonAgeBackendKeysOrdered =
         ["pgp", "kms", "gcp_kms", "hckms", "azure_kv", "hc_vault", "key_groups"]
+    private static let nonAgeBackendKeys = Set(nonAgeBackendKeysOrdered)
 
     /// Public keys a sops-encrypted file is wrapped for, read from its
     /// `sops.age[].recipient` metadata.
@@ -51,12 +60,12 @@ enum EncryptedFileMetadata {
     /// carrying a YAML `sops:` block, so a non-empty result already answers
     /// "this is YAML" with no separate flag to keep in sync — and no call
     /// site has to spell `SopsFileFormat` just to read a file it already
-    /// has the bytes of. See `ProjectScanner.classify` for where the two
+    /// has the bytes of. See `ProjectScanner.classify` for where the four
     /// shapes are actually told apart (structurally, via
     /// `SopsMetadataShape`) before a `SniffedFile` is ever produced.
     static func recipients(inEncryptedFile text: String) -> [String] {
         let yamlLines = sopsBlockLines(in: text)
-        guard !yamlLines.isEmpty else { return recipientsFromDotenv(text) }
+        guard !yamlLines.isEmpty else { return nonYAMLRecipients(text) }
         return yamlLines.compactMap { line in
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard trimmed.hasPrefix("- recipient:") || trimmed.hasPrefix("recipient:") else { return nil }
@@ -79,7 +88,7 @@ enum EncryptedFileMetadata {
     /// — see that function's doc comment.
     static func nonAgeBackends(inEncryptedFile text: String) -> [String] {
         let yamlLines = sopsBlockLines(in: text)
-        guard !yamlLines.isEmpty else { return nonAgeBackendsFromDotenv(text) }
+        guard !yamlLines.isEmpty else { return nonYAMLNonAgeBackends(text) }
         var found: [String] = []
         for line in yamlLines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -92,6 +101,41 @@ enum EncryptedFileMetadata {
             }
         }
         return found
+    }
+
+    // MARK: - Non-YAML dispatch
+
+    /// Routes to whichever non-YAML store's shape `text` actually has, for
+    /// `recipients(inEncryptedFile:)`. `nonYAMLKind` is the exact same
+    /// structural check `ProjectScanner.classify` already used to decide
+    /// this text belongs in `tree.encrypted` at all and which
+    /// `SopsFileFormat` its `SniffedFile` carries — calling it again here,
+    /// rather than threading that answer down as a parameter, is what keeps
+    /// the two readings from ever being able to drift apart (see
+    /// `SopsBlockAgreementTests` at the bottom of `SopsMetadataShapeTests
+    /// .swift` for why two independent readings of "what shape is this"
+    /// disagreeing is exactly the class of bug this file exists to avoid).
+    /// `nil` is unreached in practice — every caller of this type only ever
+    /// has text one of the three structural checks already matched — but is
+    /// handled honestly (no recipients) rather than force-unwrapped.
+    private static func nonYAMLRecipients(_ text: String) -> [String] {
+        switch SopsMetadataShape.nonYAMLKind(text) {
+        case .dotenv: return recipientsFromDotenv(text)
+        case .json: return recipientsFromJSON(text)
+        case .ini: return recipientsFromINI(text)
+        case nil: return []
+        }
+    }
+
+    /// The `nonAgeBackends(inEncryptedFile:)` counterpart to
+    /// `nonYAMLRecipients(_:)` — see that function's doc comment.
+    private static func nonYAMLNonAgeBackends(_ text: String) -> [String] {
+        switch SopsMetadataShape.nonYAMLKind(text) {
+        case .dotenv: return nonAgeBackendsFromDotenv(text)
+        case .json: return nonAgeBackendsFromJSON(text)
+        case .ini: return nonAgeBackendsFromINI(text)
+        case nil: return []
+        }
     }
 
     // MARK: - dotenv
@@ -152,30 +196,219 @@ enum EncryptedFileMetadata {
     private static func nonAgeBackendsFromDotenv(_ text: String) -> [String] {
         var found: [String] = []
         for entry in dotenvSopsMetadataLines(in: text) {
-            let segment = Self.dotenvTopLevelSegment(of: entry.key)
+            // Every `entry.key` here already passed `dotenvSopsMetadataLines`'s
+            // own `hasPrefix("sops_")` filter, so the prefix is always there
+            // to drop.
+            let segment = Self.topLevelSegment(of: entry.key.dropFirst("sops_".count))
             guard Self.nonAgeBackendKeys.contains(segment), !found.contains(segment) else { continue }
             found.append(segment)
         }
         return found
     }
 
-    /// `sops_key_groups__list_0__map_pgp__list_0__map_fp` → `key_groups`;
-    /// `sops_mac` → `mac`. Strips the `sops_` prefix, then cuts at the first
-    /// `__map_`/`__list_` separator (whichever comes first) — see
-    /// `flattenTreeBranch`'s doc comment above for where those separators
-    /// come from. A key with neither (every scalar field: `mac`, `version`,
-    /// `lastmodified`, `unencrypted_suffix`, `shamir_threshold`) returns
-    /// whatever remains after the prefix, unchanged.
-    private static func dotenvTopLevelSegment(of key: String) -> String {
-        guard key.hasPrefix("sops_") else { return key }
-        let afterPrefix = key.dropFirst("sops_".count)
+    /// `key_groups__list_0__map_pgp__list_0__map_fp` → `key_groups`;
+    /// `mac` → `mac`. Cuts at the first `__map_`/`__list_` separator
+    /// (whichever comes first) — see `flattenTreeBranch`'s doc comment above
+    /// for where those separators come from. A key with neither (every
+    /// scalar field: `mac`, `version`, `lastmodified`, `unencrypted_suffix`,
+    /// `shamir_threshold`) returns unchanged.
+    ///
+    /// Shared by the dotenv reader above (which strips its `sops_` prefix
+    /// before calling this — see `nonAgeBackendsFromDotenv`) and the INI
+    /// reader below (whose flattened keys carry no such prefix to strip:
+    /// sops's INI store already isolates them under a literal `[sops]`
+    /// section instead — see `iniSopsMetadataEntries`'s doc comment). Both
+    /// stores share the same `flattenTreeBranch` separators underneath a
+    /// different top-level wrapper, so one function reads both.
+    private static func topLevelSegment(of key: Substring) -> String {
         let candidates = [
-            afterPrefix.range(of: "__map_")?.lowerBound,
-            afterPrefix.range(of: "__list_")?.lowerBound,
+            key.range(of: "__map_")?.lowerBound,
+            key.range(of: "__list_")?.lowerBound,
         ].compactMap { $0 }
-        guard let cut = candidates.min() else { return String(afterPrefix) }
-        return String(afterPrefix[..<cut])
+        guard let cut = candidates.min() else { return String(key) }
+        return String(key[..<cut])
     }
+
+    // MARK: - JSON
+
+    /// getsops/sops's JSON store never flattens anything: it keeps its
+    /// metadata as a genuine nested JSON object under a literal top-level
+    /// `"sops"` key (`MetadataFlattenNone`, `stores/json/store.go`'s
+    /// `LoadEncryptedFile`) — the same tree shape `age`/`pgp`/`kms`/…
+    /// entries have in YAML, just written as JSON instead of flattened
+    /// `KEY=value` lines the way dotenv and INI are. So this reads it with
+    /// `JSONSerialization` rather than scanning lines, the one reader here
+    /// that does not share `LineEndings.lines(of:)` with the rest of this
+    /// file.
+    ///
+    /// Verified against the real `sops` binary — SOPS-38 phase F2 task 3,
+    /// captured once by hand to see the genuine *multi*-recipient shape
+    /// (`EncryptedFileMetadataJSONTests` proves the round trip against the
+    /// real in-process bridge instead, which also supports more than one
+    /// recipient — this fixture just happened to be pulled from the CLI
+    /// first). Encrypting a small object for two age recipients produces a
+    /// document whose plaintext keys carry `ENC[...]` values alongside a
+    /// sibling top-level metadata object — described in prose rather than
+    /// pasted in as a literal fenced example, because the first draft of
+    /// this comment did paste one in, and made this very file the next
+    /// false positive `SopsMetadataShapeTests.ownSourceTreeIsNotEncrypted`
+    /// exists to catch: `SopsMetadataShape.isJSONMetadata` has no column-0
+    /// or exact-line-match protection the way its YAML/dotenv/INI siblings
+    /// do — it is a bare substring-plus-whitespace-skip scan — so a doc
+    /// comment quoting `"sops":` immediately followed by `{`, with the two
+    /// required field-name substrings nearby, satisfies it regardless of
+    /// indentation or a leading `///`. Reproduced, then rewritten; the
+    /// fixture that pins the real shape lives in `EncryptedFileMetadataJSON
+    /// Tests`, where the app does not read it. That metadata object holds:
+    /// an `age` array of entries, each an encrypted data key alongside the
+    /// recipient's public key; the last-modified timestamp; the document's
+    /// MAC; the unencrypted-suffix setting; the sops version — and no
+    /// pgp/kms/… entry at all when that backend protects nothing in the
+    /// file (`stores.stores.go`'s `omitempty` struct tags: sops's Go struct
+    /// never even emits an empty array for one), the exact same
+    /// present-or-absent shape `EncryptedFileMetadataDotenvTests
+    /// .realDotenvFileHasNoNonAgeBackend` already pins for dotenv.
+    /// `EncryptedFileMetadataJSONTests` in the test target round-trips this
+    /// through the real in-process bridge, which does support `format:
+    /// .json` for a single recipient (`SopsBridgeJSONTests`, F2 task 2).
+    private static func jsonSopsBlock(in text: String) -> [String: Any]? {
+        guard let data = text.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return object["sops"] as? [String: Any]
+    }
+
+    /// `sops.age[].recipient` read straight out of the real JSON object —
+    /// no flattened key name to parse, unlike dotenv/INI. See
+    /// `jsonSopsBlock(in:)`'s doc comment for the shape.
+    private static func recipientsFromJSON(_ text: String) -> [String] {
+        guard let sopsBlock = jsonSopsBlock(in: text),
+              let ageEntries = sopsBlock["age"] as? [[String: Any]] else { return [] }
+        return ageEntries.compactMap { entry in
+            guard let recipient = entry["recipient"] as? String, !recipient.isEmpty else { return nil }
+            return recipient
+        }
+    }
+
+    /// The JSON counterpart to `nonAgeBackends(inEncryptedFile:)`'s YAML
+    /// loop and `nonAgeBackendsFromDotenv`: each backend key is present or
+    /// absent as a real JSON key, so this is a membership test against
+    /// `nonAgeBackendKeysOrdered` rather than a line scan. The `[]`/`{}`
+    /// emptiness guard the YAML reader needs (a hand-authored `.sops.yaml`
+    /// backend list could theoretically be edited down to an explicit empty
+    /// array) is kept here too, defensively, even though `jsonSopsBlock`'s
+    /// own doc comment notes sops's real writer never emits one — an
+    /// explicitly empty value read back from disk should not be flagged
+    /// either way it got there.
+    private static func nonAgeBackendsFromJSON(_ text: String) -> [String] {
+        guard let sopsBlock = jsonSopsBlock(in: text) else { return [] }
+        var found: [String] = []
+        for key in Self.nonAgeBackendKeysOrdered {
+            guard let value = sopsBlock[key] else { continue }
+            if let array = value as? [Any], array.isEmpty { continue }
+            if let object = value as? [String: Any], object.isEmpty { continue }
+            found.append(key)
+        }
+        return found
+    }
+
+    // MARK: - INI
+
+    /// getsops/sops's INI store keeps its metadata under a literal `[sops]`
+    /// section, with every nested field flattened *below* that section
+    /// header rather than fully flattened like dotenv's (`MetadataFlatten
+    /// BelowTop`, `stores/ini/store.go`'s `LoadEncryptedFile` /
+    /// `stores/metadata.go`'s `ExtractMetadata`) — so an INI flattened key
+    /// carries no `sops_` prefix at all; the section header already scopes
+    /// it. Verified against the real `sops` binary, captured once by hand
+    /// for the genuine multi-recipient shape the same way `jsonSopsBlock`'s
+    /// doc comment describes — `EncryptedFileMetadataINITests` round-trips
+    /// this through the real in-process bridge instead (`format: .ini`, F2
+    /// task 2): encrypting `[db]\npassword=hunter2\nuser=admin\n` for two
+    /// age recipients produces
+    /// ```ini
+    /// [db]
+    /// password = ENC[...]
+    /// user     = ENC[...]
+    ///
+    /// [sops]
+    /// age__list_0__map_enc       = -----BEGIN AGE ENCRYPTED FILE-----\n...
+    /// age__list_0__map_recipient = age1...
+    /// age__list_1__map_enc       = -----BEGIN AGE ENCRYPTED FILE-----\n...
+    /// age__list_1__map_recipient = age1...
+    /// lastmodified               = ...
+    /// mac                        = ENC[...]
+    /// unencrypted_suffix         = _unencrypted
+    /// version                    = 3.13.3
+    /// ```
+    /// — keys padded to a common column (the same padding
+    /// `SopsMetadataShape.isINIMetadata`'s doc comment already describes for
+    /// `mac`/`version`), so each is read up to the first `=` and trimmed
+    /// rather than matched literally.
+    ///
+    /// The **last** `[sops]` section, matching `SopsMetadataShape
+    /// .isINIMetadata`'s own last-match rule (see `sopsBlockLines(in:)`'s
+    /// doc comment above for why the YAML reader agrees with its own
+    /// structural check the same way) — and ended by the next `[section]`
+    /// header or EOF, so a user's own INI data cannot smuggle a later
+    /// section into this scan.
+    private static func iniSopsBlockLines(in text: String) -> [String] {
+        let all = LineEndings.lines(of: text).map(String.init)
+        guard let headerIndex = all.lastIndex(where: {
+            $0.trimmingCharacters(in: .whitespaces) == "[sops]"
+        }) else { return [] }
+
+        var lines: [String] = []
+        for line in all[(headerIndex + 1)...] {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("["), trimmed.hasSuffix("]") { break }
+            lines.append(line)
+        }
+        return lines
+    }
+
+    /// `iniSopsBlockLines(in:)`'s lines, each split at its first `=` and
+    /// trimmed of the padding sops writes around it. See that function's
+    /// doc comment for the real shape this scans.
+    private static func iniSopsMetadataEntries(in text: String) -> [(key: String, value: String)] {
+        iniSopsBlockLines(in: text).compactMap { line in
+            guard let equals = line.firstIndex(of: "=") else { return nil }
+            let key = line[line.startIndex..<equals].trimmingCharacters(in: .whitespaces)
+            guard !key.isEmpty else { return nil }
+            let value = line[line.index(after: equals)...].trimmingCharacters(in: .whitespaces)
+            return (key, value)
+        }
+    }
+
+    /// `age__list_<n>__map_recipient = <value>` for every age entry — the
+    /// INI counterpart to `recipientsFromDotenv`, differing only in that the
+    /// key carries no `sops_` prefix to check for. See
+    /// `iniSopsMetadataEntries(in:)`'s doc comment for the shape this scans.
+    private static func recipientsFromINI(_ text: String) -> [String] {
+        iniSopsMetadataEntries(in: text).compactMap { entry in
+            guard entry.key.hasPrefix("age__"), entry.key.hasSuffix("__map_recipient") else { return nil }
+            return entry.value.isEmpty ? nil : entry.value
+        }
+    }
+
+    /// The INI counterpart to `nonAgeBackendsFromDotenv`, sharing
+    /// `topLevelSegment(of:)` — the only difference is that an INI
+    /// flattened key has no `sops_` prefix to strip first, because the
+    /// `[sops]` section header already scopes it (see
+    /// `iniSopsBlockLines(in:)`'s doc comment). No `[]`/`{}` emptiness guard
+    /// here either, for the same reason `nonAgeBackendsFromDotenv` has
+    /// none: sops's flattener never emits a key for an empty list at all.
+    private static func nonAgeBackendsFromINI(_ text: String) -> [String] {
+        var found: [String] = []
+        for entry in iniSopsMetadataEntries(in: text) {
+            let segment = Self.topLevelSegment(of: entry.key[...])
+            guard Self.nonAgeBackendKeys.contains(segment), !found.contains(segment) else { continue }
+            found.append(segment)
+        }
+        return found
+    }
+
+    // MARK: - YAML
 
     /// Extracts just the `sops:` metadata block's lines — started by a line
     /// that is exactly `sops:` at column 0, ended by the next column-0 line

@@ -803,7 +803,7 @@ private struct ProjectWorkspaceView: View {
         documentViewModel = nil
         unsavedChanges.clear()
         if let id, let project = projects.groups.flatMap(\.members).first(where: { $0.id == id }) {
-            fileListModel = FileListModel(projectRoot: URL(fileURLWithPath: project.rootPath))
+            fileListModel = FileListModel(projectRoot: URL(fileURLWithPath: project.rootPath), keyStore: keyStore)
         } else {
             fileListModel = nil
         }

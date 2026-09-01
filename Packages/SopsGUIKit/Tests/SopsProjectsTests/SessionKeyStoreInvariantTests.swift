@@ -43,9 +43,23 @@ struct SessionKeyStoreInvariantTests {
     /// `String` parameters (`importKey(_ text: String)`) are fine — the key
     /// only ever flows in that direction through this type's public surface,
     /// never out.
-    @Test("no public member's return type or property type is String")
+    @Test("no public member's return type or property type is String, except the session's own public key")
     func noPublicMemberReturnsStringDirectly() throws {
+        // `sessionPublicKey` (SOPS-38 phase F3) is the one deliberate
+        // exception to this guard: it hands back a public age recipient
+        // ("age1…"), not the private identity this guard exists to protect —
+        // see `publicKey` (the backing storage)'s own doc comment for why
+        // that is safe by construction, the same way `SopsBridge.recipients
+        // (in:format:)` and `EncryptedFileMetadata.recipients` already hand
+        // back public keys as plain `[String]` elsewhere in this app.
+        // Excluded by removing its one declaration line before the regex
+        // runs below, not by narrowing the regex itself, so any OTHER public
+        // String-typed member — the actual defect this test exists to catch
+        // — still fails it exactly as before.
         let text = try Self.source()
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.contains("public var sessionPublicKey:") }
+            .joined(separator: "\n")
 
         // `public func … -> String` / `-> String?`: a func whose declared
         // return type is String itself. `withKey`'s `-> R?`/`-> R` are

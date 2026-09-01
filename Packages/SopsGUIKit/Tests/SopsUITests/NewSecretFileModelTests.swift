@@ -172,6 +172,18 @@ struct NewSecretFileModelTests {
         #expect(model.targetFormat == .dotenv, "no resolvePlan() call in between — targetFormat is pure")
     }
 
+    @Test("a .json-named target reports .json, a .ini-named target reports .ini (SOPS-38 phase F2 task 5)")
+    func jsonAndINITargetsReportTheirOwnFormat() throws {
+        let root = try scratchDirectory()
+        let model = NewSecretFileModel(projectRoot: root, keyStore: try makeKeyStore())
+
+        model.relativeName = "secret.json"
+        #expect(model.targetFormat == .json)
+
+        model.relativeName = "secret.ini"
+        #expect(model.targetFormat == .ini, "no resolvePlan() call in between — targetFormat is pure")
+    }
+
     // MARK: - .ready
 
     @Test("a name governed by an age rule that includes this session's key is ready")
@@ -540,6 +552,53 @@ struct NewSecretFileModelTests {
         let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
         #expect(rows.isEmpty)
         #expect(model.planError == nil)
+    }
+
+    // MARK: - .dotEnv source into a .json/.ini-named destination (SOPS-38 phase F2 task 5)
+    //
+    // Reachable through the real UI: `sourceChoice` and `relativeName` are
+    // independent fields (`NewSecretFileSheet` lets a user set either in any
+    // order), so picking a `.env` source and typing a `.json`/`.ini`-named
+    // destination is an ordinary sequence, not a theoretical one. This is the
+    // model-level proof that `SecretFileCreator.Failure
+    // .dotEnvSourceIncompatibleWithFormat` — already proven directly against
+    // `SecretFileCreator.create` in `SecretFileCreatorTests` — surfaces as an
+    // ordinary `.blocked` readiness through this model's existing, generic
+    // `SecretFileCreator.Failure` handling in `create()`: no model code
+    // needed to change for this refusal to reach the wizard.
+
+    @Test("a .env source into a .json-named destination is blocked, and nothing is written")
+    func dotEnvSourceIntoJSONTargetIsBlocked() async throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        // A broad rule (matches any relative path) so the plan resolves
+        // .governedByRule for a `.json` name too — `ageOnlyConfig`'s own
+        // `.*\.yaml$` rule would not match here, and this test needs to
+        // reach `create()`'s guard, not `.needsRecipients`.
+        try """
+            creation_rules:
+              - path_regex: .*
+                age: \(owner.public)
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let keyStore = try makeKeyStore(importing: owner.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+        model.relativeName = "secret.json"
+        await model.resolvePlan()
+
+        model.sourceChoice = .dotEnv
+        let source = root.appendingPathComponent("source.env")
+        try "API_KEY=hunter2\n".write(to: source, atomically: true, encoding: .utf8)
+        model.loadDotEnv(from: source)
+
+        let created = await model.create()
+
+        #expect(created == nil)
+        guard case .blocked(let message) = model.readiness else {
+            Issue.record("expected .blocked, got \(model.readiness)")
+            return
+        }
+        #expect(message.detail.localizedCaseInsensitiveContains("json"))
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("secret.json").path))
     }
 
     // MARK: - forgetLastCreateFailure() actually drops retained content, Mirror-proven

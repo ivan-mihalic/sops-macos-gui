@@ -1,6 +1,7 @@
 import Foundation
 import ScratchCleanup
 import SopsEngine
+import SopsProjects
 import Testing
 @testable import SopsUI
 
@@ -19,6 +20,70 @@ import Testing
 // reports as openable encrypted files. A fixture with a `sops:` block but no
 // `version:` under it was never something sops could have produced, and no
 // longer passes for one.
+// MARK: - Real age key pairs, for the isReadOnly (SOPS-38 phase F3) tests
+// below only. Redeclared here rather than imported — the rest of this file's
+// fixtures are deliberately hand-written text, but `isReadOnly` needs a real
+// derived public key (`SessionKeyStore.sessionPublicKey`, via the real
+// bridge) to compare against, and every other `SopsUITests` file that needs
+// a real key pair already keeps its own file-private copy rather than
+// reaching across targets for `SopsProjectsTests`' — see
+// `FileListModelConfigStateTests.swift`'s own header comment.
+
+private struct FixtureError: Error, CustomStringConvertible {
+    let description: String
+    init(_ description: String) { self.description = description }
+}
+
+private func toolPath(_ name: String) throws -> String {
+    let candidates = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+        .map { ($0 as NSString).appendingPathComponent(name) }
+    guard let found = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+        throw FixtureError("\(name) not found in \(candidates)")
+    }
+    return found
+}
+
+@discardableResult
+private func run(_ executable: String, _ arguments: [String]) throws -> String {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: executable)
+    process.arguments = arguments
+    let stdout = Pipe(), stderr = Pipe()
+    process.standardOutput = stdout
+    process.standardError = stderr
+    try process.run()
+    let outData = stdout.fileHandleForReading.readDataToEndOfFile()
+    let errData = stderr.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else {
+        throw FixtureError(
+            "\(executable) \(arguments.joined(separator: " ")) exited \(process.terminationStatus): "
+                + String(decoding: errData, as: UTF8.self))
+    }
+    return String(decoding: outData, as: UTF8.self)
+}
+
+private struct AgeKeyPair {
+    let `private`: String
+    let `public`: String
+
+    static func generate() throws -> AgeKeyPair {
+        let output = try run(try toolPath("age-keygen"), [])
+        var priv = "", pub = ""
+        for line in output.split(whereSeparator: \.isNewline) {
+            if line.hasPrefix("AGE-SECRET-KEY-") {
+                priv = String(line)
+            } else if line.hasPrefix("# public key: ") {
+                pub = String(line.dropFirst("# public key: ".count))
+            }
+        }
+        guard !priv.isEmpty, !pub.isEmpty else {
+            throw FixtureError("age-keygen produced no usable key pair")
+        }
+        return AgeKeyPair(private: priv, public: pub)
+    }
+}
+
 @Suite("FileListModel")
 @MainActor
 struct FileListModelTests {
@@ -32,14 +97,38 @@ ScratchDirectoryRegistry.shared.register(root)
         return root
     }
 
-    private func writeSopsLike(_ root: URL, at relativePath: String) throws {
+    private func writeSopsLike(
+        _ root: URL, at relativePath: String,
+        recipient: String = "age1exampleexampleexampleexampleexampleexampleexampleexamplex"
+    ) throws {
         let url = root.appendingPathComponent(relativePath)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try """
         key: ENC[AES256_GCM,data:Zm9v,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
         sops:
             age:
-                - recipient: age1exampleexampleexampleexampleexampleexampleexampleexamplex
+                - recipient: \(recipient)
+            mac: ENC[AES256_GCM,data:AAAA,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
+            version: 3.13.3
+        """.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// A file that is still genuinely sops-shaped (`sops:`, `mac:`,
+    /// `version:` — `SopsMetadataShape.isYAMLMetadata` cares about those,
+    /// never about `age` itself) but declares **no** age recipients at all:
+    /// `age: []`. `EncryptedFileMetadata.recipients(inEncryptedFile:)` scans
+    /// for `- recipient:`/`recipient:` lines inside the `sops:` block and
+    /// finds none, so `SniffedFile.recipients` comes back `[]` — the same
+    /// "unknown/unparseable metadata" shape `FileListModel.isReadOnly`'s own
+    /// doc comment names, reached here without any real non-age backend
+    /// (PGP/KMS), which this test target has no way to produce.
+    private func writeSopsLikeWithNoRecipients(_ root: URL, at relativePath: String) throws {
+        let url = root.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try """
+        key: ENC[AES256_GCM,data:Zm9v,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
+        sops:
+            age: []
             mac: ENC[AES256_GCM,data:AAAA,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
             version: 3.13.3
         """.write(to: url, atomically: true, encoding: .utf8)
@@ -249,5 +338,125 @@ ScratchDirectoryRegistry.shared.register(root)
         let model = FileListModel(projectRoot: try makeProject())
         let foreign = URL(fileURLWithPath: "/completely/elsewhere/file.yaml")
         #expect(model.relativePath(for: foreign) == foreign.path)
+    }
+
+    // MARK: - isReadOnly (SOPS-38 phase F3): detected from metadata, no decrypt
+
+    @Test("a file encrypted to the session's own key is not read-only")
+    func ownKeyFileIsNotReadOnly() async throws {
+        let mine = try AgeKeyPair.generate()
+        let root = try makeProject()
+        try writeSopsLike(root, at: "mine.yaml", recipient: mine.public)
+
+        let store = SessionKeyStore()
+        try store.importKey(mine.private)
+        let model = FileListModel(projectRoot: root, keyStore: store)
+        await model.refresh()
+
+        let file = try #require(model.files.first)
+        #expect(!file.isReadOnly)
+    }
+
+    @Test("a file encrypted only to a foreign key is read-only")
+    func foreignKeyFileIsReadOnly() async throws {
+        let mine = try AgeKeyPair.generate()
+        let stranger = try AgeKeyPair.generate()
+        let root = try makeProject()
+        try writeSopsLike(root, at: "theirs.yaml", recipient: stranger.public)
+
+        let store = SessionKeyStore()
+        try store.importKey(mine.private)
+        let model = FileListModel(projectRoot: root, keyStore: store)
+        await model.refresh()
+
+        let file = try #require(model.files.first)
+        #expect(file.isReadOnly)
+    }
+
+    /// A project with both kinds of file must report each independently —
+    /// this is what actually rules out a model-wide flag or a
+    /// first-file-wins bug that a single-file test could not catch.
+    @Test("a mixed project reports isReadOnly per file, not per project")
+    func mixedProjectReportsPerFile() async throws {
+        let mine = try AgeKeyPair.generate()
+        let stranger = try AgeKeyPair.generate()
+        let root = try makeProject()
+        try writeSopsLike(root, at: "mine.yaml", recipient: mine.public)
+        try writeSopsLike(root, at: "theirs.yaml", recipient: stranger.public)
+
+        let store = SessionKeyStore()
+        try store.importKey(mine.private)
+        let model = FileListModel(projectRoot: root, keyStore: store)
+        await model.refresh()
+
+        #expect(model.files.count == 2)
+        let mineFile = try #require(model.files.first { $0.url.lastPathComponent == "mine.yaml" })
+        let theirsFile = try #require(model.files.first { $0.url.lastPathComponent == "theirs.yaml" })
+        #expect(!mineFile.isReadOnly)
+        #expect(theirsFile.isReadOnly)
+    }
+
+    /// The conservatism the brief requires in both directions this app must
+    /// never overclaim: no key store at all (`FileListModel`'s own default)
+    /// is exactly the shape every pre-existing call site in this file uses,
+    /// and it must keep behaving as "not known", not "everything is
+    /// read-only".
+    @Test("with no key store configured, no file is reported read-only")
+    func noKeyStoreMeansNothingIsFlagged() async throws {
+        let root = try makeProject()
+        try writeSopsLike(root, at: "secret.yaml", recipient: "age1exampleexampleexampleexampleexampleexampleexampleexamplex")
+
+        let model = FileListModel(projectRoot: root)
+        await model.refresh()
+
+        let file = try #require(model.files.first)
+        #expect(!file.isReadOnly)
+    }
+
+    /// A key store with no key imported yet (a locked session) must behave
+    /// identically to no key store at all — `sessionPublicKey` is `nil`
+    /// either way, and `FileListModel` must not distinguish the two.
+    @Test("a locked session (no key imported) reports nothing as read-only")
+    func lockedSessionMeansNothingIsFlagged() async throws {
+        let root = try makeProject()
+        try writeSopsLike(root, at: "secret.yaml", recipient: "age1exampleexampleexampleexampleexampleexampleexampleexamplex")
+
+        let store = SessionKeyStore()
+        let model = FileListModel(projectRoot: root, keyStore: store)
+        await model.refresh()
+
+        let file = try #require(model.files.first)
+        #expect(!file.isReadOnly)
+    }
+
+    /// The other half of the conservatism `isReadOnly`'s own doc comment
+    /// requires: **with a session key configured**, a file whose own
+    /// recipient metadata cannot be read (empty, unparseable, a shape this
+    /// app does not recognise) must still not be flagged read-only — an
+    /// empty `recipients` list is "unknown", never "this file protects
+    /// nobody". This is the one branch review flagged as untested: every
+    /// other `isReadOnly` fixture in this file populates a real recipient,
+    /// so nothing before this test could fail if the `!recipients.isEmpty`
+    /// guard were deleted from `FileListView.swift`'s `isReadOnly` helper.
+    ///
+    /// Verified by ablation, not merely inspection: temporarily removing
+    /// that guard (`guard !recipients.isEmpty else { return false }`) makes
+    /// this test fail (`empty recipients would otherwise be treated as
+    /// "session key not in empty list" → true`) while every other test in
+    /// this suite keeps passing — see the fix's own report for the exact
+    /// commands run.
+    @Test("a file with no readable recipients is not read-only, even with a session key configured")
+    func unreadableRecipientsAreNotReadOnlyEvenWithAKeyConfigured() async throws {
+        let mine = try AgeKeyPair.generate()
+        let root = try makeProject()
+        try writeSopsLikeWithNoRecipients(root, at: "unknown.yaml")
+
+        let store = SessionKeyStore()
+        try store.importKey(mine.private)
+        let model = FileListModel(projectRoot: root, keyStore: store)
+        await model.refresh()
+
+        let file = try #require(model.files.first)
+        #expect(!file.isReadOnly, "unreadable/empty recipient metadata must never be read as read-only")
     }
 }

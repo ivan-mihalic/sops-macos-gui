@@ -77,7 +77,18 @@ enum SopsMetadataShape {
             // sops-written document; see the doc comment above.
             guard line.hasPrefix(" ") || line.hasPrefix("\t") else { return false }
             switch Self.yamlKey(of: line) {
-            case "mac": sawMAC = true
+            case "mac":
+                // SOPS-38 phase F3 task 4 (F2 review M4): the `mac` *key*
+                // being present is not enough — a plaintext document that
+                // merely hand-writes or quotes a `sops:` block with an
+                // ordinary `mac: ...` value satisfied this before. sops's
+                // own serializer always writes `mac: ENC[AES256_GCM,…]`
+                // (verified against a real bridge-encrypted fixture; see
+                // `SopsMetadataShapeMACAnchorTests`'s own doc comment), so
+                // anchoring on that prefix is free of false negatives.
+                // Never truncated when this line is reached at all — see
+                // that same doc comment, "No truncation hazard".
+                sawMAC = Self.yamlValue(of: line).hasPrefix("ENC[")
             case "version": sawVersion = true
             default: break
             }
@@ -86,12 +97,12 @@ enum SopsMetadataShape {
     }
 
     /// Which non-YAML sops store, if any, wrote `text`'s metadata — `nil` for
-    /// neither. Recognising *which* is what lets a caller route dotenv (this
-    /// build reads its recipients — see `EncryptedFileMetadata`) differently
-    /// from JSON/INI (still reported honestly as unverifiable) without a
-    /// second structural pass: `isYAMLMetadata`/the old boolean
+    /// none of them. Recognising *which* is what lets a caller (`EncryptedFile
+    /// Metadata`, `ProjectScanner.classify`) give each its own `SopsFileFormat`
+    /// without a second structural pass: `isYAMLMetadata`/the old boolean
     /// `isNonYAMLMetadata` only ever answered "is this a sops document",
-    /// never "which store wrote it".
+    /// never "which store wrote it". As of SOPS-38 phase F2 task 3, this
+    /// build reads recipients out of all three — dotenv, JSON and INI.
     enum Kind {
         case dotenv, json, ini
     }
@@ -122,37 +133,71 @@ enum SopsMetadataShape {
         var sawMAC = false
         var sawVersion = false
         for line in lines {
-            if line.hasPrefix("sops_mac=") { sawMAC = true }
+            // SOPS-38 phase F3 task 4 (F2 review M4): the `sops_mac=` prefix
+            // alone is not enough — see `isYAMLMetadata`'s identical change
+            // and `SopsMetadataShapeMACAnchorTests`'s own doc comment for
+            // the real-bridge-verified `sops_mac=ENC[…]` shape this anchors
+            // on, and why the value is never truncated when this line is
+            // reached at all.
+            if line.hasPrefix("sops_mac=") {
+                sawMAC = line.dropFirst("sops_mac=".count).hasPrefix("ENC[")
+            }
             if line.hasPrefix("sops_version=") { sawVersion = true }
         }
         return sawMAC && sawVersion
     }
 
-    /// JSON: `"sops"` names an *object*, so the token after the colon is `{`.
-    /// Every false positive in this repository was a dictionary or map literal
-    /// in some other language — `["sops": tool(…)]` in Swift,
-    /// `{"sops": sopsVersion}` in Go — where the value is an identifier or a
-    /// call, never a brace. The `mac`/`version` requirement is the same
-    /// belt-and-braces as the YAML case.
+    /// JSON: a top-level `sops` key whose value is an object carrying `mac`
+    /// and `version` fields *of its own* — nested inside that object, not
+    /// merely present somewhere in the document. Checked with a real
+    /// `JSONSerialization` parse, not a substring scan.
     ///
-    /// The whitespace skipped between the colon and the brace is
-    /// `Character.isWhitespace`, not an explicit `" "`/`"\t"`/`"\n"`/`"\r"`
-    /// list. The explicit list had the CRLF blind spot this file's `lines(of:)`
-    /// was already written to avoid: `"\r\n"` is one `Character` equal to
-    /// neither `"\n"` nor `"\r"`, so a CRLF-converted JSON file with the brace
-    /// on the next line stopped the skip dead and the store went unrecognised
-    /// — a false *negative*, the direction this type's doc comment names as
-    /// the worse one, because an unrecognised encrypted `.env`/`.json` becomes
-    /// a plaintext-leak alarm about a file that is not leaking anything.
+    /// The substring version this replaced — "does `\"mac\":` appear
+    /// anywhere, does `\"version\":` appear anywhere, does `\"sops\":`
+    /// appear anywhere followed by `{`" — checked three things independently
+    /// and had no way to tell an object's *own* `mac`/`version` apart from
+    /// sibling top-level fields of the same name. SOPS-38 phase F2 task 3
+    /// review: an entirely ordinary device-inventory-shaped record —
+    /// `{"mac": "00:11:22:33:44:55", "version": "1.0", "sops": {"foo":
+    /// "bar"}}`, a MAC address and a schema version next to an unrelated
+    /// `sops` object — satisfied all three independently and was classified
+    /// as an encrypted file, the exact class of bug this type's own doc
+    /// comment already names for a Swift dictionary literal and a Go map
+    /// literal, just not yet closed for this one field pairing. See
+    /// `SopsMetadataShapeTests.deviceInventoryJSONIsNotEncrypted` for the
+    /// fixture.
+    ///
+    /// A parse failure — most often a truncated tail that starts mid-
+    /// document and so never opens the top-level object at all — is
+    /// honestly treated as "not this shape", never guessed at from whichever
+    /// substrings happen to survive the cut: a document is one JSON value,
+    /// and half of one does not parse. That is a real, accepted
+    /// false-negative direction on its own (a huge encrypted JSON file whose
+    /// metadata block sits past the tail-read budget could briefly go
+    /// undetected) — mitigated the same way YAML's identical oversized case
+    /// already is, not left as a silent gap:
+    /// `ProjectScanner.looksLikeTruncatedSopsBlock` recognises JSON's own
+    /// near-tail shape too, so `ProjectScanner.classify` re-reads a wider
+    /// tail before giving up, and a still-too-large document becomes
+    /// `.metadataBlockTooLarge` rather than silence. See
+    /// `SopsMetadataShapeTests.truncatedJSONTailIsNotMetadata` for the
+    /// decision pinned directly, and
+    /// `ProjectScanUndisclosedScopeTests.oversizedJSONMetadataBlockIsNotInvisible`
+    /// for the case that exercises the mitigation end to end.
     private static func isJSONMetadata(_ text: String) -> Bool {
-        guard text.contains("\"mac\":"), text.contains("\"version\":") else { return false }
-        var remainder = text[...]
-        while let match = remainder.range(of: "\"sops\":") {
-            let afterColon = remainder[match.upperBound...].drop(while: \.isWhitespace)
-            if afterColon.first == "{" { return true }
-            remainder = remainder[match.upperBound...]
-        }
-        return false
+        guard let data = text.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let sops = object["sops"] as? [String: Any]
+        else { return false }
+        // SOPS-38 phase F3 task 4 (F2 review M4): `sops["mac"] != nil` alone
+        // is not enough — see `isYAMLMetadata`'s identical change and
+        // `SopsMetadataShapeMACAnchorTests`'s own doc comment for the
+        // real-bridge-verified `"mac": "ENC[…]"` shape this anchors on. A
+        // parse failure already returns `false` above, and a *successful*
+        // parse means the whole document — mac value included — was intact
+        // in this tail, so there is no truncation case to guard here either.
+        guard let mac = sops["mac"] as? String, mac.hasPrefix("ENC[") else { return false }
+        return sops["version"] != nil
     }
 
     /// INI: a `[sops]` section header on a line of its own, with `mac` and
@@ -171,7 +216,14 @@ enum SopsMetadataShape {
             // The next section header ends the sops section.
             if trimmed.hasPrefix("["), trimmed.hasSuffix("]") { break }
             switch Self.iniKey(of: line) {
-            case "mac": sawMAC = true
+            case "mac":
+                // SOPS-38 phase F3 task 4 (F2 review M4): the `mac` *key*
+                // being present is not enough — see `isYAMLMetadata`'s
+                // identical change and `SopsMetadataShapeMACAnchorTests`'s
+                // own doc comment for the real-bridge-verified
+                // `mac = ENC[…]` shape this anchors on, and why the value
+                // is never truncated when this line is reached at all.
+                sawMAC = Self.iniValue(of: line).hasPrefix("ENC[")
             case "version": sawVersion = true
             default: break
             }
@@ -212,9 +264,27 @@ enum SopsMetadataShape {
         return line[line.startIndex..<colon].trimmingCharacters(in: .whitespaces)
     }
 
+    /// The value of a `key: value` YAML line, trimmed of its leading space —
+    /// `yamlKey`'s mirror image, added for `isYAMLMetadata`'s `mac` value
+    /// check (SOPS-38 phase F3 task 4). Returns `""` for a line with no
+    /// colon, which starts nothing.
+    private static func yamlValue(of line: Substring) -> String {
+        guard let colon = line.firstIndex(of: ":") else { return "" }
+        return line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+    }
+
     /// The key of a `key = value` INI line, trimmed of its padding.
     private static func iniKey(of line: Substring) -> String {
         guard let equals = line.firstIndex(of: "=") else { return "" }
         return line[line.startIndex..<equals].trimmingCharacters(in: .whitespaces)
+    }
+
+    /// The value of a `key = value` INI line, trimmed of its padding —
+    /// `iniKey`'s mirror image, added for `isINIMetadata`'s `mac` value
+    /// check (SOPS-38 phase F3 task 4). Returns `""` for a line with no
+    /// `=`, which starts nothing.
+    private static func iniValue(of line: Substring) -> String {
+        guard let equals = line.firstIndex(of: "=") else { return "" }
+        return line[line.index(after: equals)...].trimmingCharacters(in: .whitespaces)
     }
 }

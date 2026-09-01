@@ -21,14 +21,44 @@ public enum LoadState: Equatable, Sendable {
     /// even attempted, so this is not a claim about the file being unreadable.
     case needsKey
     /// The file could not be decrypted with the identity that is configured:
-    /// a wrong key, a MAC mismatch, a damaged value, or a document sops does
-    /// not recognise as its own.
+    /// a MAC mismatch, a damaged value, or a document sops does not
+    /// recognise as its own. **Never** a wrong key — that is
+    /// `.readOnlyCiphertext` below, as of SOPS-38 phase F3.
     ///
     /// The associated text is `SopsBridgeError.description` verbatim — sops's
     /// own classified message. `Engine/gobridge` (Task 7) guarantees it never
     /// contains a value from the document: only fixed English and, where
     /// relevant, a key path.
     case failed(String)
+    /// The session's configured identity is not among this file's
+    /// recipients — `SopsBridgeError.Kind.noMatchingIdentity`, the bridge's
+    /// own classification, not a guess from message text. SOPS-38 phase F3:
+    /// distinguished from `.failed` so a view can render this file as
+    /// read-only ciphertext (Task 2) rather than a bare error, since a
+    /// missing recipient is an ordinary, expected state for a project shared
+    /// across several people's keys — not a broken file.
+    ///
+    /// Reached the same way `.failed` is: after a real decrypt attempt fails
+    /// with that specific classification. This case never itself causes a
+    /// decrypt, an apply, or an `updateRecipients` call — `reason` is the
+    /// same wrong-key message `loadFailureMessage(for:)` already builds for
+    /// `.failed`, and `recipients` comes from `SopsBridge.recipients(in:
+    /// format:)`, which needs no identity at all.
+    ///
+    /// - Parameters:
+    ///   - reason: `loadFailureMessage(for:)`'s wrong-key sentence — the
+    ///     same text `.failed` would have carried before this case existed.
+    ///   - rawCiphertext: The file's own encrypted bytes, exactly as read
+    ///     from disk for this load attempt (`load()`'s own `contents`) —
+    ///     never decrypted, never re-derived. What Task 2's view shows in
+    ///     place of editable rows.
+    ///   - recipients: This file's own native age recipient list, read from
+    ///     its metadata without any identity. Empty when that read itself
+    ///     failed (a non-native backend, unreadable metadata) — a view must
+    ///     treat that the same way `FileListModel`'s own conservative
+    ///     `isReadOnly` does: as "unknown", never as "this file has no
+    ///     recipients".
+    case readOnlyCiphertext(reason: String, rawCiphertext: String, recipients: [String])
 }
 
 /// The result of `SecretDocumentViewModel.save()`.
@@ -48,6 +78,19 @@ public enum SaveOutcome: Equatable, Sendable {
 private enum Outcome<Success: Sendable>: Sendable {
     case success(Success)
     case failure(String)
+}
+
+/// `Self.decrypt`'s own result — `Outcome<[SecretRow]>` with one more thing
+/// attached to a failure: the bridge's classification, when it has one.
+/// SOPS-38 phase F3 needs to know *which* failure this is (a wrong key,
+/// specifically) to route it to `.readOnlyCiphertext` instead of `.failed`,
+/// and `Outcome<Success>` is shared with `save()`'s `applyChanges` path,
+/// which has no equivalent distinction to make — a second, purpose-built
+/// type here is cheaper than teaching the generic one a case only one caller
+/// uses.
+private enum DecryptOutcome: Sendable {
+    case success([SecretRow])
+    case failure(message: String, kind: SopsBridgeError.Kind?)
 }
 
 /// Loads one SOPS document into editable rows, tracks which values the user
@@ -161,28 +204,123 @@ public final class SecretDocumentViewModel {
     /// actually inside — silently corrupting the round trip.
     public let format: SopsFileFormat
 
-    /// Whether this document's format can hold containers (maps, lists) —
-    /// today, only YAML can. `EditorAddRowSheet`/`SecretEditorView` read
-    /// this (via `allowedAddKinds` below) to decide what the `+` sheet may
-    /// even offer, rather than letting the user choose something the save
-    /// would only refuse afterwards.
-    public var supportsNestedStructure: Bool { format == .yaml }
+    /// One row of the editing-capability matrix every format this app opens
+    /// gets exactly one of, via `addCapabilities(for:)` below. Adding a
+    /// fifth format later means adding a case to that `switch` — the
+    /// compiler enforces it, since the switch is exhaustive over
+    /// `SopsFileFormat` — never scattering another `format == …` comparison
+    /// through `refusalForAdding`/`allowedAddKinds`/`EditorAddRowSheet`.
+    ///
+    /// The three destination flags are independent because the four formats
+    /// this app opens genuinely disagree on all three:
+    ///
+    /// | format | root | nested map | list |
+    /// |---|---|---|---|
+    /// | yaml, json | ✓ | ✓ | ✓ |
+    /// | dotenv | ✓ | ✗ | ✗ |
+    /// | ini | ✗ | ✓ | ✗ |
+    ///
+    /// INI is the reason this cannot collapse back to one `Bool`: its store
+    /// (`stores/ini/store.go:42`, pinned by
+    /// `Engine/gobridge/ini_test.go`'s `TestINIApplyChangesAddAtDocumentRootProducesCleanError`)
+    /// requires every root-level tree item to be a section — a container —
+    /// and this app's own Add API (`Engine/gobridge/documentchanges.go`'s
+    /// `parseAddValue`) can only ever create a scalar leaf, never a
+    /// container. So an INI document's root can hold new sections in
+    /// principle but this app has no way to create one, while a key *inside*
+    /// an existing section is an ordinary scalar add exactly like a flat
+    /// dotenv line. Nested add allowed, root add refused, lists refused
+    /// (INI has none — every row's own `InList` is always `false`, pinned by
+    /// `TestINIDecryptToRowsSectionKeyPathsAndEncryptedFlags`) is a
+    /// combination none of the other three formats need, which is exactly
+    /// why it needs its own flag rather than reusing `dotenv`'s or
+    /// `yaml`'s.
+    struct AddCapabilities: Equatable, Sendable {
+        /// Whether a new row may be added directly at the document's own
+        /// root map.
+        let allowsRootDestination: Bool
+        /// Whether a new row may be added into an existing map that is not
+        /// the document root (a nested YAML/JSON map, or an existing INI
+        /// section).
+        let allowsNestedMapDestination: Bool
+        /// Whether a new row may be appended to a list.
+        let allowsListDestination: Bool
+        /// The row kinds a new row's type picker may offer. `emptyMap`/
+        /// `emptyList` are never in here for any format — see
+        /// `SecretRow.Kind.isEditable` — because this app's Add API has no
+        /// way to create a container at all, the same fact that makes INI's
+        /// `allowsRootDestination` `false` above.
+        let allowedKinds: [SecretRow.Kind]
+    }
+
+    private static let everyAddKind: [SecretRow.Kind] = [.string, .int, .float, .bool, .null, .timestamp]
+
+    /// `format`'s row in the capability matrix documented on
+    /// `AddCapabilities` above.
+    ///
+    /// - `.yaml`/`.json`: JSON's own store (`stores/json/store.go`) is
+    ///   exactly as capable as YAML's here — nested maps, lists, every
+    ///   scalar kind, no format-specific key-grammar hazard (object keys are
+    ///   JSON strings; any string is a valid one, pinned by
+    ///   `TestJSONApplyChangesAcceptsKeysDotenvWouldRefuse`) — so JSON gets
+    ///   the identical row rather than its own case.
+    /// - `.dotenv`: unchanged from before this matrix existed — a flat
+    ///   `KEY=value` store, string-only, no containers at all.
+    /// - `.ini`: see `AddCapabilities`'s own doc comment for why root is
+    ///   refused while nested is not, and `AddRowRefusal.invalidINIKey` for
+    ///   the key-grammar hazards this format has that dotenv and JSON do
+    ///   not. String-only for the same reason as dotenv, but empirically
+    ///   distinct: `stores/ini/store.go`'s `encodeTree` stringifies every
+    ///   leaf value with `stores.ValToString` regardless of what kind it was
+    ///   written with, so an int or bool add would not be refused by the
+    ///   bridge — it would silently retype to a string on the very next
+    ///   load. Offering only `.string` here is what keeps the sheet from
+    ///   ever presenting a choice that reloads as something else.
+    private static func addCapabilities(for format: SopsFileFormat) -> AddCapabilities {
+        switch format {
+        case .yaml, .json:
+            return AddCapabilities(
+                allowsRootDestination: true, allowsNestedMapDestination: true,
+                allowsListDestination: true, allowedKinds: everyAddKind)
+        case .dotenv:
+            return AddCapabilities(
+                allowsRootDestination: true, allowsNestedMapDestination: false,
+                allowsListDestination: false, allowedKinds: [.string])
+        case .ini:
+            return AddCapabilities(
+                allowsRootDestination: false, allowsNestedMapDestination: true,
+                allowsListDestination: false, allowedKinds: [.string])
+        }
+    }
+
+    /// `Self.addCapabilities(for: format)`, memoized as a property only so
+    /// every read site says `addCapabilities` rather than repeating the
+    /// `for: format` argument — `format` never changes after `init`, so
+    /// there is nothing this could go stale against.
+    var addCapabilities: AddCapabilities { Self.addCapabilities(for: format) }
+
+    /// Whether this document's format can hold a new row in a map other
+    /// than its own root — the property `EditorAddRowSheet`/
+    /// `SecretEditorView` have always read (via `allowedAddKinds` below) to
+    /// decide what the `+` sheet may even offer. See `AddCapabilities` for
+    /// why this is now one flag among three rather than the only one: a
+    /// document that answers `true` here can still refuse a root add
+    /// (`.ini`) or a list append (`.dotenv`, `.ini`) — `refusalForAdding`
+    /// below is what actually enforces all three, not this property alone.
+    public var supportsNestedStructure: Bool { addCapabilities.allowsNestedMapDestination }
 
     /// The row kinds a new row's type picker may offer for this document.
     /// `emptyMap`/`emptyList` are never offered — see `SecretRow.Kind
     /// .isEditable`, and `EditorAddRowSheet` used to hold this exact list
     /// itself as a private constant. It now asks the model instead, because
-    /// the answer depends on the format: sops's own dotenv store can only
-    /// ever represent a flat set of `KEY=value` string lines — no int, no
-    /// bool, no null, no container — so a dotenv document restricts to
-    /// `.string` alone. Data-driven on `format` rather than a second
-    /// `if format == .dotenv` scattered through the view, so a later format
-    /// that *can* hold typed scalars only has to change this one switch.
-    public var allowedAddKinds: [SecretRow.Kind] {
-        supportsNestedStructure ? Self.everyAddKind : [.string]
-    }
-
-    private static let everyAddKind: [SecretRow.Kind] = [.string, .int, .float, .bool, .null, .timestamp]
+    /// the answer depends on the format: sops's own dotenv *and* INI stores
+    /// can only ever represent string leaves (see `AddCapabilities`'s doc
+    /// comment for why INI's is empirically true rather than assumed), so
+    /// both restrict to `.string` alone. Data-driven on `format` via
+    /// `addCapabilities` rather than a second `if format == .dotenv`
+    /// scattered through the view, so a later format that *can* hold typed
+    /// scalars only has to change `addCapabilities(for:)`.
+    public var allowedAddKinds: [SecretRow.Kind] { addCapabilities.allowedKinds }
 
     private let fileURL: URL
     private let keyStore: SessionKeyStore
@@ -395,7 +533,7 @@ public final class SecretDocumentViewModel {
         // `body` receives the key and immediately hops off this actor itself
         // (`Self.decrypt`, below) — the key is never copied out into a local
         // variable here. See `SessionKeyStore.withKey(_:)`'s async overload.
-        let decrypted: Outcome<[SecretRow]>? = await keyStore.withKey { key in
+        let decrypted: DecryptOutcome? = await keyStore.withKey { key in
             await Self.decrypt(contents, format: format, agePrivateKey: key)
         }
 
@@ -413,7 +551,23 @@ public final class SecretDocumentViewModel {
             loadedFingerprint = fingerprint
             adoptBaseline(newRows)
             loadState = .loaded
-        case .failure(let message):
+        case .failure(let message, .noMatchingIdentity):
+            // SOPS-38 phase F3: a wrong key is not a broken file — see
+            // `LoadState.readOnlyCiphertext`'s own doc comment. `resetToEmpty`
+            // still runs first: this state carries `rawCiphertext`/
+            // `recipients` of its own rather than reusing `encryptedContents`,
+            // and a document in this state is never `.loaded`, so `save()`'s
+            // `loadState == .loaded` guard already refuses it without any
+            // further gating here.
+            resetToEmpty()
+            // Read-only, metadata-only, and best-effort: recipients() needs
+            // no identity, but a failure reading them (a non-native backend,
+            // unreadable metadata) must not turn a real wrong-key finding
+            // into a bare crash or a different error — an empty list is the
+            // same honest "unknown" `FileListModel.isReadOnly` already uses.
+            let recipients = (try? SopsBridge.recipients(in: contents, format: format)) ?? []
+            loadState = .readOnlyCiphertext(reason: message, rawCiphertext: contents, recipients: recipients)
+        case .failure(let message, _):
             resetToEmpty()
             loadState = .failed(message)
         }
@@ -512,14 +666,14 @@ public final class SecretDocumentViewModel {
     /// this function returning.
     private static func decrypt(
         _ contents: String, format: SopsFileFormat, agePrivateKey key: String
-    ) async -> Outcome<[SecretRow]> {
+    ) async -> DecryptOutcome {
         await runOffCooperativePool {
             do {
                 return .success(try SopsBridge.decryptToRows(contents, format: format, agePrivateKey: key))
             } catch let error as SopsBridgeError {
-                return .failure(loadFailureMessage(for: error))
+                return .failure(message: loadFailureMessage(for: error), kind: error.kind)
             } catch {
-                return .failure("this file could not be decrypted")
+                return .failure(message: "this file could not be decrypted", kind: nil)
             }
         }
     }
@@ -615,15 +769,22 @@ public final class SecretDocumentViewModel {
         /// refuses both; this mirrors it so the sheet can say so before the
         /// user commits.
         case reservedKey
-        /// This document's format cannot hold what was asked for: a
-        /// container entry (a list append, or adding into a nested map) in a
-        /// document whose format cannot hold containers at all, or a value
-        /// kind that format cannot represent — sops's own dotenv store can
-        /// only ever write a flat set of `KEY=value` string lines. See
-        /// `supportsNestedStructure`/`allowedAddKinds`. The bridge is not the
-        /// authority here the way it is for `reservedKey`: nothing on the Go
-        /// side refuses this today, so this guard is what keeps the picker
-        /// from ever offering a choice this format cannot actually save.
+        /// This document's format cannot hold what was asked for at this
+        /// destination or with this kind — see `AddCapabilities`. Three
+        /// distinct shapes reach this one case: a list append in a format
+        /// with no lists, an add into a nested map in a format with no
+        /// containers at all (dotenv), and — new with INI — an add at the
+        /// document's own *root*, which INI refuses precisely because it
+        /// *does* have containers (sections) but this app's Add API cannot
+        /// create one; see `AddCapabilities`'s doc comment for why. The
+        /// bridge is not the authority here the way it is for
+        /// `reservedKey`/`invalidDotenvKey`/`invalidINIKey`: nothing on the
+        /// Go side refuses a wrong destination or kind by name the way it
+        /// refuses a bad key — `documentchanges.go`'s `validateAdd` reports
+        /// a generic structural error instead (a locate-and-encode failure
+        /// for INI's root case) — so this guard is what keeps the sheet from
+        /// ever offering a choice this format cannot actually save, rather
+        /// than mirroring a named bridge refusal the way the other cases do.
         case unsupportedForFormat
         /// This document is dotenv, and the name does not fit dotenv's own
         /// key grammar (`DotEnvParser.isValidKey`, `[\w.-]+`, ASCII-only).
@@ -637,6 +798,28 @@ public final class SecretDocumentViewModel {
         /// comment, so the key that would come out on the next read is not
         /// the one just typed, or the whole entry disappears silently.
         case invalidDotenvKey
+        /// This document is INI, and the name has a shape sops's own INI
+        /// store (`gopkg.in/ini.v1`) cannot round-trip safely. Found by
+        /// probing the real writer directly (`Engine/gobridge`, throwaway
+        /// probe, SOPS-38 phase F2 task 4) rather than assumed from dotenv's
+        /// rule — INI's hazards are a different three shapes, not the same
+        /// ones: an embedded `\n` makes the *whole file* fail to decrypt
+        /// afterwards (not just this entry); an embedded `\r` is silently
+        /// dropped from the key at write time, so the entry saves under a
+        /// name other than the one just typed; and a key starting with `#`
+        /// or `;` is written as a comment line, which desyncs the file from
+        /// its own message-authentication code and makes the *entire file*
+        /// fail to decrypt, by this app or by the real `sops` CLI — the
+        /// costliest of the three, and the reason this exists as a refusal
+        /// rather than an accepted quirk. `=`, `` ` ``, `"`, `:`, `[` and `]`
+        /// all round-trip safely (`ini.v1`'s writer quotes what it must) and
+        /// are deliberately not refused here — unlike dotenv, INI is safe by
+        /// construction for those, per
+        /// `TestINIApplyChangesAcceptsKeysDotenvWouldRefuse`. Mirrors
+        /// `refuseInvalidINIKey` (`Engine/gobridge/documentchanges.go`), the
+        /// same relationship `invalidDotenvKey` has to
+        /// `refuseInvalidDotenvKey`.
+        case invalidINIKey
         /// A save is in flight. See `save()`.
         case saveInProgress
     }
@@ -758,20 +941,36 @@ public final class SecretDocumentViewModel {
     public func refusalForAdding(_ key: String, in destination: AddDestination) -> AddRowRefusal? {
         if isSaving { return .saveInProgress }
         if loadState != .loaded { return .notLoaded }
-        // A container entry — a list append, or any destination that is not
-        // the document's own root map — is something only a format with
-        // `supportsNestedStructure` can hold at all. A genuinely flat
-        // document (every dotenv load this app produces) never selects its
-        // way into one of these in the first place — see
-        // `addDestination(forSelectedRowID:)`, whose `default` branch always
-        // resolves to the row's own (empty) parent for a document with no
-        // nesting — so this is a defence against a caller that reaches
-        // `addRow`/`refusalForAdding` directly rather than something the
-        // real UI can trigger today.
-        if !supportsNestedStructure, destination.isList || !destination.parent.isEmpty {
+
+        // Structural checks first, and before any name is even looked at:
+        // for INI a root destination is refused regardless of what the user
+        // types, and the sheet (`EditorAddRowSheet.currentRefusal`) relies on
+        // that ordering to show the "cannot add here" message immediately
+        // rather than waiting for text in an empty key field.
+        //
+        // A list append a format cannot hold is a defence against a caller
+        // that reaches `addRow`/`refusalForAdding` directly (this app's own
+        // tests among them) rather than something the real UI can trigger
+        // today — no row this app decodes for dotenv or INI is ever
+        // `isInList` (dotenv has no lists in its store at all; INI's rows are
+        // pinned `InList: false` by
+        // `TestINIDecryptToRowsSectionKeyPathsAndEncryptedFlags`), so
+        // `addDestination(forSelectedRowID:)` never resolves to one for
+        // either format.
+        if destination.isList {
+            return addCapabilities.allowsListDestination ? nil : .unsupportedForFormat
+        }
+        if destination.parent.isEmpty {
+            if !addCapabilities.allowsRootDestination { return .unsupportedForFormat }
+        } else if !addCapabilities.allowsNestedMapDestination {
+            // A genuinely flat dotenv document never selects its way into a
+            // nested destination in the first place — see
+            // `addDestination(forSelectedRowID:)`'s `default` branch, which
+            // always resolves back to the row's own (empty) parent for a
+            // document with no nesting — so this, like the list case above,
+            // guards a direct caller rather than the real UI.
             return .unsupportedForFormat
         }
-        if destination.isList { return nil }
 
         let name = key.trimmingCharacters(in: .whitespacesAndNewlines)
         if name.isEmpty { return .emptyKey }
@@ -783,6 +982,11 @@ public final class SecretDocumentViewModel {
         // see that function's doc comment — so this can never drift from
         // what a real dotenv file can actually hold.
         if format == .dotenv, !DotEnvParser.isValidKey(name) { return .invalidDotenvKey }
+        // INI has its own, different, hazardous shapes — see
+        // `AddRowRefusal.invalidINIKey`'s doc comment for what was actually
+        // measured and why `=`/backtick/quote/colon/brackets are absent from
+        // this list.
+        if format == .ini, !Self.isValidINIKey(name) { return .invalidINIKey }
 
         let candidate = destination.parent + [name]
         let taken = rows.contains { row in
@@ -791,6 +995,26 @@ public final class SecretDocumentViewModel {
                 && Array(row.path.prefix(candidate.count)) == candidate
         }
         return taken ? .duplicateKey : nil
+    }
+
+    /// Whether `name` is a key sops's own INI store can round-trip safely as
+    /// a new key. See `AddRowRefusal.invalidINIKey` for what each rejected
+    /// shape does to the file if it is not refused, and
+    /// `Engine/gobridge/documentchanges.go`'s `refuseInvalidINIKey` for the
+    /// Go-side mirror this must never drift from.
+    ///
+    /// `contains(where: \.isNewline)`, never `contains("\n")` /
+    /// `contains("\r")` — this package's own rule
+    /// (`LineEndings.swift`, enforced by `CRLFToleranceTests
+    /// .sourcesContainNoNewlineBlindIdioms`): Swift's `Character` is an
+    /// extended grapheme cluster, and `"\r\n"` is *one* such cluster, not
+    /// two, so a name pasted with an actual CRLF sequence in it (from a
+    /// clipboard, most plausibly) would satisfy neither `.contains("\n")`
+    /// nor `.contains("\r")` — the very literal `"\r\n"` this function
+    /// exists to catch would slip straight through. `Character.isNewline`
+    /// recognises LF, CR and CRLF (as the single cluster it is) alike.
+    private static func isValidINIKey(_ name: String) -> Bool {
+        !name.contains(where: \.isNewline) && !name.hasPrefix("#") && !name.hasPrefix(";")
     }
 
     /// Removes a row from the document in memory. Nothing reaches disk until
@@ -1152,13 +1376,23 @@ public final class SecretDocumentViewModel {
     /// disk. The document simply can no longer be shown, and saying so is
     /// more honest than leaving a stale editor open over it.
     private func adoptSavedDocument(_ newEncrypted: String) async {
-        let reloaded: Outcome<[SecretRow]>? = await keyStore.withKey { key in
+        let reloaded: DecryptOutcome? = await keyStore.withKey { key in
             await Self.decrypt(newEncrypted, format: format, agePrivateKey: key)
         }
         switch reloaded {
         case .success(let newRows)?:
             adoptBaseline(newRows)
-        case .failure(let message)?:
+        case .failure(let message, _)?:
+            // Not routed through `.readOnlyCiphertext` even for a
+            // `.noMatchingIdentity` kind: the save this reload follows just
+            // succeeded *with the currently configured key*, so that key was
+            // among the recipients a moment ago. This app has no
+            // `updateRecipients` call on the ordinary save path (only
+            // `ProjectAccessModel`/`RecipientAccessModel` do that, entirely
+            // separately), so this branch is not reachable in practice today
+            // — kept as `.failed` rather than silently swallowing the
+            // distinction, so a future path that *can* reach it is not
+            // handed a wrong assumption.
             resetToEmpty()
             loadState = .failed(message)
         case nil:

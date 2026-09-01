@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import ScratchCleanup
+import SopsEngine
 import SopsHealth
 import SopsProjects
 import SwiftUI
@@ -239,6 +240,37 @@ struct ProjectStartHereViewPresentationTests {
         }
         #expect(message.detail.contains("yaml: line 3"))
     }
+
+    /// `start-here.supported-formats` names the formats this app opens by
+    /// hand-written prose ("Opens sops files in YAML, dotenv, JSON and
+    /// INI.") with no compiler tie back to `SopsFileFormat` — the catalog
+    /// entry and the enum can drift apart silently. This guards the drift:
+    /// the `switch` below has no `default:`, so a fifth `SopsFileFormat`
+    /// case fails *this test's own compile* with no mapping to reach for,
+    /// which is a louder failure than a runtime miss would be. Ablation:
+    /// deleting one branch's expected token (or adding a fake one nothing in
+    /// the sentence satisfies) turns this red — verified by hand before
+    /// filing this test.
+    @Test("start-here.supported-formats mentions every SopsFileFormat case",
+          .enabled(if: LocalizationTests.bundleHasMacOSLayout,
+                   "this asserts on the real catalog sentence, and swift test's native build system never compiles .xcstrings — every key falls back to its own raw value (\"start-here.supported-formats\"), which contains none of the format tokens; run under xcodebuild or swift test --build-system swiftbuild"))
+    func supportedFormatsSentenceMentionsEverySopsFileFormat() {
+        func expectedToken(for format: SopsFileFormat) -> String {
+            switch format {
+            case .yaml: return "YAML"
+            case .dotenv: return "dotenv"
+            case .json: return "JSON"
+            case .ini: return "INI"
+            }
+        }
+
+        let sentence = LocalizedKey.startHereSupportedFormats.text
+        for format in SopsFileFormat.allCases {
+            let token = expectedToken(for: format)
+            #expect(sentence.contains(token),
+                    "start-here.supported-formats must mention \(format.rawValue) (expected \"\(token)\"): \(sentence)")
+        }
+    }
 }
 
 // MARK: - Rendered — what a user (or VoiceOver) actually sees
@@ -446,6 +478,23 @@ struct ProjectStartHereViewRenderTests {
             .startHereProbeLocation,
         ] {
             #expect(!shown.contains(key.text), "rendered \(key.rawValue) before configState resolved: \(shown)")
+        }
+    }
+
+    /// SOPS-38 phase F3 task 3 (spec §7 b.1, F2 review I4): a first-time user
+    /// looking at an empty project has no way to learn which sops formats
+    /// this app actually opens — this factual sentence names all four
+    /// (YAML/dotenv/JSON/INI). Independent of `configState`: it is a fact
+    /// about the app, not about this project's rules, so it shows even
+    /// before `configState` resolves — the same reasoning
+    /// `FileListView.footnotes`'s own `otherFormatCount` note already
+    /// applies one guard up.
+    @Test("names the four sops formats this app opens, regardless of configState")
+    func namesSupportedFormats() {
+        for configState: CreationPlan? in [nil, .noConfig, .noRuleMatched] {
+            let shown = text(configState)
+            #expect(shown.contains(LocalizedKey.startHereSupportedFormats.text),
+                    "configState \(String(describing: configState)) did not show the supported-formats sentence: \(shown)")
         }
     }
 
@@ -761,38 +810,26 @@ struct FileListViewStartHereWiringTests {
 
     /// A project holding only a sops file in an unsupported format used to
     /// hit the empty placeholder with `otherFormatCount`'s note nested where
-    /// the branch could never reach it (`FileListViewWiringTests
-    /// .otherFormatNoteSurvivesAnEmptyList` pins the model-and-view
-    /// combination for the old placeholder branch). This pins the same
-    /// property for the new branch, and that the note appears exactly once —
-    /// `FileListView.footnotes` and `ProjectStartHereView` both know about
-    /// `otherFormatCount`, and only one of them may say it out loud.
+    /// the branch could never reach it, and this test used to pin that the
+    /// note appeared exactly once across `FileListView.footnotes` and
+    /// `ProjectStartHereView` — both know about `otherFormatCount`, and only
+    /// one of them may say it out loud.
     ///
-    /// This fixture was a dotenv-shaped file until Task 6 (SOPS-38): the
-    /// editor now opens dotenv too, so it is no longer "another format" —
-    /// it is listed and openable exactly like YAML. JSON is a real,
-    /// still-unsupported one, the same shape
-    /// `SopsMetadataShapeTests.nonYAMLKindReadsJSON` uses.
-    @Test("an other-format-only project shows the note exactly once, alongside the guidance")
-    func otherFormatNoteAppearsOnceAlongsideGuidance() async throws {
-        let root = try project("other-format")
-        try """
-        {"password":"ENC[AES256_GCM,data:abc,iv:def,tag:ghi,type:str]","sops":{"mac":"ENC[AES256_GCM,data:xyz,iv:uvw,tag:rst,type:str]","version":"3.13.3"}}
-        """.write(to: root.appendingPathComponent("secrets.json"), atomically: true, encoding: .utf8)
-
-        let model = FileListModel(projectRoot: root)
-        await model.refresh()
-        try #require(model.files.isEmpty && model.otherFormatCount == 1)
-
-        let nodes = AXProbe.tree(size: Self.size) {
-            FileListView(model: model, selection: .constant(nil), onNewFile: {})
-        }
-        let shown = nodes.map { $0.label + " " + $0.value + " " + $0.help }.joined(separator: "\n")
-        #expect(shown.contains(LocalizedKey.newFileInfoNoConfig.text),
-                "the tree did not populate — this test would be vacuous: \(shown)")
-
-        let noteText = String(format: LocalizedKey.filesOtherFormatNote.text, 1)
-        let occurrences = nodes.filter { $0.value == noteText || $0.label == noteText }.count
-        #expect(occurrences == 1, "the other-format note appeared \(occurrences) times, expected exactly 1: \(shown)")
-    }
+    /// The fixture behind that scenario moved twice, and each move is real
+    /// project history worth keeping rather than a test quietly deleted: it
+    /// was dotenv-shaped until Task 6 (SOPS-38) taught the editor to open
+    /// dotenv too, so dotenv stopped being "another format" and the fixture
+    /// became JSON, the last real "other format" this build had. SOPS-38
+    /// phase F2 task 3 closed that gap as well —
+    /// `FileListViewWiringTests.jsonFileIsListedNotHiddenBehindOtherFormatNote`
+    /// is JSON's own version of exactly this move — and with it, the
+    /// combination this test pinned (a real file, `showsStartHere` true,
+    /// `otherFormatCount` positive) is no longer reachable through any real
+    /// sops document at all: `ScannedTree.encryptedInOtherFormats` is empty
+    /// for every project this build can classify (see that field's own doc
+    /// comment). Retired rather than rewritten a third time around a fixture
+    /// that would have to lie about being sops's own output to keep failing
+    /// this way — `otherFormatCountIsSurfaced` above still pins
+    /// `ProjectStartHereView`'s own rendering of a positive count directly,
+    /// which is the part of this claim that remains testable without one.
 }

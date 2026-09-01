@@ -280,11 +280,20 @@ public struct NewSecretFileSheet: View {
     ///
     /// No `default` — a case added to `SopsFileFormat` later must fail this
     /// file's build, the same discipline every switch in this file keeps.
+    ///
+    /// `.json`/`.ini` (SOPS-38 phase F2 task 5) are real copy now:
+    /// `SopsFileFormat.forDestinationName` can produce either, so this
+    /// branch is reachable the moment a user types a `.json`/`.ini`-named
+    /// destination — F2 task 2's `nil` placeholder would have been an honest
+    /// "nothing to say yet" then; it would be a false "this app has no
+    /// opinion about your file's format" now.
     static func targetFormatText(for format: SopsFileFormat?) -> String? {
         switch format {
         case nil: nil
         case .yaml: LocalizedKey.newFileTargetFormatYAML.text
         case .dotenv: LocalizedKey.newFileTargetFormatDotEnv.text
+        case .json: LocalizedKey.newFileTargetFormatJSON.text
+        case .ini: LocalizedKey.newFileTargetFormatINI.text
         }
     }
 

@@ -178,6 +178,34 @@ public struct SecretEditorView: View {
         loadState == .loaded && UnsavedWorkGate.isClear(isDirty: isDirty, isSaving: isSaving)
     }
 
+    /// The Access button's help text — its tooltip when enabled, and its
+    /// *reason* for being disabled otherwise. `canOpenAccessPanel` collapses
+    /// several distinct reasons into one boolean (not loaded, dirty,
+    /// saving); this is honest about the one of them worth naming
+    /// separately.
+    ///
+    /// SOPS-38 phase F3 finding: before this existed, a `.readOnlyCiphertext`
+    /// document's Access button was disabled — correctly, `loadState !=
+    /// .loaded` already refuses it — but explained itself with
+    /// `accessDisabledUnsavedChanges` ("Save your changes before managing
+    /// access."), which is false here: this document was never decrypted, so
+    /// there is nothing to save, and no amount of saving would make Access
+    /// reachable. A disabled control with an honest reason ("you can't change
+    /// access to a file you can't decrypt") beats a vanished one, which is
+    /// why this state hides nothing — see `CiphertextReadOnlyView`'s own doc
+    /// comment for why there genuinely is no path from that view to a
+    /// recipient change.
+    ///
+    /// Pulled out as a pure function — mirroring `canOpenAccessPanel` and
+    /// this module's other `WorkspaceSwitchDecision`/`QuitRequest`-shaped
+    /// helpers — so the distinction is directly testable without rendering
+    /// this view.
+    static func accessButtonHelpText(loadState: LoadState, canOpenAccess: Bool) -> LocalizedKey {
+        guard !canOpenAccess else { return .accessToolbarButton }
+        if case .readOnlyCiphertext = loadState { return .accessDisabledReadOnlyCiphertext }
+        return .accessDisabledUnsavedChanges
+    }
+
     /// - Parameters:
     ///   - initiallySelectedRowID: which row starts selected. The app leaves
     ///     this `nil`; it exists because the toolbar's `-` is enabled only
@@ -405,9 +433,7 @@ public struct SecretEditorView: View {
                     Label(.accessToolbarButton, systemImage: "person.2.badge.key")
                 }
                 .disabled(!canOpenAccess)
-                .help(canOpenAccess
-                    ? LocalizedKey.accessToolbarButton.text
-                    : LocalizedKey.accessDisabledUnsavedChanges.text)
+                .help(Self.accessButtonHelpText(loadState: viewModel.loadState, canOpenAccess: canOpenAccess).text)
             }
 
             Button {
@@ -524,6 +550,15 @@ public struct SecretEditorView: View {
                         .textSelection(.enabled)
                 }
             }
+        case .readOnlyCiphertext(let reason, let rawCiphertext, let recipients):
+            // SOPS-38 phase F3: the real view — raw ciphertext, this file's
+            // own recipients (labelled where the registry knows them), and
+            // the wrong-key explanation `.failed` used to carry. See
+            // `CiphertextReadOnlyView`'s own doc comment for why there is no
+            // path from here back to decrypt/save/addRow/updateRecipients.
+            CiphertextReadOnlyView(
+                reason: reason, rawCiphertext: rawCiphertext, recipients: recipients,
+                projectURL: recipientAccess?.projectURL)
         case .loaded:
             if viewModel.rows.isEmpty {
                 centered {
@@ -960,11 +995,23 @@ public struct EditorAddRowSheet: View {
     }
 
     /// The model's own answer, so the sheet and the save can never disagree
-    /// about whether a name is allowed. `nil` while the field is still empty:
-    /// "you have not typed anything yet" is not an error worth shouting.
+    /// about whether a name is allowed. `nil` while the field is still empty
+    /// — "you have not typed anything yet" is not an error worth shouting —
+    /// **except** when the destination itself is the problem
+    /// (`.unsupportedForFormat`): an INI document's root can refuse every
+    /// name equally (SOPS-38 phase F2 task 4 — see `AddCapabilities` on the
+    /// model), and that is worth saying immediately rather than waiting for
+    /// the user to type something that could never have been accepted
+    /// anyway. `refusalForAdding` checks the destination before it ever
+    /// looks at the name, so calling it with an empty key still gets the
+    /// right answer for that case.
     private var currentRefusal: SecretDocumentViewModel.AddRowRefusal? {
-        guard !destination.isList, !key.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
-        return refusal(key)
+        guard !destination.isList else { return nil }
+        let trimmedKey = key.trimmingCharacters(in: .whitespaces)
+        let result = refusal(trimmedKey)
+        if result == .unsupportedForFormat { return result }
+        guard !trimmedKey.isEmpty else { return nil }
+        return result
     }
 
     private var canAdd: Bool {
@@ -1031,20 +1078,29 @@ public struct EditorAddRowSheet: View {
         }
     }
 
-    /// Only the reasons a *name* can be refused get a message here; the
-    /// others cannot be reached from this sheet (it is not even presented
-    /// without a loaded document, and the `+` is disabled during a save).
-    /// `.unsupportedForFormat` belongs with them for the same reason: this
-    /// sheet's `kind` picker is built from `allowedKinds`, so it can never
-    /// offer a kind the model would refuse, and a document flat enough to
-    /// refuse a nested destination never produces a selection that resolves
-    /// to one in the first place (`addDestination(forSelectedRowID:)`).
+    /// Every reason worth a message here is one `currentRefusal` above can
+    /// actually surface: a *name*'s own refusal (`duplicateKey`,
+    /// `reservedKey`, `invalidDotenvKey`, `invalidINIKey`), or the one
+    /// *destination*-level refusal that is reachable from this sheet
+    /// (`.unsupportedForFormat` — INI's root; see `AddCapabilities`). The
+    /// other `.unsupportedForFormat` shapes (a nested/list destination on a
+    /// format with no containers, a list append on a format with no lists)
+    /// stay unreachable from here for the reason the model's own doc comment
+    /// gives: this sheet's `kind` picker is built from `allowedKinds`, so it
+    /// can never offer a kind the model would refuse, and a document flat
+    /// enough to refuse a nested destination never produces a selection that
+    /// resolves to one in the first place
+    /// (`addDestination(forSelectedRowID:)`) — but the *message* is generic
+    /// enough to be true of all of them, so nothing here has to distinguish
+    /// which shape it is.
     static func explanation(for refusal: SecretDocumentViewModel.AddRowRefusal) -> LocalizedKey? {
         switch refusal {
         case .duplicateKey: .editorAddDuplicateKey
         case .reservedKey: .editorAddReservedKey
         case .invalidDotenvKey: .editorAddInvalidDotenvKey
-        case .emptyKey, .notLoaded, .unsupportedKind, .unsupportedForFormat, .saveInProgress: nil
+        case .invalidINIKey: .editorAddInvalidINIKey
+        case .unsupportedForFormat: .editorAddUnsupportedForFormat
+        case .emptyKey, .notLoaded, .unsupportedKind, .saveInProgress: nil
         }
     }
 

@@ -358,8 +358,45 @@ struct SecretDocumentViewModelTests {
         #expect(!vm.isDirty)
     }
 
-    @Test("a file that fails to decrypt reports failed and renders nothing editable")
-    func failedDecryptReportsFailedWithNoRows() async throws {
+    /// SOPS-38 phase F3: a wrong key used to fold into `.failed` — the same
+    /// bucket as a damaged file or a bad MAC. That conflated "someone else's
+    /// project, working as designed" with "this file is broken", so it now
+    /// reaches its own state instead. See `LoadState.readOnlyCiphertext`'s
+    /// own doc comment.
+    @Test("a file this session's key cannot decrypt reports readOnlyCiphertext, never failed")
+    func wrongKeyReportsReadOnlyCiphertextWithNoRows() async throws {
+        let owner = try AgeKeyPair.generate()
+        let stranger = try AgeKeyPair.generate()
+        let fileURL = try encryptedFixture(sampleYAML, key: owner)
+        let onDiskCiphertext = try String(contentsOf: fileURL, encoding: .utf8)
+
+        let store = SessionKeyStore()
+        try store.importKey(stranger.private)
+
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
+        await vm.load()
+
+        guard case .readOnlyCiphertext(let reason, let rawCiphertext, let recipients) = vm.loadState else {
+            Issue.record("expected .readOnlyCiphertext, got \(vm.loadState)")
+            return
+        }
+        #expect(reason.contains("none of the keys"), Comment(rawValue: reason))
+        // The raw bytes handed to the view are exactly what is on disk —
+        // never decrypted, never re-derived from anything this app computed.
+        #expect(rawCiphertext == onDiskCiphertext)
+        // Read from the file's own metadata, no identity needed: the
+        // stranger's key is absent and the owner's is present.
+        #expect(recipients == [owner.public])
+        #expect(vm.rows.isEmpty, "a read-only ciphertext load must render nothing editable")
+        #expect(!vm.isDirty)
+    }
+
+    /// The message text itself must still lead with the wrong-key
+    /// explanation and keep the engine's own diagnostic underneath — this
+    /// state carries the exact same `reason` `.failed` used to, just under a
+    /// different case name.
+    @Test("readOnlyCiphertext's reason leads with the wrong-key explanation")
+    func readOnlyCiphertextReasonExplainsTheWrongKey() async throws {
         let owner = try AgeKeyPair.generate()
         let stranger = try AgeKeyPair.generate()
         let fileURL = try encryptedFixture(sampleYAML, key: owner)
@@ -370,13 +407,93 @@ struct SecretDocumentViewModelTests {
         let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         await vm.load()
 
-        guard case .failed(let message) = vm.loadState else {
-            Issue.record("expected .failed, got \(vm.loadState)")
+        guard case .readOnlyCiphertext(let reason, _, _) = vm.loadState else {
+            Issue.record("expected .readOnlyCiphertext, got \(vm.loadState)")
             return
         }
-        #expect(message.contains("none of the keys"), Comment(rawValue: message))
-        #expect(vm.rows.isEmpty, "a failed load must render nothing editable")
+        #expect(reason.hasPrefix(LocalizedKey.editorLoadFailedWrongKey.text))
+    }
+
+    /// The `recipients` field of `.readOnlyCiphertext` is best-effort: `load()`
+    /// builds it with `try? SopsBridge.recipients(in:format:)`, and a failure
+    /// there must degrade to `[]` rather than derailing the wrong-key finding
+    /// itself. Reproduced with a real file, not a mock: corrupting only the
+    /// `sops.age[].recipient` string (leaving the actual encrypted data key
+    /// blob, `enc:`, untouched) makes `SopsBridge.recipients` fail — the Go
+    /// side rejects it as not a valid native age recipient
+    /// (`age.ParseX25519Recipient`, `gobridge/recipients.go`'s
+    /// `recipientsFromMetadata`) — while `SopsBridge.decryptToRows` still
+    /// classifies the failure as `.noMatchingIdentity`, because decrypting
+    /// only ever tries the session's identity against the `enc:` blob and
+    /// never re-parses the recipient string at all. Confirmed directly
+    /// against the real bridge (`Engine/gobridge`) before writing this test,
+    /// the same way `Encrypt/Decrypt/Recipients` are proven everywhere else
+    /// in this suite — not assumed from reading the Go source.
+    @Test("a recipients() read failure inside readOnlyCiphertext degrades to an empty list, not a crash")
+    func recipientsReadFailureDegradesToEmptyList() async throws {
+        let owner = try AgeKeyPair.generate()
+        let stranger = try AgeKeyPair.generate()
+        let fileURL = try encryptedFixture(sampleYAML, key: owner)
+
+        var contents = try String(contentsOf: fileURL, encoding: .utf8)
+        guard contents.contains(owner.public) else {
+            throw FixtureError("fixture does not contain the owner's recipient string")
+        }
+        // Replace only the recipient value — never the `enc:` blob a few
+        // lines above it, which is what decryption actually reads.
+        contents = contents.replacingOccurrences(
+            of: owner.public, with: "age1thisisnotarealrecipientvalueatallxx")
+        try contents.write(to: fileURL, atomically: true, encoding: .utf8)
+        let onDiskCiphertext = contents
+
+        let store = SessionKeyStore()
+        try store.importKey(stranger.private)
+
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
+        await vm.load()
+
+        guard case .readOnlyCiphertext(let reason, let rawCiphertext, let recipients) = vm.loadState else {
+            Issue.record("expected .readOnlyCiphertext even with an unreadable recipient list, got \(vm.loadState)")
+            return
+        }
+        // The wrong-key finding itself is unaffected by the corruption —
+        // decrypt never looks at the recipient string.
+        #expect(reason.contains("none of the keys"), Comment(rawValue: reason))
+        #expect(rawCiphertext == onDiskCiphertext)
+        // The one thing this test exists to pin: recipients() failed, and
+        // that failure became [], not a thrown error or a crash.
+        #expect(recipients == [], "a failed recipients() read must degrade to [], never propagate or default to something else")
+        #expect(vm.rows.isEmpty)
         #expect(!vm.isDirty)
+    }
+
+    /// A genuinely damaged file — not a wrong key at all — must still reach
+    /// `.failed`, never `.readOnlyCiphertext`. Reuses the same retyped-tag
+    /// corruption `noErrorStringCarriesARowValue` below already proves
+    /// reliably fails decryption for a reason that is not a missing
+    /// identity: the *correct* key is imported here, so any failure can only
+    /// come from the corruption, never from `.noMatchingIdentity`.
+    @Test("a damaged file that is not a wrong-key problem still reports failed")
+    func genuinelyDamagedFileStillReportsFailed() async throws {
+        let owner = try AgeKeyPair.generate()
+        let fileURL = try encryptedFixture("api_key: retyped\nother: fine\n", key: owner)
+        var lines = try String(contentsOf: fileURL, encoding: .utf8).components(separatedBy: "\n")
+        guard let index = lines.firstIndex(where: { $0.hasPrefix("api_key: ENC[") }) else {
+            throw FixtureError("fixture has no encrypted api_key")
+        }
+        lines[index] = lines[index].replacingOccurrences(of: ",type:str]", with: ",type:int]")
+        try lines.joined(separator: "\n").write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let store = SessionKeyStore()
+        try store.importKey(owner.private)
+
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
+        await vm.load()
+
+        guard case .failed = vm.loadState else {
+            Issue.record("expected .failed for a damaged (non-wrong-key) file, got \(vm.loadState)")
+            return
+        }
     }
 
     // MARK: Loading
@@ -833,7 +950,13 @@ struct SecretDocumentViewModelTests {
         }
     }
 
-    @Test("save() right after a failed load fails rather than claiming saved")
+    /// SOPS-38 phase F3: a wrong key now reaches `.readOnlyCiphertext`, not
+    /// `.failed` (see `LoadState.readOnlyCiphertext`'s own doc comment) —
+    /// but `save()`'s own guard (`loadState == .loaded`) does not care which
+    /// non-`.loaded` state it is looking at, so the outcome this test is
+    /// really about, "a save from a non-loaded document still refuses",
+    /// holds exactly as before.
+    @Test("save() right after a read-only-ciphertext load fails rather than claiming saved")
     func saveAfterFailedLoadFails() async throws {
         let owner = try AgeKeyPair.generate()
         let stranger = try AgeKeyPair.generate()
@@ -843,8 +966,8 @@ struct SecretDocumentViewModelTests {
 
         let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         await vm.load()
-        guard case .failed = vm.loadState else {
-            Issue.record("expected the wrong key to fail the load")
+        guard case .readOnlyCiphertext = vm.loadState else {
+            Issue.record("expected the wrong key to reach .readOnlyCiphertext, got \(vm.loadState)")
             return
         }
         #expect(!vm.isDirty)
@@ -852,7 +975,7 @@ struct SecretDocumentViewModelTests {
         let outcome = await vm.save()
 
         guard case .failed = outcome else {
-            Issue.record("expected .failed after a failed load, got \(outcome)")
+            Issue.record("expected .failed after a readOnlyCiphertext load, got \(outcome)")
             return
         }
     }
@@ -881,13 +1004,17 @@ struct SecretDocumentViewModelTests {
         try store.importKey(stranger.private)
         await vm.load()
 
-        guard case .failed = vm.loadState else {
-            Issue.record("expected the reload with the wrong key to fail, got \(vm.loadState)")
+        // SOPS-38 phase F3: this is now `.readOnlyCiphertext`, not `.failed`
+        // — see `LoadState.readOnlyCiphertext`'s own doc comment. The
+        // property this test is actually pinning is unchanged either way:
+        // no stale rows, and `save()` still refuses.
+        guard case .readOnlyCiphertext = vm.loadState else {
+            Issue.record("expected the reload with the wrong key to reach .readOnlyCiphertext, got \(vm.loadState)")
             return
         }
-        // The never-an-empty-form property: a failed reload must not leave
-        // the previous load's rows sitting around looking like a live,
-        // savable document.
+        // The never-an-empty-form property: a reload that lands here must
+        // not leave the previous load's rows sitting around looking like a
+        // live, savable document.
         #expect(vm.rows.isEmpty)
         #expect(!vm.isDirty)
 
@@ -895,7 +1022,7 @@ struct SecretDocumentViewModelTests {
         // worse, the stale in-memory state) over the file.
         let outcome = await vm.save()
         guard case .failed = outcome else {
-            Issue.record("expected .failed after a failed reload, got \(outcome)")
+            Issue.record("expected .failed after a readOnlyCiphertext reload, got \(outcome)")
             return
         }
 
@@ -1917,6 +2044,375 @@ struct SecretDocumentDotenvTests {
         #expect(reloaded.loadState == .loaded)
         #expect(try row(reloaded, "FOO").value == "rotated")
         #expect(try row(reloaded, "BAZ").value == "qux")
+    }
+}
+
+/// SOPS-38 phase F2 task 3: json/ini sops files now reach `tree.encrypted`
+/// (`ProjectScanner.classify`) with their own `SopsFileFormat`, so they
+/// reach this view model exactly the way a YAML or dotenv file does — same
+/// constructor, same `load()`. What matters here, and what these two smoke
+/// tests exist to pin, is that opening one at all — decrypting it through
+/// the real in-process bridge and populating `rows` — actually works end to
+/// end, not just that the scanner classifies the file correctly. The real
+/// per-format capability matrix (F2 task 4) has its own suites below —
+/// `SecretDocumentJSONCapabilityTests`/`SecretDocumentINICapabilityTests`.
+@Suite("SecretDocumentViewModel opens json and ini documents")
+@MainActor
+struct SecretDocumentJSONAndINISmokeTests {
+
+    @Test("a json sops document loads through the view model with non-empty rows")
+    func jsonDocumentLoads() async throws {
+        let key = try AgeKeyPair.generate()
+        let encrypted = try SopsBridge.encrypt(
+            "{\"db\": \"hunter2\", \"user\": \"admin\"}", format: .json, recipients: [key.public])
+        let dir = try scratchDirectory("json-fixture")
+        let fileURL = dir.appendingPathComponent("secret.json")
+        try encrypted.write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .json, keyStore: store)
+        await vm.load()
+
+        #expect(vm.loadState == .loaded, "got: \(vm.loadState)")
+        #expect(!vm.rows.isEmpty)
+        #expect(vm.rows.first { $0.path == ["db"] }?.value == "hunter2")
+        #expect(vm.rows.first { $0.path == ["user"] }?.value == "admin")
+    }
+
+    @Test("an ini sops document loads through the view model with non-empty rows")
+    func iniDocumentLoads() async throws {
+        let key = try AgeKeyPair.generate()
+        let encrypted = try SopsBridge.encrypt(
+            "[db]\nurl = postgres://x\npassword = hunter2\n", format: .ini, recipients: [key.public])
+        let dir = try scratchDirectory("ini-fixture")
+        let fileURL = dir.appendingPathComponent("secret.ini")
+        try encrypted.write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .ini, keyStore: store)
+        await vm.load()
+
+        #expect(vm.loadState == .loaded, "got: \(vm.loadState)")
+        #expect(!vm.rows.isEmpty)
+        #expect(vm.rows.first { $0.path == ["db", "url"] }?.value == "postgres://x")
+        #expect(vm.rows.first { $0.path == ["db", "password"] }?.value == "hunter2")
+    }
+}
+
+// MARK: - SOPS-38 phase F2 task 4: the real per-format capability matrix
+
+/// JSON's own store (`stores/json/store.go`) is exactly as capable as
+/// YAML's — nested maps, lists, every scalar kind, no format-specific
+/// key-grammar hazard — so `SecretDocumentViewModel.addCapabilities(for:
+/// .json)` is the identical row to `.yaml`'s. These tests pin that it
+/// actually behaves that way, not just that the matrix says so.
+@Suite("SecretDocumentViewModel — JSON capability matrix")
+@MainActor
+struct SecretDocumentJSONCapabilityTests {
+
+    private func loadedJSON(_ plain: String) async throws -> (SecretDocumentViewModel, AgeKeyPair, URL) {
+        let key = try AgeKeyPair.generate()
+        let encrypted = try SopsBridge.encrypt(plain, format: .json, recipients: [key.public])
+        let dir = try scratchDirectory("json-fixture")
+        let fileURL = dir.appendingPathComponent("secret.json")
+        try encrypted.write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .json, keyStore: store)
+        await vm.load()
+        #expect(vm.loadState == .loaded)
+        return (vm, key, fileURL)
+    }
+
+    private func row(_ vm: SecretDocumentViewModel, _ path: String...) throws -> SecretRow {
+        guard let found = vm.rows.first(where: { $0.path == path }) else {
+            throw FixtureError("no row at \(path); present: \(vm.rows.map { $0.path.joined(separator: ".") })")
+        }
+        return found
+    }
+
+    private static let nestedJSON = """
+        {"db": {"url": "postgres://x", "port": 5432}, "tags": ["a", "b"]}
+        """
+
+    @Test("a json document reports nested structure and every add kind, same as yaml")
+    func jsonReportsFullCapability() async throws {
+        let (vm, _, _) = try await loadedJSON(Self.nestedJSON)
+        #expect(vm.supportsNestedStructure)
+        #expect(Set(vm.allowedAddKinds) == Set([.string, .int, .float, .bool, .null, .timestamp]))
+    }
+
+    @Test("a top-level string add on a json document is accepted")
+    func jsonAcceptsRootAdd() async throws {
+        let (vm, _, _) = try await loadedJSON(Self.nestedJSON)
+        let root = vm.addDestination(forSelectedRowID: nil)
+        guard case .added(let id) = vm.addRow(in: root, key: "region", kind: .string, value: "us-east") else {
+            Issue.record("a top-level add on a json document was refused")
+            return
+        }
+        #expect(vm.rows.first(where: { $0.id == id })?.path == ["region"])
+    }
+
+    @Test("an int add into an existing nested json map is accepted")
+    func jsonAcceptsNestedAdd() async throws {
+        let (vm, _, _) = try await loadedJSON(Self.nestedJSON)
+        let urlRow = try row(vm, "db", "url")
+        let destination = vm.addDestination(forSelectedRowID: urlRow.id)
+        #expect(destination == .init(document: 0, parent: ["db"], isList: false))
+        guard case .added(let id) = vm.addRow(in: destination, key: "timeout", kind: .int, value: "30") else {
+            Issue.record("a nested add on a json document was refused")
+            return
+        }
+        #expect(vm.rows.first(where: { $0.id == id })?.path == ["db", "timeout"])
+    }
+
+    @Test("a string append into an existing json list is accepted")
+    func jsonAcceptsListAppend() async throws {
+        let (vm, _, _) = try await loadedJSON(Self.nestedJSON)
+        let firstTag = try row(vm, "tags", "0")
+        let destination = vm.addDestination(forSelectedRowID: firstTag.id)
+        #expect(destination == .init(document: 0, parent: ["tags"], isList: true))
+        #expect(vm.addRow(in: destination, key: "", kind: .string, value: "c").isAdded)
+    }
+
+    @Test("open, nested add, list append, save and reload round-trips a json document")
+    func jsonRoundTrip() async throws {
+        let (vm, key, fileURL) = try await loadedJSON(Self.nestedJSON)
+        let urlRow = try row(vm, "db", "url")
+        let nestedDestination = vm.addDestination(forSelectedRowID: urlRow.id)
+        #expect(vm.addRow(in: nestedDestination, key: "region", kind: .string, value: "us-east").isAdded)
+
+        let firstTag = try row(vm, "tags", "0")
+        let listDestination = vm.addDestination(forSelectedRowID: firstTag.id)
+        #expect(vm.addRow(in: listDestination, key: "", kind: .string, value: "c").isAdded)
+
+        #expect(vm.isDirty)
+        let outcome = await vm.save()
+        #expect(outcome == .saved)
+        #expect(!vm.isDirty)
+
+        let onDiskEncrypted = try String(contentsOf: fileURL, encoding: .utf8)
+        let decrypted = try SopsBridge.decrypt(onDiskEncrypted, format: .json, agePrivateKey: key.private)
+        #expect(decrypted.contains("\"region\""))
+        #expect(decrypted.contains("us-east"))
+        #expect(decrypted.contains("\"c\""))
+        #expect(decrypted.contains("postgres://x"), "an untouched value must survive the save")
+
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let reloaded = SecretDocumentViewModel(fileURL: fileURL, format: .json, keyStore: store)
+        await reloaded.load()
+        #expect(reloaded.loadState == .loaded)
+        #expect(try row(reloaded, "db", "region").value == "us-east")
+        #expect(try row(reloaded, "tags", "2").value == "c")
+        #expect(try row(reloaded, "db", "url").value == "postgres://x")
+    }
+}
+
+private extension SecretDocumentViewModel.AddRowOutcome {
+    var isAdded: Bool {
+        if case .added = self { return true }
+        return false
+    }
+}
+
+/// INI's own store (`stores/ini/store.go`) sits between yaml's and dotenv's:
+/// it has containers (sections), unlike dotenv, but this app's Add API can
+/// only ever create a scalar leaf, never a container — so a new *section*
+/// cannot be created from this app at all, and the document's own root
+/// (which sops's INI store requires to hold nothing but sections) is
+/// refused as an add destination entirely. See `SecretDocumentViewModel
+/// .AddCapabilities`'s doc comment for the full reasoning and the pinned
+/// bridge test (`TestINIApplyChangesAddAtDocumentRootProducesCleanError`)
+/// this mirrors.
+@Suite("SecretDocumentViewModel — INI capability matrix")
+@MainActor
+struct SecretDocumentINICapabilityTests {
+
+    private func loadedINI(_ plain: String) async throws -> (SecretDocumentViewModel, AgeKeyPair, URL) {
+        let key = try AgeKeyPair.generate()
+        let encrypted = try SopsBridge.encrypt(plain, format: .ini, recipients: [key.public])
+        let dir = try scratchDirectory("ini-fixture")
+        let fileURL = dir.appendingPathComponent("secret.ini")
+        try encrypted.write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .ini, keyStore: store)
+        await vm.load()
+        #expect(vm.loadState == .loaded)
+        return (vm, key, fileURL)
+    }
+
+    private func row(_ vm: SecretDocumentViewModel, _ path: String...) throws -> SecretRow {
+        guard let found = vm.rows.first(where: { $0.path == path }) else {
+            throw FixtureError("no row at \(path); present: \(vm.rows.map { $0.path.joined(separator: ".") })")
+        }
+        return found
+    }
+
+    private static let sectionedINI = "[db]\nurl = postgres://x\npassword = secret\n\n[api]\nkey = secret2\n"
+
+    @Test("an ini document reports nested structure but restricts to .string")
+    func iniReportsNestedButStringOnlyCapability() async throws {
+        let (vm, _, _) = try await loadedINI(Self.sectionedINI)
+        #expect(vm.supportsNestedStructure)
+        #expect(vm.allowedAddKinds == [.string])
+    }
+
+    @Test("a top-level add on an ini document is refused before any key is even typed")
+    func iniRefusesTopLevelAdd() async throws {
+        let (vm, _, fileURL) = try await loadedINI(Self.sectionedINI)
+        let onDiskBefore = try String(contentsOf: fileURL, encoding: .utf8)
+        let root = vm.addDestination(forSelectedRowID: nil)
+        #expect(root == .init(document: 0, parent: [], isList: false))
+
+        // Refused regardless of what the name would have been — even an
+        // empty one — because the destination itself is the problem, not
+        // the name. `EditorAddRowSheet.currentRefusal` relies on exactly
+        // this to show a message before the user has typed anything.
+        #expect(vm.refusalForAdding("", in: root) == .unsupportedForFormat)
+        #expect(vm.refusalForAdding("new_section_key", in: root) == .unsupportedForFormat)
+        #expect(vm.addRow(in: root, key: "new_section_key", kind: .string, value: "v")
+            == .refused(.unsupportedForFormat))
+        #expect(!vm.isDirty, "a refused addition must not dirty the document")
+
+        let onDiskAfter = try String(contentsOf: fileURL, encoding: .utf8)
+        #expect(onDiskAfter == onDiskBefore)
+    }
+
+    @Test("a string add into an existing ini section is accepted")
+    func iniAcceptsAddIntoExistingSection() async throws {
+        let (vm, _, _) = try await loadedINI(Self.sectionedINI)
+        let urlRow = try row(vm, "db", "url")
+        let destination = vm.addDestination(forSelectedRowID: urlRow.id)
+        #expect(destination == .init(document: 0, parent: ["db"], isList: false))
+        guard case .added(let id) = vm.addRow(in: destination, key: "host", kind: .string, value: "localhost")
+        else {
+            Issue.record("an add into an existing ini section was refused")
+            return
+        }
+        #expect(vm.rows.first(where: { $0.id == id })?.path == ["db", "host"])
+    }
+
+    @Test("adding into the implicit DEFAULT section is accepted, same as any other section")
+    func iniAcceptsAddIntoDefaultSection() async throws {
+        // TestINILoadAlwaysCarriesAnImplicitDefaultSection (Engine/gobridge)
+        // pins that every INI document's row list starts with a phantom,
+        // always-present "DEFAULT" section — an ordinary `.emptyMap` row
+        // when nothing precedes the document's first `[section]` header.
+        // `addDestination` must treat it exactly like any other selected
+        // section, not like the document root it happens to sit at the top
+        // of.
+        let (vm, _, _) = try await loadedINI(Self.sectionedINI)
+        let defaultRow = try row(vm, "DEFAULT")
+        #expect(defaultRow.kind == .emptyMap)
+        let destination = vm.addDestination(forSelectedRowID: defaultRow.id)
+        #expect(destination == .init(document: 0, parent: ["DEFAULT"], isList: false))
+        #expect(vm.addRow(in: destination, key: "standalone", kind: .string, value: "v").isAdded)
+    }
+
+    @Test("a non-string kind add into an existing ini section is refused")
+    func iniRefusesNonStringKind() async throws {
+        let (vm, _, _) = try await loadedINI(Self.sectionedINI)
+        let urlRow = try row(vm, "db", "url")
+        let destination = vm.addDestination(forSelectedRowID: urlRow.id)
+        #expect(vm.addRow(in: destination, key: "port", kind: .int, value: "5432")
+            == .refused(.unsupportedForFormat))
+        #expect(!vm.isDirty)
+    }
+
+    @Test("a list destination is refused on an ini document")
+    func iniRefusesListDestination() async throws {
+        // Not reachable through `addDestination(forSelectedRowID:)` — sops's
+        // INI store has no list type at all, so no row this app decodes for
+        // INI is ever `isInList`
+        // (`TestINIDecryptToRowsSectionKeyPathsAndEncryptedFlags`). Pinned
+        // directly, the same way `dotenvRefusesNestedDestination` pins the
+        // dotenv case, as a defence against a caller that reaches `addRow`
+        // some other way.
+        let (vm, _, _) = try await loadedINI(Self.sectionedINI)
+        let listDestination = SecretDocumentViewModel.AddDestination(document: 0, parent: ["db"], isList: true)
+        #expect(vm.addRow(in: listDestination, key: "", kind: .string, value: "v")
+            == .refused(.unsupportedForFormat))
+        #expect(!vm.isDirty)
+    }
+
+    // MARK: - SOPS-38 phase F2 task 4: INI key grammar
+
+    /// sops's own INI store (`gopkg.in/ini.v1`, via `stores/ini/store.go`)
+    /// cannot round-trip these four shapes safely — see
+    /// `SecretDocumentViewModel.AddRowRefusal.invalidINIKey`'s doc comment
+    /// for exactly what each one does when it is not refused, established by
+    /// probing the real writer directly. Mirrors
+    /// `TestINIApplyChangesRefusesKeyContainingNewline`/
+    /// `...RefusesKeyContainingCarriageReturn`/
+    /// `...RefusesKeyStartingWithHashOrSemicolon` in
+    /// `Engine/gobridge/ini_test.go`.
+    @Test("adding a key with ini-breaking characters is refused before any write")
+    func iniRefusesInvalidKeyGrammar() async throws {
+        let (vm, _, fileURL) = try await loadedINI(Self.sectionedINI)
+        let onDiskBefore = try String(contentsOf: fileURL, encoding: .utf8)
+        let db = vm.addDestination(forSelectedRowID: try row(vm, "db", "url").id)
+
+        #expect(vm.addRow(in: db, key: "weird\nnewline", kind: .string, value: "v")
+            == .refused(.invalidINIKey))
+        #expect(vm.addRow(in: db, key: "weird\rcr", kind: .string, value: "v")
+            == .refused(.invalidINIKey))
+        #expect(vm.addRow(in: db, key: "#hashprefix", kind: .string, value: "v")
+            == .refused(.invalidINIKey))
+        #expect(vm.addRow(in: db, key: ";semiprefix", kind: .string, value: "v")
+            == .refused(.invalidINIKey))
+        #expect(!vm.isDirty, "a refused addition must not dirty the document")
+
+        let onDiskAfter = try String(contentsOf: fileURL, encoding: .utf8)
+        #expect(onDiskAfter == onDiskBefore)
+    }
+
+    /// The discriminating half of the test above: a key using only shapes
+    /// INI's own store round-trips safely — including several dotenv would
+    /// refuse (`=`) — is unaffected by the new guard.
+    @Test("a key with ini-safe special characters is unaffected by the new guard")
+    func iniAcceptsSafeSpecialCharacterKey() async throws {
+        let (vm, _, _) = try await loadedINI(Self.sectionedINI)
+        let db = vm.addDestination(forSelectedRowID: try row(vm, "db", "url").id)
+        for name in ["FOO=BAR", "weird]bracket", "weird[bracket", "weird`tick", "weird\"quote", "weird:colon"] {
+            #expect(vm.refusalForAdding(name, in: db) == nil, "\(name) should be accepted")
+        }
+    }
+
+    @Test("open, add into an existing section, edit, save and reload round-trips an ini document")
+    func iniRoundTrip() async throws {
+        let (vm, key, fileURL) = try await loadedINI(Self.sectionedINI)
+        let destination = vm.addDestination(forSelectedRowID: try row(vm, "db", "url").id)
+        #expect(vm.addRow(in: destination, key: "host", kind: .string, value: "localhost").isAdded)
+
+        let passwordID = try row(vm, "db", "password").id
+        vm.update(rowID: passwordID, to: "rotated")
+        #expect(vm.isDirty)
+
+        let outcome = await vm.save()
+        #expect(outcome == .saved)
+        #expect(!vm.isDirty)
+
+        let onDiskEncrypted = try String(contentsOf: fileURL, encoding: .utf8)
+        let decrypted = try SopsBridge.decrypt(onDiskEncrypted, format: .ini, agePrivateKey: key.private)
+        #expect(decrypted.contains("host"))
+        #expect(decrypted.contains("localhost"))
+        #expect(decrypted.contains("rotated"))
+        #expect(decrypted.contains("postgres://x"), "an untouched value must survive the save")
+
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let reloaded = SecretDocumentViewModel(fileURL: fileURL, format: .ini, keyStore: store)
+        await reloaded.load()
+        #expect(reloaded.loadState == .loaded)
+        #expect(try row(reloaded, "db", "host").value == "localhost")
+        #expect(try row(reloaded, "db", "password").value == "rotated")
+        #expect(try row(reloaded, "db", "url").value == "postgres://x")
     }
 }
 

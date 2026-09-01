@@ -297,6 +297,19 @@ public enum SecretFileCreator {
         /// `Error.description` is path- and errno-derived only — see that
         /// type's "Errors never contain the file's contents" section.
         case write(AtomicFileWriter.Error)
+        /// A guard ahead of step 4 (see `plaintext(for:format:)`'s own doc
+        /// comment): a `.dotEnv` source can only become genuine dotenv
+        /// content (`format == .dotenv`) or the pre-existing, still-supported
+        /// flattened-YAML-map behaviour (`format == .yaml`). There is no
+        /// honest JSON or INI translation of a flat `KEY=value` import, and
+        /// without this guard a `.json`/`.ini`-named destination would
+        /// silently fall through to `FlatYAMLEmitter`'s YAML-shaped output —
+        /// not a clean refusal, a format nobody asked for, quietly encrypted
+        /// under the wrong label (task SOPS-38 phase F2 task 5; sops's own
+        /// INI store is permissive enough about `:`/`=` separators that this
+        /// would not even reliably fail at the bridge). `SopsFileFormat`
+        /// names which target format triggered the refusal.
+        case dotEnvSourceIncompatibleWithFormat(SopsFileFormat)
     }
 
     /// The mode intermediate directories are created with in step 7. Owner
@@ -348,6 +361,13 @@ public enum SecretFileCreator {
         // format the wizard tells the user before Create is pressed can
         // never disagree with what this call actually writes.
         let format = SopsFileFormat.forDestinationName(destination.lastPathComponent)
+
+        // Guard ahead of step 4 — see `Failure.dotEnvSourceIncompatibleWithFormat`'s
+        // own doc comment. Checked before any plaintext is built, so a
+        // refused combination never reaches the bridge at all.
+        if case .dotEnv = source, format == .json || format == .ini {
+            throw Failure.dotEnvSourceIncompatibleWithFormat(format)
+        }
 
         // 4. Never touches disk, never leaves this process.
         let plaintext = Self.plaintext(for: source, format: format)
@@ -467,33 +487,54 @@ public enum SecretFileCreator {
     /// derived. It only changes two of the three cases below:
     ///
     /// - `.empty` needs a *format-shaped* sentinel for "nothing yet, but a
-    ///   valid document" — YAML's is `"{}\n"` (`SopsBridge.encrypt` expects a
-    ///   document, not an empty string; see `FlatYAMLEmitter.emit`'s own doc
-    ///   comment for the same rule stated there). Dotenv needs no sentinel at
-    ///   all: measured directly against the real bridge
-    ///   (`SopsBridgeDotenvTests.emptyDotenvDocumentIsCreatedAndReadsBackEmpty`),
-    ///   `""` is already a legitimate, empty dotenv document on its own terms
-    ///   — see `DotEnvEmitter.emit(_:)`'s own doc comment for the measured
-    ///   reason.
+    ///   valid document" — YAML's and JSON's is `"{}\n"` (`SopsBridge.encrypt`
+    ///   expects a document, not an empty string for either: measured
+    ///   directly against the real bridge for JSON,
+    ///   `Engine/gobridge/json_test.go`'s `TestJSONEncryptRefusesEmptyDocument`/
+    ///   `TestJSONEncryptAcceptsEmptyObject`, F2 task 1 — YAML's own rule is
+    ///   the pre-existing one stated at `FlatYAMLEmitter.emit`'s own doc
+    ///   comment). Dotenv and INI need no sentinel at all: `""` is already a
+    ///   legitimate, empty document on its own terms for both — dotenv,
+    ///   measured directly against the real bridge
+    ///   (`SopsBridgeDotenvTests.emptyDotenvDocumentIsCreatedAndReadsBackEmpty`;
+    ///   see `DotEnvEmitter.emit(_:)`'s own doc comment for the measured
+    ///   reason); INI, because `gopkg.in/ini.v1`'s `LoadPlainFile` always
+    ///   returns an implicit `DEFAULT` section — even for a genuinely
+    ///   zero-byte document — so there is nothing for it to refuse
+    ///   (`Engine/gobridge/ini_test.go`'s
+    ///   `TestINILoadAlwaysCarriesAnImplicitDefaultSection`, F2 task 1, and
+    ///   probed directly against the real bridge for the exact zero-byte
+    ///   case while implementing this task).
     /// - `.dotEnv(entries)` picks its serialiser by `format`: `DotEnvEmitter`
     ///   for a genuinely dotenv-named destination, `FlatYAMLEmitter` (the
-    ///   pre-existing behaviour, unchanged) for everything else — a `.env`
-    ///   source imported into a `.yaml`-named destination still becomes a
-    ///   flat YAML map exactly as it always has.
+    ///   pre-existing behaviour, unchanged) for a YAML-named one. `create()`
+    ///   refuses a `.json`/`.ini`-named destination for this source before
+    ///   this function is ever called — see `Failure
+    ///   .dotEnvSourceIncompatibleWithFormat`'s own doc comment — so this
+    ///   function is never actually asked to plot a third path for it; the
+    ///   `?:` below stays a two-way choice on purpose, mirroring exactly
+    ///   what `create()`'s guard leaves reachable.
     /// - `.verbatimYAML(text)` is unaffected by `format` — it is pasted or
     ///   decrypted text handed through unchanged either way. Pairing it with
-    ///   a dotenv-named destination is not a case this type tries to make
-    ///   sensible: the text is sops's own YAML store's input regardless of
-    ///   what `format` says, and if the two disagree the bridge's own dotenv
-    ///   loader refuses it (an ordinary line has no `=` in YAML's
-    ///   `key: value` shape) — reported as `Failure.engine`, not silently
-    ///   accepted, so nothing here needs to guess at a use this app's own UI
-    ///   never actually offers (`NewSecretFileModel.SourceChoice.plainYAML`/
-    ///   `.encryptedYAML` are always meant for a YAML target).
+    ///   a dotenv-, JSON-, or INI-named destination is not a case this type
+    ///   tries to make sensible: the text is sops's own YAML store's input
+    ///   regardless of what `format` says, and if the two disagree the
+    ///   bridge's own loader for that format refuses it (an ordinary line has
+    ///   no `=` in YAML's `key: value` shape, and YAML's own flow-mapping
+    ///   syntax is not valid JSON or INI either) — reported as
+    ///   `Failure.engine`, not silently accepted, so nothing here needs to
+    ///   guess at a use this app's own UI never actually offers
+    ///   (`NewSecretFileModel.SourceChoice.plainYAML`/`.encryptedYAML` are
+    ///   always meant for a YAML target).
     private static func plaintext(for source: Source, format: SopsFileFormat) -> String {
         switch source {
         case .empty:
-            return format == .dotenv ? "" : "{}\n"
+            switch format {
+            case .dotenv, .ini:
+                return ""
+            case .yaml, .json:
+                return "{}\n"
+            }
         case .verbatimYAML(let text):
             return text
         case .dotEnv(let entries):

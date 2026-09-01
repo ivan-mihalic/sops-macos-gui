@@ -35,7 +35,15 @@ let package = Package(
         .testTarget(name: "SopsEngineTests", dependencies: ["SopsEngine", "ScratchCleanup"]),
         .target(name: "SopsHealth", dependencies: ["SopsEngine"]),
         .testTarget(name: "SopsHealthTests", dependencies: ["SopsHealth", "SopsEngine", "ScratchCleanup"]),
-        .target(name: "SopsProjects", dependencies: ["SopsHealth"]),
+        // `SopsEngine` is an explicit dependency, not a transitive one through
+        // `SopsHealth` (which already depends on it), because SwiftPM module
+        // visibility follows a target's own declared dependency list, not the
+        // whole graph reachable through it — the same reason
+        // `SopsProjectsTests` below states it explicitly. SOPS-38 phase F3:
+        // `SessionKeyStore` derives the session's own age public key via
+        // `SopsBridge.agePublicKey(forPrivateKey:)`, so this target needs
+        // `SopsEngine` for its own production code now, not only its tests.
+        .target(name: "SopsProjects", dependencies: ["SopsHealth", "SopsEngine"]),
         // `SopsEngine` is an explicit dependency, not a transitive one, because
         // `ProjectRecipientApplierTests` builds its fixtures with the real
         // in-process bridge (`SopsBridge.encryptYAML`/`decryptYAML`) rather
@@ -59,6 +67,23 @@ let package = Package(
             name: "snapshots",
             dependencies: ["SopsUI", "SopsEngine", "SopsHealth", "SopsProjects"],
             path: "Sources/SnapshotTool"
+        ),
+        // SOPS-38 phase F3 review fix: pins that `Fixtures.editorLoadFailedViewModel()`
+        // and `Fixtures.editorReadOnlyCiphertextViewModel()` each still reach the
+        // `LoadState` their snapshot name claims. `SopsUITests` deliberately does
+        // not depend on `snapshots` (Package.swift's own products list — the
+        // catalog is a dev tool, never part of the shipped app), which is exactly
+        // why the drift this pins went unnoticed the first time: Task 1 changed
+        // `SecretDocumentViewModel.load()`'s classification, and the fixture that
+        // used to reach `.failed` started reaching `.readOnlyCiphertext` instead,
+        // with nothing anywhere in the test suite positioned to notice. `snapshots`
+        // uses `@main` (`SnapshotMain.swift`), which is what makes it a testable
+        // executable target at all — a target with a bare top-level `main.swift`
+        // could not be imported this way.
+        .testTarget(
+            name: "SnapshotToolTests",
+            dependencies: ["snapshots", "SopsUI", "SopsEngine"],
+            path: "Tests/SnapshotToolTests"
         ),
     ]
 )

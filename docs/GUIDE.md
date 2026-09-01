@@ -207,15 +207,16 @@ checked-out branches is one heading rather than four unrelated rows.
 
 ![File list](images/guide-09-files.png)
 
-Every sops-encrypted YAML **or dotenv** file under the project root, by path.
-Click one to open it — `services/worker.secrets.env`, the `.env` file the setup
-script above wrote, opens exactly like the two YAML files above it (SOPS-38).
+Every sops-encrypted file under the project root, by path — YAML, dotenv, JSON
+and INI all open the same way. Click one to open it — `services/worker.secrets.env`,
+the `.env` file the setup script above wrote, opens exactly like the two YAML
+files above it (SOPS-38).
 
-The footnote at the bottom is still doing real work, just for a narrower set of
-formats than it used to: a sops file in a format this app cannot open yet
-(JSON, INI) is counted there rather than hidden — a file you can see in Finder
-silently missing from the list is the worse outcome — even though the demo
-project above does not create one to show it.
+The footnote at the bottom is still doing real work, just for a narrower case
+than it used to: a sops file in a shape this app does not recognise at all is
+counted there rather than hidden — a file you can see in Finder silently
+missing from the list is the worse outcome — even though the demo project
+above does not create one to show it.
 
 ---
 
@@ -295,6 +296,12 @@ is a pending change until Save.
 
 Editing values is not the only thing you can do to an open file. Changing *who
 can read it* is Part 5.
+
+Not every file in the list is one your key can open. A file whose recipients
+don't include you shows a padlock badge in the file list; select it anyway and
+it opens read-only — "You can't decrypt this file", the raw encrypted contents
+underneath, and who *can* decrypt it, so you know whom to ask. There is
+nothing to edit here: Save, +, and − all stay disabled.
 
 ---
 
@@ -515,8 +522,8 @@ different confirmation.
 ## Troubleshooting
 
 **A file I can see in Finder is not in the list.** Either it is not sops-
-encrypted, or it is sops in a non-YAML format. The footnote at the bottom of the
-file list counts the second case.
+encrypted, or it is sops in a shape this app does not recognise. The footnote
+at the bottom of the file list counts the second case.
 
 **"No decryption key configured" on a file I own.** The identity in this session
 cannot decrypt that file — the file is encrypted to a recipient you do not hold. Compare the
