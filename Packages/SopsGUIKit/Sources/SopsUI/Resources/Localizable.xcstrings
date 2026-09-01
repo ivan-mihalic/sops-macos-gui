@@ -3827,6 +3827,28 @@
           }
         }
       }
+    },
+    "new-file.target-format.yaml": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Will be created as a YAML file."
+          }
+        }
+      }
+    },
+    "new-file.target-format.dotenv": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Will be created as a dotenv (.env) file."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

@@ -489,6 +489,20 @@ public final class NewSecretFileModel {
 
     public var plan: CreationPlan? { resolution?.plan }
 
+    /// Which on-disk format `relativeName` currently implies — `nil` before
+    /// any name has been typed, since there is nothing to name yet.
+    /// `SopsFileFormat.forDestinationName(_:)` is the **one** place this
+    /// decision is made (task SOPS-38); `create()` derives the identical
+    /// answer from the identical name inside `SecretFileCreator.create`
+    /// (never a value carried over from here), so what this reports before
+    /// Create is pressed can never disagree with what actually gets written.
+    /// `NewSecretFileSheet` reads this to make the target format visible in
+    /// the wizard's own copy.
+    public var targetFormat: SopsFileFormat? {
+        guard !isBlank(relativeName) else { return nil }
+        return SopsFileFormat.forDestinationName(relativeName)
+    }
+
     /// The `relativeName` that `plan` was actually resolved for, `nil` before
     /// any resolve has happened at all.
     ///

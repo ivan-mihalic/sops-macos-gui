@@ -171,6 +171,147 @@ struct SecretFileCreatorTests {
         }
     }
 
+    // MARK: - Dotenv-format destinations (task SOPS-38)
+    //
+    // `SopsFileFormat.forDestinationName(_:)` is what decides these — a
+    // destination whose name ends `.env` (`.sops.env` included) is written
+    // as a genuine sops dotenv document (`format: .dotenv`), everything else
+    // stays YAML exactly as the tests above already prove. These tests prove
+    // the destination's own name is what decides, not the `Source` case: the
+    // dotEnv-source-into-.yaml test above and `dotEnvTargetIsGenuineDotenv`
+    // below use the identical `.dotEnv(entries)` source and land in two
+    // different on-disk formats purely because of the destination name.
+
+    @Test("a .sops.env destination is written as a genuine dotenv document, not YAML text")
+    func dotEnvTargetIsGenuineDotenv() throws {
+        let owner = try AgeKeyPair.generate()
+        let (_, project) = try makeProject()
+        let destination = project.appendingPathComponent(".sops.env")
+
+        let entries = [
+            DotEnvEntry(key: "DATABASE_PASSWORD", value: sentinelValue, line: 1),
+            DotEnvEntry(key: "API_KEY", value: "sk-abc123", line: 2),
+        ]
+        let receipt = try SecretFileCreator.create(
+            .dotEnv(entries), plan: plan([owner.public]), at: destination, in: project,
+            sessionKey: owner.private)
+
+        #expect(receipt.destination.path == destination.path)
+        let encrypted = try String(contentsOf: destination, encoding: .utf8)
+
+        // Genuinely dotenv, not YAML text encrypted with the wrong label:
+        // reading it back with `format: .yaml` must fail the same way
+        // `SopsBridgeDotenvTests.wrongFormatFailsCleanly` proves for any
+        // other dotenv document, because the on-disk bytes are not valid
+        // YAML at all.
+        #expect(throws: SopsBridgeError.self) {
+            _ = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
+        }
+
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .dotenv, agePrivateKey: owner.private)
+        #expect(rows.count == entries.count)
+        for entry in entries {
+            #expect(rows.first { $0.path == [entry.key] }?.value == entry.value, "key \(entry.key)")
+        }
+    }
+
+    /// The empty-document sentinel `.empty` needs for a YAML target
+    /// (`"{}\n"`) has no dotenv equivalent to invent — see
+    /// `SecretFileCreator.plaintext(for:format:)`'s own doc comment and
+    /// `SopsBridgeDotenvTests.emptyDotenvDocumentIsCreatedAndReadsBackEmpty`,
+    /// which measured `""` as already a legitimate, empty dotenv document.
+    /// This is the same claim proved end to end through `create()`.
+    @Test("an empty source into a .sops.env destination creates a readable, empty dotenv document")
+    func emptySourceIntoDotEnvTargetCreatesReadableFile() throws {
+        let owner = try AgeKeyPair.generate()
+        let (_, project) = try makeProject()
+        let destination = project.appendingPathComponent(".sops.env")
+
+        let receipt = try SecretFileCreator.create(
+            .empty, plan: plan([owner.public]), at: destination, in: project,
+            sessionKey: owner.private)
+
+        #expect(receipt.destination.path == destination.path)
+        let encrypted = try String(contentsOf: destination, encoding: .utf8)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .dotenv, agePrivateKey: owner.private)
+        #expect(rows.isEmpty)
+    }
+
+    /// A known, pre-existing limitation of sops's own dotenv store, not
+    /// something this app's emitter introduces — see `DotEnvEmitter`'s own
+    /// doc comment for the measured mechanism: `LoadPlainFile` unconditionally
+    /// reverses a value's literal `\n` (backslash followed by the letter
+    /// `n`) back into a real line break on *load*, indistinguishable from
+    /// the two-character escape `EmitPlainFile` itself writes for a genuine
+    /// newline. A `.env` value that happens to contain that literal two-
+    /// character sequence unquoted (a Windows path, `C:\new`, is the
+    /// ordinary way this happens) round-trips to something else entirely.
+    ///
+    /// This is not silently accepted: `verifyRoundTrip`'s `.dotEnv` branch
+    /// compares every decrypted row's value against `entry.value` regardless
+    /// of *why* they might differ, so this lands on the same
+    /// `roundTripMismatch` refusal a genuine corruption would — the file is
+    /// never created, and the failure is caught here rather than trusted to
+    /// happen to be caught.
+    @Test("a value colliding with the dotenv store's own \\\\n convention is refused, not corrupted")
+    func dotEnvValueCollidingWithStoreEscapeIsRefused() throws {
+        let owner = try AgeKeyPair.generate()
+        let (_, project) = try makeProject()
+        let destination = project.appendingPathComponent(".sops.env")
+
+        // Two literal characters, backslash then "n" — not a real newline.
+        let entries = [DotEnvEntry(key: "PATH", value: "C:\\new", line: 1)]
+
+        #expect(throws: SecretFileCreator.Failure.roundTripMismatch) {
+            try SecretFileCreator.create(
+                .dotEnv(entries), plan: plan([owner.public]), at: destination, in: project,
+                sessionKey: owner.private)
+        }
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    /// The creation flow's own hand-off to the rest of the app: a freshly
+    /// created `.sops.env` must be recognised by `ProjectScanner` — the same
+    /// walk `FileListModel.refresh()` runs before
+    /// `ProjectWorkspaceView.activateFile` opens a file at the format
+    /// `ListedFile.format` names — as `.dotenv`, not `.yaml` and not one of
+    /// the unverifiable "other formats". `ProjectScanner` decides this from
+    /// the file's own *content* (`SopsMetadataShape`), never its name — see
+    /// `SopsFileFormat.forDestinationName(_:)`'s own doc comment for why that
+    /// is a deliberately different question — so this is a genuine, if
+    /// narrow, integration test: it proves the bytes `SecretFileCreator`
+    /// just wrote for a `.env`-named destination carry the on-disk shape the
+    /// scanner's independent, content-based classifier recognises as dotenv,
+    /// not merely that `decryptToRows(format: .dotenv)` can read them back
+    /// (`dotEnvTargetIsGenuineDotenv`, above, already proves that half).
+    @Test("a freshly created .sops.env scans back as .dotenv, ready for the editor to open")
+    func createdDotEnvFileScansAsDotEnv() async throws {
+        let owner = try AgeKeyPair.generate()
+        let (_, project) = try makeProject()
+        let destination = project.appendingPathComponent(".sops.env")
+
+        _ = try SecretFileCreator.create(
+            .dotEnv([DotEnvEntry(key: "API_KEY", value: sentinelValue, line: 1)]),
+            plan: plan([owner.public]), at: destination, in: project,
+            sessionKey: owner.private)
+
+        let tree = await ProjectScanner.scan(root: project)
+
+        // `tree.encrypted[].url` comes back through the scanner's own
+        // `resolvingSymlinksInPath()` walk (`ProjectScanner.walk`'s own
+        // comment on `enumerationRoot`), so it need not be spelled
+        // byte-for-byte like `destination` — matching on the last path
+        // component and the count is the same discipline
+        // `SopsMetadataShapeTests.realDotenvIsRecognised` already uses for
+        // the identical reason.
+        #expect(
+            tree.encrypted.count == 1,
+            "got: encrypted=\(tree.encrypted.count) other=\(tree.encryptedInOtherFormats.count)")
+        #expect(tree.encrypted.first?.url.lastPathComponent == destination.lastPathComponent)
+        #expect(tree.encrypted.first?.format == .dotenv)
+        #expect(tree.encryptedInOtherFormats.isEmpty)
+    }
+
     @Test("a target under a not-yet-existing directory creates it, mode 0700")
     func missingIntermediateDirectoryIsCreated() throws {
         let owner = try AgeKeyPair.generate()
@@ -680,7 +821,7 @@ struct SecretFileCreatorTests {
 
         // Must not throw.
         try SecretFileCreator.verifyRecipientsStructurally(
-            encrypted, expected: [owner.public, stranger.public])
+            encrypted, format: .yaml, expected: [owner.public, stranger.public])
     }
 
     @Test("a recipient set that does not match what was actually written is caught")
@@ -694,7 +835,7 @@ struct SecretFileCreatorTests {
 
         #expect(throws: SecretFileCreator.Failure.recipientsMismatch) {
             try SecretFileCreator.verifyRecipientsStructurally(
-                encrypted, expected: [owner.public, stranger.public])
+                encrypted, format: .yaml, expected: [owner.public, stranger.public])
         }
     }
 

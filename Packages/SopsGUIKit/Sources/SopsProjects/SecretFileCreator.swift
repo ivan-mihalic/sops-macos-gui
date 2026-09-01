@@ -339,8 +339,18 @@ public enum SecretFileCreator {
         //    the encrypt/round-trip work below at all.
         try refuseIfPresent(destination)
 
+        // `format` is derived from `destination`'s own name and nothing
+        // else — `SopsFileFormat.forDestinationName(_:)` is the one place
+        // this app makes that decision (task SOPS-38), and every step below
+        // that touches the bridge uses this exact value, never a second,
+        // independently-derived guess. `NewSecretFileModel.targetFormat`
+        // calls the identical function against the identical name, so the
+        // format the wizard tells the user before Create is pressed can
+        // never disagree with what this call actually writes.
+        let format = SopsFileFormat.forDestinationName(destination.lastPathComponent)
+
         // 4. Never touches disk, never leaves this process.
-        let plaintext = Self.plaintext(for: source)
+        let plaintext = Self.plaintext(for: source, format: format)
 
         // 5. For exactly `plan.recipients` — the set a caller resolved,
         //    never one this type derives. See "Why this never resolves its
@@ -348,7 +358,7 @@ public enum SecretFileCreator {
         let encrypted: String
         do {
             encrypted = try SopsBridge.encrypt(
-                plaintext, format: .yaml, recipients: plan.recipients, encryptedRegex: plan.encryptedRegex)
+                plaintext, format: format, recipients: plan.recipients, encryptedRegex: plan.encryptedRegex)
         } catch let error as SopsBridgeError {
             throw Failure.engine(error.description)
         }
@@ -374,7 +384,7 @@ public enum SecretFileCreator {
         var decryptFailureKind: SopsBridgeError.Kind?
         var decryptFailureDescription = "the encrypted document could not be decrypted for verification"
         do {
-            rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: sessionKey)
+            rows = try SopsBridge.decryptToRows(encrypted, format: format, agePrivateKey: sessionKey)
         } catch let error as SopsBridgeError {
             rows = nil
             decryptFailureKind = error.kind
@@ -405,7 +415,7 @@ public enum SecretFileCreator {
             // is easy to read the flag's name as being only about *who can
             // read the file later* rather than also about *what this call
             // itself can still promise*.
-            try verifyRecipientsStructurally(encrypted, expected: plan.recipients)
+            try verifyRecipientsStructurally(encrypted, format: format, expected: plan.recipients)
             let receipt = try finishWriting(encrypted, to: destination)
             // Ticket #10, claim 3: record, durably, that this file was
             // written unverified — see `AcknowledgedUnreadableMarker`'s own
@@ -438,10 +448,12 @@ public enum SecretFileCreator {
     /// `create()` itself to make the bridge actually produce the wrong
     /// recipient set — that would require a genuine engine bug, which this
     /// suite has no way to manufacture on demand.
-    static func verifyRecipientsStructurally(_ encrypted: String, expected: [String]) throws {
+    static func verifyRecipientsStructurally(
+        _ encrypted: String, format: SopsFileFormat, expected: [String]
+    ) throws {
         let actual: [String]
         do {
-            actual = try SopsBridge.recipients(in: encrypted, format: .yaml)
+            actual = try SopsBridge.recipients(in: encrypted, format: format)
         } catch let error as SopsBridgeError {
             throw Failure.engine(error.description)
         }
@@ -450,14 +462,42 @@ public enum SecretFileCreator {
 
     // MARK: - Step 4: source → plaintext
 
-    private static func plaintext(for source: Source) -> String {
+    /// `format` is `SopsFileFormat.forDestinationName(destination.lastPathComponent)`
+    /// — see `create()`'s own comment for why that is the only place it is
+    /// derived. It only changes two of the three cases below:
+    ///
+    /// - `.empty` needs a *format-shaped* sentinel for "nothing yet, but a
+    ///   valid document" — YAML's is `"{}\n"` (`SopsBridge.encrypt` expects a
+    ///   document, not an empty string; see `FlatYAMLEmitter.emit`'s own doc
+    ///   comment for the same rule stated there). Dotenv needs no sentinel at
+    ///   all: measured directly against the real bridge
+    ///   (`SopsBridgeDotenvTests.emptyDotenvDocumentIsCreatedAndReadsBackEmpty`),
+    ///   `""` is already a legitimate, empty dotenv document on its own terms
+    ///   — see `DotEnvEmitter.emit(_:)`'s own doc comment for the measured
+    ///   reason.
+    /// - `.dotEnv(entries)` picks its serialiser by `format`: `DotEnvEmitter`
+    ///   for a genuinely dotenv-named destination, `FlatYAMLEmitter` (the
+    ///   pre-existing behaviour, unchanged) for everything else — a `.env`
+    ///   source imported into a `.yaml`-named destination still becomes a
+    ///   flat YAML map exactly as it always has.
+    /// - `.verbatimYAML(text)` is unaffected by `format` — it is pasted or
+    ///   decrypted text handed through unchanged either way. Pairing it with
+    ///   a dotenv-named destination is not a case this type tries to make
+    ///   sensible: the text is sops's own YAML store's input regardless of
+    ///   what `format` says, and if the two disagree the bridge's own dotenv
+    ///   loader refuses it (an ordinary line has no `=` in YAML's
+    ///   `key: value` shape) — reported as `Failure.engine`, not silently
+    ///   accepted, so nothing here needs to guess at a use this app's own UI
+    ///   never actually offers (`NewSecretFileModel.SourceChoice.plainYAML`/
+    ///   `.encryptedYAML` are always meant for a YAML target).
+    private static func plaintext(for source: Source, format: SopsFileFormat) -> String {
         switch source {
         case .empty:
-            return "{}\n"
+            return format == .dotenv ? "" : "{}\n"
         case .verbatimYAML(let text):
             return text
         case .dotEnv(let entries):
-            return FlatYAMLEmitter.emit(entries)
+            return format == .dotenv ? DotEnvEmitter.emit(entries) : FlatYAMLEmitter.emit(entries)
         }
     }
 

@@ -80,6 +80,29 @@ struct SopsBridgeDotenvTests {
         #expect(rows.count == 2)
     }
 
+    /// Task SOPS-38 (creation flow, `.sops.env`): unlike the YAML store, the
+    /// dotenv store's `LoadPlainFile` never rejects an empty document — it
+    /// splits the input on `\n`, and an empty (or purely blank) string
+    /// splits into exactly one empty line, which is simply skipped, leaving
+    /// zero tree items and no error at all. Measured directly against the
+    /// pinned getsops/sops v3.13.3 source this app embeds
+    /// (`stores/dotenv/store.go`'s `LoadPlainFile`), and pinned here against
+    /// the real bridge rather than trusted from reading Go: an empty string
+    /// encrypts cleanly and decrypts back to zero rows, mirroring what
+    /// `SecretFileCreator.Source.empty` already gets for a YAML target
+    /// (`"{}\n"`) — except a dotenv document needs no YAML-shaped sentinel
+    /// text at all, because "no lines" is already a legitimate, empty dotenv
+    /// document on its own terms.
+    @Test("encrypting an empty string as .dotenv succeeds and decrypts back to zero rows")
+    func emptyDotenvDocumentIsCreatedAndReadsBackEmpty() throws {
+        let owner = try AgeKeyPair.generate()
+
+        let encrypted = try SopsBridge.encrypt("", format: .dotenv, recipients: [owner.public])
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .dotenv, agePrivateKey: owner.private)
+
+        #expect(rows.isEmpty)
+    }
+
     @Test("recipients(in:) and updateRecipients round-trip a dotenv document")
     func recipientsAndUpdateRecipientsRoundTrip() throws {
         let owner = try AgeKeyPair.generate()

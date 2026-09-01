@@ -722,6 +722,15 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // An example path, not a real default — the field starts empty.
     case newFileNamePlaceholder = "new-file.name.placeholder"
 
+    // Task SOPS-38: `NewSecretFileModel.targetFormat` — derived from
+    // `relativeName`'s own extension via `SopsFileFormat.forDestinationName(_:)`
+    // — decides which of these renders. Two sentences rather than one
+    // parameterised with a format name, matching how `.newFileInfoNoConfig`/
+    // `.newFileInfoNoRuleMatched` are two separate keys rather than one: each
+    // is a whole, separately translatable sentence.
+    case newFileTargetFormatYAML = "new-file.target-format.yaml"
+    case newFileTargetFormatDotEnv = "new-file.target-format.dotenv"
+
     // The `ⓘ` line's shapes: one per `CreationPlan` case, plus resolving.
     // `.unsupportedRule`/`.configUnreadable` reuse `CreationFailurePresenter
     // .message(forBlocking:)`'s own sentence rather than getting a key here —
