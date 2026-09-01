@@ -1,6 +1,7 @@
 package gobridge
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -281,6 +282,131 @@ func TestDotenvLeafEncryptionSummary(t *testing.T) {
 	}
 	if summary.EncryptedLeafCount != 2 {
 		t.Errorf("EncryptedLeafCount = %d, want 2 (EMPTY is never encrypted)", summary.EncryptedLeafCount)
+	}
+}
+
+// -----------------------------------------------------------------------
+// SOPS-38 fix-wave C1: a new key must survive the dotenv store's own grammar
+// -----------------------------------------------------------------------
+//
+// stores/dotenv/store.go (sops v3.13.3) emits "key=value\n" with the key
+// written verbatim, and reads a file back by splitting each line on the
+// FIRST "=" and treating a "#"-prefixed line as a comment. So a key this
+// bridge lets through unchecked can produce a file that *saves* successfully
+// and can never be decrypted again: "=" inside the key steals characters
+// from the value on read-back, "#" at the start of the key makes the whole
+// line (ciphertext included) disappear as a comment, and an embedded newline
+// or CR splits one entry into more than one line. None of these fail the
+// write — only a later `sops --decrypt` (MAC mismatch, or a "key" that
+// silently vanished) reveals the corruption, by which point the plaintext
+// that produced it may be gone. This must be refused at Add time, before any
+// byte reaches disk.
+
+// TestDotenvApplyChangesRefusesKeyContainingEqualsSign proves the "=" case:
+// the dotenv store's reader would treat everything from the first "=" onward
+// as the value, so a key like "FOO=BAR" round-trips as something else
+// entirely.
+func TestDotenvApplyChangesRefusesKeyContainingEqualsSign(t *testing.T) {
+	key := newAgeKeyPair(t)
+	encrypted, err := Encrypt([]byte(dotenvPlain), FormatDotenv, EncryptOpts{AgeRecipients: []string{key.Public}})
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	_, err = ApplyChangesAndEncrypt(encrypted, FormatDotenv, ChangeSet{
+		Adds: []Add{{Key: "FOO=BAR", Value: "v", Kind: KindString}},
+	}, key.Private)
+	if err == nil {
+		t.Fatal("a dotenv key containing '=' was accepted")
+	}
+	if strings.Contains(err.Error(), "v") && strings.Contains(err.Error(), "FOO=BAR=v") {
+		t.Fatalf("refusal echoes more than the key: %q", err.Error())
+	}
+}
+
+// TestDotenvApplyChangesRefusesKeyStartingWithHash proves the "#" case: the
+// dotenv store's reader treats a line starting with "#" as a comment and
+// drops it whole — key and ciphertext value both vanish silently on the next
+// read.
+func TestDotenvApplyChangesRefusesKeyStartingWithHash(t *testing.T) {
+	key := newAgeKeyPair(t)
+	encrypted, err := Encrypt([]byte(dotenvPlain), FormatDotenv, EncryptOpts{AgeRecipients: []string{key.Public}})
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	_, err = ApplyChangesAndEncrypt(encrypted, FormatDotenv, ChangeSet{
+		Adds: []Add{{Key: "#X", Value: "v", Kind: KindString}},
+	}, key.Private)
+	if err == nil {
+		t.Fatal("a dotenv key starting with '#' was accepted")
+	}
+}
+
+// TestDotenvApplyChangesRefusesKeyContainingNewline proves the third case: an
+// embedded LF or CR splits one entry into more than one physical line.
+func TestDotenvApplyChangesRefusesKeyContainingNewline(t *testing.T) {
+	key := newAgeKeyPair(t)
+	encrypted, err := Encrypt([]byte(dotenvPlain), FormatDotenv, EncryptOpts{AgeRecipients: []string{key.Public}})
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	for _, bad := range []string{"A\nB", "A\rB"} {
+		if _, err := ApplyChangesAndEncrypt(encrypted, FormatDotenv, ChangeSet{
+			Adds: []Add{{Key: bad, Value: "v", Kind: KindString}},
+		}, key.Private); err == nil {
+			t.Fatalf("a dotenv key containing a line break (%q) was accepted", bad)
+		}
+	}
+}
+
+// TestDotenvApplyChangesJSONRefusesInvalidKey exercises the same refusal
+// through ApplyChangesJSON — the entry point the Swift bridge actually calls
+// — so the guard is proven where the app calls it, not just at the Go API
+// one layer down.
+func TestDotenvApplyChangesJSONRefusesInvalidKey(t *testing.T) {
+	key := newAgeKeyPair(t)
+	encrypted, err := Encrypt([]byte(dotenvPlain), FormatDotenv, EncryptOpts{AgeRecipients: []string{key.Public}})
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	payload, err := json.Marshal(ChangeSet{
+		Adds: []Add{{Key: "FOO=BAR", Value: "v", Kind: KindString}},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	if _, err := ApplyChangesJSON(encrypted, FormatDotenv, payload, key.Private); err == nil {
+		t.Fatal("ApplyChangesJSON accepted an invalid dotenv key")
+	}
+}
+
+// TestYAMLApplyChangesAcceptsKeysDotenvWouldRefuse is the discriminating
+// half: the same key text ("FOO=BAR", "#X", a key with an embedded newline)
+// is exactly as valid a YAML map key as any other string. If the guard were
+// accidentally format-blind, this would fail instead of the dotenv tests
+// above passing for the wrong reason.
+func TestYAMLApplyChangesAcceptsKeysDotenvWouldRefuse(t *testing.T) {
+	key := newAgeKeyPair(t)
+	encrypted := encryptWithCLI(t, key, "service: api\n")
+
+	for _, name := range []string{"FOO=BAR", "#X"} {
+		out, err := ApplyChangesAndEncrypt(encrypted, FormatYAML, ChangeSet{
+			Adds: []Add{{Key: name, Value: "v", Kind: KindString}},
+		}, key.Private)
+		if err != nil {
+			t.Fatalf("YAML refused key %q that dotenv would refuse for a different reason: %v", name, err)
+		}
+		rows, err := DecryptToRows(out, FormatYAML, key.Private)
+		if err != nil {
+			t.Fatalf("DecryptToRows: %v", err)
+		}
+		if got := rowByPath(t, rows, name).Value; got != "v" {
+			t.Fatalf("%s = %q, want %q", name, got, "v")
+		}
 	}
 }
 

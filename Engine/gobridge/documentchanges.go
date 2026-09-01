@@ -185,7 +185,7 @@ func ApplyChangesAndEncrypt(encrypted []byte, format Format, changes ChangeSet, 
 	// every later secret invisible to it. See `exposureLedger`.
 	ledger := newExposureLedger(doc.tree, doc.encryptedNodes)
 
-	plan, err := planChanges(doc.tree.Branches, changes)
+	plan, err := planChanges(doc.tree.Branches, format, changes)
 	if err != nil {
 		return nil, err
 	}
@@ -268,7 +268,7 @@ type plannedAdd struct {
 
 // planChanges validates a change set against the document as loaded and
 // returns it ready to apply. It never mutates the tree.
-func planChanges(branches sops.TreeBranches, changes ChangeSet) (*changePlan, error) {
+func planChanges(branches sops.TreeBranches, format Format, changes ChangeSet) (*changePlan, error) {
 	plan := &changePlan{
 		sets:    make([]plannedSet, 0, len(changes.Sets)),
 		adds:    make([]plannedAdd, 0, len(changes.Adds)),
@@ -322,7 +322,7 @@ func planChanges(branches sops.TreeBranches, changes ChangeSet) (*changePlan, er
 	}
 
 	for _, add := range changes.Adds {
-		value, err := validateAdd(branches, add, removes)
+		value, err := validateAdd(branches, format, add, removes)
 		if err != nil {
 			return nil, err
 		}
@@ -399,7 +399,7 @@ func validateRemoval(branches sops.TreeBranches, removal Removal) error {
 
 // validateAdd checks that an add has somewhere to go and returns the parsed
 // value it would write.
-func validateAdd(branches sops.TreeBranches, add Add, beingRemoved map[string]bool) (interface{}, error) {
+func validateAdd(branches sops.TreeBranches, format Format, add Add, beingRemoved map[string]bool) (interface{}, error) {
 	parentWhere := pathText(add.Document, add.Parent)
 	parent, ok := valueAtPath(branches, add.Document, add.Parent)
 	if !ok {
@@ -413,6 +413,11 @@ func validateAdd(branches sops.TreeBranches, add Add, beingRemoved map[string]bo
 		}
 		if err := refuseReservedKey(add); err != nil {
 			return nil, err
+		}
+		if format == FormatDotenv {
+			if err := refuseInvalidDotenvKey(add); err != nil {
+				return nil, err
+			}
 		}
 		newPath := append(append([]string{}, add.Parent...), add.Key)
 		// An existing key is normally not an addition — but it is when the
@@ -451,6 +456,53 @@ func refuseReservedKey(add Add) error {
 		return fmt.Errorf("%s: %q at the top level of a document is where SOPS keeps its own metadata — "+
 			"choose a different name, or put this key inside a map",
 			pathText(add.Document, newPath), sopsMetadataKey)
+	}
+	return nil
+}
+
+// refuseInvalidDotenvKey rejects a new key the dotenv store cannot
+// round-trip. Measured directly against the pinned getsops/sops v3.13.3
+// source this app embeds (stores/dotenv/store.go): EmitPlainFile writes
+// "key=value\n" with the key emitted verbatim, and LoadPlainFile reads a file
+// back by splitting each line on the FIRST "=" and treating a "#"-prefixed
+// line as a comment. None of these three shapes fails on write — the file
+// saves and looks fine — only a later read reveals the damage:
+//
+//   - a key containing "=" reads back with everything from that "=" onward
+//     folded into the value, so the key that comes out is not the key that
+//     went in;
+//   - a key starting with "#" reads back as a comment line and is dropped
+//     whole, taking its ciphertext value with it — the entry silently
+//     disappears;
+//   - a key containing a newline or carriage return splits into more than
+//     one physical line, corrupting whatever line follows it.
+//
+// This mirrors SecretDocumentViewModel.refusalForAdding on the Swift side —
+// same three checks, same reason — so the sheet and the save can never
+// disagree about a name this format can hold. Values are never named in the
+// message (CLAUDE.md): only the key, which the user just typed and already
+// sees on screen.
+func refuseInvalidDotenvKey(add Add) error {
+	newPath := append(append([]string{}, add.Parent...), add.Key)
+	where := pathText(add.Document, newPath)
+	switch {
+	case strings.Contains(add.Key, "="):
+		return fmt.Errorf(
+			"%s: a dotenv key cannot contain %q — this file's own format reads everything "+
+				"from the first %q onward as the value, so the key that would be read back "+
+				"is not the one just typed",
+			where, "=", "=")
+	case strings.HasPrefix(add.Key, "#"):
+		return fmt.Errorf(
+			"%s: a dotenv key cannot start with %q — this file's own format reads a line "+
+				"starting with %q as a comment, so the entry would silently disappear on the "+
+				"next read",
+			where, "#", "#")
+	case strings.ContainsAny(add.Key, "\n\r"):
+		return fmt.Errorf(
+			"%s: a dotenv key cannot contain a line break — this file's own format reads "+
+				"each line as a separate entry, so it would split into more than one",
+			where)
 	}
 	return nil
 }
