@@ -414,6 +414,59 @@ struct SecretDocumentViewModelTests {
         #expect(reason.hasPrefix(LocalizedKey.editorLoadFailedWrongKey.text))
     }
 
+    /// The `recipients` field of `.readOnlyCiphertext` is best-effort: `load()`
+    /// builds it with `try? SopsBridge.recipients(in:format:)`, and a failure
+    /// there must degrade to `[]` rather than derailing the wrong-key finding
+    /// itself. Reproduced with a real file, not a mock: corrupting only the
+    /// `sops.age[].recipient` string (leaving the actual encrypted data key
+    /// blob, `enc:`, untouched) makes `SopsBridge.recipients` fail — the Go
+    /// side rejects it as not a valid native age recipient
+    /// (`age.ParseX25519Recipient`, `gobridge/recipients.go`'s
+    /// `recipientsFromMetadata`) — while `SopsBridge.decryptToRows` still
+    /// classifies the failure as `.noMatchingIdentity`, because decrypting
+    /// only ever tries the session's identity against the `enc:` blob and
+    /// never re-parses the recipient string at all. Confirmed directly
+    /// against the real bridge (`Engine/gobridge`) before writing this test,
+    /// the same way `Encrypt/Decrypt/Recipients` are proven everywhere else
+    /// in this suite — not assumed from reading the Go source.
+    @Test("a recipients() read failure inside readOnlyCiphertext degrades to an empty list, not a crash")
+    func recipientsReadFailureDegradesToEmptyList() async throws {
+        let owner = try AgeKeyPair.generate()
+        let stranger = try AgeKeyPair.generate()
+        let fileURL = try encryptedFixture(sampleYAML, key: owner)
+
+        var contents = try String(contentsOf: fileURL, encoding: .utf8)
+        guard contents.contains(owner.public) else {
+            throw FixtureError("fixture does not contain the owner's recipient string")
+        }
+        // Replace only the recipient value — never the `enc:` blob a few
+        // lines above it, which is what decryption actually reads.
+        contents = contents.replacingOccurrences(
+            of: owner.public, with: "age1thisisnotarealrecipientvalueatallxx")
+        try contents.write(to: fileURL, atomically: true, encoding: .utf8)
+        let onDiskCiphertext = contents
+
+        let store = SessionKeyStore()
+        try store.importKey(stranger.private)
+
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
+        await vm.load()
+
+        guard case .readOnlyCiphertext(let reason, let rawCiphertext, let recipients) = vm.loadState else {
+            Issue.record("expected .readOnlyCiphertext even with an unreadable recipient list, got \(vm.loadState)")
+            return
+        }
+        // The wrong-key finding itself is unaffected by the corruption —
+        // decrypt never looks at the recipient string.
+        #expect(reason.contains("none of the keys"), Comment(rawValue: reason))
+        #expect(rawCiphertext == onDiskCiphertext)
+        // The one thing this test exists to pin: recipients() failed, and
+        // that failure became [], not a thrown error or a crash.
+        #expect(recipients == [], "a failed recipients() read must degrade to [], never propagate or default to something else")
+        #expect(vm.rows.isEmpty)
+        #expect(!vm.isDirty)
+    }
+
     /// A genuinely damaged file — not a wrong key at all — must still reach
     /// `.failed`, never `.readOnlyCiphertext`. Reuses the same retyped-tag
     /// corruption `noErrorStringCarriesARowValue` below already proves

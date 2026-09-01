@@ -58,7 +58,7 @@ struct SessionKeyStoreInvariantTests {
         // — still fails it exactly as before.
         let text = try Self.source()
             .split(separator: "\n", omittingEmptySubsequences: false)
-            .filter { !$0.contains("var sessionPublicKey") }
+            .filter { !$0.contains("public var sessionPublicKey:") }
             .joined(separator: "\n")
 
         // `public func … -> String` / `-> String?`: a func whose declared

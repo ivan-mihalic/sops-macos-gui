@@ -113,6 +113,27 @@ ScratchDirectoryRegistry.shared.register(root)
         """.write(to: url, atomically: true, encoding: .utf8)
     }
 
+    /// A file that is still genuinely sops-shaped (`sops:`, `mac:`,
+    /// `version:` — `SopsMetadataShape.isYAMLMetadata` cares about those,
+    /// never about `age` itself) but declares **no** age recipients at all:
+    /// `age: []`. `EncryptedFileMetadata.recipients(inEncryptedFile:)` scans
+    /// for `- recipient:`/`recipient:` lines inside the `sops:` block and
+    /// finds none, so `SniffedFile.recipients` comes back `[]` — the same
+    /// "unknown/unparseable metadata" shape `FileListModel.isReadOnly`'s own
+    /// doc comment names, reached here without any real non-age backend
+    /// (PGP/KMS), which this test target has no way to produce.
+    private func writeSopsLikeWithNoRecipients(_ root: URL, at relativePath: String) throws {
+        let url = root.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try """
+        key: ENC[AES256_GCM,data:Zm9v,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
+        sops:
+            age: []
+            mac: ENC[AES256_GCM,data:AAAA,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
+            version: 3.13.3
+        """.write(to: url, atomically: true, encoding: .utf8)
+    }
+
     /// The dotenv counterpart to `writeSopsLike` — hand-written text carrying
     /// the shape sops's dotenv store actually writes (`sops_`-prefixed
     /// `KEY=value` lines, no `sops:` block at all), for the same reason
@@ -406,5 +427,36 @@ ScratchDirectoryRegistry.shared.register(root)
 
         let file = try #require(model.files.first)
         #expect(!file.isReadOnly)
+    }
+
+    /// The other half of the conservatism `isReadOnly`'s own doc comment
+    /// requires: **with a session key configured**, a file whose own
+    /// recipient metadata cannot be read (empty, unparseable, a shape this
+    /// app does not recognise) must still not be flagged read-only — an
+    /// empty `recipients` list is "unknown", never "this file protects
+    /// nobody". This is the one branch review flagged as untested: every
+    /// other `isReadOnly` fixture in this file populates a real recipient,
+    /// so nothing before this test could fail if the `!recipients.isEmpty`
+    /// guard were deleted from `FileListView.swift`'s `isReadOnly` helper.
+    ///
+    /// Verified by ablation, not merely inspection: temporarily removing
+    /// that guard (`guard !recipients.isEmpty else { return false }`) makes
+    /// this test fail (`empty recipients would otherwise be treated as
+    /// "session key not in empty list" → true`) while every other test in
+    /// this suite keeps passing — see the fix's own report for the exact
+    /// commands run.
+    @Test("a file with no readable recipients is not read-only, even with a session key configured")
+    func unreadableRecipientsAreNotReadOnlyEvenWithAKeyConfigured() async throws {
+        let mine = try AgeKeyPair.generate()
+        let root = try makeProject()
+        try writeSopsLikeWithNoRecipients(root, at: "unknown.yaml")
+
+        let store = SessionKeyStore()
+        try store.importKey(mine.private)
+        let model = FileListModel(projectRoot: root, keyStore: store)
+        await model.refresh()
+
+        let file = try #require(model.files.first)
+        #expect(!file.isReadOnly, "unreadable/empty recipient metadata must never be read as read-only")
     }
 }
