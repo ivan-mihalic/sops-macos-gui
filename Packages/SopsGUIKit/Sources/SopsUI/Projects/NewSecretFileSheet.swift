@@ -280,11 +280,21 @@ public struct NewSecretFileSheet: View {
     ///
     /// No `default` — a case added to `SopsFileFormat` later must fail this
     /// file's build, the same discipline every switch in this file keeps.
+    ///
+    /// `.json`/`.ini` (SOPS-38 phase F2 task 2) are placeholders, not real
+    /// copy: `SopsFileFormat.forDestinationName` — the only thing that feeds
+    /// `format` here — cannot produce either yet (that is F2 task 5's job,
+    /// along with the `LocalizedKey` + `Localizable.xcstrings` entries a real
+    /// answer needs), so this branch is unreachable today. `nil` is the
+    /// honest placeholder rather than routing either through the YAML or
+    /// dotenv copy, which would say something false about a file this build
+    /// cannot yet create.
     static func targetFormatText(for format: SopsFileFormat?) -> String? {
         switch format {
         case nil: nil
         case .yaml: LocalizedKey.newFileTargetFormatYAML.text
         case .dotenv: LocalizedKey.newFileTargetFormatDotEnv.text
+        case .json, .ini: nil
         }
     }
 

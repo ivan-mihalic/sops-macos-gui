@@ -166,6 +166,17 @@ public final class SecretDocumentViewModel {
     /// this (via `allowedAddKinds` below) to decide what the `+` sheet may
     /// even offer, rather than letting the user choose something the save
     /// would only refuse afterwards.
+    ///
+    /// `== .yaml` rather than a `switch` — SOPS-38 phase F2 task 2 added
+    /// `.json`/`.ini` to `SopsFileFormat` and left this comparison alone
+    /// rather than widening it, so both new cases fall through to `false`
+    /// (restricted, dotenv-shaped) for now. That is the conservative side,
+    /// not the correct one: JSON's own store is exactly as capable as
+    /// YAML's, and INI genuinely sits between the two (a section is a
+    /// container, a key inside one is not) in a way no boolean here can
+    /// express. F2 task 4 owns the real per-format capability matrix —
+    /// including whatever `allowedAddKinds` below needs to stop being
+    /// data-driven on a single `Bool`.
     public var supportsNestedStructure: Bool { format == .yaml }
 
     /// The row kinds a new row's type picker may offer for this document.

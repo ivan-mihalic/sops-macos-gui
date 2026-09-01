@@ -20,13 +20,25 @@ import Foundation
 /// re-validates that string; an unrecognized value surfaces as an ordinary
 /// bridge error, never a panic, because the Go side validates it first.
 ///
-/// `.dotenv` is the first non-YAML format this app reads and writes; `.json`
-/// and `.ini` are the next two sops itself supports and are not implemented
-/// yet — adding a case here is deliberately the only place a new format's
-/// wire value is spelled on the Swift side.
+/// `.dotenv` was the first non-YAML format this app reads and writes;
+/// `.json` and `.ini` (SOPS-38 phase F2) are the next two sops itself
+/// supports. Adding a case here is deliberately the only place a new
+/// format's wire value is spelled on the Swift side — and, by construction,
+/// every exhaustive `switch` over this type elsewhere in the app fails to
+/// compile until it says what the new case means, rather than silently
+/// falling through a `default:`.
+///
+/// `.json` and `.ini` are not yet reachable from `forDestinationName` below
+/// (that is F2 task 5) or from the editor's real capability matrix — the
+/// nested-add/section rules for INI in particular (F2 task 4) — or from the
+/// health scanner's classification (F2 task 3). This task (F2 task 2) only
+/// makes the wire value exist and prove itself through the bridge; every
+/// compile site it touched to get there is documented at that site.
 public enum SopsFileFormat: String, Sendable, Codable {
     case yaml
     case dotenv
+    case json
+    case ini
 
     /// Which format a not-yet-created file at `name` should be written in —
     /// `.dotenv` when `name` ends `.env` (case-insensitively; `.sops.env`
