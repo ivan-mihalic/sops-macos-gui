@@ -103,7 +103,7 @@ struct ProjectRecipientApplierFailureIsolationTests {
             """ + "\n"
         try configText.write(to: configURL, atomically: true, encoding: .utf8)
 
-        let encrypted = try SopsBridge.encryptYAML(applierPlainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [owner.public])
 
         let first = root.appendingPathComponent("a-first.yaml")
         try encrypted.write(to: first, atomically: true, encoding: .utf8)
@@ -154,8 +154,8 @@ struct ProjectRecipientApplierFailureIsolationTests {
         // engine, not by trusting the outcome enum.
         for url in [first, last] {
             let bytes = try String(contentsOf: url, encoding: .utf8)
-            #expect(Set(try SopsBridge.recipients(in: bytes)) == Set([owner.public, added.public]))
-            #expect(try SopsBridge.decryptYAML(bytes, agePrivateKey: added.private) == applierPlainYAML)
+            #expect(Set(try SopsBridge.recipients(in: bytes, format: .yaml)) == Set([owner.public, added.public]))
+            #expect(try SopsBridge.decrypt(bytes, format: .yaml, agePrivateKey: added.private) == applierPlainYAML)
         }
 
         // The two bad ones were left exactly as they were.
@@ -197,8 +197,8 @@ struct ProjectRecipientApplierUnchangedTests {
         let other = try AgeKeyPair.generate()
         let root = try applierScratchDirectory()
 
-        let encrypted = try SopsBridge.encryptYAML(
-            applierPlainYAML, recipients: [owner.public, other.public])
+        let encrypted = try SopsBridge.encrypt(
+            applierPlainYAML, format: .yaml, recipients: [owner.public, other.public])
         let url = root.appendingPathComponent("secret.yaml")
         try encrypted.write(to: url, atomically: true, encoding: .utf8)
         let before = try String(contentsOf: url, encoding: .utf8)
@@ -232,7 +232,7 @@ struct ProjectRecipientApplierCancellationTests {
         let added = try AgeKeyPair.generate()
         let root = try applierScratchDirectory()
 
-        let encrypted = try SopsBridge.encryptYAML(applierPlainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [owner.public])
         var files: [URL] = []
         for name in ["a.yaml", "b.yaml", "c.yaml"] {
             let url = root.appendingPathComponent(name)
@@ -255,7 +255,7 @@ struct ProjectRecipientApplierCancellationTests {
                 if tally.count("read") == 1 {
                     mayFinish.wait()
                 }
-                return try SopsBridge.recipients(in: contents)
+                return try SopsBridge.recipients(in: contents, format: .yaml)
             })
 
         let files_ = files
@@ -293,7 +293,7 @@ struct ProjectRecipientApplierSecondWriterTests {
         let added = try AgeKeyPair.generate()
         let root = try applierScratchDirectory()
 
-        let encrypted = try SopsBridge.encryptYAML(applierPlainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [owner.public])
         let contended = root.appendingPathComponent("a-contended.yaml")
         let quiet = root.appendingPathComponent("b-quiet.yaml")
         try encrypted.write(to: contended, atomically: true, encoding: .utf8)
@@ -304,11 +304,11 @@ struct ProjectRecipientApplierSecondWriterTests {
         // replaces the file underneath it.
         let applier = ProjectRecipientApplier(
             rewrapRecipients: { contents, recipients, key in
-                let out = try SopsBridge.updateRecipients(contents, to: recipients, agePrivateKey: key)
+                let out = try SopsBridge.updateRecipients(contents, format: .yaml, to: recipients, agePrivateKey: key)
                 if contents == encrypted, FileManager.default.fileExists(atPath: contended.path) {
                     // Only interfere with the first file.
-                    let marker = try SopsBridge.encryptYAML(
-                        "database:\n    password: somebody-elses-write\n", recipients: [owner.public])
+                    let marker = try SopsBridge.encrypt(
+                        "database:\n    password: somebody-elses-write\n", format: .yaml, recipients: [owner.public])
                     try? marker.write(to: contended, atomically: true, encoding: .utf8)
                 }
                 return out
@@ -324,8 +324,8 @@ struct ProjectRecipientApplierSecondWriterTests {
         }
         #expect(reason.contains("changed on disk"))
         // The second writer's version survived — it was not clobbered.
-        #expect(try SopsBridge.decryptYAML(
-            String(contentsOf: contended, encoding: .utf8), agePrivateKey: owner.private)
+        #expect(try SopsBridge.decrypt(
+            String(contentsOf: contended, encoding: .utf8), format: .yaml, agePrivateKey: owner.private)
             == "database:\n    password: somebody-elses-write\n")
 
         // ...and the run carried on to the next file.
@@ -343,7 +343,7 @@ struct ProjectRecipientApplierSecrecyTests {
         let root = try applierScratchDirectory()
 
         // Encrypted for somebody else entirely: the session key cannot open it.
-        let foreign = try SopsBridge.encryptYAML(applierPlainYAML, recipients: [stranger.public])
+        let foreign = try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [stranger.public])
         let url = root.appendingPathComponent("foreign.yaml")
         try foreign.write(to: url, atomically: true, encoding: .utf8)
 
@@ -389,8 +389,8 @@ struct ProjectRecipientApplierPlanTests {
         for dir in [prod, staging] {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
-        let forOwner = try SopsBridge.encryptYAML(applierPlainYAML, recipients: [owner.public])
-        let forOther = try SopsBridge.encryptYAML(applierPlainYAML, recipients: [other.public])
+        let forOwner = try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [owner.public])
+        let forOther = try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [other.public])
         try forOwner.write(to: prod.appendingPathComponent("db.yaml"), atomically: true, encoding: .utf8)
         try forOwner.write(to: prod.appendingPathComponent("api.yaml"), atomically: true, encoding: .utf8)
         try forOther.write(
@@ -440,7 +440,7 @@ struct ProjectRecipientApplierPlanTests {
     func planWithoutAConfig() async throws {
         let owner = try AgeKeyPair.generate()
         let root = try applierScratchDirectory()
-        let encrypted = try SopsBridge.encryptYAML(applierPlainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [owner.public])
         try encrypted.write(
             to: root.appendingPathComponent("secret.yaml"), atomically: true, encoding: .utf8)
 
@@ -467,7 +467,7 @@ struct ProjectRecipientApplierPlanTests {
                       - \(owner.public)
 
             """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
-        let encrypted = try SopsBridge.encryptYAML(applierPlainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [owner.public])
         try encrypted.write(
             to: root.appendingPathComponent("secret.yaml"), atomically: true, encoding: .utf8)
 
@@ -499,7 +499,7 @@ struct ProjectRecipientApplierConfigWriteTests {
                   - \(owner.public)
 
             """.write(to: configURL, atomically: true, encoding: .utf8)
-        let encrypted = try SopsBridge.encryptYAML(applierPlainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [owner.public])
         try encrypted.write(
             to: root.appendingPathComponent("secret.yaml"), atomically: true, encoding: .utf8)
 
@@ -534,7 +534,7 @@ struct ProjectRecipientApplierConfigWriteTests {
                   - \(owner.public)
 
             """.write(to: configURL, atomically: true, encoding: .utf8)
-        let encrypted = try SopsBridge.encryptYAML(applierPlainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [owner.public])
         try encrypted.write(
             to: root.appendingPathComponent("secret.yaml"), atomically: true, encoding: .utf8)
 
@@ -591,7 +591,7 @@ struct ProjectRecipientApplierOrderingTests {
         for (directory, key) in [("zulu", zulu), ("alpha", alpha)] {
             let dir = root.appendingPathComponent(directory, isDirectory: true)
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let encrypted = try SopsBridge.encryptYAML(applierPlainYAML, recipients: [key.public])
+            let encrypted = try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [key.public])
             try encrypted.write(
                 to: dir.appendingPathComponent("secret.yaml"), atomically: true, encoding: .utf8)
         }
@@ -620,7 +620,7 @@ struct ProjectRecipientApplierOrderingTests {
 
             """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
 
-        let encrypted = try SopsBridge.encryptYAML(applierPlainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [owner.public])
         for name in ["zzz.yaml", "mmm.yaml", "aaa.yaml"] {
             try encrypted.write(to: root.appendingPathComponent(name), atomically: true, encoding: .utf8)
         }
@@ -666,7 +666,7 @@ struct ProjectRecipientApplierMissingFingerprintTests {
         let added = try AgeKeyPair.generate()
         let root = try applierScratchDirectory("applier-no-fingerprint")
         let file = root.appendingPathComponent("a.yaml")
-        let encrypted = try SopsBridge.encryptYAML(applierPlainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [owner.public])
         try encrypted.write(to: file, atomically: true, encoding: .utf8)
 
         nonisolated(unsafe) var writes = 0
@@ -735,7 +735,7 @@ struct ProjectRecipientApplierAliasTests {
             """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
 
         let target = root.appendingPathComponent("db.yaml")
-        try SopsBridge.encryptYAML(applierPlainYAML, recipients: [owner.public])
+        try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [owner.public])
             .write(to: target, atomically: true, encoding: .utf8)
         // Sorts *before* "db.yaml", so a plan that simply keeps the first of
         // the two keeps the alias — which is the wrong one of the two names to
@@ -772,7 +772,7 @@ struct ProjectRecipientApplierAliasTests {
                 age: \(owner.public)
 
             """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
-        let encrypted = try SopsBridge.encryptYAML(applierPlainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [owner.public])
         for name in ["a.yaml", "b.yaml"] {
             try encrypted.write(to: root.appendingPathComponent(name), atomically: true, encoding: .utf8)
         }
@@ -803,7 +803,7 @@ struct ProjectRecipientApplierAliasTests {
             """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
 
         let target = root.appendingPathComponent("db.yaml")
-        try SopsBridge.encryptYAML(applierPlainYAML, recipients: [owner.public])
+        try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [owner.public])
             .write(to: target, atomically: true, encoding: .utf8)
         let alias = root.appendingPathComponent("alias.yaml")
         try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: target)

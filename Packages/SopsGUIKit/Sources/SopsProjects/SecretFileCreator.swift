@@ -347,8 +347,8 @@ public enum SecretFileCreator {
         //    own plan" above.
         let encrypted: String
         do {
-            encrypted = try SopsBridge.encryptYAML(
-                plaintext, recipients: plan.recipients, encryptedRegex: plan.encryptedRegex)
+            encrypted = try SopsBridge.encrypt(
+                plaintext, format: .yaml, recipients: plan.recipients, encryptedRegex: plan.encryptedRegex)
         } catch let error as SopsBridgeError {
             throw Failure.engine(error.description)
         }
@@ -374,7 +374,7 @@ public enum SecretFileCreator {
         var decryptFailureKind: SopsBridgeError.Kind?
         var decryptFailureDescription = "the encrypted document could not be decrypted for verification"
         do {
-            rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: sessionKey)
+            rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: sessionKey)
         } catch let error as SopsBridgeError {
             rows = nil
             decryptFailureKind = error.kind
@@ -441,7 +441,7 @@ public enum SecretFileCreator {
     static func verifyRecipientsStructurally(_ encrypted: String, expected: [String]) throws {
         let actual: [String]
         do {
-            actual = try SopsBridge.recipients(in: encrypted)
+            actual = try SopsBridge.recipients(in: encrypted, format: .yaml)
         } catch let error as SopsBridgeError {
             throw Failure.engine(error.description)
         }

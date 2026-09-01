@@ -21,8 +21,8 @@ struct SaveFailureKeepsChangesTests {
     private func loadedModel(writeFile: @escaping @Sendable (String, URL, FileFingerprint?) throws -> FileFingerprint?)
         throws -> SecretDocumentViewModel {
         let key = try AgeKeyPairForTests.generate()
-        let encrypted = try SopsBridge.encryptYAML(
-            "db:\n    password: fixture-value-alpha\n    port: 5432\n", recipients: [key.public])
+        let encrypted = try SopsBridge.encrypt(
+            "db:\n    password: fixture-value-alpha\n    port: 5432\n", format: .yaml, recipients: [key.public])
         let store = SessionKeyStore()
         try store.importKey(key.private)
         return SecretDocumentViewModel(

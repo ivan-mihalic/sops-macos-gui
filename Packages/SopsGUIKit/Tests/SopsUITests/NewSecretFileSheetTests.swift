@@ -713,7 +713,7 @@ struct CreateFromSourceTests {
         #expect(destination.path == root.appendingPathComponent("secret.yaml").path)
 
         let encrypted = try String(contentsOf: destination, encoding: .utf8)
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
         let password = try #require(rows.first { $0.path == ["db", "password"] })
         #expect(password.value == "correct-horse-battery-staple-EXAMPLE")
     }
@@ -779,7 +779,7 @@ struct CreateFromSourceTests {
         let destination = try #require(created, "create() must succeed for a loaded .env source")
 
         let encrypted = try String(contentsOf: destination, encoding: .utf8)
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
         let dbPassword = try #require(rows.first { $0.path == ["DB_PASSWORD"] })
         let apiKey = try #require(rows.first { $0.path == ["API_KEY"] })
         #expect(dbPassword.value == "correct-horse-battery-staple-EXAMPLE")
@@ -1029,7 +1029,7 @@ struct CreateFromSourceTests {
         let destination = try #require(created, "create() must not need the source file to still exist")
 
         let encrypted = try String(contentsOf: destination, encoding: .utf8)
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
         #expect(rows.count == previewedEntries.count)
         for entry in previewedEntries {
             let row = try #require(rows.first { $0.path == [entry.key] })
@@ -1109,7 +1109,7 @@ struct CreateFromSourceTests {
         let destination = try #require(created)
 
         let encrypted = try String(contentsOf: destination, encoding: .utf8)
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
         #expect(rows.isEmpty)
     }
 }
@@ -1194,7 +1194,7 @@ struct StaleVerdictTests {
         // And it is not merely cosmetic: creating now actually works.
         let destination = try #require(await model.create())
         let encrypted = try String(contentsOf: destination, encoding: .utf8)
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
         #expect(rows.first { $0.path == ["db", "password"] }?.value == "fine-EXAMPLE")
     }
 

@@ -108,7 +108,7 @@ enum Guide {
             // show by reading these files, and a fixture the scanner merely
             // happens to accept would make the image a claim about the fixture
             // rather than about the app.
-            let encrypted = try SopsBridge.encryptYAML(plaintext, recipients: [key.public])
+            let encrypted = try SopsBridge.encrypt(plaintext, format: .yaml, recipients: [key.public])
             try encrypted.write(to: url, atomically: true, encoding: .utf8)
         }
         try write("config/production.secrets.yaml", productionPlaintext)
@@ -187,7 +187,7 @@ enum Guide {
 
     private static func editorModel() async throws -> SecretDocumentViewModel {
         let key = try GuideKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(productionPlaintext, recipients: [key.public])
+        let encrypted = try SopsBridge.encrypt(productionPlaintext, format: .yaml, recipients: [key.public])
         let store = SessionKeyStore()
         try store.importKey(key.private)
         let model = SecretDocumentViewModel(

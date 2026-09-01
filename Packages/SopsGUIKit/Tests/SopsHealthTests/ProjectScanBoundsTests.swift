@@ -91,8 +91,8 @@ ScratchDirectoryRegistry.shared.register(noise)
         // One real encryption through the bridge, its ciphertext then copied
         // to many paths — each copy is still a genuine, real sops-encrypted
         // file (real recipients, real MAC), not a fixture faking the shape.
-        let matchingCipherText = try SopsBridge.encryptYAML(
-            "db_password: hunter2\n", recipients: [devKey])
+        let matchingCipherText = try SopsBridge.encrypt(
+            "db_password: hunter2\n", format: .yaml, recipients: [devKey])
         let matchingCount = 300
         for i in 0..<matchingCount {
             try matchingCipherText.write(

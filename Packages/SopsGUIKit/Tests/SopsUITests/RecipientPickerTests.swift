@@ -451,7 +451,7 @@ struct ManuallyChosenRecipientsCreateTests {
         let destination = try #require(created)
 
         let encrypted = try String(contentsOf: destination, encoding: .utf8)
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
         #expect(rows.isEmpty)
 
         let configAfter = try String(contentsOf: root.appendingPathComponent(".sops.yaml"), encoding: .utf8)
@@ -485,10 +485,10 @@ struct ManuallyChosenRecipientsCreateTests {
         let secondAttempt = await model.create()
         let destination = try #require(secondAttempt)
         let encrypted = try String(contentsOf: destination, encoding: .utf8)
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: stranger.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: stranger.private)
         #expect(rows.isEmpty)
         #expect(throws: (any Error).self) {
-            try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+            try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
         }
     }
 

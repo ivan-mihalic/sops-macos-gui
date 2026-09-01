@@ -208,7 +208,7 @@ struct AccessibilityTreeTests {
     private func loadedEditor() async throws -> SecretDocumentViewModel {
         // Off the main actor on purpose — see the suite's doc comment.
         let key = try AgeKey.generate()
-        let encrypted = try SopsBridge.encryptYAML(Self.plaintext, recipients: [key.public])
+        let encrypted = try SopsBridge.encrypt(Self.plaintext, format: .yaml, recipients: [key.public])
         return try await MainActor.run {
             let store = SessionKeyStore()
             try store.importKey(key.private)
@@ -299,7 +299,7 @@ struct AccessibilityTreeTests {
     @Test("two secrets of very different lengths present identically to the accessibility tree")
     func maskDoesNotLeakTheLengthOfTheSecret() async throws {
         let key = try AgeKey.generate()
-        let encrypted = try SopsBridge.encryptYAML(Self.lengthPlaintext, recipients: [key.public])
+        let encrypted = try SopsBridge.encrypt(Self.lengthPlaintext, format: .yaml, recipients: [key.public])
         let model = try await MainActor.run {
             let store = SessionKeyStore()
             try store.importKey(key.private)

@@ -1115,7 +1115,7 @@ public struct ProjectHealthCheck: HealthCheck {
             }
 
             do {
-                let summary = try SopsBridge.inspectLeafEncryption(in: contents)
+                let summary = try SopsBridge.inspectLeafEncryption(in: contents, format: .yaml)
                 let unencrypted = summary.leafCount - summary.encryptedLeafCount
                 if summary.uncompilableRuleDeclared, unencrypted > 0 {
                     problems.append("\(relative)'s own metadata names an encryption rule that does not compile, and \(unencrypted) of its \(summary.leafCount) value(s) are not actually encrypted. sops discards a rule that cannot compile instead of refusing to save the file, so this file's valid recipient list and MAC describe the metadata, not the values.")

@@ -66,8 +66,8 @@ private func makeNestedProject(owner: PreviewAgeKeyPair) throws -> URL {
               - \(owner.public)
 
         """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
-    let encrypted = try SopsBridge.encryptYAML(
-        "database:\n    password: correct-horse-battery-staple\n", recipients: [owner.public])
+    let encrypted = try SopsBridge.encrypt(
+        "database:\n    password: correct-horse-battery-staple\n", format: .yaml, recipients: [owner.public])
     for directory in ["dev", "prod"] {
         try FileManager.default.createDirectory(
             at: root.appendingPathComponent(directory), withIntermediateDirectories: true)

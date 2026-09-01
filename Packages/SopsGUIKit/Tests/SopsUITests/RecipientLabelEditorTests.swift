@@ -65,7 +65,7 @@ private func makeLabelProject(owner: LabelAgeKeyPair, label: String = "recipient
               - \(owner.public)
 
         """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
-    try SopsBridge.encryptYAML(labelPlainYAML, recipients: [owner.public])
+    try SopsBridge.encrypt(labelPlainYAML, format: .yaml, recipients: [owner.public])
         .write(to: root.appendingPathComponent("a.yaml"), atomically: true, encoding: .utf8)
     return root
 }
@@ -230,7 +230,7 @@ struct RecipientLabelEditorModelTests {
         #expect(
             try String(contentsOf: root.appendingPathComponent(".sops.yaml"), encoding: .utf8)
                 == configBefore)
-        #expect(try SopsBridge.recipients(in: fileBefore) == [owner.public],
+        #expect(try SopsBridge.recipients(in: fileBefore, format: .yaml) == [owner.public],
                 "the recipient still decrypts the file exactly as before")
     }
 
@@ -370,7 +370,7 @@ struct RecipientLabelEditorWiringTests {
     @Test("a file with no project offers no naming control")
     func noProjectNoControl() async throws {
         let owner = try LabelAgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(labelPlainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(labelPlainYAML, format: .yaml, recipients: [owner.public])
 
         let model = RecipientAccessModel(
             fileURL: URL(fileURLWithPath: "/dev/null/no-project.yaml"), projectURL: nil,

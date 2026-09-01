@@ -244,10 +244,10 @@ public struct ProjectRecipientApplier: Sendable {
             try AtomicFileWriter.write(contents, to: url, expecting: expecting)
         },
         readRecipients: @escaping @Sendable (String) throws -> [String] = {
-            try SopsBridge.recipients(in: $0)
+            try SopsBridge.recipients(in: $0, format: .yaml)
         },
         rewrapRecipients: @escaping @Sendable (String, [String], String) throws -> String = {
-            try SopsBridge.updateRecipients($0, to: $1, agePrivateKey: $2)
+            try SopsBridge.updateRecipients($0, format: .yaml, to: $1, agePrivateKey: $2)
         },
         scanProject: @escaping @Sendable (URL) async -> ScannedTree = {
             await ProjectScanner.scan(root: $0, maxScannedFiles: ScanBudgetSetting.current())

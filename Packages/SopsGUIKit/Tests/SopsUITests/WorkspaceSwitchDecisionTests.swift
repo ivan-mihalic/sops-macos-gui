@@ -419,8 +419,8 @@ private struct EncryptedFixture: Sendable {
 
 private let sharedFixture: EncryptedFixture? = {
     guard let key = try? SwitchAgeKey.generate(),
-          let encrypted = try? SopsBridge.encryptYAML(
-            WorkspaceSwitchDecisionTests.plaintext, recipients: [key.public])
+          let encrypted = try? SopsBridge.encrypt(
+            WorkspaceSwitchDecisionTests.plaintext, format: .yaml, recipients: [key.public])
     else { return nil }
     return EncryptedFixture(encrypted: encrypted, privateKey: key.private)
 }()

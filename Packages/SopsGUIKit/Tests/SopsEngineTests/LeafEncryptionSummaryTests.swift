@@ -15,9 +15,9 @@ struct LeafEncryptionSummaryTests {
     @Test("a fully encrypted document reports every leaf as encrypted")
     func fullyEncryptedDocument() throws {
         let key = try AgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [key.public])
+        let encrypted = try SopsBridge.encrypt(plainYAML, format: .yaml, recipients: [key.public])
 
-        let summary = try SopsBridge.inspectLeafEncryption(in: encrypted)
+        let summary = try SopsBridge.inspectLeafEncryption(in: encrypted, format: .yaml)
 
         // plainYAML: db.host, db.password, api_key — three leaves.
         #expect(summary.leafCount == 3)
@@ -34,11 +34,11 @@ struct LeafEncryptionSummaryTests {
     @Test("the default suffix sops always writes is not reported as narrowing")
     func defaultSuffixIsNotNarrowing() throws {
         let key = try AgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [key.public])
+        let encrypted = try SopsBridge.encrypt(plainYAML, format: .yaml, recipients: [key.public])
 
         #expect(encrypted.contains("unencrypted_suffix: _unencrypted"),
                 "this test's premise depends on sops still writing the default suffix line")
-        #expect(!(try SopsBridge.inspectLeafEncryption(in: encrypted).narrowingDeclared))
+        #expect(!(try SopsBridge.inspectLeafEncryption(in: encrypted, format: .yaml).narrowingDeclared))
     }
 
     /// The real bug, reproduced against the real `sops` binary rather than
@@ -62,7 +62,7 @@ struct LeafEncryptionSummaryTests {
         #expect(encrypted.contains("sk-live-abc123"))
         #expect(encrypted.contains("encrypted_regex: (unclosed"))
 
-        let summary = try SopsBridge.inspectLeafEncryption(in: encrypted)
+        let summary = try SopsBridge.inspectLeafEncryption(in: encrypted, format: .yaml)
 
         #expect(summary.leafCount == 3)
         #expect(summary.encryptedLeafCount == 0)
@@ -73,9 +73,9 @@ struct LeafEncryptionSummaryTests {
     @Test("a document with nothing to encrypt reports zero leaves, not zero-of-something")
     func emptyDocument() throws {
         let key = try AgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML("{}\n", recipients: [key.public])
+        let encrypted = try SopsBridge.encrypt("{}\n", format: .yaml, recipients: [key.public])
 
-        let summary = try SopsBridge.inspectLeafEncryption(in: encrypted)
+        let summary = try SopsBridge.inspectLeafEncryption(in: encrypted, format: .yaml)
 
         #expect(summary.leafCount == 0)
         #expect(summary.encryptedLeafCount == 0)
@@ -84,16 +84,16 @@ struct LeafEncryptionSummaryTests {
     @Test("reading needs no age identity at all")
     func needsNoIdentity() throws {
         let key = try AgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [key.public])
+        let encrypted = try SopsBridge.encrypt(plainYAML, format: .yaml, recipients: [key.public])
 
         // No identity imported or referenced anywhere in this call.
-        #expect(try SopsBridge.inspectLeafEncryption(in: encrypted).leafCount == 3)
+        #expect(try SopsBridge.inspectLeafEncryption(in: encrypted, format: .yaml).leafCount == 3)
     }
 
     @Test("a document with no sops metadata is refused, not silently reported as encrypted")
     func refusesNonSopsDocument() {
         #expect(throws: SopsBridgeError.self) {
-            try SopsBridge.inspectLeafEncryption(in: plainYAML)
+            try SopsBridge.inspectLeafEncryption(in: plainYAML, format: .yaml)
         }
     }
 }

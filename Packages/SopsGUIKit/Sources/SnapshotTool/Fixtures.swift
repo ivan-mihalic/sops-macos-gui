@@ -472,7 +472,7 @@ enum Fixtures {
     /// not just that the view can render a shape of data.
     static func editorLoadedViewModel() async throws -> SecretDocumentViewModel {
         let key = try SnapshotAgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(editorRichDocumentYAML, recipients: [key.public])
+        let encrypted = try SopsBridge.encrypt(editorRichDocumentYAML, format: .yaml, recipients: [key.public])
         let store = SessionKeyStore()
         try store.importKey(key.private)
         let model = SecretDocumentViewModel(
@@ -488,7 +488,7 @@ enum Fixtures {
     /// real key, same load path as above.
     static func editorEmptyDocumentViewModel() async throws -> SecretDocumentViewModel {
         let key = try SnapshotAgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML("{}\n", recipients: [key.public])
+        let encrypted = try SopsBridge.encrypt("{}\n", format: .yaml, recipients: [key.public])
         let store = SessionKeyStore()
         try store.importKey(key.private)
         let model = SecretDocumentViewModel(
@@ -527,7 +527,7 @@ enum Fixtures {
         // unscrolled top (CLAUDE.md, "What it still cannot see"). A snapshot
         // whose whole subject sat below the fold would review nothing.
         let key = try SnapshotAgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(
+        let encrypted = try SopsBridge.encrypt(
             """
             db:
                 host: db.internal.example
@@ -535,7 +535,7 @@ enum Fixtures {
             feature_flags:
                 - beta_checkout
                 - dark_mode
-            """, recipients: [key.public])
+            """, format: .yaml, recipients: [key.public])
         let store = SessionKeyStore()
         try store.importKey(key.private)
         let model = SecretDocumentViewModel(
@@ -585,13 +585,13 @@ enum Fixtures {
     /// the one fixture where that is the entire subject.
     static func editorRevealedRowViewModel() async throws -> (SecretDocumentViewModel, Set<String>) {
         let key = try SnapshotAgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(
+        let encrypted = try SopsBridge.encrypt(
             """
             db:
                 host: db.internal.example
                 password: correct-horse-battery-staple-EXAMPLE
             api_key: sk_live_EXAMPLEEXAMPLEEXAMPLEEXAMPLE0001
-            """, recipients: [key.public])
+            """, format: .yaml, recipients: [key.public])
         let store = SessionKeyStore()
         try store.importKey(key.private)
         let model = SecretDocumentViewModel(
@@ -623,8 +623,8 @@ enum Fixtures {
     static func editorLoadFailedViewModel() async throws -> SecretDocumentViewModel {
         let owner = try SnapshotAgeKeyPair.generate()
         let intruder = try SnapshotAgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(
-            "database:\n    password: hunter2-EXAMPLE\n", recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(
+            "database:\n    password: hunter2-EXAMPLE\n", format: .yaml, recipients: [owner.public])
         let store = SessionKeyStore()
         try store.importKey(intruder.private)
         let model = SecretDocumentViewModel(

@@ -18,7 +18,7 @@ struct CompatibilityTests {
     func cliDecryptsBridgeOutput() throws {
         let key = try AgeKeyPair.generate()
 
-        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [key.public])
+        let encrypted = try SopsBridge.encrypt(plainYAML, format: .yaml, recipients: [key.public])
         let file = try TempFile(named: "secrets.yaml", contents: encrypted)
 
         let decrypted = try SopsCLI.run(["--decrypt", file.path], identity: key)
@@ -33,7 +33,7 @@ struct CompatibilityTests {
 
         let encrypted = try SopsCLI.run(
             ["--encrypt", "--age", key.public, file.path], identity: key)
-        let decrypted = try SopsBridge.decryptYAML(encrypted, agePrivateKey: key.private)
+        let decrypted = try SopsBridge.decrypt(encrypted, format: .yaml, agePrivateKey: key.private)
 
         #expect(decrypted == plainYAML)
     }
@@ -42,8 +42,8 @@ struct CompatibilityTests {
     func encryptedRegexRoundTrip() throws {
         let key = try AgeKeyPair.generate()
 
-        let encrypted = try SopsBridge.encryptYAML(
-            plainYAML, recipients: [key.public], encryptedRegex: "^(password|api_key)$")
+        let encrypted = try SopsBridge.encrypt(
+            plainYAML, format: .yaml, recipients: [key.public], encryptedRegex: "^(password|api_key)$")
 
         #expect(encrypted.contains("host: localhost"), "non-matching key must stay readable")
         #expect(!encrypted.contains("hunter2"), "matching key must be encrypted")
@@ -57,10 +57,10 @@ struct CompatibilityTests {
         let owner = try AgeKeyPair.generate()
         let stranger = try AgeKeyPair.generate()
 
-        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(plainYAML, format: .yaml, recipients: [owner.public])
 
         #expect(throws: SopsBridgeError.self) {
-            try SopsBridge.decryptYAML(encrypted, agePrivateKey: stranger.private)
+            try SopsBridge.decrypt(encrypted, format: .yaml, agePrivateKey: stranger.private)
         }
     }
 
@@ -69,9 +69,9 @@ struct CompatibilityTests {
         let key = try AgeKeyPair.generate()
 
         for _ in 0..<25 {
-            let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [key.public])
+            let encrypted = try SopsBridge.encrypt(plainYAML, format: .yaml, recipients: [key.public])
             #expect(!encrypted.contains("hunter2"))
-            #expect(try SopsBridge.decryptYAML(encrypted, agePrivateKey: key.private) == plainYAML)
+            #expect(try SopsBridge.decrypt(encrypted, format: .yaml, agePrivateKey: key.private) == plainYAML)
         }
     }
 }

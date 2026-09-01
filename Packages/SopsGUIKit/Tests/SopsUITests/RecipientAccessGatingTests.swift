@@ -343,7 +343,7 @@ struct AccessButtonWiringTests {
 
     private func loadedEditor(makeDirty: Bool) async throws -> SecretDocumentViewModel {
         let key = try AgeKeyPairForTests.generate()
-        let encrypted = try SopsBridge.encryptYAML(Self.plaintext, recipients: [key.public])
+        let encrypted = try SopsBridge.encrypt(Self.plaintext, format: .yaml, recipients: [key.public])
         let store = SessionKeyStore()
         try store.importKey(key.private)
         let model = SecretDocumentViewModel(
@@ -406,8 +406,8 @@ struct RecipientAccessRowLabelTests {
     func rowLabelMatchesStatus() async throws {
         let owner = try AgeKeyPairForTests.generate()
         let kept = try AgeKeyPairForTests.generate()
-        let encrypted = try SopsBridge.encryptYAML(
-            "db:\n    password: fixture-EXAMPLE\n", recipients: [owner.public, kept.public])
+        let encrypted = try SopsBridge.encrypt(
+            "db:\n    password: fixture-EXAMPLE\n", format: .yaml, recipients: [owner.public, kept.public])
         let store = SessionKeyStore()
         try store.importKey(owner.private)
         let model = RecipientAccessModel(
@@ -459,8 +459,8 @@ struct RecipientAccessRegistryQuarantineTests {
     @Test("a moved-aside registry's notice is shown, not just held on the model")
     func noticeIsRendered() async throws {
         let owner = try AgeKeyPairForTests.generate()
-        let encrypted = try SopsBridge.encryptYAML(
-            "db:\n    password: fixture-EXAMPLE\n", recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(
+            "db:\n    password: fixture-EXAMPLE\n", format: .yaml, recipients: [owner.public])
         let store = SessionKeyStore()
         try store.importKey(owner.private)
         let notice = "Your recipient names at /fixture/.sops-gui/recipients.json could not be read, " +
@@ -493,8 +493,8 @@ struct RecipientAccessRegistryQuarantineTests {
     @Test("an ordinary load shows no registry-quarantine banner")
     func ordinaryLoadShowsNoRegistryQuarantineBanner() async throws {
         let owner = try AgeKeyPairForTests.generate()
-        let encrypted = try SopsBridge.encryptYAML(
-            "db:\n    password: fixture-EXAMPLE\n", recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(
+            "db:\n    password: fixture-EXAMPLE\n", format: .yaml, recipients: [owner.public])
         let store = SessionKeyStore()
         try store.importKey(owner.private)
 

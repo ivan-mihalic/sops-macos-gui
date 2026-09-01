@@ -536,7 +536,7 @@ struct ProjectHealthCheckDeclaredBackendTests {
     func mixedHealthyAgeRuleAndUnusedPGPRule() async throws {
         let key = try Self.realAgePublicKey()
         // Genuinely and correctly encrypted to that same real recipient.
-        let encrypted = try SopsBridge.encryptYAML("password: hunter2\n", recipients: [key])
+        let encrypted = try SopsBridge.encrypt("password: hunter2\n", format: .yaml, recipients: [key])
 
         let root = try makeProject(
             sopsYAML: """
@@ -599,7 +599,7 @@ struct ProjectHealthCheckDeclaredBackendTests {
     @Test("an age-only project with a genuinely matching file still reports a confident .ok")
     func ageOnlyProjectIsStillOK() async throws {
         let key = try Self.realAgePublicKey()
-        let encrypted = try SopsBridge.encryptYAML("password: hunter2\n", recipients: [key])
+        let encrypted = try SopsBridge.encrypt("password: hunter2\n", format: .yaml, recipients: [key])
         let root = try makeProject(
             sopsYAML: """
             creation_rules:
@@ -633,7 +633,7 @@ struct ProjectHealthCheckDeclaredBackendTests {
     @Test("a key group holding only age recipients does not withhold the verdict")
     func ageOnlyKeyGroupStillReportsOK() async throws {
         let key = try Self.realAgePublicKey()
-        let encrypted = try SopsBridge.encryptYAML("password: hunter2\n", recipients: [key])
+        let encrypted = try SopsBridge.encrypt("password: hunter2\n", format: .yaml, recipients: [key])
         let root = try makeProject(
             sopsYAML: """
             creation_rules:

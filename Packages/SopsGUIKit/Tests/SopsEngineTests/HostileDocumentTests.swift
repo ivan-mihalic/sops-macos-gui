@@ -38,9 +38,9 @@ struct HostileDocumentTests {
 
     private static func makeFixture() throws -> Fixture {
         let identity = try AgeKeyPair.generate()
-        let healthy = try SopsBridge.encryptYAML(
+        let healthy = try SopsBridge.encrypt(
             "alpha: \(canary)\nbeta: 42\n",
-            recipients: [identity.public])
+            format: .yaml, recipients: [identity.public])
         let hostile = healthy.replacingOccurrences(
             of: ",type:str]", with: ",type:bytes]",
             options: [], range: healthy.range(of: ",type:str]"))
@@ -56,7 +56,7 @@ struct HostileDocumentTests {
 
         #expect(throws: SopsBridgeError.self) {
             _ = try SopsBridge.decryptToRows(
-                fixture.hostile, agePrivateKey: fixture.identity.private)
+                fixture.hostile, format: .yaml, agePrivateKey: fixture.identity.private)
         }
     }
 
@@ -68,14 +68,14 @@ struct HostileDocumentTests {
         let key = fixture.identity.private
 
         let calls: [(String, () throws -> Any)] = [
-            ("decryptToRows", { try SopsBridge.decryptToRows(fixture.hostile, agePrivateKey: key) }),
-            ("decryptYAML", { try SopsBridge.decryptYAML(fixture.hostile, agePrivateKey: key) }),
-            ("applyEdits", { try SopsBridge.applyEdits(fixture.hostile, edits: [], agePrivateKey: key) }),
+            ("decryptToRows", { try SopsBridge.decryptToRows(fixture.hostile, format: .yaml, agePrivateKey: key) }),
+            ("decryptYAML", { try SopsBridge.decrypt(fixture.hostile, format: .yaml, agePrivateKey: key) }),
+            ("applyEdits", { try SopsBridge.applyEdits(fixture.hostile, format: .yaml, edits: [], agePrivateKey: key) }),
             (
                 "applyChanges",
                 {
                     try SopsBridge.applyChanges(
-                        fixture.hostile, changes: SecretChangeSet(), agePrivateKey: key)
+                        fixture.hostile, format: .yaml, changes: SecretChangeSet(), agePrivateKey: key)
                 }
             ),
         ]
@@ -101,7 +101,7 @@ struct HostileDocumentTests {
 
         do {
             _ = try SopsBridge.decryptToRows(
-                fixture.hostile, agePrivateKey: fixture.identity.private)
+                fixture.hostile, format: .yaml, agePrivateKey: fixture.identity.private)
             Issue.record("the hostile document did not fail")
         } catch let error as SopsBridgeError {
             #expect(!error.description.contains(Self.canary))
@@ -121,7 +121,7 @@ struct HostileDocumentTests {
         var rows: [SecretRow]?
         do {
             rows = try SopsBridge.decryptToRows(
-                fixture.hostile, agePrivateKey: fixture.identity.private)
+                fixture.hostile, format: .yaml, agePrivateKey: fixture.identity.private)
         } catch is SopsBridgeError {
             rows = nil
         }
@@ -137,10 +137,10 @@ struct HostileDocumentTests {
 
         for round in 1...3 {
             #expect(throws: SopsBridgeError.self) {
-                _ = try SopsBridge.decryptToRows(fixture.hostile, agePrivateKey: key)
+                _ = try SopsBridge.decryptToRows(fixture.hostile, format: .yaml, agePrivateKey: key)
             }
 
-            let rows = try SopsBridge.decryptToRows(fixture.healthy, agePrivateKey: key)
+            let rows = try SopsBridge.decryptToRows(fixture.healthy, format: .yaml, agePrivateKey: key)
             #expect(
                 rows.contains { $0.value == Self.canary },
                 "round \(round): a healthy document did not decrypt after a fault")
@@ -148,7 +148,7 @@ struct HostileDocumentTests {
             // The write path too — it is the one that touches the user's file.
             let saved = try SopsBridge.applyEdits(
                 fixture.healthy,
-                edits: [SecretEdit(path: ["beta"], value: "43", kind: .int)],
+                format: .yaml, edits: [SecretEdit(path: ["beta"], value: "43", kind: .int)],
                 agePrivateKey: key)
             #expect(!saved.isEmpty, "round \(round): saving produced nothing after a fault")
 
@@ -166,7 +166,7 @@ struct HostileDocumentTests {
         let stranger = try AgeKeyPair.generate()
 
         do {
-            _ = try SopsBridge.decryptToRows(fixture.healthy, agePrivateKey: stranger.private)
+            _ = try SopsBridge.decryptToRows(fixture.healthy, format: .yaml, agePrivateKey: stranger.private)
             Issue.record("decrypting with the wrong identity succeeded")
         } catch let error as SopsBridgeError {
             #expect(!error.description.contains("the sops engine faulted"))

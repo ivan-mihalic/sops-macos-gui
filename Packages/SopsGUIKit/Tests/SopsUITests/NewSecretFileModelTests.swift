@@ -211,14 +211,14 @@ struct NewSecretFileModelTests {
         // The real recipient, `stranger`, can read it back — proving the
         // file really was encrypted for the rule's actual recipient set and
         // not silently for `owner` instead.
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: stranger.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: stranger.private)
         #expect(rows.isEmpty)
         // And `owner`'s key genuinely cannot — not just "almost certainly
         // can't" by construction of age recipients: this is the one
         // assertion the whole acknowledgement path leans on, so it is
         // proven directly rather than left to a comment.
         #expect(throws: (any Error).self) {
-            try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+            try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
         }
     }
 
@@ -497,7 +497,7 @@ struct NewSecretFileModelTests {
 
         #expect(destination.path == root.appendingPathComponent("secret.yaml").path)
         let encrypted = try String(contentsOf: destination, encoding: .utf8)
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
         #expect(rows.isEmpty)
         #expect(model.planError == nil)
     }

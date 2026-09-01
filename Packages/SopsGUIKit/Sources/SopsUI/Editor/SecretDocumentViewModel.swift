@@ -465,7 +465,7 @@ public final class SecretDocumentViewModel {
     private static func decrypt(_ contents: String, agePrivateKey key: String) async -> Outcome<[SecretRow]> {
         await runOffCooperativePool {
             do {
-                return .success(try SopsBridge.decryptToRows(contents, agePrivateKey: key))
+                return .success(try SopsBridge.decryptToRows(contents, format: .yaml, agePrivateKey: key))
             } catch let error as SopsBridgeError {
                 return .failure(loadFailureMessage(for: error))
             } catch {
@@ -1082,7 +1082,7 @@ public final class SecretDocumentViewModel {
     ) async -> Outcome<String> {
         await runOffCooperativePool {
             do {
-                return .success(try SopsBridge.applyChanges(contents, changes: changes, agePrivateKey: key))
+                return .success(try SopsBridge.applyChanges(contents, format: .yaml, changes: changes, agePrivateKey: key))
             } catch let error as SopsBridgeError {
                 return .failure(error.description)
             } catch {

@@ -105,7 +105,7 @@ private func makeKeyStore(importing key: String? = nil) throws -> SessionKeyStor
 /// encryption, not a fixture string, so the file this model unlocks is
 /// exactly the shape a real SOPS document has.
 private func writeEncryptedFixture(plaintext: String, recipients: [String], to url: URL) throws {
-    let encrypted = try SopsBridge.encryptYAML(plaintext, recipients: recipients)
+    let encrypted = try SopsBridge.encrypt(plaintext, format: .yaml, recipients: recipients)
     try encrypted.write(to: url, atomically: true, encoding: .utf8)
 }
 
@@ -407,7 +407,7 @@ struct EncryptedImportModelTests {
         // A genuine encrypted fixture, then a NUL spliced into its bytes —
         // exactly the shape `HostileFileRefusalTests.nulBearingDocumentIsRefused`
         // exercises for the load path, applied to the import path instead.
-        let encrypted = try SopsBridge.encryptYAML("alpha: one\n", recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt("alpha: one\n", format: .yaml, recipients: [owner.public])
         let source = root.appendingPathComponent("source.yaml")
         try (encrypted + "\u{0}trailer: two\n").write(to: source, atomically: true, encoding: .utf8)
 
@@ -468,13 +468,13 @@ struct EncryptedImportModelTests {
         let destination = try #require(created)
 
         let encrypted = try String(contentsOf: destination, encoding: .utf8)
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: a.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: a.private)
         #expect(rows.first { $0.path == ["greeting"] }?.value == "hello")
         // `b` genuinely cannot read what was actually written — proving the
         // file was re-encrypted for the *target* rule, not for the source
         // file's own original recipients.
         #expect(throws: (any Error).self) {
-            try SopsBridge.decryptToRows(encrypted, agePrivateKey: b.private)
+            try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: b.private)
         }
     }
 

@@ -165,27 +165,36 @@ public struct LeafEncryptionSummary: Decodable, Equatable, Sendable {
 /// the static bridge; no `sops` binary is ever spawned.
 public enum SopsBridge {
 
-    public static func encryptYAML(
+    /// `format` has no default: every call site states which document shape
+    /// it means, rather than the bridge silently assuming YAML. See
+    /// `SopsFileFormat`'s own doc comment for why.
+    public static func encrypt(
         _ plain: String,
+        format: SopsFileFormat,
         recipients: [String],
         encryptedRegex: String = ""
     ) throws -> String {
         try call { out in
             plain.withGoString { plainPtr in
-                recipients.joined(separator: ",").withGoString { recipientsPtr in
-                    encryptedRegex.withGoString { regexPtr in
-                        sops_encrypt_yaml(plainPtr, recipientsPtr, regexPtr, out)
+                format.rawValue.withGoString { formatPtr in
+                    recipients.joined(separator: ",").withGoString { recipientsPtr in
+                        encryptedRegex.withGoString { regexPtr in
+                            sops_encrypt(plainPtr, formatPtr, recipientsPtr, regexPtr, out)
+                        }
                     }
                 }
             }
         }
     }
 
-    public static func decryptYAML(_ encrypted: String, agePrivateKey: String) throws -> String {
+    /// `format` has no default — see `encrypt(_:format:recipients:encryptedRegex:)`.
+    public static func decrypt(_ encrypted: String, format: SopsFileFormat, agePrivateKey: String) throws -> String {
         try call { out in
             encrypted.withGoString { encryptedPtr in
-                agePrivateKey.withGoString { keyPtr in
-                    sops_decrypt_yaml(encryptedPtr, keyPtr, out)
+                format.rawValue.withGoString { formatPtr in
+                    agePrivateKey.withGoString { keyPtr in
+                        sops_decrypt(encryptedPtr, formatPtr, keyPtr, out)
+                    }
                 }
             }
         }
@@ -193,10 +202,14 @@ public enum SopsBridge {
 
     /// Returns the native age recipients stored in this document's SOPS
     /// metadata. Reading recipient metadata requires no private identity.
-    public static func recipients(in encrypted: String) throws -> [String] {
+    /// `format` has no default — see
+    /// `encrypt(_:format:recipients:encryptedRegex:)`.
+    public static func recipients(in encrypted: String, format: SopsFileFormat) throws -> [String] {
         let json = try call { out in
             encrypted.withGoString { encryptedPtr in
-                sops_recipients(encryptedPtr, out)
+                format.rawValue.withGoString { formatPtr in
+                    sops_recipients(encryptedPtr, formatPtr, out)
+                }
             }
         }
         guard let data = json.data(using: .utf8) else {
@@ -211,9 +224,11 @@ public enum SopsBridge {
 
     /// Explicitly replaces the document's native age recipient set, re-wrapping
     /// the existing data key with the supplied private identity. It never reads
-    /// a project config or a key from the environment.
+    /// a project config or a key from the environment. `format` has no default —
+    /// see `encrypt(_:format:recipients:encryptedRegex:)`.
     public static func updateRecipients(
         _ encrypted: String,
+        format: SopsFileFormat,
         to recipients: [String],
         agePrivateKey: String
     ) throws -> String {
@@ -225,9 +240,11 @@ public enum SopsBridge {
         }
         return try call { out in
             encrypted.withGoString { encryptedPtr in
-                recipientsJSON.withGoString { recipientsPtr in
-                    agePrivateKey.withGoString { keyPtr in
-                        sops_update_recipients(encryptedPtr, recipientsPtr, keyPtr, out)
+                format.rawValue.withGoString { formatPtr in
+                    recipientsJSON.withGoString { recipientsPtr in
+                        agePrivateKey.withGoString { keyPtr in
+                            sops_update_recipients(encryptedPtr, formatPtr, recipientsPtr, keyPtr, out)
+                        }
                     }
                 }
             }
@@ -387,11 +404,14 @@ public enum SopsBridge {
     /// may read that as a problem.
     ///
     /// Throws when `encrypted` has no sops metadata at all, or is not
-    /// valid YAML — the same failure shape `recipients(in:)` has.
-    public static func inspectLeafEncryption(in encrypted: String) throws -> LeafEncryptionSummary {
+    /// valid YAML — the same failure shape `recipients(in:)` has. `format`
+    /// has no default — see `encrypt(_:format:recipients:encryptedRegex:)`.
+    public static func inspectLeafEncryption(in encrypted: String, format: SopsFileFormat) throws -> LeafEncryptionSummary {
         let json = try call { out in
             encrypted.withGoString { encryptedPtr in
-                sops_leaf_encryption_summary(encryptedPtr, out)
+                format.rawValue.withGoString { formatPtr in
+                    sops_leaf_encryption_summary(encryptedPtr, formatPtr, out)
+                }
             }
         }
         guard let data = json.data(using: .utf8) else {

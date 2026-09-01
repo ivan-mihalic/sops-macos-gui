@@ -12,7 +12,7 @@ import Testing
 /// `model(reading:...)` helper.
 ///
 /// `RecipientAccessModel.load()` guards this at `RecipientAccessModel.swift:290`,
-/// immediately before `SopsBridge.recipients(in: contents)` — until this
+/// immediately before `SopsBridge.recipients(in: contents, format: .yaml)` — until this
 /// test, that guard had no behavioural proof of its own, only the sibling
 /// guard in `SecretDocumentViewModel` did.
 @Suite("RecipientAccessModel refuses a document it cannot read whole")

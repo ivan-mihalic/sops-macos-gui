@@ -26,8 +26,8 @@ struct FlatYAMLEmitterTests {
     /// it cares about.
     private func roundTrip(_ entries: [DotEnvEntry]) throws -> [SecretRow] {
         let yaml = FlatYAMLEmitter.emit(entries)
-        let encrypted = try SopsBridge.encryptYAML(yaml, recipients: [Self.pair.public])
-        return try SopsBridge.decryptToRows(encrypted, agePrivateKey: Self.pair.private)
+        let encrypted = try SopsBridge.encrypt(yaml, format: .yaml, recipients: [Self.pair.public])
+        return try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: Self.pair.private)
     }
 
     @Test("every escape-table value shape survives the round trip intact")

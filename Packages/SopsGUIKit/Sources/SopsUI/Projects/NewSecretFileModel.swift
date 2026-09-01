@@ -1039,7 +1039,7 @@ public final class NewSecretFileModel {
 
         let decrypted: Result<String, Swift.Error>? = keyStore.withKey { key in
             do {
-                return .success(try SopsBridge.decryptYAML(sourceText, agePrivateKey: key))
+                return .success(try SopsBridge.decrypt(sourceText, format: .yaml, agePrivateKey: key))
             } catch {
                 return .failure(error)
             }
@@ -1075,7 +1075,7 @@ public final class NewSecretFileModel {
         // .recipients(in:)`'s own doc comment) — read only now, after a
         // successful decrypt, since nothing downstream needs it otherwise.
         do {
-            let sourceRecipients = try SopsBridge.recipients(in: sourceText)
+            let sourceRecipients = try SopsBridge.recipients(in: sourceText, format: .yaml)
             encryptedImportOutcome = Learned(
                 .unlocked(UnlockedImport(sourceRecipients: sourceRecipients, decryptedText: plaintext)),
                 about: path)

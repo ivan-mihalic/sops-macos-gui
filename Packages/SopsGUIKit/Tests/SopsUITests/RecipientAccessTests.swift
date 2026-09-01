@@ -117,7 +117,7 @@ struct RecipientAccessStagingTests {
         let kept = try AgeKeyPair.generate()
         let added = try AgeKeyPair.generate()
 
-        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [owner.public, kept.public])
+        let encrypted = try SopsBridge.encrypt(plainYAML, format: .yaml, recipients: [owner.public, kept.public])
         let fileURL = try fixtureFile(encrypted)
         let bytesBeforeStaging = try String(contentsOf: fileURL, encoding: .utf8)
 
@@ -144,13 +144,13 @@ struct RecipientAccessStagingTests {
         // reports, are exactly what they were before any staging happened.
         let bytesAfterStaging = try String(contentsOf: fileURL, encoding: .utf8)
         #expect(bytesAfterStaging == bytesBeforeStaging)
-        #expect(try SopsBridge.recipients(in: bytesAfterStaging) == [owner.public, kept.public])
+        #expect(try SopsBridge.recipients(in: bytesAfterStaging, format: .yaml) == [owner.public, kept.public])
     }
 
     @Test("discarding staged changes returns to the loaded baseline")
     func discardRestoresBaseline() async throws {
         let owner = try AgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(plainYAML, format: .yaml, recipients: [owner.public])
         let fileURL = try fixtureFile(encrypted)
 
         let keyStore = SessionKeyStore()
@@ -171,7 +171,7 @@ struct RecipientAccessStagingTests {
     @Test("adding a recipient already staged is refused as a duplicate")
     func refusesDuplicateStagedRecipient() async throws {
         let owner = try AgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(plainYAML, format: .yaml, recipients: [owner.public])
         let fileURL = try fixtureFile(encrypted)
 
         let keyStore = SessionKeyStore()
@@ -208,7 +208,7 @@ struct RecipientAccessStagingTests {
     func removeThenReAddViaUndoIsNotDirty() async throws {
         let owner = try AgeKeyPair.generate()
         let kept = try AgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [owner.public, kept.public])
+        let encrypted = try SopsBridge.encrypt(plainYAML, format: .yaml, recipients: [owner.public, kept.public])
         let fileURL = try fixtureFile(encrypted)
 
         let keyStore = SessionKeyStore()
@@ -246,8 +246,8 @@ struct RecipientAccessPendingRemovalsTests {
         let kept = try AgeKeyPair.generate()
         let removed = try AgeKeyPair.generate()
         let added = try AgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(
-            plainYAML, recipients: [owner.public, kept.public, removed.public])
+        let encrypted = try SopsBridge.encrypt(
+            plainYAML, format: .yaml, recipients: [owner.public, kept.public, removed.public])
         let fileURL = try fixtureFile(encrypted)
 
         let keyStore = SessionKeyStore()
@@ -281,8 +281,8 @@ struct RecipientAccessApplyTests {
         let added = try AgeKeyPair.generate()
         let removed = try AgeKeyPair.generate()
 
-        let encrypted = try SopsBridge.encryptYAML(
-            plainYAML, recipients: [owner.public, kept.public, removed.public])
+        let encrypted = try SopsBridge.encrypt(
+            plainYAML, format: .yaml, recipients: [owner.public, kept.public, removed.public])
         let fileURL = try fixtureFile(encrypted)
 
         let keyStore = SessionKeyStore()
@@ -301,11 +301,11 @@ struct RecipientAccessApplyTests {
         // The bridge actually rewrapped the data key: the new file decrypts
         // for every recipient in the new set and not for the removed one.
         let onDisk = try String(contentsOf: fileURL, encoding: .utf8)
-        #expect(try SopsBridge.decryptYAML(onDisk, agePrivateKey: owner.private) == plainYAML)
-        #expect(try SopsBridge.decryptYAML(onDisk, agePrivateKey: kept.private) == plainYAML)
-        #expect(try SopsBridge.decryptYAML(onDisk, agePrivateKey: added.private) == plainYAML)
+        #expect(try SopsBridge.decrypt(onDisk, format: .yaml, agePrivateKey: owner.private) == plainYAML)
+        #expect(try SopsBridge.decrypt(onDisk, format: .yaml, agePrivateKey: kept.private) == plainYAML)
+        #expect(try SopsBridge.decrypt(onDisk, format: .yaml, agePrivateKey: added.private) == plainYAML)
         #expect(throws: SopsBridgeError.self) {
-            try SopsBridge.decryptYAML(onDisk, agePrivateKey: removed.private)
+            try SopsBridge.decrypt(onDisk, format: .yaml, agePrivateKey: removed.private)
         }
 
         // A fresh read reports exactly the applied set, proving this is real
@@ -318,7 +318,7 @@ struct RecipientAccessApplyTests {
     @Test("removing every recipient is refused before the bridge or disk is touched")
     func refusesEmptyRecipientSet() async throws {
         let owner = try AgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(plainYAML, format: .yaml, recipients: [owner.public])
         let fileURL = try fixtureFile(encrypted)
         let bytesBefore = try String(contentsOf: fileURL, encoding: .utf8)
 
@@ -335,14 +335,14 @@ struct RecipientAccessApplyTests {
 
         let bytesAfter = try String(contentsOf: fileURL, encoding: .utf8)
         #expect(bytesAfter == bytesBefore)
-        #expect(try SopsBridge.recipients(in: bytesAfter) == [owner.public])
+        #expect(try SopsBridge.recipients(in: bytesAfter, format: .yaml) == [owner.public])
     }
 
     @Test("reading recipients needs no session key, but apply does and explains why")
     func readingNeedsNoKeyApplyDoes() async throws {
         let owner = try AgeKeyPair.generate()
         let added = try AgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(plainYAML, format: .yaml, recipients: [owner.public])
         let fileURL = try fixtureFile(encrypted)
         let bytesBefore = try String(contentsOf: fileURL, encoding: .utf8)
 
@@ -380,7 +380,7 @@ struct RecipientAccessRegistryTests {
     func labelsKnownRecipientsAndFallsBackForUnknownOnes() async throws {
         let known = try AgeKeyPair.generate()
         let unknown = try AgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [known.public, unknown.public])
+        let encrypted = try SopsBridge.encrypt(plainYAML, format: .yaml, recipients: [known.public, unknown.public])
         let fileURL = try fixtureFile(encrypted)
 
         let project = try makeProject()
@@ -408,7 +408,7 @@ struct RecipientAccessRegistryTests {
     @Test("a corrupt registry surfaces a quarantine notice, and recipients still show unlabelled")
     func corruptRegistrySurfacesAQuarantineNotice() async throws {
         let known = try AgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [known.public])
+        let encrypted = try SopsBridge.encrypt(plainYAML, format: .yaml, recipients: [known.public])
         let fileURL = try fixtureFile(encrypted)
 
         let project = try makeProject()
@@ -432,7 +432,7 @@ struct RecipientAccessRegistryTests {
     @Test("a file with no project still shows every recipient by public key")
     func noProjectMeansNoLabelsButNothingHidden() async throws {
         let owner = try AgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(plainYAML, format: .yaml, recipients: [owner.public])
         let fileURL = try fixtureFile(encrypted)
 
         let keyStore = SessionKeyStore()
@@ -451,7 +451,7 @@ struct RecipientAccessRegistryTests {
     func applyingARemovalRecordsRotationDebt() async throws {
         let owner = try AgeKeyPair.generate()
         let removed = try AgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [owner.public, removed.public])
+        let encrypted = try SopsBridge.encrypt(plainYAML, format: .yaml, recipients: [owner.public, removed.public])
         let project = try makeProject()
         let fileURL = project.appendingPathComponent("secrets/app.yaml")
         try FileManager.default.createDirectory(
@@ -477,7 +477,7 @@ struct RecipientAccessRegistryTests {
     func applyingAnAdditionOnlyRecordsNoRotationDebt() async throws {
         let owner = try AgeKeyPair.generate()
         let added = try AgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(plainYAML, format: .yaml, recipients: [owner.public])
         let project = try makeProject()
         let fileURL = project.appendingPathComponent("app.yaml")
         try encrypted.write(to: fileURL, atomically: true, encoding: .utf8)
@@ -497,7 +497,7 @@ struct RecipientAccessRegistryTests {
     @Test("a loaded panel shows the rotation debt already recorded for this exact file")
     func loadShowsExistingRotationDebt() async throws {
         let owner = try AgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(plainYAML, format: .yaml, recipients: [owner.public])
         let project = try makeProject()
         let fileURL = project.appendingPathComponent("app.yaml")
         try encrypted.write(to: fileURL, atomically: true, encoding: .utf8)
@@ -516,7 +516,7 @@ struct RecipientAccessRegistryTests {
     @Test("acknowledging a rotation debt clears it from the panel and the ledger")
     func acknowledgeClearsDebt() async throws {
         let owner = try AgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(plainYAML, format: .yaml, recipients: [owner.public])
         let project = try makeProject()
         let fileURL = project.appendingPathComponent("app.yaml")
         try encrypted.write(to: fileURL, atomically: true, encoding: .utf8)
@@ -538,7 +538,7 @@ struct RecipientAccessRegistryTests {
     func applyRefreshesRotationDebtWithoutAReload() async throws {
         let owner = try AgeKeyPair.generate()
         let removed = try AgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [owner.public, removed.public])
+        let encrypted = try SopsBridge.encrypt(plainYAML, format: .yaml, recipients: [owner.public, removed.public])
         let project = try makeProject()
         let fileURL = project.appendingPathComponent("app.yaml")
         try encrypted.write(to: fileURL, atomically: true, encoding: .utf8)
@@ -559,7 +559,7 @@ struct RecipientAccessRegistryTests {
     func removalWithoutAProjectRecordsNothing() async throws {
         let owner = try AgeKeyPair.generate()
         let removed = try AgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [owner.public, removed.public])
+        let encrypted = try SopsBridge.encrypt(plainYAML, format: .yaml, recipients: [owner.public, removed.public])
         let fileURL = try fixtureFile(encrypted)
 
         let keyStore = SessionKeyStore()
@@ -617,7 +617,7 @@ struct RecipientAccessSeamTests {
         if let readFile {
             resolvedReadFile = readFile
         } else {
-            let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: recipients)
+            let encrypted = try SopsBridge.encrypt(plainYAML, format: .yaml, recipients: recipients)
             resolvedReadFile = { _ in encrypted }
         }
         return RecipientAccessModel(
@@ -814,7 +814,7 @@ struct RecipientAccessSeamTests {
     func aRealConcurrentWriterIsRefusedWithoutClobbering() async throws {
         let owner = try AgeKeyPair.generate()
         let added = try AgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(plainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(plainYAML, format: .yaml, recipients: [owner.public])
         let fileURL = try fixtureFile(encrypted)
 
         let keyStore = SessionKeyStore()
@@ -841,7 +841,7 @@ struct RecipientAccessSeamTests {
         // The other writer's key is still there, and the staged addition
         // never landed — the refused apply touched nothing.
         let onDisk = try String(contentsOf: fileURL, encoding: .utf8)
-        #expect(try SopsBridge.recipients(in: onDisk) == [owner.public])
+        #expect(try SopsBridge.recipients(in: onDisk, format: .yaml) == [owner.public])
         #expect(model.currentRecipients == [owner.public])
         #expect(model.stagedRecipients == [owner.public, added.public], "the staged edit must survive the refusal")
     }

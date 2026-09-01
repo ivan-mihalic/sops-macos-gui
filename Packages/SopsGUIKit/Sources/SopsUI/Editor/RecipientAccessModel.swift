@@ -319,7 +319,7 @@ public final class RecipientAccessModel {
         }
 
         do {
-            let recipients = try SopsBridge.recipients(in: contents)
+            let recipients = try SopsBridge.recipients(in: contents, format: .yaml)
             let collapsed = Self.collapsingDuplicates(recipients)
             encryptedContents = contents
             loadedFingerprint = fingerprint
@@ -611,7 +611,7 @@ public final class RecipientAccessModel {
     public static func defaultRewrap(_ contents: String, _ recipients: [String], _ key: String) async throws -> String
     {
         try await runOffCooperativePool {
-            try SopsBridge.updateRecipients(contents, to: recipients, agePrivateKey: key)
+            try SopsBridge.updateRecipients(contents, format: .yaml, to: recipients, agePrivateKey: key)
         }
     }
 }

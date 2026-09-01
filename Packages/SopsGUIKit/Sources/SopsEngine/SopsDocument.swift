@@ -246,14 +246,17 @@ extension SopsBridge {
     /// does not verify, a file that is not a SOPS document. It never returns an
     /// empty row list to mean "could not decrypt" — a document the app could
     /// not read must not present as an empty form the user might save over
-    /// their file.
+    /// their file. `format` has no default — see
+    /// `SopsBridge.encrypt(_:format:recipients:encryptedRegex:)`.
     public static func decryptToRows(
-        _ encrypted: String, agePrivateKey: String
+        _ encrypted: String, format: SopsFileFormat, agePrivateKey: String
     ) throws -> [SecretRow] {
         let json = try call { out in
             encrypted.withGoString { encryptedPtr in
-                agePrivateKey.withGoString { keyPtr in
-                    sops_decrypt_to_rows(encryptedPtr, keyPtr, out)
+                format.rawValue.withGoString { formatPtr in
+                    agePrivateKey.withGoString { keyPtr in
+                        sops_decrypt_to_rows(encryptedPtr, formatPtr, keyPtr, out)
+                    }
                 }
             }
         }
@@ -282,16 +285,19 @@ extension SopsBridge {
     ///
     /// Errors name the key path that failed and never the value: an error
     /// string is exactly the kind of text that reaches a log, a screenshot or a
-    /// crash report, and this path handles plaintext.
+    /// crash report, and this path handles plaintext. `format` has no
+    /// default — see `SopsBridge.encrypt(_:format:recipients:encryptedRegex:)`.
     public static func applyEdits(
-        _ encrypted: String, edits: [SecretEdit], agePrivateKey: String
+        _ encrypted: String, format: SopsFileFormat, edits: [SecretEdit], agePrivateKey: String
     ) throws -> String {
         let editsJSON = try encodeToJSON(edits, failureMessage: "the edits could not be encoded")
         return try call { out in
             encrypted.withGoString { encryptedPtr in
-                editsJSON.withGoString { editsPtr in
-                    agePrivateKey.withGoString { keyPtr in
-                        sops_apply_edits(encryptedPtr, editsPtr, keyPtr, out)
+                format.rawValue.withGoString { formatPtr in
+                    editsJSON.withGoString { editsPtr in
+                        agePrivateKey.withGoString { keyPtr in
+                            sops_apply_edits(encryptedPtr, formatPtr, editsPtr, keyPtr, out)
+                        }
                     }
                 }
             }
@@ -309,16 +315,19 @@ extension SopsBridge {
     /// a refusal never leaves half a save applied, and a failure returns no
     /// bytes at all. See `SecretChangeSet` for the one rule that is specific
     /// to structural changes: a batch whose list indices could be read two
-    /// ways is refused rather than guessed at.
+    /// ways is refused rather than guessed at. `format` has no default — see
+    /// `SopsBridge.encrypt(_:format:recipients:encryptedRegex:)`.
     public static func applyChanges(
-        _ encrypted: String, changes: SecretChangeSet, agePrivateKey: String
+        _ encrypted: String, format: SopsFileFormat, changes: SecretChangeSet, agePrivateKey: String
     ) throws -> String {
         let changesJSON = try encodeToJSON(changes, failureMessage: "the changes could not be encoded")
         return try call { out in
             encrypted.withGoString { encryptedPtr in
-                changesJSON.withGoString { changesPtr in
-                    agePrivateKey.withGoString { keyPtr in
-                        sops_apply_changes(encryptedPtr, changesPtr, keyPtr, out)
+                format.rawValue.withGoString { formatPtr in
+                    changesJSON.withGoString { changesPtr in
+                        agePrivateKey.withGoString { keyPtr in
+                            sops_apply_changes(encryptedPtr, formatPtr, changesPtr, keyPtr, out)
+                        }
                     }
                 }
             }

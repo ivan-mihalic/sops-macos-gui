@@ -74,7 +74,7 @@ ScratchDirectoryRegistry.shared.register(root)
     /// A genuinely sops-encrypted YAML document, produced by the same
     /// in-process bridge the shipping app uses.
     static func encrypted(_ plain: String, to recipients: [String]) throws -> String {
-        try SopsBridge.encryptYAML(plain, recipients: recipients)
+        try SopsBridge.encrypt(plain, format: .yaml, recipients: recipients)
     }
 
     /// A genuinely sops-encrypted YAML document produced by the real `sops`

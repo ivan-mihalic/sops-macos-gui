@@ -68,7 +68,7 @@ struct SecretFileCreatorTests {
 
         #expect(receipt.destination.path == destination.path)
         let encrypted = try String(contentsOf: destination, encoding: .utf8)
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
         #expect(rows.isEmpty)
     }
 
@@ -87,7 +87,7 @@ struct SecretFileCreatorTests {
             sessionKey: owner.private)
 
         let encrypted = try String(contentsOf: destination, encoding: .utf8)
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
         #expect(!rows.isEmpty)
         #expect(rows.first { $0.path == ["database", "password"] }?.value == sentinelValue)
     }
@@ -135,7 +135,7 @@ struct SecretFileCreatorTests {
 
         #expect(receipt.destination.path == destination.path)
         let encrypted = try String(contentsOf: destination, encoding: .utf8)
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
         #expect(rows.isEmpty)
     }
 
@@ -164,7 +164,7 @@ struct SecretFileCreatorTests {
             sessionKey: owner.private)
 
         let encrypted = try String(contentsOf: destination, encoding: .utf8)
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
         #expect(rows.count == entries.count)
         for entry in entries {
             #expect(rows.first { $0.path == [entry.key] }?.value == entry.value, "key \(entry.key)")
@@ -440,7 +440,7 @@ struct SecretFileCreatorTests {
 
         #expect(receipt.destination.path == destination.path)
         let encrypted = try String(contentsOf: destination, encoding: .utf8)
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
         #expect(rows.count == entries.count)
         #expect(rows.first { $0.path == ["KEY"] }?.value == entries[0].value)
     }
@@ -478,7 +478,7 @@ struct SecretFileCreatorTests {
         // Written for the recipient it was actually encrypted for, proving
         // the write went through rather than being silently skipped too.
         let encrypted = try String(contentsOf: destination, encoding: .utf8)
-        #expect(try SopsBridge.recipients(in: encrypted) == [stranger.public])
+        #expect(try SopsBridge.recipients(in: encrypted, format: .yaml) == [stranger.public])
     }
 
     /// Ticket #10, claim 3: `create()` must record, durably, that this file
@@ -676,7 +676,7 @@ struct SecretFileCreatorTests {
     func matchingRecipientsPassStructuralVerification() throws {
         let owner = try AgeKeyPair.generate()
         let stranger = try AgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML("{}\n", recipients: [owner.public, stranger.public])
+        let encrypted = try SopsBridge.encrypt("{}\n", format: .yaml, recipients: [owner.public, stranger.public])
 
         // Must not throw.
         try SecretFileCreator.verifyRecipientsStructurally(
@@ -690,7 +690,7 @@ struct SecretFileCreatorTests {
         // Encrypted for `owner` only, but this call claims it was meant for
         // both — the shape a bridge bug producing the wrong recipient set
         // would take.
-        let encrypted = try SopsBridge.encryptYAML("{}\n", recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt("{}\n", format: .yaml, recipients: [owner.public])
 
         #expect(throws: SecretFileCreator.Failure.recipientsMismatch) {
             try SecretFileCreator.verifyRecipientsStructurally(

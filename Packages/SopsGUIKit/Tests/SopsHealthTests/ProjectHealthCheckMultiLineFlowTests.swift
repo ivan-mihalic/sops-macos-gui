@@ -54,8 +54,8 @@ struct ProjectHealthCheckMultiLineFlowTests {
 
         // Genuinely, correctly encrypted to both real recipients — the real
         // bridge, not a fixture.
-        let encrypted = try SopsBridge.encryptYAML(
-            "password: hunter2\napi_key: sk-live-abc123\n", recipients: [key1, key2])
+        let encrypted = try SopsBridge.encrypt(
+            "password: hunter2\napi_key: sk-live-abc123\n", format: .yaml, recipients: [key1, key2])
 
         // The recipient list is written as a flow sequence split across two
         // lines, matching the reviewer's exact repro shape.
