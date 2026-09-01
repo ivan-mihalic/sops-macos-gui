@@ -28,6 +28,8 @@ type Format string
 const (
 	FormatYAML   Format = "yaml"
 	FormatDotenv Format = "dotenv"
+	FormatJSON   Format = "json"
+	FormatINI    Format = "ini"
 )
 
 func (f Format) toSopsFormat() (formats.Format, error) {
@@ -36,6 +38,10 @@ func (f Format) toSopsFormat() (formats.Format, error) {
 		return formats.Yaml, nil
 	case FormatDotenv:
 		return formats.Dotenv, nil
+	case FormatJSON:
+		return formats.Json, nil
+	case FormatINI:
+		return formats.Ini, nil
 	default:
 		return 0, fmt.Errorf("unsupported format %q", f)
 	}
