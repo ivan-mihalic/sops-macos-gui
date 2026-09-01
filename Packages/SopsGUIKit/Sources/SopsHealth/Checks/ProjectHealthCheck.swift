@@ -509,14 +509,16 @@ public struct ProjectHealthCheck: HealthCheck {
             return root.appendingPathComponent(relative).path
         }
 
-        // Encrypted files this build cannot read at all. The bridge is
-        // YAML-only in M1 (`gobridge.Format`), so a sops-encrypted .env, .json
-        // or .ini carries metadata in a shape `EncryptedFileMetadata` does not
-        // parse. Saying so is the point: silently omitting them from the count
-        // and then reporting OK is the same vacuous verdict this whole
-        // finding was rewritten to stop producing.
+        // Encrypted files this build still cannot read at all. YAML and
+        // dotenv sops documents both reach `tree.encrypted` now and are
+        // checked in the loop below — `EncryptedFileMetadata` reads
+        // recipients out of either shape. JSON and INI are what is left in
+        // `tree.encryptedInOtherFormats`: nothing on the Swift side parses
+        // their metadata yet. Saying so is the point: silently omitting them
+        // from the count and then reporting OK is the same vacuous verdict
+        // this whole finding was rewritten to stop producing.
         for url in tree.encryptedInOtherFormats {
-            unverifiable.append("\(relativeName(url)) is sops-encrypted in a format this app does not read yet — this build handles YAML only — so its recipient list was not checked.")
+            unverifiable.append("\(relativeName(url)) is sops-encrypted in a format this app does not read yet — JSON and INI are not supported — so its recipient list was not checked.")
         }
 
         for sniffed in tree.encrypted {
@@ -1096,7 +1098,7 @@ public struct ProjectHealthCheck: HealthCheck {
         var verifiedCount = 0
 
         for url in tree.encryptedInOtherFormats {
-            unverifiable.append("\(relativeName(url)) is sops-encrypted in a format this app does not read yet — this build handles YAML only — so its values were not checked.")
+            unverifiable.append("\(relativeName(url)) is sops-encrypted in a format this app does not read yet — JSON and INI are not supported — so its values were not checked.")
         }
 
         for sniffed in tree.encrypted {
@@ -1115,7 +1117,18 @@ public struct ProjectHealthCheck: HealthCheck {
             }
 
             do {
-                let summary = try SopsBridge.inspectLeafEncryption(in: contents, format: .yaml)
+                // `sniffed.format`, not a hardcoded `.yaml` — `tree.encrypted`
+                // has carried dotenv files since Task 5, and
+                // `SopsBridge.inspectLeafEncryption` has read both shapes
+                // since Task 4 (`gobridge.InspectLeafEncryption` has its own
+                // `TestDotenvLeafEncryptionSummary`). Passing the wrong
+                // format here would not silently misreport — the bridge
+                // fails to parse a dotenv tail as YAML and the `catch` below
+                // reports it unverifiable — but "unverifiable" for a shape
+                // this app can actually check is exactly the vacuous-gap
+                // pattern this whole file exists to close, so it uses the
+                // real answer instead.
+                let summary = try SopsBridge.inspectLeafEncryption(in: contents, format: sniffed.format)
                 let unencrypted = summary.leafCount - summary.encryptedLeafCount
                 if summary.uncompilableRuleDeclared, unencrypted > 0 {
                     problems.append("\(relative)'s own metadata names an encryption rule that does not compile, and \(unencrypted) of its \(summary.leafCount) value(s) are not actually encrypted. sops discards a rule that cannot compile instead of refusing to save the file, so this file's valid recipient list and MAC describe the metadata, not the values.")

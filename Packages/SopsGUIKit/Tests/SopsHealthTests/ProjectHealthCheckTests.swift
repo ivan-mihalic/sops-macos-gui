@@ -176,6 +176,57 @@ struct ProjectHealthCheckTests {
         #expect(finding(await check.run(), suffix: "stale-recipients").status == .problem)
     }
 
+    // Task 5 (SOPS-38): a dotenv sops file used to be reported "unverifiable"
+    // wholesale (`tree.encryptedInOtherFormats`, "this build handles YAML
+    // only"). It now goes through the exact same recipient comparison a
+    // YAML file does — real bridge output, never a hand-written fixture,
+    // because the dotenv metadata shape (`sops_age__list_N__map_recipient=`)
+    // is exactly the thing this app cannot afford to get wrong by
+    // assumption. See `EncryptedFileMetadataDotenvTests.swift` for the shape
+    // itself, verified against the bridge separately.
+
+    @Test("a dotenv file whose recipients match its rule is OK, not unverifiable")
+    func healthyDotenvFileIsOK() async throws {
+        let encrypted = try ProjectFixture.encryptedDotenv("API_KEY=hunter2\n", to: [devKey])
+        let root = try makeProject(
+            sopsYAML: """
+            creation_rules:
+              - path_regex: secrets/.*\\.env$
+                age: \(devKey)
+            """,
+            files: ["secrets/prod.env": encrypted])
+        let check = ProjectHealthCheck(source: FakeProjects(
+            projects: [InspectedProject(name: "demo", rootPath: root)]))
+        let findings = await check.run()
+
+        let stale = finding(findings, suffix: "stale-recipients")
+        #expect(stale.status == .ok, "got: \(stale.status), detail: \(stale.detail)")
+        #expect(stale.detail.contains("Checked 1 encrypted file"))
+        #expect(!stale.detail.contains("does not read"))
+        #expect(!stale.detail.contains("unverifiable"))
+    }
+
+    @Test("a dotenv file encrypted to a recipient no longer in .sops.yaml is a problem, not unverifiable")
+    func staleDotenvRecipientIsAProblem() async throws {
+        let removedColleague = try ProjectFixture.ageKeyPair()
+        let encrypted = try ProjectFixture.encryptedDotenv(
+            "API_KEY=hunter2\n", to: [devKey, removedColleague.public])
+        let root = try makeProject(
+            sopsYAML: """
+            creation_rules:
+              - path_regex: secrets/.*\\.env$
+                age: \(devKey)
+            """,
+            files: ["secrets/prod.env": encrypted])
+        let check = ProjectHealthCheck(source: FakeProjects(
+            projects: [InspectedProject(name: "demo", rootPath: root)]))
+
+        let stale = finding(await check.run(), suffix: "stale-recipients")
+        #expect(stale.status == .problem, "got: \(stale.status), detail: \(stale.detail)")
+        #expect(stale.detail.contains("secrets/prod.env"))
+        #expect(stale.detail.contains(removedColleague.public))
+    }
+
     @Test("a plaintext .env inside the project that is not gitignored is a problem")
     func ungitignoredPlaintextIsAProblem() async throws {
         let root = try makeProject(

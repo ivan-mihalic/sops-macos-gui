@@ -284,15 +284,34 @@ public struct ProjectRecipientApplier: Sendable {
     /// produces the text.
     public func plan(projectRoot: URL, recipients: [String]) async -> Plan {
         let tree = await scanProject(projectRoot)
+        // TEMPORARY (Task 5, SOPS-38): `tree.encrypted` has carried dotenv
+        // files since this task — before it, only YAML ever reached here.
+        // Everything below this point — `readRecipients`/`rewrapRecipients`
+        // above and `SopsBridge.updateConfigRecipients` in `proposeConfig` —
+        // is still hardcoded to `format: .yaml`, because rewrapping a
+        // project-wide recipient set is out of this task's scope (the next
+        // task widens it). Feeding a dotenv file's contents to a
+        // YAML-format bridge call here would not fail loudly — the tail read
+        // in `readFile` doesn't care what it decodes to be *called*, so a
+        // dotenv document would either be misread as YAML or (more likely)
+        // rejected with a confusing "not valid YAML" error attributed to a
+        // file that is a perfectly valid dotenv one. Excluding it here is
+        // safer than reaching that call and finding out which. Remove this
+        // filter once `readRecipients`/`rewrapRecipients`/`proposeConfig`
+        // are format-aware.
+        let yamlOnly = tree.encrypted.filter { $0.format == .yaml }
         let encryptedFiles = Self.sortedByProjectRelativePath(
             Self.deduplicatedByResolvedPath(
-                Self.sortedByProjectRelativePath(tree.encrypted.map(\.url), under: projectRoot)),
+                Self.sortedByProjectRelativePath(yamlOnly.map(\.url), under: projectRoot)),
             under: projectRoot)
         // How many names the dedup above dropped. Computed once and reused
         // across every return below, including the ones that pass `[]` for
         // `encryptedFiles` — those are only reached when the scan itself
-        // found nothing, so this is 0 there too.
-        let duplicateFileNameCount = tree.encrypted.count - encryptedFiles.count
+        // found nothing, so this is 0 there too. Measured against `yamlOnly`,
+        // not `tree.encrypted`: a dotenv file excluded by the temporary
+        // filter above is not a duplicate name, and counting it as one would
+        // misreport why `encryptedFiles` is shorter than the raw scan.
+        let duplicateFileNameCount = yamlOnly.count - encryptedFiles.count
         let configURL = projectRoot.appendingPathComponent(".sops.yaml")
         let configExists = FileManager.default.fileExists(atPath: configURL.path)
 

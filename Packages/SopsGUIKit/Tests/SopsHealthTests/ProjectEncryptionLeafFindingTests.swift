@@ -51,6 +51,29 @@ struct ProjectEncryptionLeafFindingTests {
         #expect(finding.detail.contains("genuinely encrypted"))
     }
 
+    /// Task 5 (SOPS-38): `tree.encrypted` now carries dotenv files too, and
+    /// this check must pass `sniffed.format` through to
+    /// `SopsBridge.inspectLeafEncryption` rather than a hardcoded `.yaml` —
+    /// otherwise a genuinely-encrypted dotenv file would fail to parse as
+    /// YAML and fall into "unverifiable", which is honest but needlessly
+    /// degraded now that the bridge can actually check it (Task 4's
+    /// `gobridge.InspectLeafEncryption` already reads dotenv).
+    @Test("a genuinely encrypted dotenv file is OK, not unverifiable")
+    func genuinelyEncryptedDotenvFileIsOK() async throws {
+        let root = try ProjectFixture.makeDirectory()
+        try ProjectFixture.gitInit(root)
+        let key = try ProjectFixture.ageKeyPair()
+        try ProjectFixture.write("creation_rules:\n  - age: \(key.public)\n", to: root, at: ".sops.yaml")
+        try ProjectFixture.write(
+            try ProjectFixture.encryptedDotenv("API_KEY=sk-live-abc123\n", to: [key.public]),
+            to: root, at: "secrets.env")
+
+        let finding = encryptionFinding(await run(root))
+        #expect(finding.status == .ok, "got: \(finding.status), detail: \(finding.detail)")
+        #expect(finding.detail.contains("genuinely encrypted"))
+        #expect(!finding.detail.contains("could not determine"))
+    }
+
     /// The core reproduction: a file this app never touched, produced
     /// entirely by the real `sops` binary with a rule that never compiled.
     @Test("a file the CLI produced with an uncompilable encrypted_regex is a problem, not an OK")

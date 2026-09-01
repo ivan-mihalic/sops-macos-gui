@@ -422,6 +422,43 @@ struct ProjectRecipientApplierPlanTests {
         #expect(try String(contentsOf: plan.configURL, encoding: .utf8) == configText)
     }
 
+    // Task 5 (SOPS-38): `tree.encrypted` started carrying dotenv files
+    // alongside YAML ones. `plan(projectRoot:recipients:)` still only reads
+    // and rewraps YAML (`readRecipients`/`rewrapRecipients` are hardcoded to
+    // `format: .yaml` — widening that is a later task), so a dotenv file
+    // must not reach `plan.encryptedFiles`/`matchedFiles`/`unmatchedFiles`
+    // at all, and planning must not crash or throw over one being present.
+    @Test("a dotenv sops file in the project is excluded from the plan, not crashed on or miscounted")
+    func dotenvFileIsExcludedFromThePlan() async throws {
+        let owner = try AgeKeyPair.generate()
+        let other = try AgeKeyPair.generate()
+        let added = try AgeKeyPair.generate()
+        let (root, _) = try makeProject(owner: owner, other: other)
+
+        // A dotenv sops file the same rule would otherwise match, dropped
+        // into the "prod" directory next to the two real YAML files that
+        // rule already governs.
+        let dotenvEncrypted = try SopsBridge.encrypt(
+            "DB_PASSWORD=hunter2\n", format: .dotenv, recipients: [owner.public])
+        try dotenvEncrypted.write(
+            to: root.appendingPathComponent("prod").appendingPathComponent(".env"),
+            atomically: true, encoding: .utf8)
+
+        let applier = ProjectRecipientApplier()
+        let plan = await applier.plan(projectRoot: root, recipients: [owner.public, added.public])
+
+        #expect(plan.configError == nil)
+        #expect(plan.configRefusal == nil)
+        // Still exactly the two YAML files under prod/ plus the one under
+        // staging/ — the dotenv file is not counted here at all.
+        #expect(plan.encryptedFiles.count == 3)
+        #expect(!plan.encryptedFiles.contains { $0.lastPathComponent == ".env" })
+        #expect(!plan.matchedFiles.contains { $0.lastPathComponent == ".env" })
+        #expect(!plan.unmatchedFiles.contains { $0.lastPathComponent == ".env" })
+        // Excluded by format, not treated as a same-name duplicate.
+        #expect(plan.duplicateFileNameCount == 0)
+    }
+
     @Test("a plan for the set the config already declares has nothing to write")
     func planForAnUnchangedSetWritesNothing() async throws {
         let owner = try AgeKeyPair.generate()

@@ -44,6 +44,24 @@ ScratchDirectoryRegistry.shared.register(root)
         """.write(to: url, atomically: true, encoding: .utf8)
     }
 
+    /// The dotenv counterpart to `writeSopsLike` — hand-written text carrying
+    /// the shape sops's dotenv store actually writes (`sops_`-prefixed
+    /// `KEY=value` lines, no `sops:` block at all), for the same reason
+    /// `writeSopsLike` is hand-written rather than bridge-encrypted: this
+    /// suite is about `FileListModel`'s own wiring, not sops's file format —
+    /// `ProjectScanner`'s and `EncryptedFileMetadata`'s own suites already
+    /// hold the dotenv *shape itself* to the real-bridge standard.
+    private func writeDotenvSopsLike(_ root: URL, at relativePath: String) throws {
+        let url = root.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try """
+        KEY=ENC[AES256_GCM,data:Zm9v,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
+        sops_age__list_0__map_recipient=age1exampleexampleexampleexampleexampleexampleexampleexamplex
+        sops_mac=ENC[AES256_GCM,data:AAAA,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
+        sops_version=3.13.3
+        """.write(to: url, atomically: true, encoding: .utf8)
+    }
+
     @Test("a fresh model reports nothing scanned yet")
     func freshModelHasNotScanned() throws {
         let model = FileListModel(projectRoot: try makeProject())
@@ -100,6 +118,26 @@ ScratchDirectoryRegistry.shared.register(root)
         #expect(model.files.count == 1)
         #expect(model.incompleteScanReason == nil,
                 "a readable project was reported as only partially scanned")
+    }
+
+    /// Task 5 (SOPS-38): a dotenv sops file now lands in `ScannedTree.encrypted`
+    /// (verified, `format == .dotenv`), not `encryptedInOtherFormats` — but
+    /// this app's editor still only opens YAML (`SopsDocument`), so it must
+    /// not turn into an openable row here. `FileListView.swift`'s own
+    /// temporary filter is what keeps that true; this pins the model-level
+    /// half of it.
+    @Test("a dotenv sops file is not listed as openable, and is counted alongside other formats")
+    func dotenvFileIsNotOpenableButIsCounted() async throws {
+        let root = try makeProject()
+        try writeSopsLike(root, at: "config/secrets.yaml")
+        try writeDotenvSopsLike(root, at: "config/secrets.env")
+
+        let model = FileListModel(projectRoot: root)
+        await model.refresh()
+
+        #expect(model.files.count == 1)
+        #expect(model.files.first?.lastPathComponent == "secrets.yaml")
+        #expect(model.otherFormatCount == 1)
     }
 
     /// `.git` exists in every real repository, so this list is almost never

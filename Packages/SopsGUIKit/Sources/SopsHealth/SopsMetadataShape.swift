@@ -85,13 +85,32 @@ enum SopsMetadataShape {
         return sawMAC && sawVersion
     }
 
-    /// sops metadata in one of the stores this build cannot read recipients
-    /// out of. Recognising it is what keeps an encrypted `.env` or `.json` out
-    /// of the plaintext-leak finding, and gets it reported honestly as
-    /// unverifiable instead.
-    static func isNonYAMLMetadata(_ text: String) -> Bool {
+    /// Which non-YAML sops store, if any, wrote `text`'s metadata — `nil` for
+    /// neither. Recognising *which* is what lets a caller route dotenv (this
+    /// build reads its recipients — see `EncryptedFileMetadata`) differently
+    /// from JSON/INI (still reported honestly as unverifiable) without a
+    /// second structural pass: `isYAMLMetadata`/the old boolean
+    /// `isNonYAMLMetadata` only ever answered "is this a sops document",
+    /// never "which store wrote it".
+    enum Kind {
+        case dotenv, json, ini
+    }
+
+    /// Which non-YAML sops store, if any, wrote `text`'s metadata.
+    static func nonYAMLKind(_ text: String) -> Kind? {
         let lines = Self.lines(of: text)
-        return isDotenvMetadata(lines) || isJSONMetadata(text) || isINIMetadata(lines)
+        if isDotenvMetadata(lines) { return .dotenv }
+        if isJSONMetadata(text) { return .json }
+        if isINIMetadata(lines) { return .ini }
+        return nil
+    }
+
+    /// sops metadata in one of the stores this build cannot *edit* yet
+    /// (JSON, INI) or could not read recipients out of before this build
+    /// added dotenv support. Kept for callers that only need the boolean —
+    /// `nonYAMLKind(_:) != nil` — rather than which store it was.
+    static func isNonYAMLMetadata(_ text: String) -> Bool {
+        Self.nonYAMLKind(text) != nil
     }
 
     /// dotenv: sops flattens its metadata into `sops_`-prefixed keys, each its

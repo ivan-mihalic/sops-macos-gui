@@ -1,4 +1,5 @@
 import Observation
+import SopsEngine
 import SopsHealth
 import SopsProjects
 import SwiftUI
@@ -103,17 +104,25 @@ public final class FileListModel {
         // must take effect on the next refresh, not only after a relaunch.
         let tree = await ProjectScanner.scan(root: projectRoot, maxScannedFiles: ScanBudgetSetting.current())
 
-        // Only the YAML-sniffed files are listed as *openable* — the editor
-        // (`SopsEngine.SopsDocument`) only reads sops's YAML store; dotenv/
-        // JSON/INI sops documents are a hard "no" for v1 (Package.swift,
-        // CLAUDE.md: "YAML only for v1. Do not add dotenv or JSON handling
-        // anywhere"). Rendering one of those as a clickable row would open a
-        // file this app cannot actually decrypt, one click after the user
-        // finds it in what looks like an ordinary list of the same kind of
-        // thing. `otherFormatCount` is surfaced instead, so a user with a
-        // `.env` sops file isn't left wondering why it never appears.
-        files = tree.encrypted.map(\.url).sorted { relativePath(for: $0) < relativePath(for: $1) }
-        otherFormatCount = tree.encryptedInOtherFormats.count
+        // Only the YAML files are listed as *openable* — the editor
+        // (`SopsEngine.SopsDocument`) only reads sops's YAML store. TEMPORARY
+        // (Task 5, SOPS-38): `tree.encrypted` now also carries dotenv files
+        // (`SniffedFile.format == .dotenv`), which this build's editor still
+        // cannot open — that lands in a later task. Rendering one as a
+        // clickable row would open a file this app cannot actually decrypt,
+        // one click after the user finds it in what looks like an ordinary
+        // list of the same kind of thing, so it is filtered out of `files`
+        // here and folded into `otherFormatCount` instead — the same bucket
+        // a JSON/INI sops file already used, and the same user-facing
+        // behaviour a dotenv file had before this task (it used to reach
+        // `otherFormatCount` via `tree.encryptedInOtherFormats`; now it gets
+        // there via this filter instead, because the scanner itself now
+        // knows it is verifiable). Remove the `format == .yaml` filter once
+        // the editor reads dotenv too, and `files` can list every format
+        // this build can actually open.
+        let yamlOnly = tree.encrypted.filter { $0.format == .yaml }
+        files = yamlOnly.map(\.url).sorted { relativePath(for: $0) < relativePath(for: $1) }
+        otherFormatCount = tree.encryptedInOtherFormats.count + (tree.encrypted.count - yamlOnly.count)
         incompleteScanReason = tree.incompleteScanReason
         skippedDirectoryNames = tree.skippedDirectoryNames.sorted()
         unfollowedDirectorySymlinks = tree.unfollowedDirectorySymlinks.sorted { $0.path < $1.path }

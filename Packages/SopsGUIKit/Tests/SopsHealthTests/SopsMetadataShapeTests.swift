@@ -7,7 +7,7 @@ private let sopsBinary = ["/opt/homebrew/bin/sops", "/usr/local/bin/sops", "/usr
     .first { FileManager.default.isExecutableFile(atPath: $0) }
 
 private let needsSopsCLI = Comment(
-    rawValue: "needs the real sops binary: the dotenv, JSON and INI stores are not reachable through the YAML-only bridge, so the only honest fixture for them is output the shipping sops actually wrote")
+    rawValue: "needs the real sops binary: the JSON and INI stores are not reachable through this app's bridge (YAML and dotenv only, as of Task 5/SOPS-38), so the only honest fixture for them is output the shipping sops actually wrote")
 
 /// PROPOSAL.md §3 metadata sniffing, second finding of the Task 14 brief.
 ///
@@ -80,14 +80,29 @@ struct SopsMetadataShapeTests {
 
     /// The dangerous direction, stated as its own test: a sops-encrypted
     /// `.env` must never fall through to the plaintext-leak finding.
-    @Test("a real sops dotenv file is recognised, not reported as a plaintext leak",
-          .enabled(if: sopsBinary != nil, needsSopsCLI))
+    ///
+    /// Uses the real in-process bridge, not the CLI (unlike the JSON/INI
+    /// tests below) — the dotenv store has been reachable through
+    /// `SopsBridge.encrypt(_:format:.dotenv:recipients:)` since Task 4, so a
+    /// bridge-produced fixture is both the honest fixture (real sops output,
+    /// same requirement as the JSON/INI tests) *and* one that doesn't need
+    /// the CLI to exist on the machine running the suite.
+    ///
+    /// Task 5 (SOPS-38): a dotenv sops file is now a *verifiable* encrypted
+    /// file — `tree.encrypted`, not `tree.encryptedInOtherFormats` — because
+    /// `EncryptedFileMetadata` learned the dotenv metadata shape alongside
+    /// this scanner change. See `EncryptedFileMetadataDotenvTests.swift`.
+    @Test("a real sops dotenv file is recognised as encrypted, not as another format")
     func realDotenvIsRecognised() async throws {
-        let cipherText = try sopsEncrypted("DB_PASSWORD=hunter2\n", extension: "env")
+        let key = try ProjectFixture.ageKeyPair()
+        let cipherText = try ProjectFixture.encryptedDotenv("DB_PASSWORD=hunter2\n", to: [key.public])
 
         let tree = try await scanOne(".env", cipherText)
 
-        #expect(tree.encryptedInOtherFormats.count == 1)
+        #expect(tree.encrypted.count == 1,
+                "got: encrypted=\(tree.encrypted.count) other=\(tree.encryptedInOtherFormats.count)")
+        #expect(tree.encrypted.first?.format == .dotenv)
+        #expect(tree.encryptedInOtherFormats.isEmpty)
         #expect(tree.plaintextCandidates.isEmpty, "an encrypted .env is not a plaintext leak")
     }
 
@@ -243,6 +258,61 @@ struct SopsMetadataShapeTests {
     func crlfIsTolerated() {
         #expect(SopsMetadataShape.isYAMLMetadata(
             "data: ENC[x]\r\nsops:\r\n    mac: ENC[y]\r\n    version: 3.13.3\r\n"))
+    }
+
+    // MARK: - nonYAMLKind, the disambiguated form
+
+    /// Real dotenv metadata, as `SopsBridge.encrypt(_:format:.dotenv:...)`
+    /// actually writes it — see `EncryptedFileMetadataDotenvTests.swift` for
+    /// where this exact shape was verified against the real bridge.
+    @Test("nonYAMLKind reads real dotenv metadata as .dotenv")
+    func nonYAMLKindReadsDotenv() throws {
+        let key = try ProjectFixture.ageKeyPair()
+        let cipherText = try ProjectFixture.encryptedDotenv("FOO=bar\n", to: [key.public])
+
+        #expect(SopsMetadataShape.nonYAMLKind(cipherText) == .dotenv)
+    }
+
+    @Test("nonYAMLKind reads a sops JSON document as .json")
+    func nonYAMLKindReadsJSON() {
+        let json = """
+            {"password":"ENC[AES256_GCM,data:abc,iv:def,tag:ghi,type:str]","sops":{"mac":"ENC[AES256_GCM,data:xyz,iv:uvw,tag:rst,type:str]","version":"3.13.3"}}
+            """
+        #expect(SopsMetadataShape.nonYAMLKind(json) == .json)
+    }
+
+    @Test("nonYAMLKind reads a sops INI document as .ini")
+    func nonYAMLKindReadsINI() {
+        let ini = """
+            [db]
+            password = ENC[AES256_GCM,data:abc,iv:def,tag:ghi,type:str]
+            [sops]
+            mac     = ENC[AES256_GCM,data:xyz,iv:uvw,tag:rst,type:str]
+            version = 3.13.3
+            """
+        #expect(SopsMetadataShape.nonYAMLKind(ini) == .ini)
+    }
+
+    @Test("nonYAMLKind is nil for a YAML sops file and for ordinary text")
+    func nonYAMLKindIsNilOtherwise() throws {
+        let key = try ProjectFixture.ageKeyPair()
+        let yaml = try ProjectFixture.encrypted("db_password: hunter2\n", to: [key.public])
+        #expect(SopsMetadataShape.nonYAMLKind(yaml) == nil)
+        #expect(SopsMetadataShape.nonYAMLKind("just some prose, no sops metadata here\n") == nil)
+    }
+
+    /// `isNonYAMLMetadata` must keep agreeing with `nonYAMLKind` now that the
+    /// former is implemented in terms of the latter — a boolean caller must
+    /// see exactly the same answer it always did.
+    @Test("isNonYAMLMetadata still agrees with nonYAMLKind")
+    func isNonYAMLMetadataAgreesWithKind() throws {
+        let key = try ProjectFixture.ageKeyPair()
+        let dotenv = try ProjectFixture.encryptedDotenv("FOO=bar\n", to: [key.public])
+        let yaml = try ProjectFixture.encrypted("db_password: hunter2\n", to: [key.public])
+
+        #expect(SopsMetadataShape.isNonYAMLMetadata(dotenv))
+        #expect(!SopsMetadataShape.isNonYAMLMetadata(yaml))
+        #expect(!SopsMetadataShape.isNonYAMLMetadata("just prose\n"))
     }
 }
 
