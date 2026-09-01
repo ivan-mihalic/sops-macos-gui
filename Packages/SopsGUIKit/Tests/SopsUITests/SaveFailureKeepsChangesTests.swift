@@ -27,6 +27,7 @@ struct SaveFailureKeepsChangesTests {
         try store.importKey(key.private)
         return SecretDocumentViewModel(
             fileURL: URL(fileURLWithPath: "/dev/null/save-failure.yaml"),
+            format: .yaml,
             keyStore: store,
             readFile: { _ in encrypted },
             writeFile: writeFile)

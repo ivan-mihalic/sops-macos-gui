@@ -16,7 +16,7 @@ struct HostileFileRefusalTests {
                        url: URL = URL(fileURLWithPath: "/dev/null/hostile.yaml"))
         -> SecretDocumentViewModel {
         SecretDocumentViewModel(
-            fileURL: url, keyStore: SessionKeyStore(),
+            fileURL: url, format: .yaml, keyStore: SessionKeyStore(),
             readFile: { _ in contents }, fingerprintFile: fingerprint)
     }
 

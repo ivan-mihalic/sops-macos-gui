@@ -1,3 +1,4 @@
+import SopsEngine
 import SopsHealth
 import SopsProjects
 import SopsUI
@@ -344,6 +345,7 @@ enum Catalog {
     private static func secretEditor() async throws -> [Snapshot] {
         let unloaded = SecretDocumentViewModel(
             fileURL: URL(fileURLWithPath: "/dev/null/loading.yaml"),
+            format: .yaml,
             keyStore: SessionKeyStore(),
             readFile: { _ in "irrelevant" })
         // Deliberately not awaited — this is what the view looks like the

@@ -254,11 +254,17 @@ public final class SecretDocumentViewModel {
     /// - Parameters:
     ///   - fileURL: The encrypted SOPS document on disk.
     ///   - format: This document's on-disk shape — see the `format` property
-    ///     above. Defaults to `.yaml` so every call site that only ever
-    ///     opened YAML (the whole suite before Task 6, the snapshot catalog's
-    ///     older fixtures) keeps compiling and behaving exactly as before
-    ///     without spelling it out; a caller that opens whatever the scanner
-    ///     found — the only place that matters — always passes it explicitly.
+    ///     above. Has no default, matching `SopsFileFormat`'s own doc comment
+    ///     ("every call site states it explicitly rather than defaulting" —
+    ///     `SopsFileFormat.swift`): a forgotten `format:` at this layer would
+    ///     silently open the file as YAML, and nothing forces it to be caught
+    ///     — today it happens to surface as a loud bridge error for dotenv
+    ///     ciphertext (it does not parse as YAML), but that is incidental to
+    ///     *this* pair of formats, not a guarantee any type or test enforces,
+    ///     and a future format (F2's JSON/INI) is not proven to fail the same
+    ///     way. Every call site — including test and snapshot construction —
+    ///     states it, so a new one that means something other than YAML has
+    ///     to say so.
     ///   - keyStore: Where the session's decryption identity comes from.
     ///     Never copied out of `SessionKeyStore`'s own lending API — see
     ///     `load()`/`save()`.
@@ -293,7 +299,7 @@ public final class SecretDocumentViewModel {
     ///     check rather than failing the save.
     public init(
         fileURL: URL,
-        format: SopsFileFormat = .yaml,
+        format: SopsFileFormat,
         keyStore: SessionKeyStore,
         readFile: @escaping (URL) throws -> String = { try String(contentsOf: $0, encoding: .utf8) },
         fingerprintFile: @escaping (URL) -> FileFingerprint? = { FileFingerprint.of($0) },

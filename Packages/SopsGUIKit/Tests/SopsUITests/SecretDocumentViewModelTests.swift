@@ -348,7 +348,7 @@ struct SecretDocumentViewModelTests {
         let fileURL = try encryptedFixture(sampleYAML, key: key)
         let emptyStore = SessionKeyStore()
 
-        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: emptyStore)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: emptyStore)
         #expect(vm.loadState == .idle)
 
         await vm.load()
@@ -367,7 +367,7 @@ struct SecretDocumentViewModelTests {
         let store = SessionKeyStore()
         try store.importKey(stranger.private)
 
-        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         await vm.load()
 
         guard case .failed(let message) = vm.loadState else {
@@ -388,7 +388,7 @@ struct SecretDocumentViewModelTests {
         let store = SessionKeyStore()
         try store.importKey(key.private)
 
-        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         await vm.load()
 
         #expect(vm.loadState == .loaded)
@@ -419,7 +419,7 @@ struct SecretDocumentViewModelTests {
         let store = SessionKeyStore()
         try store.importKey(key.private)
 
-        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         await vm.load()
         let hostID = try row(vm, "db", "host").id
 
@@ -437,7 +437,7 @@ struct SecretDocumentViewModelTests {
         let store = SessionKeyStore()
         try store.importKey(key.private)
 
-        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         await vm.load()
         let hostID = try row(vm, "db", "host").id
         let apiKeyID = try row(vm, "api_key").id
@@ -457,7 +457,7 @@ struct SecretDocumentViewModelTests {
         let store = SessionKeyStore()
         try store.importKey(key.private)
 
-        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         await vm.load()
         let originalValue = try row(vm, "empty_map").value
         let emptyMapID = try row(vm, "empty_map").id
@@ -477,7 +477,7 @@ struct SecretDocumentViewModelTests {
         let store = SessionKeyStore()
         try store.importKey(key.private)
 
-        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         await vm.load()
         let hostID = try row(vm, "db", "host").id
         vm.update(rowID: hostID, to: "db.internal")
@@ -506,7 +506,7 @@ struct SecretDocumentViewModelTests {
         let store = SessionKeyStore()
         try store.importKey(key.private)
 
-        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         await vm.load()
         let hostID = try row(vm, "db", "host").id
         vm.update(rowID: hostID, to: "db.internal")
@@ -548,7 +548,7 @@ struct SecretDocumentViewModelTests {
         let store = SessionKeyStore()
         try store.importKey(key.private)
 
-        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         await vm.load()
         try cliSet(fileURL, key: key, path: "[\"added_elsewhere\"]", value: "\"from-another-writer\"")
 
@@ -574,7 +574,7 @@ struct SecretDocumentViewModelTests {
         let store = SessionKeyStore()
         try store.importKey(key.private)
 
-        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         await vm.load()
 
         let hostID = try row(vm, "db", "host").id
@@ -612,7 +612,7 @@ struct SecretDocumentViewModelTests {
         try store.importKey(key.private)
 
         let vm = SecretDocumentViewModel(
-            fileURL: fileURL, keyStore: store,
+            fileURL: fileURL, format: .yaml, keyStore: store,
             writeFile: { contents, url, expecting in
                 let receipt = try AtomicFileWriter.write(contents, to: url, expecting: expecting)
                 // The other writer gets in between this save finishing and
@@ -647,7 +647,7 @@ struct SecretDocumentViewModelTests {
 
         struct WriteBoom: Error {}
         let vm = SecretDocumentViewModel(
-            fileURL: fileURL, keyStore: store,
+            fileURL: fileURL, format: .yaml, keyStore: store,
             writeFile: { _, _, _ in throw WriteBoom() })
         await vm.load()
         let hostID = try row(vm, "db", "host").id
@@ -680,7 +680,7 @@ struct SecretDocumentViewModelTests {
 
         var writeWasCalled = false
         let vm = SecretDocumentViewModel(
-            fileURL: fileURL, keyStore: store,
+            fileURL: fileURL, format: .yaml, keyStore: store,
             writeFile: { contents, url, _ in
                 writeWasCalled = true
                 try contents.write(to: url, atomically: true, encoding: .utf8)
@@ -720,7 +720,7 @@ struct SecretDocumentViewModelTests {
 
         let store = SessionKeyStore()
         try store.importKey(key.private)
-        let loadVM = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        let loadVM = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         await loadVM.load()
 
         guard case .failed(let loadMessage) = loadVM.loadState else {
@@ -733,7 +733,7 @@ struct SecretDocumentViewModelTests {
         let goodFileURL = try encryptedFixture(sampleYAML, key: key)
         struct WriteBoom: Error {}
         let saveVM = SecretDocumentViewModel(
-            fileURL: goodFileURL, keyStore: store,
+            fileURL: goodFileURL, format: .yaml, keyStore: store,
             writeFile: { _, _, _ in throw WriteBoom() })
         await saveVM.load()
         let hostID = try row(saveVM, "db", "host").id
@@ -759,7 +759,7 @@ struct SecretDocumentViewModelTests {
 
         let store = SessionKeyStore()
         try store.importKey(key.private)
-        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
 
         await vm.load()
         print("=== loadState after load(): \(vm.loadState) ===")
@@ -796,7 +796,7 @@ struct SecretDocumentViewModelTests {
         try store.importKey(key.private)
 
         // load() was never called at all.
-        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         #expect(vm.loadState == .idle)
         #expect(!vm.isDirty, "isDirty is false here for the wrong reason: nothing was ever loaded")
 
@@ -820,7 +820,7 @@ struct SecretDocumentViewModelTests {
         let fileURL = try encryptedFixture(sampleYAML, key: key)
         let emptyStore = SessionKeyStore()
 
-        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: emptyStore)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: emptyStore)
         await vm.load()
         #expect(vm.loadState == .needsKey)
         #expect(!vm.isDirty)
@@ -841,7 +841,7 @@ struct SecretDocumentViewModelTests {
         let store = SessionKeyStore()
         try store.importKey(stranger.private)
 
-        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         await vm.load()
         guard case .failed = vm.loadState else {
             Issue.record("expected the wrong key to fail the load")
@@ -867,7 +867,7 @@ struct SecretDocumentViewModelTests {
         let store = SessionKeyStore()
         try store.importKey(owner.private)
 
-        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
 
         // First load succeeds with the owner's key.
         await vm.load()
@@ -927,7 +927,7 @@ struct SecretDocumentViewModelTests {
 
         let store = SessionKeyStore()
         try store.importKey(key.private)
-        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
 
         let ticks = TickCounter()
         let heartbeat = Task { @MainActor in
@@ -1074,7 +1074,7 @@ struct SecretDocumentStructuralTests {
         let fileURL = try encryptedFixture(yaml, key: key)
         let store = SessionKeyStore()
         try store.importKey(key.private)
-        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         await vm.load()
         #expect(vm.loadState == .loaded)
         return (vm, key, fileURL)
@@ -1231,7 +1231,7 @@ struct SecretDocumentStructuralTests {
     @Test("adding to a document that was never loaded is refused")
     func addingWithoutADocumentIsRefused() async throws {
         let vm = SecretDocumentViewModel(
-            fileURL: URL(fileURLWithPath: "/nowhere/none.yaml"), keyStore: SessionKeyStore())
+            fileURL: URL(fileURLWithPath: "/nowhere/none.yaml"), format: .yaml, keyStore: SessionKeyStore())
         let destination = vm.addDestination(forSelectedRowID: nil)
         #expect(vm.addRow(in: destination, key: "k", kind: .string, value: "v") == .refused(.notLoaded))
     }
@@ -1300,7 +1300,7 @@ struct SecretDocumentStructuralTests {
             structuralYAML, key: key, extraArgs: ["--encrypted-regex", "^(password|token)$"])
         let store = SessionKeyStore()
         try store.importKey(key.private)
-        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         await vm.load()
 
         let destination = vm.addDestination(forSelectedRowID: try row(vm, "db", "host").id)
@@ -1367,7 +1367,7 @@ struct SecretDocumentSaveIntegrityTests {
         let fileURL = try encryptedFixture(yaml, key: key)
         let store = SessionKeyStore()
         try store.importKey(key.private)
-        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         await vm.load()
         #expect(vm.loadState == .loaded)
         return (vm, key, fileURL)
@@ -1425,7 +1425,7 @@ struct SecretDocumentSaveIntegrityTests {
         let fileURL = try encryptedFixture(flatYAML(keyCount: 3_000), key: key)
         let store = SessionKeyStore()
         try store.importKey(key.private)
-        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         await vm.load()
 
         let firstID = try #require(vm.rows.first).id
@@ -1526,7 +1526,7 @@ struct SecretDocumentViewModelAtomicSaveTests {
 
         let store = SessionKeyStore()
         try store.importKey(key.private)
-        let vm = SecretDocumentViewModel(fileURL: link, keyStore: store)
+        let vm = SecretDocumentViewModel(fileURL: link, format: .yaml, keyStore: store)
         await vm.load()
         #expect(vm.loadState == .loaded)
         vm.update(rowID: try row(vm, "db", "host").id, to: "db.internal")
@@ -1550,7 +1550,7 @@ struct SecretDocumentViewModelAtomicSaveTests {
 
         let store = SessionKeyStore()
         try store.importKey(key.private)
-        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         await vm.load()
         vm.update(rowID: try row(vm, "db", "host").id, to: "db.internal")
         #expect(await vm.save() == .saved)
@@ -1582,7 +1582,7 @@ struct SecretDocumentViewModelAtomicSaveTests {
 
         let store = SessionKeyStore()
         try store.importKey(key.private)
-        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         await vm.load()
         vm.update(rowID: try row(vm, "db", "host").id, to: "never-lands")
 
@@ -1636,7 +1636,7 @@ struct SecretDocumentPadlockTests {
         let fileURL = try encryptedFixture(yaml, key: key)
         let store = SessionKeyStore()
         try store.importKey(key.private)
-        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         await vm.load()
         #expect(vm.loadState == .loaded)
         return (vm, key, fileURL)
@@ -1654,7 +1654,7 @@ struct SecretDocumentPadlockTests {
     private func rowsAsTheFileHasThem(_ fileURL: URL, key: AgeKeyPair) async throws -> [SecretRow] {
         let store = SessionKeyStore()
         try store.importKey(key.private)
-        let fresh = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        let fresh = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         await fresh.load()
         #expect(fresh.loadState == .loaded, "the saved file could not be read back")
         return fresh.rows
@@ -1803,7 +1803,7 @@ struct SecretDocumentDotenvTests {
         let fileURL = try encryptedFixture(sampleYAML, key: key)
         let store = SessionKeyStore()
         try store.importKey(key.private)
-        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .yaml, keyStore: store)
         await vm.load()
 
         #expect(vm.supportsNestedStructure)

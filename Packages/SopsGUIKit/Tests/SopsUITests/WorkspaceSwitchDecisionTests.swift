@@ -147,6 +147,7 @@ struct WorkspaceSwitchDecisionTests {
             try store.importKey(fixture.privateKey)
             let model = SecretDocumentViewModel(
                 fileURL: WorkspaceSwitchDecisionTests.fileA,
+                format: .yaml,
                 keyStore: store, readFile: { _ in fixture.encrypted },
                 // No expectation to check, and nothing on disk to check it
                 // against: these fixtures never touch the filesystem.

@@ -364,6 +364,7 @@ struct RevealedRowTests {
             try store.importKey(key.private)
             return SecretDocumentViewModel(
                 fileURL: URL(fileURLWithPath: "/dev/null/reveal.yaml"),
+                format: .yaml,
                 keyStore: store,
                 readFile: { _ in encrypted },
                 fingerprintFile: { _ in nil },

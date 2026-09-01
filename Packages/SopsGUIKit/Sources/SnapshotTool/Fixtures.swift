@@ -477,6 +477,7 @@ enum Fixtures {
         try store.importKey(key.private)
         let model = SecretDocumentViewModel(
             fileURL: URL(fileURLWithPath: "/dev/null/snapshot-loaded.yaml"),
+            format: .yaml,
             keyStore: store,
             readFile: { _ in encrypted })
         await model.load()
@@ -493,6 +494,7 @@ enum Fixtures {
         try store.importKey(key.private)
         let model = SecretDocumentViewModel(
             fileURL: URL(fileURLWithPath: "/dev/null/snapshot-empty.yaml"),
+            format: .yaml,
             keyStore: store,
             readFile: { _ in encrypted })
         await model.load()
@@ -508,6 +510,7 @@ enum Fixtures {
         let store = SessionKeyStore()
         let model = SecretDocumentViewModel(
             fileURL: URL(fileURLWithPath: "/dev/null/snapshot-needs-key.yaml"),
+            format: .yaml,
             keyStore: store,
             readFile: { _ in "irrelevant — never reached with no key configured" })
         await model.load()
@@ -540,6 +543,7 @@ enum Fixtures {
         try store.importKey(key.private)
         let model = SecretDocumentViewModel(
             fileURL: URL(fileURLWithPath: "/dev/null/snapshot-pending.yaml"),
+            format: .yaml,
             keyStore: store,
             readFile: { _ in encrypted })
         await model.load()
@@ -596,6 +600,7 @@ enum Fixtures {
         try store.importKey(key.private)
         let model = SecretDocumentViewModel(
             fileURL: URL(fileURLWithPath: "/dev/null/snapshot-revealed.yaml"),
+            format: .yaml,
             keyStore: store,
             readFile: { _ in encrypted })
         await model.load()
@@ -645,6 +650,7 @@ enum Fixtures {
         try store.importKey(intruder.private)
         let model = SecretDocumentViewModel(
             fileURL: URL(fileURLWithPath: "/dev/null/snapshot-wrong-key.yaml"),
+            format: .yaml,
             keyStore: store,
             readFile: { _ in encrypted })
         await model.load()

@@ -192,6 +192,7 @@ enum Guide {
         try store.importKey(key.private)
         let model = SecretDocumentViewModel(
             fileURL: URL(fileURLWithPath: "/dev/null/production.secrets.yaml"),
+            format: .yaml,
             keyStore: store,
             readFile: { _ in encrypted })
         await model.load()
@@ -229,6 +230,7 @@ enum Guide {
         // troubleshooting section points at.
         let needsKey = SecretDocumentViewModel(
             fileURL: URL(fileURLWithPath: "/dev/null/production.secrets.yaml"),
+            format: .yaml,
             keyStore: SessionKeyStore(),
             readFile: { _ in "never read — the key check happens first" })
         await needsKey.load()

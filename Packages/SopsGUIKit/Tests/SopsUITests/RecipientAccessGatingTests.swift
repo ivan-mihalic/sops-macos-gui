@@ -348,6 +348,7 @@ struct AccessButtonWiringTests {
         try store.importKey(key.private)
         let model = SecretDocumentViewModel(
             fileURL: URL(fileURLWithPath: "/dev/null/access-gating.yaml"),
+            format: .yaml,
             keyStore: store, readFile: { _ in encrypted })
         await model.load()
         if makeDirty {

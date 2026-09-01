@@ -214,6 +214,7 @@ struct AccessibilityTreeTests {
             try store.importKey(key.private)
             return SecretDocumentViewModel(
                 fileURL: URL(fileURLWithPath: "/dev/null/accessibility.yaml"),
+                format: .yaml,
                 keyStore: store, readFile: { _ in encrypted })
         }
     }
@@ -305,6 +306,7 @@ struct AccessibilityTreeTests {
             try store.importKey(key.private)
             return SecretDocumentViewModel(
                 fileURL: URL(fileURLWithPath: "/dev/null/lengths.yaml"),
+                format: .yaml,
                 keyStore: store, readFile: { _ in encrypted })
         }
         await model.load()
