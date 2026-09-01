@@ -237,6 +237,7 @@ public struct SecretEditorView: View {
             EditorAddRowSheet(
                 destination: request.destination,
                 refusal: { viewModel.refusalForAdding($0, in: request.destination) },
+                allowedKinds: viewModel.allowedAddKinds,
                 onCancel: { addRequest = nil },
                 onAdd: { key, kind, value in
                     let outcome = viewModel.addRow(
@@ -907,11 +908,23 @@ private struct SecretRowView: View {
 public struct EditorAddRowSheet: View {
     let destination: SecretDocumentViewModel.AddDestination
     let refusal: (String) -> SecretDocumentViewModel.AddRowRefusal?
+    /// The kinds this document's format can actually hold —
+    /// `SecretDocumentViewModel.allowedAddKinds`, so this sheet's type picker
+    /// can never offer a choice the save would only refuse. Used to be a
+    /// private constant here (`emptyMap`/`emptyList` are rows the editor can
+    /// show but not create: an empty container is not a value, and adding
+    /// one would be a shape the user could not then put anything into
+    /// without a second, differently-shaped operation) — that part is
+    /// unchanged and still true of every element this can ever contain; what
+    /// moved is *which* of the remaining kinds apply, because that now
+    /// depends on the document's format rather than being fixed for every
+    /// document this app can open.
+    let allowedKinds: [SecretRow.Kind]
     let onCancel: () -> Void
     let onAdd: (String, SecretRow.Kind, String) -> Void
 
     @State private var key = ""
-    @State private var kind: SecretRow.Kind = .string
+    @State private var kind: SecretRow.Kind
     @State private var value = ""
 
     /// Written out rather than synthesized. A `private struct`'s memberwise
@@ -922,22 +935,20 @@ public struct EditorAddRowSheet: View {
     public init(
         destination: SecretDocumentViewModel.AddDestination,
         refusal: @escaping (String) -> SecretDocumentViewModel.AddRowRefusal?,
+        allowedKinds: [SecretRow.Kind],
         onCancel: @escaping () -> Void,
         onAdd: @escaping (String, SecretRow.Kind, String) -> Void
     ) {
         self.destination = destination
         self.refusal = refusal
+        self.allowedKinds = allowedKinds
         self.onCancel = onCancel
         self.onAdd = onAdd
+        // `.string` whenever it is offered — the common case, and the only
+        // choice at all for a format restricted to it — otherwise the first
+        // (and, today, only other) kind this document's format allows.
+        self._kind = State(initialValue: allowedKinds.contains(.string) ? .string : (allowedKinds.first ?? .string))
     }
-
-    /// The kinds that have a value to type into. `emptyMap`/`emptyList` are
-    /// rows the editor can show but not create: an empty container is not a
-    /// value, and adding one would be a shape the user could not then put
-    /// anything into without a second, differently-shaped operation.
-    private static let offeredKinds: [SecretRow.Kind] = [
-        .string, .int, .float, .bool, .null, .timestamp,
-    ]
 
     /// The model's own answer, so the sheet and the save can never disagree
     /// about whether a name is allowed. `nil` while the field is still empty:
@@ -981,7 +992,7 @@ public struct EditorAddRowSheet: View {
                 }
 
                 Picker(LocalizedKey.editorAddTypeField.text, selection: $kind) {
-                    ForEach(Self.offeredKinds, id: \.self) { offered in
+                    ForEach(allowedKinds, id: \.self) { offered in
                         Text(SecretRowViewLogic.kindLabel(offered).text).tag(offered)
                     }
                 }
@@ -1014,11 +1025,16 @@ public struct EditorAddRowSheet: View {
     /// Only the reasons a *name* can be refused get a message here; the
     /// others cannot be reached from this sheet (it is not even presented
     /// without a loaded document, and the `+` is disabled during a save).
+    /// `.unsupportedForFormat` belongs with them for the same reason: this
+    /// sheet's `kind` picker is built from `allowedKinds`, so it can never
+    /// offer a kind the model would refuse, and a document flat enough to
+    /// refuse a nested destination never produces a selection that resolves
+    /// to one in the first place (`addDestination(forSelectedRowID:)`).
     static func explanation(for refusal: SecretDocumentViewModel.AddRowRefusal) -> LocalizedKey? {
         switch refusal {
         case .duplicateKey: .editorAddDuplicateKey
         case .reservedKey: .editorAddReservedKey
-        case .emptyKey, .notLoaded, .unsupportedKind, .saveInProgress: nil
+        case .emptyKey, .notLoaded, .unsupportedKind, .unsupportedForFormat, .saveInProgress: nil
         }
     }
 

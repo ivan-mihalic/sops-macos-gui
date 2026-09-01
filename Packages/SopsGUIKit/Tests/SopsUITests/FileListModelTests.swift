@@ -1,5 +1,6 @@
 import Foundation
 import ScratchCleanup
+import SopsEngine
 import Testing
 @testable import SopsUI
 
@@ -120,14 +121,18 @@ ScratchDirectoryRegistry.shared.register(root)
                 "a readable project was reported as only partially scanned")
     }
 
-    /// Task 5 (SOPS-38): a dotenv sops file now lands in `ScannedTree.encrypted`
+    /// Task 5 (SOPS-38) put a dotenv sops file into `ScannedTree.encrypted`
     /// (verified, `format == .dotenv`), not `encryptedInOtherFormats` — but
-    /// this app's editor still only opens YAML (`SopsDocument`), so it must
-    /// not turn into an openable row here. `FileListView.swift`'s own
-    /// temporary filter is what keeps that true; this pins the model-level
-    /// half of it.
-    @Test("a dotenv sops file is not listed as openable, and is counted alongside other formats")
-    func dotenvFileIsNotOpenableButIsCounted() async throws {
+    /// left it filtered out of `files` because the editor could not open it
+    /// yet. Task 6 taught `SecretDocumentViewModel` a document's format
+    /// (threaded through to the bridge), so that TEMPORARY filter in
+    /// `FileListView.swift`'s `refresh()` is gone: a dotenv file is listed
+    /// and openable exactly like YAML, carrying its own format so the
+    /// editor opens it correctly, and `otherFormatCount` goes back to
+    /// counting only what this build genuinely cannot verify at all
+    /// (JSON/INI).
+    @Test("a dotenv sops file is listed as openable, carrying its own format")
+    func dotenvFileIsListedAndOpenable() async throws {
         let root = try makeProject()
         try writeSopsLike(root, at: "config/secrets.yaml")
         try writeDotenvSopsLike(root, at: "config/secrets.env")
@@ -135,9 +140,12 @@ ScratchDirectoryRegistry.shared.register(root)
         let model = FileListModel(projectRoot: root)
         await model.refresh()
 
-        #expect(model.files.count == 1)
-        #expect(model.files.first?.lastPathComponent == "secrets.yaml")
-        #expect(model.otherFormatCount == 1)
+        #expect(model.files.count == 2)
+        let dotenvFile = try #require(model.files.first { $0.url.lastPathComponent == "secrets.env" })
+        #expect(dotenvFile.format == .dotenv)
+        let yamlFile = try #require(model.files.first { $0.url.lastPathComponent == "secrets.yaml" })
+        #expect(yamlFile.format == .yaml)
+        #expect(model.otherFormatCount == 0)
     }
 
     /// `.git` exists in every real repository, so this list is almost never
@@ -192,7 +200,7 @@ ScratchDirectoryRegistry.shared.register(root)
         #expect(model.hasScanned)
         #expect(model.files.count == 1)
         let found = try #require(model.files.first)
-        #expect(model.relativePath(for: found) == "config/secrets.yaml")
+        #expect(model.relativePath(for: found.url) == "config/secrets.yaml")
     }
 
     @Test("files are sorted by their relative path")
@@ -205,7 +213,7 @@ ScratchDirectoryRegistry.shared.register(root)
         let model = FileListModel(projectRoot: root)
         await model.refresh()
 
-        #expect(model.files.map { model.relativePath(for: $0) } == [
+        #expect(model.files.map { model.relativePath(for: $0.url) } == [
             "a-first.yaml", "middle/b.yaml", "z-last.yaml",
         ])
     }

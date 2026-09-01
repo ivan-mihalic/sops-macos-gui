@@ -150,6 +150,40 @@ public final class SecretDocumentViewModel {
     /// view would otherwise have to do.
     private var saveCompletionWaiters: [CheckedContinuation<Void, Never>] = []
 
+    /// This document's on-disk shape (Task 4's `SopsFileFormat`) — YAML or
+    /// dotenv. Set once, from the value the caller passed at construction
+    /// (`FileListModel.files`' own `ListedFile.format`, via
+    /// `ProjectWorkspaceView.activateFile` in `AppShell.swift`), and never
+    /// re-derived from `fileURL`'s extension at any later point: the format
+    /// used to save a document must always be the one used to load it, and a
+    /// second guess taken from the filename could disagree with the first
+    /// one — a renamed file, or an extension that lies about what is
+    /// actually inside — silently corrupting the round trip.
+    public let format: SopsFileFormat
+
+    /// Whether this document's format can hold containers (maps, lists) —
+    /// today, only YAML can. `EditorAddRowSheet`/`SecretEditorView` read
+    /// this (via `allowedAddKinds` below) to decide what the `+` sheet may
+    /// even offer, rather than letting the user choose something the save
+    /// would only refuse afterwards.
+    public var supportsNestedStructure: Bool { format == .yaml }
+
+    /// The row kinds a new row's type picker may offer for this document.
+    /// `emptyMap`/`emptyList` are never offered — see `SecretRow.Kind
+    /// .isEditable`, and `EditorAddRowSheet` used to hold this exact list
+    /// itself as a private constant. It now asks the model instead, because
+    /// the answer depends on the format: sops's own dotenv store can only
+    /// ever represent a flat set of `KEY=value` string lines — no int, no
+    /// bool, no null, no container — so a dotenv document restricts to
+    /// `.string` alone. Data-driven on `format` rather than a second
+    /// `if format == .dotenv` scattered through the view, so a later format
+    /// that *can* hold typed scalars only has to change this one switch.
+    public var allowedAddKinds: [SecretRow.Kind] {
+        supportsNestedStructure ? Self.everyAddKind : [.string]
+    }
+
+    private static let everyAddKind: [SecretRow.Kind] = [.string, .int, .float, .bool, .null, .timestamp]
+
     private let fileURL: URL
     private let keyStore: SessionKeyStore
     private let readFile: (URL) throws -> String
@@ -219,6 +253,12 @@ public final class SecretDocumentViewModel {
 
     /// - Parameters:
     ///   - fileURL: The encrypted SOPS document on disk.
+    ///   - format: This document's on-disk shape — see the `format` property
+    ///     above. Defaults to `.yaml` so every call site that only ever
+    ///     opened YAML (the whole suite before Task 6, the snapshot catalog's
+    ///     older fixtures) keeps compiling and behaving exactly as before
+    ///     without spelling it out; a caller that opens whatever the scanner
+    ///     found — the only place that matters — always passes it explicitly.
     ///   - keyStore: Where the session's decryption identity comes from.
     ///     Never copied out of `SessionKeyStore`'s own lending API — see
     ///     `load()`/`save()`.
@@ -253,6 +293,7 @@ public final class SecretDocumentViewModel {
     ///     check rather than failing the save.
     public init(
         fileURL: URL,
+        format: SopsFileFormat = .yaml,
         keyStore: SessionKeyStore,
         readFile: @escaping (URL) throws -> String = { try String(contentsOf: $0, encoding: .utf8) },
         fingerprintFile: @escaping (URL) -> FileFingerprint? = { FileFingerprint.of($0) },
@@ -262,6 +303,7 @@ public final class SecretDocumentViewModel {
         }
     ) {
         self.fileURL = fileURL
+        self.format = format
         self.keyStore = keyStore
         self.readFile = readFile
         self.fingerprintFile = fingerprintFile
@@ -348,7 +390,7 @@ public final class SecretDocumentViewModel {
         // (`Self.decrypt`, below) — the key is never copied out into a local
         // variable here. See `SessionKeyStore.withKey(_:)`'s async overload.
         let decrypted: Outcome<[SecretRow]>? = await keyStore.withKey { key in
-            await Self.decrypt(contents, agePrivateKey: key)
+            await Self.decrypt(contents, format: format, agePrivateKey: key)
         }
 
         guard let decrypted else {
@@ -462,10 +504,12 @@ public final class SecretDocumentViewModel {
     /// all. It lives in this function's own local scope for the duration of
     /// one call and is never stored in a property, logged, or retained past
     /// this function returning.
-    private static func decrypt(_ contents: String, agePrivateKey key: String) async -> Outcome<[SecretRow]> {
+    private static func decrypt(
+        _ contents: String, format: SopsFileFormat, agePrivateKey key: String
+    ) async -> Outcome<[SecretRow]> {
         await runOffCooperativePool {
             do {
-                return .success(try SopsBridge.decryptToRows(contents, format: .yaml, agePrivateKey: key))
+                return .success(try SopsBridge.decryptToRows(contents, format: format, agePrivateKey: key))
             } catch let error as SopsBridgeError {
                 return .failure(loadFailureMessage(for: error))
             } catch {
@@ -565,6 +609,16 @@ public final class SecretDocumentViewModel {
         /// refuses both; this mirrors it so the sheet can say so before the
         /// user commits.
         case reservedKey
+        /// This document's format cannot hold what was asked for: a
+        /// container entry (a list append, or adding into a nested map) in a
+        /// document whose format cannot hold containers at all, or a value
+        /// kind that format cannot represent — sops's own dotenv store can
+        /// only ever write a flat set of `KEY=value` string lines. See
+        /// `supportsNestedStructure`/`allowedAddKinds`. The bridge is not the
+        /// authority here the way it is for `reservedKey`: nothing on the Go
+        /// side refuses this today, so this guard is what keeps the picker
+        /// from ever offering a choice this format cannot actually save.
+        case unsupportedForFormat
         /// A save is in flight. See `save()`.
         case saveInProgress
     }
@@ -639,6 +693,12 @@ public final class SecretDocumentViewModel {
     ) -> AddRowOutcome {
         guard loadState == .loaded else { return .refused(.notLoaded) }
         guard kind.isEditable else { return .refused(.unsupportedKind) }
+        // Checked directly rather than only through `refusalForAdding` below:
+        // that function validates a *name*, and has no `kind` parameter to
+        // judge — a direct `addRow` call (this app's own tests among them)
+        // can ask for a kind the sheet would never have offered in the first
+        // place, and this is what keeps the save from ever doing it anyway.
+        guard allowedAddKinds.contains(kind) else { return .refused(.unsupportedForFormat) }
         if let refusal = refusalForAdding(key, in: destination) { return .refused(refusal) }
 
         // Trimmed here rather than trusted from the caller: a key that is
@@ -680,6 +740,19 @@ public final class SecretDocumentViewModel {
     public func refusalForAdding(_ key: String, in destination: AddDestination) -> AddRowRefusal? {
         if isSaving { return .saveInProgress }
         if loadState != .loaded { return .notLoaded }
+        // A container entry — a list append, or any destination that is not
+        // the document's own root map — is something only a format with
+        // `supportsNestedStructure` can hold at all. A genuinely flat
+        // document (every dotenv load this app produces) never selects its
+        // way into one of these in the first place — see
+        // `addDestination(forSelectedRowID:)`, whose `default` branch always
+        // resolves to the row's own (empty) parent for a document with no
+        // nesting — so this is a defence against a caller that reaches
+        // `addRow`/`refusalForAdding` directly rather than something the
+        // real UI can trigger today.
+        if !supportsNestedStructure, destination.isList || !destination.parent.isEmpty {
+            return .unsupportedForFormat
+        }
         if destination.isList { return nil }
 
         let name = key.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -907,7 +980,7 @@ public final class SecretDocumentViewModel {
         // Same reasoning as `load()`: `body` receives the key and hops off
         // this actor itself; the key never lives in a local variable here.
         let applied: Outcome<String>? = await keyStore.withKey { key in
-            await Self.applyChanges(contents, changes: changes, agePrivateKey: key)
+            await Self.applyChanges(contents, format: format, changes: changes, agePrivateKey: key)
         }
 
         guard let applied else {
@@ -1056,7 +1129,7 @@ public final class SecretDocumentViewModel {
     /// more honest than leaving a stale editor open over it.
     private func adoptSavedDocument(_ newEncrypted: String) async {
         let reloaded: Outcome<[SecretRow]>? = await keyStore.withKey { key in
-            await Self.decrypt(newEncrypted, agePrivateKey: key)
+            await Self.decrypt(newEncrypted, format: format, agePrivateKey: key)
         }
         switch reloaded {
         case .success(let newRows)?:
@@ -1078,11 +1151,12 @@ public final class SecretDocumentViewModel {
     /// pool; over nine seconds when it wasn't. `key`'s lifetime is exactly
     /// this call.
     private static func applyChanges(
-        _ contents: String, changes: SecretChangeSet, agePrivateKey key: String
+        _ contents: String, format: SopsFileFormat, changes: SecretChangeSet, agePrivateKey key: String
     ) async -> Outcome<String> {
         await runOffCooperativePool {
             do {
-                return .success(try SopsBridge.applyChanges(contents, format: .yaml, changes: changes, agePrivateKey: key))
+                return .success(
+                    try SopsBridge.applyChanges(contents, format: format, changes: changes, agePrivateKey: key))
             } catch let error as SopsBridgeError {
                 return .failure(error.description)
             } catch {

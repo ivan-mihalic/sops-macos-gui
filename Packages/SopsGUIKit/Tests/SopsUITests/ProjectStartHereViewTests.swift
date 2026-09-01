@@ -759,22 +759,26 @@ struct FileListViewStartHereWiringTests {
                 "the narrowed empty-partial state must still be shown")
     }
 
-    /// A project holding only a dotenv-format sops file used to hit the
-    /// empty placeholder with `otherFormatCount`'s note nested where the
-    /// branch could never reach it (`FileListViewWiringTests
+    /// A project holding only a sops file in an unsupported format used to
+    /// hit the empty placeholder with `otherFormatCount`'s note nested where
+    /// the branch could never reach it (`FileListViewWiringTests
     /// .otherFormatNoteSurvivesAnEmptyList` pins the model-and-view
     /// combination for the old placeholder branch). This pins the same
     /// property for the new branch, and that the note appears exactly once —
     /// `FileListView.footnotes` and `ProjectStartHereView` both know about
     /// `otherFormatCount`, and only one of them may say it out loud.
+    ///
+    /// This fixture was a dotenv-shaped file until Task 6 (SOPS-38): the
+    /// editor now opens dotenv too, so it is no longer "another format" —
+    /// it is listed and openable exactly like YAML. JSON is a real,
+    /// still-unsupported one, the same shape
+    /// `SopsMetadataShapeTests.nonYAMLKindReadsJSON` uses.
     @Test("an other-format-only project shows the note exactly once, alongside the guidance")
     func otherFormatNoteAppearsOnceAlongsideGuidance() async throws {
         let root = try project("other-format")
         try """
-        API_KEY=ENC[AES256_GCM,data:Zm9v,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
-        sops_mac=ENC[AES256_GCM,data:AAAA,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
-        sops_version=3.9.4
-        """.write(to: root.appendingPathComponent(".env.production"), atomically: true, encoding: .utf8)
+        {"password":"ENC[AES256_GCM,data:abc,iv:def,tag:ghi,type:str]","sops":{"mac":"ENC[AES256_GCM,data:xyz,iv:uvw,tag:rst,type:str]","version":"3.13.3"}}
+        """.write(to: root.appendingPathComponent("secrets.json"), atomically: true, encoding: .utf8)
 
         let model = FileListModel(projectRoot: root)
         await model.refresh()

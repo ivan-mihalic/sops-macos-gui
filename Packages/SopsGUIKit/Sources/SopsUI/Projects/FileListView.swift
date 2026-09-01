@@ -4,6 +4,30 @@ import SopsHealth
 import SopsProjects
 import SwiftUI
 
+/// One openable row in `FileListModel.files`: an encrypted document this
+/// build can actually open, alongside the format it must be opened, edited
+/// and saved as.
+///
+/// Carrying `format` here — not just the `url` — is what lets
+/// `ProjectWorkspaceView.activateFile` (`AppShell.swift`) hand
+/// `SecretDocumentViewModel` the right one without re-deriving it from the
+/// file's extension. The scanner is the one place that already knows it for
+/// certain (`SniffedFile.format`, Task 5's `ProjectScanner.classify`), and
+/// `SecretDocumentViewModel.format`'s own doc comment is explicit that the
+/// format used to save a document must always be the one used to load it —
+/// re-guessing from a filename downstream of that is exactly the kind of
+/// second answer that could disagree with the first.
+public struct ListedFile: Identifiable, Equatable, Sendable {
+    public let url: URL
+    public let format: SopsFileFormat
+    public var id: URL { url }
+
+    public init(url: URL, format: SopsFileFormat) {
+        self.url = url
+        self.format = format
+    }
+}
+
 /// Drives the file list for one project: runs `ProjectScanner.scan(root:)`
 /// and exposes the result the view needs, plus the relative-path formatting
 /// every row displays.
@@ -17,7 +41,7 @@ import SwiftUI
 public final class FileListModel {
 
     public let projectRoot: URL
-    public private(set) var files: [URL] = []
+    public private(set) var files: [ListedFile] = []
     public private(set) var otherFormatCount = 0
     public private(set) var isScanning = false
     public private(set) var hasScanned = false
@@ -104,25 +128,22 @@ public final class FileListModel {
         // must take effect on the next refresh, not only after a relaunch.
         let tree = await ProjectScanner.scan(root: projectRoot, maxScannedFiles: ScanBudgetSetting.current())
 
-        // Only the YAML files are listed as *openable* — the editor
-        // (`SopsEngine.SopsDocument`) only reads sops's YAML store. TEMPORARY
-        // (Task 5, SOPS-38): `tree.encrypted` now also carries dotenv files
-        // (`SniffedFile.format == .dotenv`), which this build's editor still
-        // cannot open — that lands in a later task. Rendering one as a
-        // clickable row would open a file this app cannot actually decrypt,
-        // one click after the user finds it in what looks like an ordinary
-        // list of the same kind of thing, so it is filtered out of `files`
-        // here and folded into `otherFormatCount` instead — the same bucket
-        // a JSON/INI sops file already used, and the same user-facing
-        // behaviour a dotenv file had before this task (it used to reach
-        // `otherFormatCount` via `tree.encryptedInOtherFormats`; now it gets
-        // there via this filter instead, because the scanner itself now
-        // knows it is verifiable). Remove the `format == .yaml` filter once
-        // the editor reads dotenv too, and `files` can list every format
-        // this build can actually open.
-        let yamlOnly = tree.encrypted.filter { $0.format == .yaml }
-        files = yamlOnly.map(\.url).sorted { relativePath(for: $0) < relativePath(for: $1) }
-        otherFormatCount = tree.encryptedInOtherFormats.count + (tree.encrypted.count - yamlOnly.count)
+        // Every verified encrypted file this build can actually open is
+        // listed. That used to mean YAML only — a TEMPORARY filter here
+        // (Task 5, SOPS-38) kept a dotenv file out of `files` and folded it
+        // into `otherFormatCount` instead, because the editor
+        // (`SecretDocumentViewModel`) had no way to open one. Task 6 taught
+        // it a document's `format` (threaded through to the bridge from
+        // `ListedFile.format`, via `ProjectWorkspaceView.activateFile` in
+        // `AppShell.swift`), so that is no longer true and the filter is
+        // gone: `otherFormatCount` goes back to covering only what this
+        // build genuinely cannot verify at all — JSON/INI
+        // (`tree.encryptedInOtherFormats`), the same bucket it always meant
+        // before Task 5's dotenv classification existed.
+        files = tree.encrypted
+            .map { ListedFile(url: $0.url, format: $0.format) }
+            .sorted { relativePath(for: $0.url) < relativePath(for: $1.url) }
+        otherFormatCount = tree.encryptedInOtherFormats.count
         incompleteScanReason = tree.incompleteScanReason
         skippedDirectoryNames = tree.skippedDirectoryNames.sorted()
         unfollowedDirectorySymlinks = tree.unfollowedDirectorySymlinks.sorted { $0.path < $1.path }
@@ -322,11 +343,11 @@ public struct FileListView: View {
                 statusPlaceholder(systemImage: "doc.text.magnifyingglass", title: .filesEmptyPartialTitle)
             } else {
                 List(selection: $selection) {
-                    ForEach(model.files, id: \.self) { url in
-                        Text(model.relativePath(for: url))
+                    ForEach(model.files) { file in
+                        Text(model.relativePath(for: file.url))
                             .lineLimit(1)
                             .truncationMode(.middle)
-                            .tag(url)
+                            .tag(file.url)
                     }
                 }
                 .listStyle(.sidebar)

@@ -152,19 +152,24 @@ ScratchDirectoryRegistry.shared.register(root)
                 "a readable project was warned about")
     }
 
-    /// A project whose only sops files are dotenv/JSON used to hit the empty
-    /// placeholder with the note explaining why rendered in a branch it could
-    /// never reach.
+    /// A project whose only sops file is one this build genuinely cannot
+    /// open — JSON, not dotenv — used to hit the empty placeholder with the
+    /// note explaining why rendered in a branch it could never reach.
+    ///
+    /// This fixture was a dotenv-shaped file until Task 6 (SOPS-38): the
+    /// editor now opens dotenv too, so a dotenv file is no longer "another
+    /// format" — it is listed and openable exactly like YAML, and asserting
+    /// this fixture's original shape here would now assert something false.
+    /// JSON is a real, still-unsupported "other format", the same shape
+    /// `SopsMetadataShapeTests.nonYAMLKindReadsJSON` uses.
     @Test("a project holding only other-format sops files is told why the list is empty",
           .enabled(if: LocalizationTests.bundleHasMacOSLayout,
                    "this asserts on text a *format* key produces, and swift test's native build system never compiles .xcstrings — every key falls back to its own raw value, which carries no %@ to substitute into; run under xcodebuild or swift test --build-system swiftbuild"),)
     func otherFormatNoteSurvivesAnEmptyList() async throws {
         let root = try project("other-format")
         try """
-        API_KEY=ENC[AES256_GCM,data:Zm9v,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
-        sops_mac=ENC[AES256_GCM,data:AAAA,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
-        sops_version=3.9.4
-        """.write(to: root.appendingPathComponent(".env.production"), atomically: true, encoding: .utf8)
+        {"password":"ENC[AES256_GCM,data:abc,iv:def,tag:ghi,type:str]","sops":{"mac":"ENC[AES256_GCM,data:xyz,iv:uvw,tag:rst,type:str]","version":"3.13.3"}}
+        """.write(to: root.appendingPathComponent("secrets.json"), atomically: true, encoding: .utf8)
 
         let model = FileListModel(projectRoot: root)
         await model.refresh()

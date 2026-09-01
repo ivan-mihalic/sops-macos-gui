@@ -607,12 +607,28 @@ enum Fixtures {
     }
 
     /// The `+` sheet, in both shapes it has: a named key for a map, and an
-    /// appended entry for a list.
+    /// appended entry for a list. YAML's full kind picker — see
+    /// `addRowSheetDotenv()` for the restricted one a dotenv document shows.
     static func addRowSheet(isList: Bool) -> EditorAddRowSheet {
         EditorAddRowSheet(
             destination: SecretDocumentViewModel.AddDestination(
                 document: 0, parent: isList ? ["feature_flags"] : ["db"], isList: isList),
             refusal: { $0 == "host" ? .duplicateKey : nil },
+            allowedKinds: [.string, .int, .float, .bool, .null, .timestamp],
+            onCancel: {},
+            onAdd: { _, _, _ in })
+    }
+
+    /// The `+` sheet as a dotenv document shows it (Task 6, SOPS-38): the
+    /// type picker offers only `.string` — `SecretDocumentViewModel
+    /// .allowedAddKinds` for a document whose format cannot hold anything
+    /// else — so this is what proves the restriction actually reaches the
+    /// screen, not just the model.
+    static func addRowSheetDotenv() -> EditorAddRowSheet {
+        EditorAddRowSheet(
+            destination: SecretDocumentViewModel.AddDestination(document: 0, parent: [], isList: false),
+            refusal: { $0 == "DB_HOST" ? .duplicateKey : nil },
+            allowedKinds: [.string],
             onCancel: {},
             onAdd: { _, _, _ in })
     }
@@ -629,6 +645,34 @@ enum Fixtures {
         try store.importKey(intruder.private)
         let model = SecretDocumentViewModel(
             fileURL: URL(fileURLWithPath: "/dev/null/snapshot-wrong-key.yaml"),
+            keyStore: store,
+            readFile: { _ in encrypted })
+        await model.load()
+        return model
+    }
+
+    /// A dotenv document (Task 6, SOPS-38): real ciphertext via the
+    /// in-process bridge's dotenv path (`SopsBridge.encrypt(_:format:
+    /// .dotenv:...)`, Task 4), loaded through `SecretDocumentViewModel
+    /// (format: .dotenv)` exactly the way `AppShell.swift`'s
+    /// `ProjectWorkspaceView.activateFile` does once `FileListModel.files`
+    /// carries a dotenv `ListedFile`. What this snapshot exists to show:
+    /// the editor renders a flat document the same as any other, and the
+    /// toolbar's `+` (see `Catalog.swift`'s `editor-add-sheet-dotenv`)
+    /// offers only a string.
+    static func editorDotenvViewModel() async throws -> SecretDocumentViewModel {
+        let key = try SnapshotAgeKeyPair.generate()
+        let encrypted = try SopsBridge.encrypt(
+            """
+            DB_HOST=db.internal.example
+            DB_PASSWORD=correct-horse-battery-staple-EXAMPLE
+            API_KEY=sk_live_EXAMPLEEXAMPLEEXAMPLEEXAMPLE0001
+            """, format: .dotenv, recipients: [key.public])
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let model = SecretDocumentViewModel(
+            fileURL: URL(fileURLWithPath: "/dev/null/snapshot-dotenv.env"),
+            format: .dotenv,
             keyStore: store,
             readFile: { _ in encrypted })
         await model.load()

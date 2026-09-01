@@ -1752,3 +1752,135 @@ struct SecretDocumentPadlockTests {
     }
 }
 
+// MARK: - Dotenv format (Task 6, SOPS-38)
+
+/// Everything above this suite predates dotenv support and fixtures itself
+/// with `encryptedFixture`/`cliDecrypt` — the real `sops`/`age` binaries,
+/// spawned as subprocesses, encrypting/decrypting YAML. A dotenv fixture
+/// does not need a subprocess at all: `SopsBridge.encrypt(_:format:
+/// .dotenv:...)` is the same in-process bridge call `load()`/`save()`
+/// themselves go through (Task 4), so building the fixture through it is
+/// still real sops behaviour, not a hand-written approximation — it is
+/// simply the bridge instead of the CLI, which is exactly what Task 5's own
+/// probe for `EncryptedFileMetadata`'s dotenv shape already established as
+/// the right tool for a dotenv fixture in this codebase.
+@Suite("SecretDocumentViewModel — dotenv format")
+@MainActor
+struct SecretDocumentDotenvTests {
+
+    private func loadedDotenv(_ plain: String) async throws -> (SecretDocumentViewModel, AgeKeyPair, URL) {
+        let key = try AgeKeyPair.generate()
+        let encrypted = try SopsBridge.encrypt(plain, format: .dotenv, recipients: [key.public])
+        let dir = try scratchDirectory("dotenv-fixture")
+        let fileURL = dir.appendingPathComponent("secret.env")
+        try encrypted.write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .dotenv, keyStore: store)
+        await vm.load()
+        #expect(vm.loadState == .loaded)
+        return (vm, key, fileURL)
+    }
+
+    private func row(_ vm: SecretDocumentViewModel, _ path: String...) throws -> SecretRow {
+        guard let found = vm.rows.first(where: { $0.path == path }) else {
+            throw FixtureError("no row at \(path); present: \(vm.rows.map { $0.path.joined(separator: ".") })")
+        }
+        return found
+    }
+
+    @Test("a dotenv document reports no nested structure and offers only .string as an add kind")
+    func dotenvReportsFlatCapability() async throws {
+        let (vm, _, _) = try await loadedDotenv("FOO=bar\n")
+        #expect(!vm.supportsNestedStructure)
+        #expect(vm.allowedAddKinds == [.string])
+    }
+
+    @Test("a YAML document keeps reporting nested structure and every add kind")
+    func yamlReportsNestedCapabilityUnaffected() async throws {
+        let key = try AgeKeyPair.generate()
+        let fileURL = try encryptedFixture(sampleYAML, key: key)
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, keyStore: store)
+        await vm.load()
+
+        #expect(vm.supportsNestedStructure)
+        #expect(vm.allowedAddKinds.contains(.int))
+        #expect(vm.allowedAddKinds.count > 1)
+    }
+
+    @Test("adding a non-string kind to a dotenv document is refused")
+    func dotenvRefusesNonStringKind() async throws {
+        let (vm, _, _) = try await loadedDotenv("FOO=bar\n")
+        let root = vm.addDestination(forSelectedRowID: nil)
+        #expect(vm.addRow(in: root, key: "PORT", kind: .int, value: "5432") == .refused(.unsupportedForFormat))
+        #expect(!vm.isDirty, "a refused addition must not dirty the document")
+    }
+
+    @Test("adding into a nested or list destination is refused on a dotenv document")
+    func dotenvRefusesNestedDestination() async throws {
+        let (vm, _, _) = try await loadedDotenv("FOO=bar\n")
+        // Not reachable through `addDestination(forSelectedRowID:)` against a
+        // genuinely flat document — every real row's path has one segment,
+        // so its `default` branch always resolves back to the document
+        // root (empty parent, not a list). This pins the defence directly,
+        // the same way `duplicateKeyIsRefused` pins `refusalForAdding`
+        // beneath the UI rather than only through it — a guard against any
+        // caller that reaches `addRow` some other way.
+        let nestedMap = SecretDocumentViewModel.AddDestination(document: 0, parent: ["FOO"], isList: false)
+        #expect(vm.addRow(in: nestedMap, key: "BAR", kind: .string, value: "baz")
+            == .refused(.unsupportedForFormat))
+
+        let nestedList = SecretDocumentViewModel.AddDestination(document: 0, parent: ["FOO"], isList: true)
+        #expect(vm.addRow(in: nestedList, key: "", kind: .string, value: "baz")
+            == .refused(.unsupportedForFormat))
+        #expect(!vm.isDirty)
+    }
+
+    @Test("a top-level string add on a dotenv document is accepted")
+    func dotenvAcceptsTopLevelString() async throws {
+        let (vm, _, _) = try await loadedDotenv("FOO=bar\n")
+        let root = vm.addDestination(forSelectedRowID: nil)
+        guard case .added(let id) = vm.addRow(in: root, key: "BAZ", kind: .string, value: "qux") else {
+            Issue.record("a top-level string add on a dotenv document was refused")
+            return
+        }
+        #expect(vm.rows.first(where: { $0.id == id })?.path == ["BAZ"])
+        #expect(vm.isDirty)
+    }
+
+    @Test("open, edit and save round-trips a dotenv document through the bridge")
+    func dotenvRoundTrip() async throws {
+        let (vm, key, fileURL) = try await loadedDotenv("FOO=bar\nBAZ=qux\n")
+        let fooID = try row(vm, "FOO").id
+        vm.update(rowID: fooID, to: "rotated")
+        #expect(vm.isDirty)
+
+        let outcome = await vm.save()
+        #expect(outcome == .saved)
+        #expect(!vm.isDirty)
+
+        // The file on disk really changed — read back through the same
+        // in-process bridge, format-explicit, exactly the compatibility path
+        // `SopsBridge.decrypt(format: .dotenv, ...)` already establishes at
+        // the engine layer (Task 4).
+        let onDiskEncrypted = try String(contentsOf: fileURL, encoding: .utf8)
+        let decrypted = try SopsBridge.decrypt(onDiskEncrypted, format: .dotenv, agePrivateKey: key.private)
+        #expect(decrypted.contains("FOO=rotated"))
+        #expect(decrypted.contains("BAZ=qux"), "an untouched value must survive the save")
+
+        // And a fresh load of the same file, through the view model itself,
+        // reports the same thing — the save did not just write bytes that
+        // happen to decrypt, it produced a document this app can open again.
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let reloaded = SecretDocumentViewModel(fileURL: fileURL, format: .dotenv, keyStore: store)
+        await reloaded.load()
+        #expect(reloaded.loadState == .loaded)
+        #expect(try row(reloaded, "FOO").value == "rotated")
+        #expect(try row(reloaded, "BAZ").value == "qux")
+    }
+}
+
