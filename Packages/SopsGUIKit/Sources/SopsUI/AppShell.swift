@@ -1,3 +1,4 @@
+import SopsEngine
 import SopsProjects
 import SwiftUI
 
@@ -663,7 +664,8 @@ private struct ProjectWorkspaceView: View {
                 unsavedChanges: unsavedChanges,
                 recipientAccess: SecretEditorView.RecipientAccessContext(
                     fileURL: selectedFileURL, keyStore: keyStore,
-                    projectURL: recipientRegistryProjectRoot))
+                    projectURL: recipientRegistryProjectRoot,
+                    format: documentViewModel.format))
         } else {
             centeredPlaceholder(.editorNoFileSelected)
         }
@@ -810,7 +812,25 @@ private struct ProjectWorkspaceView: View {
     private func activateFile(_ url: URL?) {
         selectedFileURL = url
         if let url {
-            let vm = SecretDocumentViewModel(fileURL: url, keyStore: keyStore)
+            // `fileListModel.files` is the one place that already knows this
+            // file's format for certain — `ListedFile.format`, carried from
+            // the scanner's own `SniffedFile.format` (Task 5) through
+            // `FileListModel.refresh()`. Looked up rather than carried
+            // alongside `selectedFileURL` itself: that binding is shared with
+            // `FileListView`'s `List(selection:)`, which only ever hands back
+            // a `URL` (`FileListView.swift`'s own `.tag(file.url)`), and
+            // duplicating it as a second `@State` pair would be one more
+            // place the two could disagree. Falling back to `.yaml` is only
+            // ever reached for a file this switch did not learn about from a
+            // scan — unreachable in practice (every `url` this function is
+            // ever called with came from `fileListModel.files` itself, via
+            // this binding or `NewSecretFileSheet`'s `onCreated`, and both
+            // call sites refresh the list *before* switching — see
+            // `onCreated`'s own comment above, "The list is refreshed first"
+            // — so the lookup above never actually misses) — not a real
+            // "guess when unsure".
+            let format = fileListModel?.files.first(where: { $0.url == url })?.format ?? .yaml
+            let vm = SecretDocumentViewModel(fileURL: url, format: format, keyStore: keyStore)
             documentViewModel = vm
             Task { await vm.load() }
         } else {

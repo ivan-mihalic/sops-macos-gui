@@ -357,13 +357,14 @@ struct RevealedRowTests {
 
     private func document() async throws -> (SecretDocumentViewModel, RevealWritten) {
         let key = try RevealAgeKey.generate()
-        let encrypted = try SopsBridge.encryptYAML(revealPlaintext, recipients: [key.public])
+        let encrypted = try SopsBridge.encrypt(revealPlaintext, format: .yaml, recipients: [key.public])
         let written = RevealWritten()
         let model = try await MainActor.run {
             let store = SessionKeyStore()
             try store.importKey(key.private)
             return SecretDocumentViewModel(
                 fileURL: URL(fileURLWithPath: "/dev/null/reveal.yaml"),
+                format: .yaml,
                 keyStore: store,
                 readFile: { _ in encrypted },
                 fingerprintFile: { _ in nil },

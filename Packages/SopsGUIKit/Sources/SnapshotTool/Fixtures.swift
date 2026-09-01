@@ -472,11 +472,12 @@ enum Fixtures {
     /// not just that the view can render a shape of data.
     static func editorLoadedViewModel() async throws -> SecretDocumentViewModel {
         let key = try SnapshotAgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(editorRichDocumentYAML, recipients: [key.public])
+        let encrypted = try SopsBridge.encrypt(editorRichDocumentYAML, format: .yaml, recipients: [key.public])
         let store = SessionKeyStore()
         try store.importKey(key.private)
         let model = SecretDocumentViewModel(
             fileURL: URL(fileURLWithPath: "/dev/null/snapshot-loaded.yaml"),
+            format: .yaml,
             keyStore: store,
             readFile: { _ in encrypted })
         await model.load()
@@ -488,11 +489,12 @@ enum Fixtures {
     /// real key, same load path as above.
     static func editorEmptyDocumentViewModel() async throws -> SecretDocumentViewModel {
         let key = try SnapshotAgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML("{}\n", recipients: [key.public])
+        let encrypted = try SopsBridge.encrypt("{}\n", format: .yaml, recipients: [key.public])
         let store = SessionKeyStore()
         try store.importKey(key.private)
         let model = SecretDocumentViewModel(
             fileURL: URL(fileURLWithPath: "/dev/null/snapshot-empty.yaml"),
+            format: .yaml,
             keyStore: store,
             readFile: { _ in encrypted })
         await model.load()
@@ -508,6 +510,7 @@ enum Fixtures {
         let store = SessionKeyStore()
         let model = SecretDocumentViewModel(
             fileURL: URL(fileURLWithPath: "/dev/null/snapshot-needs-key.yaml"),
+            format: .yaml,
             keyStore: store,
             readFile: { _ in "irrelevant — never reached with no key configured" })
         await model.load()
@@ -527,7 +530,7 @@ enum Fixtures {
         // unscrolled top (CLAUDE.md, "What it still cannot see"). A snapshot
         // whose whole subject sat below the fold would review nothing.
         let key = try SnapshotAgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(
+        let encrypted = try SopsBridge.encrypt(
             """
             db:
                 host: db.internal.example
@@ -535,11 +538,12 @@ enum Fixtures {
             feature_flags:
                 - beta_checkout
                 - dark_mode
-            """, recipients: [key.public])
+            """, format: .yaml, recipients: [key.public])
         let store = SessionKeyStore()
         try store.importKey(key.private)
         let model = SecretDocumentViewModel(
             fileURL: URL(fileURLWithPath: "/dev/null/snapshot-pending.yaml"),
+            format: .yaml,
             keyStore: store,
             readFile: { _ in encrypted })
         await model.load()
@@ -585,17 +589,18 @@ enum Fixtures {
     /// the one fixture where that is the entire subject.
     static func editorRevealedRowViewModel() async throws -> (SecretDocumentViewModel, Set<String>) {
         let key = try SnapshotAgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(
+        let encrypted = try SopsBridge.encrypt(
             """
             db:
                 host: db.internal.example
                 password: correct-horse-battery-staple-EXAMPLE
             api_key: sk_live_EXAMPLEEXAMPLEEXAMPLEEXAMPLE0001
-            """, recipients: [key.public])
+            """, format: .yaml, recipients: [key.public])
         let store = SessionKeyStore()
         try store.importKey(key.private)
         let model = SecretDocumentViewModel(
             fileURL: URL(fileURLWithPath: "/dev/null/snapshot-revealed.yaml"),
+            format: .yaml,
             keyStore: store,
             readFile: { _ in encrypted })
         await model.load()
@@ -607,12 +612,28 @@ enum Fixtures {
     }
 
     /// The `+` sheet, in both shapes it has: a named key for a map, and an
-    /// appended entry for a list.
+    /// appended entry for a list. YAML's full kind picker — see
+    /// `addRowSheetDotenv()` for the restricted one a dotenv document shows.
     static func addRowSheet(isList: Bool) -> EditorAddRowSheet {
         EditorAddRowSheet(
             destination: SecretDocumentViewModel.AddDestination(
                 document: 0, parent: isList ? ["feature_flags"] : ["db"], isList: isList),
             refusal: { $0 == "host" ? .duplicateKey : nil },
+            allowedKinds: [.string, .int, .float, .bool, .null, .timestamp],
+            onCancel: {},
+            onAdd: { _, _, _ in })
+    }
+
+    /// The `+` sheet as a dotenv document shows it (Task 6, SOPS-38): the
+    /// type picker offers only `.string` — `SecretDocumentViewModel
+    /// .allowedAddKinds` for a document whose format cannot hold anything
+    /// else — so this is what proves the restriction actually reaches the
+    /// screen, not just the model.
+    static func addRowSheetDotenv() -> EditorAddRowSheet {
+        EditorAddRowSheet(
+            destination: SecretDocumentViewModel.AddDestination(document: 0, parent: [], isList: false),
+            refusal: { $0 == "DB_HOST" ? .duplicateKey : nil },
+            allowedKinds: [.string],
             onCancel: {},
             onAdd: { _, _, _ in })
     }
@@ -623,12 +644,41 @@ enum Fixtures {
     static func editorLoadFailedViewModel() async throws -> SecretDocumentViewModel {
         let owner = try SnapshotAgeKeyPair.generate()
         let intruder = try SnapshotAgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(
-            "database:\n    password: hunter2-EXAMPLE\n", recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(
+            "database:\n    password: hunter2-EXAMPLE\n", format: .yaml, recipients: [owner.public])
         let store = SessionKeyStore()
         try store.importKey(intruder.private)
         let model = SecretDocumentViewModel(
             fileURL: URL(fileURLWithPath: "/dev/null/snapshot-wrong-key.yaml"),
+            format: .yaml,
+            keyStore: store,
+            readFile: { _ in encrypted })
+        await model.load()
+        return model
+    }
+
+    /// A dotenv document (Task 6, SOPS-38): real ciphertext via the
+    /// in-process bridge's dotenv path (`SopsBridge.encrypt(_:format:
+    /// .dotenv:...)`, Task 4), loaded through `SecretDocumentViewModel
+    /// (format: .dotenv)` exactly the way `AppShell.swift`'s
+    /// `ProjectWorkspaceView.activateFile` does once `FileListModel.files`
+    /// carries a dotenv `ListedFile`. What this snapshot exists to show:
+    /// the editor renders a flat document the same as any other, and the
+    /// toolbar's `+` (see `Catalog.swift`'s `editor-add-sheet-dotenv`)
+    /// offers only a string.
+    static func editorDotenvViewModel() async throws -> SecretDocumentViewModel {
+        let key = try SnapshotAgeKeyPair.generate()
+        let encrypted = try SopsBridge.encrypt(
+            """
+            DB_HOST=db.internal.example
+            DB_PASSWORD=correct-horse-battery-staple-EXAMPLE
+            API_KEY=sk_live_EXAMPLEEXAMPLEEXAMPLEEXAMPLE0001
+            """, format: .dotenv, recipients: [key.public])
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let model = SecretDocumentViewModel(
+            fileURL: URL(fileURLWithPath: "/dev/null/snapshot-dotenv.env"),
+            format: .dotenv,
             keyStore: store,
             readFile: { _ in encrypted })
         await model.load()

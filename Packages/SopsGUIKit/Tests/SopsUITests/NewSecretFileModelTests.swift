@@ -132,6 +132,46 @@ struct NewSecretFileModelTests {
         #expect(model.planError == nil)
     }
 
+    // MARK: - targetFormat (task SOPS-38)
+    //
+    // Pure, name-only, and needs no resolve at all — `SopsFileFormat
+    // .forDestinationName(_:)` is the single place this decision is made;
+    // these tests are the model-level proof that `targetFormat` calls it and
+    // nothing else, mirroring `SopsFileFormatDestinationNameTests`'s own
+    // coverage of that function one layer down.
+
+    @Test("no name typed yet has no target format")
+    func blankNameHasNoTargetFormat() throws {
+        let root = try scratchDirectory()
+        let model = NewSecretFileModel(projectRoot: root, keyStore: try makeKeyStore())
+
+        #expect(model.targetFormat == nil)
+        model.relativeName = "   "
+        #expect(model.targetFormat == nil, "whitespace-only is still blank")
+    }
+
+    @Test("a .yaml-named target reports .yaml")
+    func yamlNamedTargetReportsYAML() throws {
+        let root = try scratchDirectory()
+        let model = NewSecretFileModel(projectRoot: root, keyStore: try makeKeyStore())
+
+        model.relativeName = "secrets/production.yaml"
+
+        #expect(model.targetFormat == .yaml)
+    }
+
+    @Test("a .env-named target reports .dotenv, and it tracks every keystroke live — no resolve needed")
+    func dotEnvNamedTargetReportsDotenv() throws {
+        let root = try scratchDirectory()
+        let model = NewSecretFileModel(projectRoot: root, keyStore: try makeKeyStore())
+
+        model.relativeName = "secret.yaml"
+        #expect(model.targetFormat == .yaml)
+
+        model.relativeName = ".sops.env"
+        #expect(model.targetFormat == .dotenv, "no resolvePlan() call in between — targetFormat is pure")
+    }
+
     // MARK: - .ready
 
     @Test("a name governed by an age rule that includes this session's key is ready")
@@ -211,14 +251,14 @@ struct NewSecretFileModelTests {
         // The real recipient, `stranger`, can read it back — proving the
         // file really was encrypted for the rule's actual recipient set and
         // not silently for `owner` instead.
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: stranger.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: stranger.private)
         #expect(rows.isEmpty)
         // And `owner`'s key genuinely cannot — not just "almost certainly
         // can't" by construction of age recipients: this is the one
         // assertion the whole acknowledgement path leans on, so it is
         // proven directly rather than left to a comment.
         #expect(throws: (any Error).self) {
-            try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+            try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
         }
     }
 
@@ -497,7 +537,7 @@ struct NewSecretFileModelTests {
 
         #expect(destination.path == root.appendingPathComponent("secret.yaml").path)
         let encrypted = try String(contentsOf: destination, encoding: .utf8)
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
         #expect(rows.isEmpty)
         #expect(model.planError == nil)
     }

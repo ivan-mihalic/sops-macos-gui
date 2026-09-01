@@ -26,13 +26,16 @@ import (
 type Format string
 
 const (
-	FormatYAML Format = "yaml"
+	FormatYAML   Format = "yaml"
+	FormatDotenv Format = "dotenv"
 )
 
 func (f Format) toSopsFormat() (formats.Format, error) {
 	switch f {
 	case FormatYAML:
 		return formats.Yaml, nil
+	case FormatDotenv:
+		return formats.Dotenv, nil
 	default:
 		return 0, fmt.Errorf("unsupported format %q", f)
 	}

@@ -74,7 +74,15 @@ ScratchDirectoryRegistry.shared.register(root)
     /// A genuinely sops-encrypted YAML document, produced by the same
     /// in-process bridge the shipping app uses.
     static func encrypted(_ plain: String, to recipients: [String]) throws -> String {
-        try SopsBridge.encryptYAML(plain, recipients: recipients)
+        try SopsBridge.encrypt(plain, format: .yaml, recipients: recipients)
+    }
+
+    /// A genuinely sops-encrypted dotenv document, produced by the same
+    /// in-process bridge the shipping app uses — never a hand-typed
+    /// `sops_age__list_0__map_recipient=` string. `plain` must already be
+    /// `KEY=value\n` lines; the dotenv store has no other shape.
+    static func encryptedDotenv(_ plain: String, to recipients: [String]) throws -> String {
+        try SopsBridge.encrypt(plain, format: .dotenv, recipients: recipients)
     }
 
     /// A genuinely sops-encrypted YAML document produced by the real `sops`

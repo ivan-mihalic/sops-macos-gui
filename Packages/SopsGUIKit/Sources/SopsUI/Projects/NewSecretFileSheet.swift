@@ -1,4 +1,5 @@
 import AppKit
+import SopsEngine
 import SopsProjects
 import SwiftUI
 
@@ -198,6 +199,12 @@ public struct NewSecretFileSheet: View {
                     .accessibilityLabel(LocalizedKey.newFileNameLabel.text)
             }
 
+            if let targetFormatText {
+                Text(targetFormatText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             if let infoLineText {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Image(systemName: "info.circle")
@@ -258,6 +265,29 @@ public struct NewSecretFileSheet: View {
     /// precedence in general (see `NewSecretFileModel.planError`'s own doc
     /// comment). Nothing in this file reads `planError` at all, and nothing
     /// may.
+    private var targetFormatText: String? { Self.targetFormatText(for: model.targetFormat) }
+
+    /// `nil` before any name has produced a target format at all — mirrors
+    /// `model.targetFormat`'s own `nil`-before-a-name-is-typed contract, so
+    /// this line and the ⓘ line below it appear together rather than one
+    /// showing before the other. See `NewSecretFileModel.targetFormat`'s own
+    /// doc comment for why this can never disagree with what `create()`
+    /// actually writes.
+    ///
+    /// Pure and `static`, matching `infoLineText(isResolving:plan:recipientNames:)`
+    /// and `canCreate(readiness:isCreating:)` above — a test can check every
+    /// shape without rendering anything or constructing a model.
+    ///
+    /// No `default` — a case added to `SopsFileFormat` later must fail this
+    /// file's build, the same discipline every switch in this file keeps.
+    static func targetFormatText(for format: SopsFileFormat?) -> String? {
+        switch format {
+        case nil: nil
+        case .yaml: LocalizedKey.newFileTargetFormatYAML.text
+        case .dotenv: LocalizedKey.newFileTargetFormatDotEnv.text
+        }
+    }
+
     private var infoLineText: String? {
         // `.resolving` counts as resolving here, not only `model.isResolving`:
         // between a keystroke and the debounce firing, `model.plan` is still

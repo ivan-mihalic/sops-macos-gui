@@ -66,7 +66,7 @@ struct SopsDocumentTests {
         let key = try AgeKeyPair.generate()
         let encrypted = try encryptWithCLI(richDocumentYAML, key: key)
 
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: key.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: key.private)
 
         #expect(
             rows.map { $0.path.joined(separator: ".") } == [
@@ -95,7 +95,7 @@ struct SopsDocumentTests {
         let encrypted = try encryptWithCLI(
             richDocumentYAML, key: key, extraArgs: ["--encrypted-regex", "^(password|api_key)$"])
 
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: key.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: key.private)
 
         #expect(try row(rows, "db", "password").isEncrypted)
         #expect(try row(rows, "api_key").isEncrypted)
@@ -107,7 +107,7 @@ struct SopsDocumentTests {
         let key = try AgeKeyPair.generate()
         let encrypted = try encryptWithCLI("{}\n", key: key)
 
-        #expect(try SopsBridge.decryptToRows(encrypted, agePrivateKey: key.private).isEmpty)
+        #expect(try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: key.private).isEmpty)
     }
 
     @Test("rows are identifiable and stable across a reload")
@@ -115,8 +115,8 @@ struct SopsDocumentTests {
         let key = try AgeKeyPair.generate()
         let encrypted = try encryptWithCLI(richDocumentYAML, key: key)
 
-        let first = try SopsBridge.decryptToRows(encrypted, agePrivateKey: key.private)
-        let second = try SopsBridge.decryptToRows(encrypted, agePrivateKey: key.private)
+        let first = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: key.private)
+        let second = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: key.private)
 
         #expect(first.map(\.id) == second.map(\.id))
         #expect(Set(first.map(\.id)).count == first.count, "row ids must be unique")
@@ -132,7 +132,7 @@ struct SopsDocumentTests {
 
         for keyArgument in ["", "   ", "# exported\n", key.public] {
             #expect(throws: SopsBridgeError.self) {
-                try SopsBridge.decryptToRows(encrypted, agePrivateKey: keyArgument)
+                try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: keyArgument)
             }
         }
     }
@@ -144,7 +144,7 @@ struct SopsDocumentTests {
         let edit = SecretEdit(path: ["db", "host"], value: "elsewhere", kind: .string)
 
         #expect(throws: SopsBridgeError.self) {
-            try SopsBridge.applyEdits(encrypted, edits: [edit], agePrivateKey: "")
+            try SopsBridge.applyEdits(encrypted, format: .yaml, edits: [edit], agePrivateKey: "")
         }
     }
 
@@ -155,7 +155,7 @@ struct SopsDocumentTests {
         let encrypted = try encryptWithCLI(richDocumentYAML, key: owner)
 
         #expect(throws: SopsBridgeError.self) {
-            try SopsBridge.decryptToRows(encrypted, agePrivateKey: stranger.private)
+            try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: stranger.private)
         }
     }
 
@@ -169,7 +169,7 @@ struct SopsDocumentTests {
         let before = try cliDecrypt(encrypted, key: key)
         let edited = try SopsBridge.applyEdits(
             encrypted,
-            edits: [SecretEdit(path: ["db", "password"], value: "correct horse", kind: .string)],
+            format: .yaml, edits: [SecretEdit(path: ["db", "password"], value: "correct horse", kind: .string)],
             agePrivateKey: key.private)
         let after = try cliDecrypt(edited, key: key)
 
@@ -195,7 +195,7 @@ struct SopsDocumentTests {
 
         let edited = try SopsBridge.applyEdits(
             encrypted,
-            edits: [SecretEdit(path: ["api_key"], value: "sk-live-rotated", kind: .string)],
+            format: .yaml, edits: [SecretEdit(path: ["api_key"], value: "sk-live-rotated", kind: .string)],
             agePrivateKey: key.private)
 
         #expect(try cliDecrypt(edited, key: key).contains("api_key: sk-live-rotated"))
@@ -215,7 +215,7 @@ struct SopsDocumentTests {
 
         let edited = try SopsBridge.applyEdits(
             encrypted,
-            edits: [SecretEdit(path: ["db", "password"], value: "rotated", kind: .string)],
+            format: .yaml, edits: [SecretEdit(path: ["db", "password"], value: "rotated", kind: .string)],
             agePrivateKey: owner.private)
 
         #expect(edited.contains(owner.public))
@@ -240,12 +240,12 @@ struct SopsDocumentTests {
 
             let edited = try SopsBridge.applyEdits(
                 encrypted,
-                edits: [SecretEdit(path: ["db", leaf], value: value, kind: kind)],
+                format: .yaml, edits: [SecretEdit(path: ["db", leaf], value: value, kind: kind)],
                 agePrivateKey: key.private)
 
             #expect(try cliDecrypt(edited, key: key).contains(wantLine), "for \(leaf)")
 
-            let rows = try SopsBridge.decryptToRows(edited, agePrivateKey: key.private)
+            let rows = try SopsBridge.decryptToRows(edited, format: .yaml, agePrivateKey: key.private)
             #expect(try row(rows, "db", leaf).kind == kind, "for \(leaf)")
             #expect(try row(rows, "db", leaf).value == value, "for \(leaf)")
         }
@@ -258,7 +258,7 @@ struct SopsDocumentTests {
 
         let edited = try SopsBridge.applyEdits(
             encrypted,
-            edits: [SecretEdit(path: ["servers", "1", "ip"], value: "10.0.0.99", kind: .string)],
+            format: .yaml, edits: [SecretEdit(path: ["servers", "1", "ip"], value: "10.0.0.99", kind: .string)],
             agePrivateKey: key.private)
 
         let out = try cliDecrypt(edited, key: key)
@@ -275,7 +275,7 @@ struct SopsDocumentTests {
 
         let edited = try SopsBridge.applyEdits(
             encrypted,
-            edits: [
+            format: .yaml, edits: [
                 SecretEdit(path: ["db", "password"], value: "new-secret-value", kind: .string),
                 SecretEdit(path: ["db", "host"], value: "new-public-host", kind: .string),
             ],
@@ -296,12 +296,12 @@ struct SopsDocumentTests {
 
             let edited = try SopsBridge.applyEdits(
                 encrypted,
-                edits: [SecretEdit(path: ["db", "password"], value: value, kind: .string)],
+                format: .yaml, edits: [SecretEdit(path: ["db", "password"], value: value, kind: .string)],
                 agePrivateKey: key.private)
 
             // The CLI must accept the result, and it must read back identically.
             _ = try cliDecrypt(edited, key: key)
-            let rows = try SopsBridge.decryptToRows(edited, agePrivateKey: key.private)
+            let rows = try SopsBridge.decryptToRows(edited, format: .yaml, agePrivateKey: key.private)
             #expect(try row(rows, "db", "password").value == value)
         }
     }
@@ -312,7 +312,7 @@ struct SopsDocumentTests {
         let encrypted = try encryptWithCLI(
             richDocumentYAML, key: key, extraArgs: ["--encrypted-regex", "^(password|api_key)$"])
 
-        let saved = try SopsBridge.applyEdits(encrypted, edits: [], agePrivateKey: key.private)
+        let saved = try SopsBridge.applyEdits(encrypted, format: .yaml, edits: [], agePrivateKey: key.private)
 
         let beforeLines = encrypted.components(separatedBy: "\n")
         let afterLines = saved.components(separatedBy: "\n")
@@ -345,7 +345,7 @@ struct SopsDocumentTests {
         ]
         for edit in refusals {
             #expect(throws: SopsBridgeError.self, "for \(edit.path)") {
-                try SopsBridge.applyEdits(encrypted, edits: [edit], agePrivateKey: key.private)
+                try SopsBridge.applyEdits(encrypted, format: .yaml, edits: [edit], agePrivateKey: key.private)
             }
         }
     }
@@ -364,7 +364,7 @@ struct SopsDocumentTests {
         for edit in failing {
             do {
                 _ = try SopsBridge.applyEdits(
-                    encrypted, edits: [edit], agePrivateKey: key.private)
+                    encrypted, format: .yaml, edits: [edit], agePrivateKey: key.private)
                 Issue.record("expected a refusal for \(edit.path)")
             } catch let error as SopsBridgeError {
                 #expect(!error.description.contains(secretish), "\(error.description)")
@@ -382,7 +382,7 @@ struct SopsDocumentTests {
         let tampered = encrypted.replacingOccurrences(of: "port: ENC[", with: "porx: ENC[")
 
         #expect(throws: SopsBridgeError.self) {
-            try SopsBridge.decryptToRows(tampered, agePrivateKey: key.private)
+            try SopsBridge.decryptToRows(tampered, format: .yaml, agePrivateKey: key.private)
         }
     }
 
@@ -397,11 +397,11 @@ struct SopsDocumentTests {
             let value = "rotated-\(iteration)"
             current = try SopsBridge.applyEdits(
                 current,
-                edits: [SecretEdit(path: ["db", "password"], value: value, kind: .string)],
+                format: .yaml, edits: [SecretEdit(path: ["db", "password"], value: value, kind: .string)],
                 agePrivateKey: key.private)
             #expect(!current.contains(value))
 
-            let rows = try SopsBridge.decryptToRows(current, agePrivateKey: key.private)
+            let rows = try SopsBridge.decryptToRows(current, format: .yaml, agePrivateKey: key.private)
             #expect(try row(rows, "db", "password").value == value)
             #expect(try row(rows, "db", "port").kind == .int)
         }
@@ -472,7 +472,7 @@ struct DocumentErrorHygieneTests {
 
             let (readMessage, readStderr) = try capturingStandardError { () -> String in
                 do {
-                    let rows = try SopsBridge.decryptToRows(corrupt, agePrivateKey: key.private)
+                    let rows = try SopsBridge.decryptToRows(corrupt, format: .yaml, agePrivateKey: key.private)
                     Issue.record("decryptToRows accepted type:\(badType) and returned \(rows.count) rows")
                     return ""
                 } catch let error as SopsBridgeError {
@@ -487,7 +487,7 @@ struct DocumentErrorHygieneTests {
                 do {
                     _ = try SopsBridge.applyEdits(
                         corrupt,
-                        edits: [SecretEdit(path: ["other"], value: "x", kind: .string)],
+                        format: .yaml, edits: [SecretEdit(path: ["other"], value: "x", kind: .string)],
                         agePrivateKey: key.private)
                     Issue.record("applyEdits accepted type:\(badType)")
                     return ""
@@ -500,7 +500,7 @@ struct DocumentErrorHygieneTests {
 
             let (plainMessage, plainStderr) = try capturingStandardError { () -> String in
                 do {
-                    _ = try SopsBridge.decryptYAML(corrupt, agePrivateKey: key.private)
+                    _ = try SopsBridge.decrypt(corrupt, format: .yaml, agePrivateKey: key.private)
                     Issue.record("decryptYAML accepted type:\(badType)")
                     return ""
                 } catch let error as SopsBridgeError {
@@ -519,10 +519,10 @@ struct DocumentErrorHygieneTests {
         let encrypted = try encryptWithCLI("api_key: hunter2\n", key: key)
 
         #expect(throws: SopsBridgeError.self) {
-            try SopsBridge.decryptToRows(encrypted, agePrivateKey: stranger.private)
+            try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: stranger.private)
         }
         do {
-            _ = try SopsBridge.decryptToRows(encrypted, agePrivateKey: stranger.private)
+            _ = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: stranger.private)
         } catch let error as SopsBridgeError {
             #expect(error.description.contains("none of the keys"), "\(error.description)")
             // Ticket #10, claim 2: this is the one decrypt failure
@@ -542,7 +542,7 @@ struct DocumentErrorHygieneTests {
         let tampered = partial.replacingOccurrences(
             of: "host: localhost", with: "host: elsewhere")
         do {
-            _ = try SopsBridge.decryptToRows(tampered, agePrivateKey: key.private)
+            _ = try SopsBridge.decryptToRows(tampered, format: .yaml, agePrivateKey: key.private)
             Issue.record("a tampered document was accepted")
         } catch let error as SopsBridgeError {
             #expect(
@@ -553,7 +553,7 @@ struct DocumentErrorHygieneTests {
 
         let mistyped = try retyped(encrypted, key: "api_key", to: "int")
         do {
-            _ = try SopsBridge.decryptToRows(mistyped, agePrivateKey: key.private)
+            _ = try SopsBridge.decryptToRows(mistyped, format: .yaml, agePrivateKey: key.private)
             Issue.record("a mistyped value was accepted")
         } catch let error as SopsBridgeError {
             #expect(error.description.contains("could not be read"), "\(error.description)")
@@ -595,7 +595,7 @@ struct DocumentLoadHygieneTests {
         for (name, source) in malformed {
             let (message, capturedStderr) = try capturingStandardError { () -> String in
                 do {
-                    _ = try SopsBridge.encryptYAML(source, recipients: [key.public])
+                    _ = try SopsBridge.encrypt(source, format: .yaml, recipients: [key.public])
                     Issue.record("\(name): malformed YAML was accepted")
                     return ""
                 } catch let error as SopsBridgeError {
@@ -609,7 +609,7 @@ struct DocumentLoadHygieneTests {
         // The same parser runs over an encrypted file, whose keys are cleartext.
         let corruptEncrypted = "a: 1\n\(canary): x\n\(canary): y\nsops:\n    version: 3.13.2\n"
         do {
-            _ = try SopsBridge.decryptToRows(corruptEncrypted, agePrivateKey: key.private)
+            _ = try SopsBridge.decryptToRows(corruptEncrypted, format: .yaml, agePrivateKey: key.private)
             Issue.record("a malformed encrypted file was accepted")
         } catch let error as SopsBridgeError {
             #expect(!error.description.contains(canary), "\(error.description)")
@@ -624,7 +624,7 @@ struct DocumentLoadHygieneTests {
             ("a: 1\nk: x\nk: y\n", "line 3"),
         ] {
             do {
-                _ = try SopsBridge.encryptYAML(source, recipients: [key.public])
+                _ = try SopsBridge.encrypt(source, format: .yaml, recipients: [key.public])
                 Issue.record("malformed YAML was accepted")
             } catch let error as SopsBridgeError {
                 #expect(error.description.contains(wanted), "\(error.description)")
@@ -648,7 +648,7 @@ struct DocumentLoadHygieneTests {
 
         do {
             _ = try SopsBridge.decryptToRows(
-                lines.joined(separator: "\n"), agePrivateKey: key.private)
+                lines.joined(separator: "\n"), format: .yaml, agePrivateKey: key.private)
             Issue.record("a damaged document was accepted")
         } catch let error as SopsBridgeError {
             #expect(error.description.contains("beta"), "\(error.description)")
@@ -661,7 +661,7 @@ struct DocumentLoadHygieneTests {
     func plainFileIsDistinguished() throws {
         let key = try AgeKeyPair.generate()
         do {
-            _ = try SopsBridge.decryptToRows("a: 1\nb: 2\n", agePrivateKey: key.private)
+            _ = try SopsBridge.decryptToRows("a: 1\nb: 2\n", format: .yaml, agePrivateKey: key.private)
             Issue.record("a plain YAML file was accepted as a SOPS document")
         } catch let error as SopsBridgeError {
             #expect(error.description.contains("not a SOPS document"), "\(error.description)")

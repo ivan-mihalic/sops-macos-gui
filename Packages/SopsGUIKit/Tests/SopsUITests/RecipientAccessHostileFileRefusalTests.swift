@@ -12,7 +12,7 @@ import Testing
 /// `model(reading:...)` helper.
 ///
 /// `RecipientAccessModel.load()` guards this at `RecipientAccessModel.swift:290`,
-/// immediately before `SopsBridge.recipients(in: contents)` — until this
+/// immediately before `SopsBridge.recipients(in: contents, format: .yaml)` — until this
 /// test, that guard had no behavioural proof of its own, only the sibling
 /// guard in `SecretDocumentViewModel` did.
 @Suite("RecipientAccessModel refuses a document it cannot read whole")
@@ -25,7 +25,7 @@ struct RecipientAccessHostileFileRefusalTests {
         url: URL = URL(fileURLWithPath: "/dev/null/hostile-access.yaml")
     ) -> RecipientAccessModel {
         RecipientAccessModel(
-            fileURL: url, projectURL: nil, keyStore: SessionKeyStore(),
+            fileURL: url, projectURL: nil, keyStore: SessionKeyStore(), format: .yaml,
             readFile: { _ in contents }, fingerprintFile: fingerprint)
     }
 

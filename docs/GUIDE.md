@@ -207,13 +207,15 @@ checked-out branches is one heading rather than four unrelated rows.
 
 ![File list](images/guide-09-files.png)
 
-Every sops-encrypted YAML file under the project root, by path. Click one to
-open it.
+Every sops-encrypted YAML **or dotenv** file under the project root, by path.
+Click one to open it — `services/worker.secrets.env`, the `.env` file the setup
+script above wrote, opens exactly like the two YAML files above it (SOPS-38).
 
-The footnote at the bottom is doing real work: this app opens **YAML only** in
-v1. `services/worker.secrets.env` is a genuine sops file that sops itself wrote,
-and it is deliberately counted-but-not-listed rather than hidden — a file you
-can see in Finder silently missing from the list is the worse outcome.
+The footnote at the bottom is still doing real work, just for a narrower set of
+formats than it used to: a sops file in a format this app cannot open yet
+(JSON, INI) is counted there rather than hidden — a file you can see in Finder
+silently missing from the list is the worse outcome — even though the demo
+project above does not create one to show it.
 
 ---
 

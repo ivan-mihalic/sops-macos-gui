@@ -37,7 +37,7 @@ empty_list: []
 
 func applyChanges(t *testing.T, encrypted []byte, key ageKeyPair, changes ChangeSet) []byte {
 	t.Helper()
-	out, err := ApplyChangesAndEncrypt(encrypted, changes, key.Private)
+	out, err := ApplyChangesAndEncrypt(encrypted, FormatYAML, changes, key.Private)
 	if err != nil {
 		t.Fatalf("ApplyChangesAndEncrypt: %v", err)
 	}
@@ -46,7 +46,7 @@ func applyChanges(t *testing.T, encrypted []byte, key ageKeyPair, changes Change
 
 func applyChangesExpectingRefusal(t *testing.T, encrypted []byte, key ageKeyPair, changes ChangeSet) string {
 	t.Helper()
-	out, err := ApplyChangesAndEncrypt(encrypted, changes, key.Private)
+	out, err := ApplyChangesAndEncrypt(encrypted, FormatYAML, changes, key.Private)
 	if err == nil {
 		t.Fatalf("expected the change set to be refused, but it was applied")
 	}
@@ -71,7 +71,7 @@ func TestRowsSayWhetherTheirParentIsAList(t *testing.T) {
 	encrypted := encryptWithCLI(t, key,
 		"lookalike:\n    \"0\": zero\n    \"1\": one\nreal:\n    - first\n    - second\nplain: value\nempty_list: []\n")
 
-	rows, err := DecryptToRows(encrypted, key.Private)
+	rows, err := DecryptToRows(encrypted, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestAddingAKeyToAMap(t *testing.T) {
 		t.Fatalf("the added key is not at the end of the map it was added to:\n%s", plain)
 	}
 
-	rows, err := DecryptToRows(out, key.Private)
+	rows, err := DecryptToRows(out, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestAddingAKeyAtTheDocumentRoot(t *testing.T) {
 		Adds: []Add{{Parent: nil, Key: "region", Value: "eu-central-1", Kind: KindString}},
 	})
 
-	rows, err := DecryptToRows(out, key.Private)
+	rows, err := DecryptToRows(out, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestAddingAnEntryToAListAppendsIt(t *testing.T) {
 		Adds: []Add{{Parent: []string{"ports"}, Value: "9999", Kind: KindInt}},
 	})
 
-	rows, err := DecryptToRows(out, key.Private)
+	rows, err := DecryptToRows(out, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestTwoEntriesCanBeAppendedToOneListInOneSave(t *testing.T) {
 		},
 	})
 
-	rows, err := DecryptToRows(out, key.Private)
+	rows, err := DecryptToRows(out, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestAddingIntoAnEmptyContainer(t *testing.T) {
 		},
 	})
 
-	rows, err := DecryptToRows(out, key.Private)
+	rows, err := DecryptToRows(out, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestAddedValuesFollowTheFilesOwnEncryptionRules(t *testing.T) {
 		},
 	})
 
-	rows, err := DecryptToRows(out, key.Private)
+	rows, err := DecryptToRows(out, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestRemovingAListElement(t *testing.T) {
 		Removes: []Removal{{Path: []string{"ports", "1"}}},
 	})
 
-	rows, err := DecryptToRows(out, key.Private)
+	rows, err := DecryptToRows(out, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -446,7 +446,7 @@ func TestRemovingTheLastKeyOfAMapLeavesAnEmptyMap(t *testing.T) {
 		Removes: []Removal{{Path: []string{"outer", "only"}}},
 	})
 
-	rows, err := DecryptToRows(out, key.Private)
+	rows, err := DecryptToRows(out, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -532,7 +532,7 @@ func TestARemovalTogetherWithChangesThatCannotHaveShiftedIsApplied(t *testing.T)
 		Removes: []Removal{{Path: []string{"ports", "3"}}},
 	})
 
-	rows, err := DecryptToRows(out, key.Private)
+	rows, err := DecryptToRows(out, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -563,7 +563,7 @@ func TestAppendingToTheListARemovalCameOutOfIsAllowed(t *testing.T) {
 		Removes: []Removal{{Path: []string{"ports", "0"}}},
 	})
 
-	rows, err := DecryptToRows(out, key.Private)
+	rows, err := DecryptToRows(out, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -653,7 +653,7 @@ func TestARefusedBatchAppliesNoneOfItsChanges(t *testing.T) {
 
 	// The input bytes are the only state there is; prove the document still
 	// reads exactly as it did.
-	rows, err := DecryptToRows(encrypted, key.Private)
+	rows, err := DecryptToRows(encrypted, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -680,7 +680,7 @@ func TestAddingAndRemovingInASpecificDocument(t *testing.T) {
 		Removes: []Removal{{Document: 0, Path: []string{"gone"}}},
 	})
 
-	rows, err := DecryptToRows(out, key.Private)
+	rows, err := DecryptToRows(out, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -747,13 +747,13 @@ func TestApplyEditsAndEncryptStillOnlySets(t *testing.T) {
 	key := newAgeKeyPair(t)
 	encrypted := encryptWithCLI(t, key, richPlainYAML)
 
-	out, err := ApplyEditsAndEncrypt(encrypted, []Edit{
+	out, err := ApplyEditsAndEncrypt(encrypted, FormatYAML, []Edit{
 		{Path: []string{"api_key"}, Value: "sk-live-rotated", Kind: KindString},
 	}, key.Private)
 	if err != nil {
 		t.Fatalf("ApplyEditsAndEncrypt: %v", err)
 	}
-	rows, err := DecryptToRows(out, key.Private)
+	rows, err := DecryptToRows(out, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -775,11 +775,11 @@ func TestApplyChangesJSONRoundTrip(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	out, err := ApplyChangesJSON(encrypted, payload, key.Private)
+	out, err := ApplyChangesJSON(encrypted, FormatYAML, payload, key.Private)
 	if err != nil {
 		t.Fatalf("ApplyChangesJSON: %v", err)
 	}
-	rows, err := DecryptToRows(out, key.Private)
+	rows, err := DecryptToRows(out, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -802,7 +802,7 @@ func TestApplyChangesJSONAcceptsAnEmptyChangeSet(t *testing.T) {
 	key := newAgeKeyPair(t)
 	encrypted := encryptWithCLI(t, key, richPlainYAML)
 
-	out, err := ApplyChangesJSON(encrypted, []byte(`{}`), key.Private)
+	out, err := ApplyChangesJSON(encrypted, FormatYAML, []byte(`{}`), key.Private)
 	if err != nil {
 		t.Fatalf("ApplyChangesJSON: %v", err)
 	}
@@ -816,7 +816,7 @@ func TestApplyChangesJSONRefusesMalformedInputWithoutEchoingIt(t *testing.T) {
 	key := newAgeKeyPair(t)
 	encrypted := encryptWithCLI(t, key, richPlainYAML)
 
-	_, err := ApplyChangesJSON(encrypted, []byte(`{"sets":[{"nope":"`+changeCanary+`"}]}`), key.Private)
+	_, err := ApplyChangesJSON(encrypted, FormatYAML, []byte(`{"sets":[{"nope":"`+changeCanary+`"}]}`), key.Private)
 	if err == nil {
 		t.Fatalf("malformed change JSON was accepted")
 	}
@@ -832,7 +832,7 @@ func TestApplyChangesRejectsAnEmptyKey(t *testing.T) {
 	encrypted := encryptWithCLI(t, key, richPlainYAML)
 
 	for _, bad := range []string{"", "   ", "# only a comment\n", key.Public} {
-		if _, err := ApplyChangesAndEncrypt(encrypted, ChangeSet{
+		if _, err := ApplyChangesAndEncrypt(encrypted, FormatYAML, ChangeSet{
 			Removes: []Removal{{Path: []string{"api_key"}}},
 		}, bad); err == nil {
 			t.Fatalf("an identity of %q was accepted", bad)
@@ -1064,7 +1064,7 @@ func TestAKeyNamedSopsAtTheDocumentRootIsRefused(t *testing.T) {
 	out := applyChanges(t, encrypted, key, ChangeSet{
 		Adds: []Add{{Parent: []string{"db"}, Key: "sops", Value: "fine", Kind: KindString}},
 	})
-	rows, err := DecryptToRows(out, key.Private)
+	rows, err := DecryptToRows(out, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -1091,7 +1091,7 @@ func TestHostileKeyNamesRoundTripThroughTheRealCLI(t *testing.T) {
 		t.Run(fmt.Sprintf("%q", name), func(t *testing.T) {
 			// `sops` is only reserved at a document root, so everything here
 			// goes into `db`, which is also the harder case for the emitter.
-			out, err := ApplyChangesAndEncrypt(encrypted, ChangeSet{
+			out, err := ApplyChangesAndEncrypt(encrypted, FormatYAML, ChangeSet{
 				Adds: []Add{{Parent: []string{"db"}, Key: name, Value: "probe-value", Kind: KindString}},
 			}, key.Private)
 			if err != nil {
@@ -1100,7 +1100,7 @@ func TestHostileKeyNamesRoundTripThroughTheRealCLI(t *testing.T) {
 			if !strings.Contains(cliDecrypt(t, key, out), "probe-value") {
 				t.Fatalf("the sops CLI cannot see the added value")
 			}
-			rows, rowErr := DecryptToRows(out, key.Private)
+			rows, rowErr := DecryptToRows(out, FormatYAML, key.Private)
 			if rowErr != nil {
 				t.Fatalf("the bridge cannot read back its own output: %v", rowErr)
 			}
@@ -1127,7 +1127,7 @@ func TestAKeyCanBeRemovedAndAddedAgainInOneSave(t *testing.T) {
 		Removes: []Removal{{Path: []string{"db", "port"}}},
 	})
 
-	rows, err := DecryptToRows(out, key.Private)
+	rows, err := DecryptToRows(out, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -1194,12 +1194,12 @@ func TestANonCanonicalListIndexResolvesToNothing(t *testing.T) {
 	encrypted := encryptWithCLI(t, key, listPlainYAML)
 
 	for _, segment := range []string{"01", "+1", " 1", "1 ", "0x1"} {
-		if _, err := ApplyChangesAndEncrypt(encrypted, ChangeSet{
+		if _, err := ApplyChangesAndEncrypt(encrypted, FormatYAML, ChangeSet{
 			Sets: []Edit{{Path: []string{"ports", segment}, Value: "1", Kind: KindInt}},
 		}, key.Private); err == nil {
 			t.Fatalf("a set at ports.%q was accepted", segment)
 		}
-		if _, err := ApplyChangesAndEncrypt(encrypted, ChangeSet{
+		if _, err := ApplyChangesAndEncrypt(encrypted, FormatYAML, ChangeSet{
 			Removes: []Removal{{Path: []string{"ports", segment}}},
 		}, key.Private); err == nil {
 			t.Fatalf("a removal at ports.%q was accepted", segment)
@@ -1207,7 +1207,7 @@ func TestANonCanonicalListIndexResolvesToNothing(t *testing.T) {
 	}
 
 	// And so the shift guard cannot be walked around with one.
-	if _, err := ApplyChangesAndEncrypt(encrypted, ChangeSet{
+	if _, err := ApplyChangesAndEncrypt(encrypted, FormatYAML, ChangeSet{
 		Sets:    []Edit{{Path: []string{"ports", "01"}, Value: "1", Kind: KindInt}},
 		Removes: []Removal{{Path: []string{"ports", "1"}}},
 	}, key.Private); err == nil {

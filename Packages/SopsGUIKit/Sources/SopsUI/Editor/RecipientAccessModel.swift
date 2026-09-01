@@ -152,6 +152,15 @@ public final class RecipientAccessModel {
     /// recipient is a registry-only act and never consults this model's
     /// document state.
     public let projectURL: URL?
+    /// This file's own on-disk shape. Threaded through to every bridge call
+    /// this type makes (`SopsBridge.recipients`/`SopsBridge.updateRecipients`
+    /// in `load()`/`apply()`) instead of the `.yaml` this type used to assume
+    /// unconditionally — a per-file Access panel opened on a dotenv document
+    /// used to call the bridge as though it were YAML and fail with a message
+    /// that named the wrong problem (SOPS-38 fix-wave I1). Mirrors
+    /// `ProjectRecipientApplier.ScopedFile.format`, the project-wide panel's
+    /// equivalent, which has been format-aware since Task 5.
+    private let format: SopsFileFormat
     private let keyStore: SessionKeyStore
     private let readFile: (URL) throws -> String
     private let fingerprintFile: (URL) -> FileFingerprint?
@@ -165,7 +174,7 @@ public final class RecipientAccessModel {
     /// crypto (`runOffCooperativePool`) while a test's substitute can just
     /// call straight through — see `RecipientAccessTests`'s seam-injection
     /// suite.
-    private let rewrapRecipients: (String, [String], String) async throws -> String
+    private let rewrapRecipients: (String, SopsFileFormat, [String], String) async throws -> String
 
     /// This file's own encrypted bytes, as last read by `load()` or produced
     /// by the most recent successful `apply()`. `nil` until a load has
@@ -185,6 +194,13 @@ public final class RecipientAccessModel {
     ///     recipient still shows, only unlabeled.
     ///   - keyStore: Where the session's decryption identity comes from.
     ///     Never copied out of its own lending API — see `apply()`.
+    ///   - format: `fileURL`'s own on-disk shape. No default — every caller
+    ///     names it explicitly, the same house rule
+    ///     `SecretDocumentViewModel.init`'s own `format` parameter follows
+    ///     (SOPS-38, "no default format"): a document's format is a fact
+    ///     about that specific file, and a silent fallback here is exactly
+    ///     what let a dotenv file's Access panel call the bridge as though it
+    ///     were YAML in the first place.
     ///   - readFile/fingerprintFile/writeFile: Same seams as
     ///     `SecretDocumentViewModel`'s initializer, for the same reason —
     ///     tests can force a read/write failure without filesystem
@@ -201,6 +217,7 @@ public final class RecipientAccessModel {
         fileURL: URL,
         projectURL: URL?,
         keyStore: SessionKeyStore,
+        format: SopsFileFormat,
         readFile: @escaping (URL) throws -> String = { try String(contentsOf: $0, encoding: .utf8) },
         fingerprintFile: @escaping (URL) -> FileFingerprint? = { FileFingerprint.of($0) },
         writeFile: @escaping (String, URL, FileFingerprint?) throws -> FileFingerprint? = {
@@ -210,12 +227,13 @@ public final class RecipientAccessModel {
         loadRegistry: @escaping (URL) -> (records: [RecipientRecord], quarantineNotice: String?) = { project in
             RecipientRegistry.loadOrQuarantine(in: project)
         },
-        rewrapRecipients: @escaping (String, [String], String) async throws -> String = RecipientAccessModel
-            .defaultRewrap
+        rewrapRecipients: @escaping (String, SopsFileFormat, [String], String) async throws -> String =
+            RecipientAccessModel.defaultRewrap
     ) {
         self.fileURL = fileURL
         self.projectURL = projectURL
         self.keyStore = keyStore
+        self.format = format
         self.readFile = readFile
         self.fingerprintFile = fingerprintFile
         self.writeFile = writeFile
@@ -319,7 +337,7 @@ public final class RecipientAccessModel {
         }
 
         do {
-            let recipients = try SopsBridge.recipients(in: contents)
+            let recipients = try SopsBridge.recipients(in: contents, format: format)
             let collapsed = Self.collapsingDuplicates(recipients)
             encryptedContents = contents
             loadedFingerprint = fingerprint
@@ -507,7 +525,7 @@ public final class RecipientAccessModel {
             // way `SecretDocumentViewModel` uses `Outcome` for its
             // non-`rethrows` call sites.
             applied = try await keyStore.withKey { key in
-                try await rewrapRecipients(contents, recipientsToApply, key)
+                try await rewrapRecipients(contents, format, recipientsToApply, key)
             }
         } catch let error as SopsBridgeError {
             return .failed(error.description)
@@ -608,10 +626,11 @@ public final class RecipientAccessModel {
     /// least as visible as the initializer itself — this is not meant to be
     /// called directly. Construct a model without passing
     /// `rewrapRecipients` to get this behavior.
-    public static func defaultRewrap(_ contents: String, _ recipients: [String], _ key: String) async throws -> String
-    {
+    public static func defaultRewrap(
+        _ contents: String, _ format: SopsFileFormat, _ recipients: [String], _ key: String
+    ) async throws -> String {
         try await runOffCooperativePool {
-            try SopsBridge.updateRecipients(contents, to: recipients, agePrivateKey: key)
+            try SopsBridge.updateRecipients(contents, format: format, to: recipients, agePrivateKey: key)
         }
     }
 }

@@ -93,7 +93,7 @@ func TestDecryptToRowsProducesTheFilesOwnOrderAndTypes(t *testing.T) {
 	key := newAgeKeyPair(t)
 	encrypted := encryptWithCLI(t, key, richPlainYAML)
 
-	rows, err := DecryptToRows(encrypted, key.Private)
+	rows, err := DecryptToRows(encrypted, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestDecryptToRowsReportsWhichValuesAreCiphertextOnDisk(t *testing.T) {
 	key := newAgeKeyPair(t)
 	encrypted := encryptWithCLI(t, key, richPlainYAML)
 
-	rows, err := DecryptToRows(encrypted, key.Private)
+	rows, err := DecryptToRows(encrypted, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestDecryptToRowsSeparatesEncryptedFromPlaintextByRule(t *testing.T) {
 	encrypted := encryptWithCLI(t, key, richPlainYAML,
 		"--encrypted-regex", "^(password|api_key)$")
 
-	rows, err := DecryptToRows(encrypted, key.Private)
+	rows, err := DecryptToRows(encrypted, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestDecryptToRowsOnADocumentThatIsOnlyTheSopsBlock(t *testing.T) {
 	key := newAgeKeyPair(t)
 	encrypted := encryptWithCLI(t, key, "{}\n")
 
-	rows, err := DecryptToRows(encrypted, key.Private)
+	rows, err := DecryptToRows(encrypted, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestDecryptToRowsOnASingleKeyDocument(t *testing.T) {
 	key := newAgeKeyPair(t)
 	encrypted := encryptWithCLI(t, key, "only: value\n")
 
-	rows, err := DecryptToRows(encrypted, key.Private)
+	rows, err := DecryptToRows(encrypted, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestDecryptToRowsRejectsAnEmptyKey(t *testing.T) {
 		"plugin":       "AGE-PLUGIN-YUBIKEY-1QQQQQQQQQQQQQ",
 	} {
 		t.Run(name, func(t *testing.T) {
-			rows, err := DecryptToRows(encrypted, keyArg)
+			rows, err := DecryptToRows(encrypted, FormatYAML, keyArg)
 			if err == nil {
 				t.Fatalf("DecryptToRows succeeded with no supplied identity and returned %d rows", len(rows))
 			}
@@ -252,7 +252,7 @@ func TestApplyEditsRejectsAnEmptyKey(t *testing.T) {
 	encrypted := encryptWithCLI(t, key, richPlainYAML)
 	t.Setenv("SOPS_AGE_KEY", key.Private)
 
-	out, err := ApplyEditsAndEncrypt(encrypted,
+	out, err := ApplyEditsAndEncrypt(encrypted, FormatYAML,
 		[]Edit{{Path: []string{"db", "host"}, Value: "elsewhere", Kind: KindString}}, "")
 	if err == nil {
 		t.Fatalf("ApplyEditsAndEncrypt succeeded with no supplied identity (%d bytes)", len(out))
@@ -275,10 +275,10 @@ func TestDocumentAPINeverExecutesSopsAgeKeyCmd(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "marker")
 	t.Setenv("SOPS_AGE_KEY_CMD", "/usr/bin/touch "+marker)
 
-	if _, err := DecryptToRows(encrypted, ""); err == nil {
+	if _, err := DecryptToRows(encrypted, FormatYAML, ""); err == nil {
 		t.Errorf("DecryptToRows succeeded with no identity")
 	}
-	if _, err := ApplyEditsAndEncrypt(encrypted, nil, ""); err == nil {
+	if _, err := ApplyEditsAndEncrypt(encrypted, FormatYAML, nil, ""); err == nil {
 		t.Errorf("ApplyEditsAndEncrypt succeeded with no identity")
 	}
 	if _, statErr := os.Stat(marker); statErr == nil {
@@ -299,7 +299,7 @@ func TestEditPreservesCommentsAndOrder(t *testing.T) {
 
 	before := cliDecrypt(t, key, encrypted)
 
-	edited, err := ApplyEditsAndEncrypt(encrypted,
+	edited, err := ApplyEditsAndEncrypt(encrypted, FormatYAML,
 		[]Edit{{Path: []string{"db", "password"}, Value: "correct horse", Kind: KindString}},
 		key.Private)
 	if err != nil {
@@ -336,7 +336,7 @@ func TestEditedFileDecryptsWithTheSopsCLI(t *testing.T) {
 	key := newAgeKeyPair(t)
 	encrypted := encryptWithCLI(t, key, richPlainYAML)
 
-	edited, err := ApplyEditsAndEncrypt(encrypted,
+	edited, err := ApplyEditsAndEncrypt(encrypted, FormatYAML,
 		[]Edit{{Path: []string{"api_key"}, Value: "sk-live-rotated", Kind: KindString}},
 		key.Private)
 	if err != nil {
@@ -378,7 +378,7 @@ func TestSavePreservesTheFilesOwnRecipientsNotTheConfigs(t *testing.T) {
 	}
 	t.Chdir(confDir)
 
-	edited, err := ApplyEditsAndEncrypt(encrypted,
+	edited, err := ApplyEditsAndEncrypt(encrypted, FormatYAML,
 		[]Edit{{Path: []string{"db", "password"}, Value: "rotated", Kind: KindString}},
 		owner.Private)
 	if err != nil {
@@ -416,7 +416,7 @@ func TestSavePreservesMacOnlyEncryptedAndUnencryptedSuffix(t *testing.T) {
 		"--unencrypted-suffix", "_unencrypted",
 		"--mac-only-encrypted")
 
-	edited, err := ApplyEditsAndEncrypt(encrypted,
+	edited, err := ApplyEditsAndEncrypt(encrypted, FormatYAML,
 		[]Edit{{Path: []string{"secret"}, Value: "rotated", Kind: KindString}}, key.Private)
 	if err != nil {
 		t.Fatalf("ApplyEditsAndEncrypt: %v", err)
@@ -450,7 +450,7 @@ func TestSaveDoesNotRewriteTheFilesRecordedVersion(t *testing.T) {
 		t.Fatalf("fixture has no version line")
 	}
 
-	edited, err := ApplyEditsAndEncrypt(encrypted,
+	edited, err := ApplyEditsAndEncrypt(encrypted, FormatYAML,
 		[]Edit{{Path: []string{"api_key"}, Value: "x", Kind: KindString}}, key.Private)
 	if err != nil {
 		t.Fatalf("ApplyEditsAndEncrypt: %v", err)
@@ -481,7 +481,7 @@ func TestEditingANonStringScalarKeepsItsType(t *testing.T) {
 			key := newAgeKeyPair(t)
 			encrypted := encryptWithCLI(t, key, richPlainYAML)
 
-			edited, err := ApplyEditsAndEncrypt(encrypted,
+			edited, err := ApplyEditsAndEncrypt(encrypted, FormatYAML,
 				[]Edit{{Path: []string{"db", tc.path}, Value: tc.value, Kind: tc.kind}},
 				key.Private)
 			if err != nil {
@@ -493,7 +493,7 @@ func TestEditingANonStringScalarKeepsItsType(t *testing.T) {
 			}
 
 			// And the row model agrees on the type afterwards.
-			rows, err := DecryptToRows(edited, key.Private)
+			rows, err := DecryptToRows(edited, FormatYAML, key.Private)
 			if err != nil {
 				t.Fatalf("DecryptToRows: %v", err)
 			}
@@ -516,7 +516,7 @@ func TestEditingToAndFromNull(t *testing.T) {
 	encrypted := encryptWithCLI(t, key, richPlainYAML)
 
 	// A value becomes null.
-	cleared, err := ApplyEditsAndEncrypt(encrypted,
+	cleared, err := ApplyEditsAndEncrypt(encrypted, FormatYAML,
 		[]Edit{{Path: []string{"db", "password"}, Kind: KindNull}}, key.Private)
 	if err != nil {
 		t.Fatalf("clearing to null: %v", err)
@@ -524,7 +524,7 @@ func TestEditingToAndFromNull(t *testing.T) {
 	if !strings.Contains(cliDecrypt(t, key, cleared), "password: null") {
 		t.Errorf("the value was not cleared to null:\n%s", cliDecrypt(t, key, cleared))
 	}
-	rows, err := DecryptToRows(cleared, key.Private)
+	rows, err := DecryptToRows(cleared, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -537,7 +537,7 @@ func TestEditingToAndFromNull(t *testing.T) {
 	}
 
 	// And a null becomes a value again, which is encrypted this time.
-	filled, err := ApplyEditsAndEncrypt(cleared,
+	filled, err := ApplyEditsAndEncrypt(cleared, FormatYAML,
 		[]Edit{{Path: []string{"db", "nothing"}, Value: "now set", Kind: KindString}}, key.Private)
 	if err != nil {
 		t.Fatalf("setting a null: %v", err)
@@ -545,7 +545,7 @@ func TestEditingToAndFromNull(t *testing.T) {
 	if strings.Contains(string(filled), "now set") {
 		t.Errorf("the new value was written in plaintext")
 	}
-	rows, err = DecryptToRows(filled, key.Private)
+	rows, err = DecryptToRows(filled, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -561,7 +561,7 @@ func TestEditingThroughNestedMapsAndLists(t *testing.T) {
 	key := newAgeKeyPair(t)
 	encrypted := encryptWithCLI(t, key, richPlainYAML)
 
-	edited, err := ApplyEditsAndEncrypt(encrypted, []Edit{
+	edited, err := ApplyEditsAndEncrypt(encrypted, FormatYAML, []Edit{
 		{Path: []string{"servers", "1", "ip"}, Value: "10.0.0.99", Kind: KindString},
 	}, key.Private)
 	if err != nil {
@@ -588,7 +588,7 @@ func TestADecimalMapKeyIsNotAListIndex(t *testing.T) {
 	const src = "ports:\n    \"0\": first\n    \"1\": second\nlist:\n    - zeroth\n    - oneth\n"
 	encrypted := encryptWithCLI(t, key, src)
 
-	rows, err := DecryptToRows(encrypted, key.Private)
+	rows, err := DecryptToRows(encrypted, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -599,7 +599,7 @@ func TestADecimalMapKeyIsNotAListIndex(t *testing.T) {
 		t.Errorf("list[0] = %q, want %q", got, "zeroth")
 	}
 
-	edited, err := ApplyEditsAndEncrypt(encrypted, []Edit{
+	edited, err := ApplyEditsAndEncrypt(encrypted, FormatYAML, []Edit{
 		{Path: []string{"ports", "1"}, Value: "changed", Kind: KindString},
 	}, key.Private)
 	if err != nil {
@@ -621,7 +621,7 @@ func TestEditingBothSidesOfEncryptedRegex(t *testing.T) {
 	encrypted := encryptWithCLI(t, key, richPlainYAML,
 		"--encrypted-regex", "^(password|api_key)$")
 
-	edited, err := ApplyEditsAndEncrypt(encrypted, []Edit{
+	edited, err := ApplyEditsAndEncrypt(encrypted, FormatYAML, []Edit{
 		{Path: []string{"db", "password"}, Value: "new-secret-value", Kind: KindString},
 		{Path: []string{"db", "host"}, Value: "new-public-host", Kind: KindString},
 	}, key.Private)
@@ -637,7 +637,7 @@ func TestEditingBothSidesOfEncryptedRegex(t *testing.T) {
 		t.Errorf("the edited plaintext-by-rule value was encrypted:\n%s", out)
 	}
 
-	rows, err := DecryptToRows(edited, key.Private)
+	rows, err := DecryptToRows(edited, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -669,7 +669,7 @@ func TestEditingToQuotingHostileAndMultilineValues(t *testing.T) {
 			key := newAgeKeyPair(t)
 			encrypted := encryptWithCLI(t, key, richPlainYAML)
 
-			edited, err := ApplyEditsAndEncrypt(encrypted,
+			edited, err := ApplyEditsAndEncrypt(encrypted, FormatYAML,
 				[]Edit{{Path: []string{"db", "password"}, Value: tc.value, Kind: KindString}},
 				key.Private)
 			if err != nil {
@@ -682,7 +682,7 @@ func TestEditingToQuotingHostileAndMultilineValues(t *testing.T) {
 				writeTemp(t, "e.yaml", edited)); err != nil {
 				t.Fatalf("the sops CLI could not decrypt the result: %v", err)
 			}
-			rows, err := DecryptToRows(edited, key.Private)
+			rows, err := DecryptToRows(edited, FormatYAML, key.Private)
 			if err != nil {
 				t.Fatalf("DecryptToRows: %v", err)
 			}
@@ -700,7 +700,7 @@ func TestMultiDocumentFilesAddressEachDocumentSeparately(t *testing.T) {
 	key := newAgeKeyPair(t)
 	encrypted := encryptWithCLI(t, key, "shared: first\n---\nshared: second\n")
 
-	rows, err := DecryptToRows(encrypted, key.Private)
+	rows, err := DecryptToRows(encrypted, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRows: %v", err)
 	}
@@ -714,7 +714,7 @@ func TestMultiDocumentFilesAddressEachDocumentSeparately(t *testing.T) {
 		t.Errorf("values wrong: %+v", rows)
 	}
 
-	edited, err := ApplyEditsAndEncrypt(encrypted,
+	edited, err := ApplyEditsAndEncrypt(encrypted, FormatYAML,
 		[]Edit{{Document: 1, Path: []string{"shared"}, Value: "changed", Kind: KindString}},
 		key.Private)
 	if err != nil {
@@ -756,7 +756,7 @@ func TestEditsAreRefusedRatherThanGuessedAt(t *testing.T) {
 		"time that is not":   {Path: []string{"db", "created"}, Value: "yesterday", Kind: KindTimestamp},
 	} {
 		t.Run(name, func(t *testing.T) {
-			out, err := ApplyEditsAndEncrypt(encrypted, []Edit{edit}, key.Private)
+			out, err := ApplyEditsAndEncrypt(encrypted, FormatYAML, []Edit{edit}, key.Private)
 			if err == nil {
 				t.Fatalf("the edit was accepted; %d bytes written", len(out))
 			}
@@ -773,7 +773,7 @@ func TestDuplicateEditsForOneRowAreRefused(t *testing.T) {
 	key := newAgeKeyPair(t)
 	encrypted := encryptWithCLI(t, key, richPlainYAML)
 
-	_, err := ApplyEditsAndEncrypt(encrypted, []Edit{
+	_, err := ApplyEditsAndEncrypt(encrypted, FormatYAML, []Edit{
 		{Path: []string{"db", "host"}, Value: "one", Kind: KindString},
 		{Path: []string{"db", "host"}, Value: "two", Kind: KindString},
 	}, key.Private)
@@ -795,7 +795,7 @@ func TestEditErrorsNameThePathAndNeverTheValue(t *testing.T) {
 		{Path: []string{"db"}, Value: secretish, Kind: KindString},
 		{Path: []string{"db", "host"}, Value: secretish, Kind: "octopus"},
 	} {
-		_, err := ApplyEditsAndEncrypt(encrypted, []Edit{edit}, key.Private)
+		_, err := ApplyEditsAndEncrypt(encrypted, FormatYAML, []Edit{edit}, key.Private)
 		if err == nil {
 			t.Fatalf("expected a refusal for %v", edit.Path)
 		}
@@ -815,10 +815,10 @@ func TestDocumentAPIWithAnUnrelatedIdentityFails(t *testing.T) {
 	stranger := newAgeKeyPair(t)
 	encrypted := encryptWithCLI(t, owner, richPlainYAML)
 
-	if rows, err := DecryptToRows(encrypted, stranger.Private); err == nil {
+	if rows, err := DecryptToRows(encrypted, FormatYAML, stranger.Private); err == nil {
 		t.Fatalf("an unrelated identity produced %d rows", len(rows))
 	}
-	if _, err := ApplyEditsAndEncrypt(encrypted,
+	if _, err := ApplyEditsAndEncrypt(encrypted, FormatYAML,
 		[]Edit{{Path: []string{"db", "host"}, Value: "x", Kind: KindString}},
 		stranger.Private); err == nil {
 		t.Fatalf("an unrelated identity produced a saved file")
@@ -831,14 +831,14 @@ func TestDocumentAPIRejectsATamperedMAC(t *testing.T) {
 	encrypted := encryptWithCLI(t, key, richPlainYAML)
 	tampered := strings.Replace(string(encrypted), "port: ENC[", "porx: ENC[", 1)
 
-	if _, err := DecryptToRows([]byte(tampered), key.Private); err == nil {
+	if _, err := DecryptToRows([]byte(tampered), FormatYAML, key.Private); err == nil {
 		t.Fatalf("a tampered document was accepted")
 	}
 }
 
 func TestDocumentAPIRejectsAPlaintextFile(t *testing.T) {
 	key := newAgeKeyPair(t)
-	if _, err := DecryptToRows([]byte(richPlainYAML), key.Private); err == nil {
+	if _, err := DecryptToRows([]byte(richPlainYAML), FormatYAML, key.Private); err == nil {
 		t.Fatalf("an unencrypted file was accepted as a sops document")
 	}
 }
@@ -856,7 +856,7 @@ func TestSavingWithNoEditsRewritesOnlyTheTimestampAndMAC(t *testing.T) {
 	encrypted := encryptWithCLI(t, key, richPlainYAML,
 		"--encrypted-regex", "^(password|api_key)$")
 
-	out, err := ApplyEditsAndEncrypt(encrypted, nil, key.Private)
+	out, err := ApplyEditsAndEncrypt(encrypted, FormatYAML, nil, key.Private)
 	if err != nil {
 		t.Fatalf("ApplyEditsAndEncrypt: %v", err)
 	}
@@ -908,7 +908,7 @@ func TestInlineCommentsMoveExactlyAsTheSopsCLIMovesThem(t *testing.T) {
 	}
 
 	// What we do.
-	ourOut, err := ApplyEditsAndEncrypt(encrypted,
+	ourOut, err := ApplyEditsAndEncrypt(encrypted, FormatYAML,
 		[]Edit{{Path: []string{"host"}, Value: "elsewhere", Kind: KindString}}, key.Private)
 	if err != nil {
 		t.Fatalf("ApplyEditsAndEncrypt: %v", err)
@@ -985,7 +985,7 @@ func TestRowsJSONIsAnArrayEvenWhenEmpty(t *testing.T) {
 	key := newAgeKeyPair(t)
 	encrypted := encryptWithCLI(t, key, "{}\n")
 
-	payload, err := DecryptToRowsJSON(encrypted, key.Private)
+	payload, err := DecryptToRowsJSON(encrypted, FormatYAML, key.Private)
 	if err != nil {
 		t.Fatalf("DecryptToRowsJSON: %v", err)
 	}
@@ -999,7 +999,7 @@ func TestApplyEditsJSONRoundTrip(t *testing.T) {
 	encrypted := encryptWithCLI(t, key, richPlainYAML)
 
 	edits := `[{"path":["db","port"],"value":"6543","kind":"int"}]`
-	out, err := ApplyEditsJSON(encrypted, []byte(edits), key.Private)
+	out, err := ApplyEditsJSON(encrypted, FormatYAML, []byte(edits), key.Private)
 	if err != nil {
 		t.Fatalf("ApplyEditsJSON: %v", err)
 	}
@@ -1007,7 +1007,7 @@ func TestApplyEditsJSONRoundTrip(t *testing.T) {
 		t.Errorf("the edit did not land")
 	}
 
-	if _, err := ApplyEditsJSON(encrypted, []byte("not json"), key.Private); err == nil {
+	if _, err := ApplyEditsJSON(encrypted, FormatYAML, []byte("not json"), key.Private); err == nil {
 		t.Errorf("malformed edit JSON was accepted")
 	}
 }
@@ -1086,10 +1086,10 @@ func TestDecryptErrorsNeverCarryTheDecryptedValue(t *testing.T) {
 				}
 			}
 
-			_, err := DecryptToRows(corrupt, key.Private)
+			_, err := DecryptToRows(corrupt, FormatYAML, key.Private)
 			check("DecryptToRows", err)
 
-			_, err = ApplyEditsAndEncrypt(corrupt,
+			_, err = ApplyEditsAndEncrypt(corrupt, FormatYAML,
 				[]Edit{{Path: []string{"other"}, Value: "x", Kind: KindString}}, key.Private)
 			check("ApplyEditsAndEncrypt", err)
 
@@ -1111,7 +1111,7 @@ func TestMACDecryptErrorsAreSanitised(t *testing.T) {
 	encrypted := encryptWithCLI(t, key, "api_key: "+decryptCanary+"\n")
 	corrupt := retypeEncryptedValue(t, encrypted, "mac", "int")
 
-	if _, err := DecryptToRows(corrupt, key.Private); err == nil {
+	if _, err := DecryptToRows(corrupt, FormatYAML, key.Private); err == nil {
 		t.Fatalf("a document with an unreadable MAC was accepted")
 	} else if strings.Contains(err.Error(), decryptCanary) {
 		t.Errorf("the error carries a decrypted value: %v", err)
@@ -1143,7 +1143,7 @@ func TestDecryptFailuresAreClassified(t *testing.T) {
 	stranger := newAgeKeyPair(t)
 	encrypted := encryptWithCLI(t, key, "api_key: "+decryptCanary+"\n")
 
-	if _, err := DecryptToRows(encrypted, stranger.Private); err == nil {
+	if _, err := DecryptToRows(encrypted, FormatYAML, stranger.Private); err == nil {
 		t.Fatal("an unrelated identity was accepted")
 	} else if !strings.Contains(err.Error(), "none of the keys") {
 		t.Errorf("a wrong-identity failure is not reported as one: %v", err)
@@ -1156,7 +1156,7 @@ func TestDecryptFailuresAreClassified(t *testing.T) {
 	partial := encryptWithCLI(t, key, "host: localhost\napi_key: "+decryptCanary+"\n",
 		"--encrypted-regex", "^api_key$")
 	tampered := strings.Replace(string(partial), "host: localhost", "host: elsewhere", 1)
-	if _, err := DecryptToRows([]byte(tampered), key.Private); err == nil {
+	if _, err := DecryptToRows([]byte(tampered), FormatYAML, key.Private); err == nil {
 		t.Fatal("a tampered document was accepted")
 	} else if !strings.Contains(err.Error(), "modified since it was encrypted") {
 		t.Errorf("a tampered document is not reported as one: %v", err)
@@ -1165,7 +1165,7 @@ func TestDecryptFailuresAreClassified(t *testing.T) {
 	}
 
 	mistyped := retypeEncryptedValue(t, encrypted, "api_key", "int")
-	if _, err := DecryptToRows(mistyped, key.Private); err == nil {
+	if _, err := DecryptToRows(mistyped, FormatYAML, key.Private); err == nil {
 		t.Fatal("a mistyped value was accepted")
 	} else if !strings.Contains(err.Error(), "could not be read") {
 		t.Errorf("an unreadable value is not reported as one: %v", err)
@@ -1176,7 +1176,7 @@ func TestDecryptFailuresAreClassified(t *testing.T) {
 	// Corrupted ciphertext is an unreadable value too, not a MAC mismatch:
 	// sops never gets far enough to compute a MAC.
 	garbled := strings.Replace(string(encrypted), "data:", "data:A", 1)
-	if _, err := DecryptToRows([]byte(garbled), key.Private); err == nil {
+	if _, err := DecryptToRows([]byte(garbled), FormatYAML, key.Private); err == nil {
 		t.Fatal("a garbled document was accepted")
 	} else if !strings.Contains(err.Error(), "could not be read") {
 		t.Errorf("garbled ciphertext is not reported as an unreadable value: %v", err)
@@ -1226,7 +1226,7 @@ func TestLoadErrorsNeverCarryDocumentText(t *testing.T) {
 
 	// The same parser runs over the *encrypted* file, whose keys are cleartext.
 	corrupt := "a: 1\n" + decryptCanary + ": x\n" + decryptCanary + ": y\nsops:\n    version: 3.13.2\n"
-	if _, err := DecryptToRows([]byte(corrupt), key.Private); err == nil {
+	if _, err := DecryptToRows([]byte(corrupt), FormatYAML, key.Private); err == nil {
 		t.Fatalf("a malformed encrypted file was accepted")
 	} else if strings.Contains(err.Error(), decryptCanary) {
 		t.Errorf("the read path carries the document's own text: %v", err)
@@ -1261,7 +1261,7 @@ func TestLoadErrorsKeepTheirPosition(t *testing.T) {
 // message.
 func TestAPlainYAMLFileIsReportedAsNotBeingASopsDocument(t *testing.T) {
 	key := newAgeKeyPair(t)
-	_, err := DecryptToRows([]byte("a: 1\nb: 2\n"), key.Private)
+	_, err := DecryptToRows([]byte("a: 1\nb: 2\n"), FormatYAML, key.Private)
 	if err == nil {
 		t.Fatal("a plain YAML file was accepted as a SOPS document")
 	}
@@ -1323,7 +1323,7 @@ func TestTheDamagedKeyIsNamedAndNotTheNextHealthyOne(t *testing.T) {
 			key := newAgeKeyPair(t)
 			corrupted := corrupt(t, encryptWithCLI(t, key, src))
 
-			_, err := DecryptToRows(corrupted, key.Private)
+			_, err := DecryptToRows(corrupted, FormatYAML, key.Private)
 			if err == nil {
 				t.Fatalf("a damaged document was accepted")
 			}
@@ -1350,7 +1350,7 @@ func TestPlaintextByRuleKeysAreNeverNamedAsTheDamagedOne(t *testing.T) {
 		"--encrypted-regex", "^(password|api_key|token)$")
 
 	corrupted := replaceEncryptedValue(t, encrypted, "api_key", "42")
-	_, err := DecryptToRows(corrupted, key.Private)
+	_, err := DecryptToRows(corrupted, FormatYAML, key.Private)
 	if err == nil {
 		t.Fatal("a damaged document was accepted")
 	}
@@ -1382,7 +1382,7 @@ func TestDamageInsideAListIsLocated(t *testing.T) {
 		t.Fatal("fixture has no encrypted ip")
 	}
 
-	_, err := DecryptToRows([]byte(strings.Join(lines, "\n")), key.Private)
+	_, err := DecryptToRows([]byte(strings.Join(lines, "\n")), FormatYAML, key.Private)
 	if err == nil {
 		t.Fatal("a damaged document was accepted")
 	}

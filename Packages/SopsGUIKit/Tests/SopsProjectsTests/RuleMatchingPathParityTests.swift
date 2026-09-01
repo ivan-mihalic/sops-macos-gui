@@ -62,7 +62,7 @@ struct RuleMatchingPathParityTests {
 
         let secrets = root.appendingPathComponent("secrets", isDirectory: true)
         try FileManager.default.createDirectory(at: secrets, withIntermediateDirectories: true)
-        let encrypted = try SopsBridge.encryptYAML(applierPlainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [owner.public])
         try encrypted.write(to: secrets.appendingPathComponent("prod.yaml"), atomically: true, encoding: .utf8)
         return root
     }

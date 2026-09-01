@@ -1738,13 +1738,13 @@
               "one": {
                 "stringUnit": {
                   "state": "translated",
-                  "value": "%d file uses a sops format this app doesn't open yet (dotenv, JSON, or INI)."
+                  "value": "%d file uses a sops format this app doesn't open yet (JSON or INI)."
                 }
               },
               "other": {
                 "stringUnit": {
                   "state": "translated",
-                  "value": "%d files use a sops format this app doesn't open yet (dotenv, JSON, or INI)."
+                  "value": "%d files use a sops format this app doesn't open yet (JSON or INI)."
                 }
               }
             }
@@ -2852,7 +2852,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "No sops-encrypted YAML files were found in this project."
+            "value": "No sops-encrypted YAML or dotenv files were found in this project."
           }
         }
       }
@@ -3824,6 +3824,39 @@
           "stringUnit": {
             "state": "translated",
             "value": "This app can't build a safe one-line command for this exact path — something in the name (most likely a line break) can't be folded into a shell command honestly. Open Terminal, navigate to the file by hand, and run chmod 600 on it yourself."
+          }
+        }
+      }
+    },
+    "new-file.target-format.yaml": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Will be created as a YAML file."
+          }
+        }
+      }
+    },
+    "new-file.target-format.dotenv": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Will be created as a dotenv (.env) file."
+          }
+        }
+      }
+    },
+    "editor.add.invalid-dotenv-key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This key cannot be saved in a dotenv file: it contains “=”, starts with “#”, or has a line break, and this format would read it back differently — or not at all. Choose a different name."
           }
         }
       }

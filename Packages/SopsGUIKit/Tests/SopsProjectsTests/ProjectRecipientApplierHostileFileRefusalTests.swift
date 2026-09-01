@@ -1,4 +1,5 @@
 import Foundation
+import SopsEngine
 import Testing
 @testable import SopsProjects
 
@@ -10,11 +11,11 @@ import Testing
 /// (`RecipientAccessModel.load()`): inject a NUL-bearing string directly as
 /// the "file" this applier reads, no real disk I/O needed.
 ///
-/// `ProjectRecipientApplier.applyToOne(_:_:_:)` guards this at
-/// `ProjectRecipientApplier.swift:629`, immediately before
-/// `readRecipients(contents)` (which defaults to `SopsBridge.recipients(in:)`)
-/// — until this test, that guard had no behavioural proof of its own; only
-/// the load-path guard in `SecretDocumentViewModel` did.
+/// `ProjectRecipientApplier.applyToOne(_:_:_:_:)` guards this, immediately
+/// before `readRecipients(contents, format)` (which defaults to
+/// `SopsBridge.recipients(in:format:)`) — until this test, that guard had no
+/// behavioural proof of its own; only the load-path guard in
+/// `SecretDocumentViewModel` did.
 @Suite("ProjectRecipientApplier refuses a file it cannot read whole")
 struct ProjectRecipientApplierHostileFileRefusalTests {
 
@@ -30,7 +31,9 @@ struct ProjectRecipientApplierHostileFileRefusalTests {
             readFile: { _ in "alpha: one\n\u{0}beta: two\n" },
             fingerprintFile: { _ in nil })
 
-        let outcome = await applier.apply(files: [url], recipients: ["age1anything"], agePrivateKey: "")
+        let outcome = await applier.apply(
+            files: [ProjectRecipientApplier.ScopedFile(url: url, format: .yaml)],
+            recipients: ["age1anything"], agePrivateKey: "")
 
         guard case .failed(let message) = outcome.results.first?.outcome else {
             Issue.record("a NUL-truncated file was not recorded as .failed: \(String(describing: outcome.results.first?.outcome))")
@@ -46,7 +49,9 @@ struct ProjectRecipientApplierHostileFileRefusalTests {
             readFile: { _ in "not a sops document\n" },
             fingerprintFile: { _ in nil })
 
-        let outcome = await applier.apply(files: [url], recipients: ["age1anything"], agePrivateKey: "")
+        let outcome = await applier.apply(
+            files: [ProjectRecipientApplier.ScopedFile(url: url, format: .yaml)],
+            recipients: ["age1anything"], agePrivateKey: "")
 
         if case .failed(let message) = outcome.results.first?.outcome {
             #expect(!message.contains("NUL"), "an ordinary failure was reported as NUL-bearing")

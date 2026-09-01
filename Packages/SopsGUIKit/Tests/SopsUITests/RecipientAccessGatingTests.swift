@@ -343,11 +343,12 @@ struct AccessButtonWiringTests {
 
     private func loadedEditor(makeDirty: Bool) async throws -> SecretDocumentViewModel {
         let key = try AgeKeyPairForTests.generate()
-        let encrypted = try SopsBridge.encryptYAML(Self.plaintext, recipients: [key.public])
+        let encrypted = try SopsBridge.encrypt(Self.plaintext, format: .yaml, recipients: [key.public])
         let store = SessionKeyStore()
         try store.importKey(key.private)
         let model = SecretDocumentViewModel(
             fileURL: URL(fileURLWithPath: "/dev/null/access-gating.yaml"),
+            format: .yaml,
             keyStore: store, readFile: { _ in encrypted })
         await model.load()
         if makeDirty {
@@ -368,7 +369,8 @@ struct AccessButtonWiringTests {
             SecretEditorView(
                 viewModel: model, fileName: "production.secrets.yaml", unsavedChanges: UnsavedChangesTracker(),
                 recipientAccess: SecretEditorView.RecipientAccessContext(
-                    fileURL: URL(fileURLWithPath: "/dev/null/access-gating.yaml"), keyStore: SessionKeyStore()))
+                    fileURL: URL(fileURLWithPath: "/dev/null/access-gating.yaml"), keyStore: SessionKeyStore(),
+                    format: .yaml))
         }
 
         let accessButton = nodes.first { $0.label == LocalizedKey.accessToolbarButton.text }
@@ -387,7 +389,8 @@ struct AccessButtonWiringTests {
             SecretEditorView(
                 viewModel: model, fileName: "production.secrets.yaml", unsavedChanges: UnsavedChangesTracker(),
                 recipientAccess: SecretEditorView.RecipientAccessContext(
-                    fileURL: URL(fileURLWithPath: "/dev/null/access-gating.yaml"), keyStore: SessionKeyStore()))
+                    fileURL: URL(fileURLWithPath: "/dev/null/access-gating.yaml"), keyStore: SessionKeyStore(),
+                    format: .yaml))
         }
 
         let accessButton = nodes.first { $0.label == LocalizedKey.accessToolbarButton.text }
@@ -406,13 +409,13 @@ struct RecipientAccessRowLabelTests {
     func rowLabelMatchesStatus() async throws {
         let owner = try AgeKeyPairForTests.generate()
         let kept = try AgeKeyPairForTests.generate()
-        let encrypted = try SopsBridge.encryptYAML(
-            "db:\n    password: fixture-EXAMPLE\n", recipients: [owner.public, kept.public])
+        let encrypted = try SopsBridge.encrypt(
+            "db:\n    password: fixture-EXAMPLE\n", format: .yaml, recipients: [owner.public, kept.public])
         let store = SessionKeyStore()
         try store.importKey(owner.private)
         let model = RecipientAccessModel(
             fileURL: URL(fileURLWithPath: "/dev/null/access-row-labels.yaml"), projectURL: nil, keyStore: store,
-            readFile: { _ in encrypted })
+            format: .yaml, readFile: { _ in encrypted })
 
         // Rendered on an unloaded model, exactly as the real toolbar button
         // does it — `RecipientAccessView`'s own `.task { await model.load() }`
@@ -459,8 +462,8 @@ struct RecipientAccessRegistryQuarantineTests {
     @Test("a moved-aside registry's notice is shown, not just held on the model")
     func noticeIsRendered() async throws {
         let owner = try AgeKeyPairForTests.generate()
-        let encrypted = try SopsBridge.encryptYAML(
-            "db:\n    password: fixture-EXAMPLE\n", recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(
+            "db:\n    password: fixture-EXAMPLE\n", format: .yaml, recipients: [owner.public])
         let store = SessionKeyStore()
         try store.importKey(owner.private)
         let notice = "Your recipient names at /fixture/.sops-gui/recipients.json could not be read, " +
@@ -469,7 +472,7 @@ struct RecipientAccessRegistryQuarantineTests {
         let model = RecipientAccessModel(
             fileURL: URL(fileURLWithPath: "/dev/null/access-registry-quarantine.yaml"),
             projectURL: URL(fileURLWithPath: "/dev/null/never-read-project"), keyStore: store,
-            readFile: { _ in encrypted },
+            format: .yaml, readFile: { _ in encrypted },
             loadRegistry: { _ in ([], notice) })
 
         let host = GatingHost(size: CGSize(width: 480, height: 360)) {
@@ -493,15 +496,15 @@ struct RecipientAccessRegistryQuarantineTests {
     @Test("an ordinary load shows no registry-quarantine banner")
     func ordinaryLoadShowsNoRegistryQuarantineBanner() async throws {
         let owner = try AgeKeyPairForTests.generate()
-        let encrypted = try SopsBridge.encryptYAML(
-            "db:\n    password: fixture-EXAMPLE\n", recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(
+            "db:\n    password: fixture-EXAMPLE\n", format: .yaml, recipients: [owner.public])
         let store = SessionKeyStore()
         try store.importKey(owner.private)
 
         let model = RecipientAccessModel(
             fileURL: URL(fileURLWithPath: "/dev/null/access-registry-quarantine-clean.yaml"),
             projectURL: URL(fileURLWithPath: "/dev/null/never-read-project"), keyStore: store,
-            readFile: { _ in encrypted },
+            format: .yaml, readFile: { _ in encrypted },
             loadRegistry: { _ in ([], nil) })
 
         let host = GatingHost(size: CGSize(width: 480, height: 360)) {

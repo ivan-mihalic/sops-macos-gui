@@ -319,6 +319,12 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // metadata; a document that misuses either cannot be read back at all.
     // Mirrors `refuseReservedKey` in the bridge — see `AddRowRefusal`.
     case editorAddReservedKey = "editor.add.reserved-key"
+    // SOPS-38 fix-wave C1: a dotenv document's own store reads a value back
+    // by splitting on the first `=` and treating a leading `#` as a comment,
+    // so a key using either character (or an embedded newline) saves without
+    // error and can never be decrypted again. Mirrors `refuseInvalidDotenvKey`
+    // in the bridge — see `AddRowRefusal.invalidDotenvKey`.
+    case editorAddInvalidDotenvKey = "editor.add.invalid-dotenv-key"
     // Shown instead of a padlock on a row added in this session — see
     // `SecretEditorView`'s doc comment for why neither padlock would be true.
     case editorNewRowBadge = "editor.new-row-badge"
@@ -721,6 +727,15 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case newFileNameLabel = "new-file.name.label"
     // An example path, not a real default — the field starts empty.
     case newFileNamePlaceholder = "new-file.name.placeholder"
+
+    // Task SOPS-38: `NewSecretFileModel.targetFormat` — derived from
+    // `relativeName`'s own extension via `SopsFileFormat.forDestinationName(_:)`
+    // — decides which of these renders. Two sentences rather than one
+    // parameterised with a format name, matching how `.newFileInfoNoConfig`/
+    // `.newFileInfoNoRuleMatched` are two separate keys rather than one: each
+    // is a whole, separately translatable sentence.
+    case newFileTargetFormatYAML = "new-file.target-format.yaml"
+    case newFileTargetFormatDotEnv = "new-file.target-format.dotenv"
 
     // The `ⓘ` line's shapes: one per `CreationPlan` case, plus resolving.
     // `.unsupportedRule`/`.configUnreadable` reuse `CreationFailurePresenter

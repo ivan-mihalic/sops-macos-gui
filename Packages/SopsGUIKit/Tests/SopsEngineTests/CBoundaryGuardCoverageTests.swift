@@ -45,9 +45,9 @@ import Testing
 ///
 /// Every name this codebase actually uses, today, to get file content to a
 /// Go bridge call that treats it as an *existing* encrypted SOPS document —
-/// `SopsBridge.decryptYAML(`, `SopsBridge.decryptToRows(`,
+/// `SopsBridge.decrypt(`, `SopsBridge.decryptToRows(`,
 /// `SopsBridge.recipients(in:`, `SopsBridge.updateRecipients(` — plus
-/// `SopsBridge.encryptYAML(` (ticket #30, below) and three known
+/// `SopsBridge.encrypt(` (ticket #30, below) and three known
 /// indirections through a private/injected seam this codebase already uses
 /// for testability (`Self.decrypt(` and `Self.applyChanges(` in
 /// `SecretDocumentViewModel`; `readRecipients(` and `rewrapRecipients(` in
@@ -63,10 +63,10 @@ import Testing
 /// forces a deliberate look at this file the day a fifth is added using one
 /// of those same names.
 ///
-/// ## `SopsBridge.encryptYAML(` is in the sink list, and the count is still 4
+/// ## `SopsBridge.encrypt(` is in the sink list, and the count is still 4
 ///
 /// Ticket #30. `NewSecretFileModel.loadPlainYAML`/`.loadDotEnv` used to read
-/// an import source and hand it to `encryptYAML` unguarded, sharing the same
+/// an import source and hand it to `encrypt` unguarded, sharing the same
 /// `withGoString` truncation mechanism as the four crossing points above —
 /// milder, because there is no *existing* document whose second half is
 /// destroyed (the file being composed does not exist on disk yet), but no
@@ -81,14 +81,14 @@ import Testing
 /// a gap this file is hiding: `readsAFile && reachesTheBridge` are both
 /// required *in the same function body* (see `everyCrossingPointIsGuarded`
 /// below), and neither `loadPlainYAML` nor `loadDotEnv` calls
-/// `SopsBridge.encryptYAML` itself — the encrypt happens later, in
+/// `SopsBridge.encrypt` itself — the encrypt happens later, in
 /// `SecretFileCreator.create`, a different type entirely, which in turn
 /// never reads a file (it receives an already-loaded `Source`). So this is
 /// the same structural limit the paragraph above already names for a new
 /// *indirection name*, one level further out: a multi-hop handoff through a
 /// stored property and a second call, not a same-body indirection, is
 /// exactly what a single-function-body scan cannot see, with or without
-/// `encryptYAML` in this list. `encryptYAML` stays in the sink list anyway —
+/// `encrypt` in this list. `encrypt` stays in the sink list anyway —
 /// it now watches every *direct* same-body pairing of a file read with an
 /// encrypt call this codebase has today (there are none) or gains later, the
 /// identical guarantee the other four names already give.
@@ -99,9 +99,9 @@ struct CBoundaryGuardCoverageTests {
 
     private static let readSignals = ["readFile("]
     private static let sinkSignals = [
-        "SopsBridge.decryptYAML(", "SopsBridge.decryptToRows(",
+        "SopsBridge.decrypt(", "SopsBridge.decryptToRows(",
         "SopsBridge.recipients(in:", "SopsBridge.updateRecipients(",
-        "SopsBridge.encryptYAML(",
+        "SopsBridge.encrypt(",
         "Self.decrypt(", "Self.applyChanges(",
         "readRecipients(", "rewrapRecipients(",
     ]

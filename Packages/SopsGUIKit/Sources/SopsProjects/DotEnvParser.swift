@@ -470,6 +470,23 @@ public enum DotEnvParser {
         return c.isLetter || c.isNumber || c == "_" || c == "." || c == "-"
     }
 
+    /// Whether `key` is entirely made of dotenv's own key charset (`[\w.-]+`,
+    /// ASCII-only) and non-empty — the single source of truth for what a key
+    /// this package's own writer (`DotEnvEmitter`) can ever be handed safely.
+    /// `DotEnvEmitter`'s doc comment already states the invariant it depends
+    /// on ("every key already passed `DotEnvParser`'s own key grammar"); this
+    /// is the function that lets a caller *check* that before constructing a
+    /// `DotEnvEntry`, rather than only trusting it — the one place this app
+    /// needs to (`SecretDocumentViewModel.refusalForAdding`, F1's editor
+    /// "Add" sheet: a key the user just typed has never been through
+    /// `DotEnvParser.parse` and so has no other guarantee it fits this
+    /// charset). Reuses `isKeyChar` rather than a second, hand-copied
+    /// character class — see this package's own rule against exactly that
+    /// kind of drift (CLAUDE.md).
+    public static func isValidKey(_ key: String) -> Bool {
+        !key.isEmpty && key.allSatisfy(isKeyChar)
+    }
+
     /// `[A-Za-z_][A-Za-z0-9_]*` — the shell/POSIX name rule, stricter than
     /// dotenv's own key charset. Every character this is ever called with
     /// already passed `isKeyChar`, so only the leading digit/`.`/`-` and any

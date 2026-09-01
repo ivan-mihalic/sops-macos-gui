@@ -1,3 +1,4 @@
+import SopsEngine
 import SopsHealth
 import SopsProjects
 import SopsUI
@@ -344,6 +345,7 @@ enum Catalog {
     private static func secretEditor() async throws -> [Snapshot] {
         let unloaded = SecretDocumentViewModel(
             fileURL: URL(fileURLWithPath: "/dev/null/loading.yaml"),
+            format: .yaml,
             keyStore: SessionKeyStore(),
             readFile: { _ in "irrelevant" })
         // Deliberately not awaited — this is what the view looks like the
@@ -357,6 +359,7 @@ enum Catalog {
         let failed = try await Fixtures.editorLoadFailedViewModel()
         let (pending, pendingSelection) = try await Fixtures.editorPendingChangesViewModel()
         let (revealed, revealedRowIDs) = try await Fixtures.editorRevealedRowViewModel()
+        let dotenv = try await Fixtures.editorDotenvViewModel()
 
         let editorSize = CGSize(width: 760, height: 560)
         func editor(_ name: String, _ model: SecretDocumentViewModel, fileName: String) -> Snapshot {
@@ -426,6 +429,16 @@ enum Catalog {
             },
             Snapshot("editor-add-sheet-list", size: CGSize(width: 460, height: 310)) {
                 Fixtures.addRowSheet(isList: true)
+            },
+            // Task 6 (SOPS-38): the editor now opens dotenv sops files, not
+            // just YAML — same view, a flat document with no map/list rows
+            // at all.
+            editor("editor-dotenv", dotenv, fileName: "production.env"),
+            // The `+` sheet's type picker restricted to `.string` — the part
+            // of Task 6 a YAML snapshot cannot show, since every kind is
+            // legitimate there.
+            Snapshot("editor-add-sheet-dotenv", size: CGSize(width: 460, height: 330)) {
+                Fixtures.addRowSheetDotenv()
             },
         ]
     }

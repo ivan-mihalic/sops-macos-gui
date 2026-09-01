@@ -69,7 +69,7 @@ private func makeSingleFileProject(
               - \(owner.public)
 
         """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
-    try SopsBridge.encryptYAML(confirmationPlainYAML, recipients: [owner.public])
+    try SopsBridge.encrypt(confirmationPlainYAML, format: .yaml, recipients: [owner.public])
         .write(to: root.appendingPathComponent("a.yaml"), atomically: true, encoding: .utf8)
     return root
 }
@@ -119,7 +119,7 @@ struct ProjectAccessConfigConfirmationTests {
                   - \(leaving.public)
 
             """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
-        try SopsBridge.encryptYAML(confirmationPlainYAML, recipients: [owner.public, leaving.public])
+        try SopsBridge.encrypt(confirmationPlainYAML, format: .yaml, recipients: [owner.public, leaving.public])
             .write(to: root.appendingPathComponent("a.yaml"), atomically: true, encoding: .utf8)
 
         let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
@@ -243,17 +243,17 @@ struct ApplyingSpinnerAccessibilityTests {
         let added = try ConfirmationAgeKeyPair.generate()
         let root = try confirmationScratchDirectory("access-spinner")
         let file = root.appendingPathComponent("a.yaml")
-        try SopsBridge.encryptYAML(confirmationPlainYAML, recipients: [owner.public])
+        try SopsBridge.encrypt(confirmationPlainYAML, format: .yaml, recipients: [owner.public])
             .write(to: file, atomically: true, encoding: .utf8)
 
         let keyStore = SessionKeyStore()
         try keyStore.importKey(owner.private)
         let gate = RewrapGate()
         let model = RecipientAccessModel(
-            fileURL: file, projectURL: nil, keyStore: keyStore,
-            rewrapRecipients: { contents, recipients, key in
+            fileURL: file, projectURL: nil, keyStore: keyStore, format: .yaml,
+            rewrapRecipients: { contents, format, recipients, key in
                 await gate.enter()
-                return try SopsBridge.updateRecipients(contents, to: recipients, agePrivateKey: key)
+                return try SopsBridge.updateRecipients(contents, format: format, to: recipients, agePrivateKey: key)
             })
 
         let host = GatingHost(size: CGSize(width: 460, height: 520)) {
@@ -293,9 +293,9 @@ struct ApplyingSpinnerAccessibilityTests {
         // or a cooperative-pool thread. The `plan` path does not call this seam
         // at all, so loading the panel is unaffected.
         let held = DispatchSemaphore(value: 0)
-        let applier = ProjectRecipientApplier(rewrapRecipients: { contents, recipients, key in
+        let applier = ProjectRecipientApplier(rewrapRecipients: { contents, format, recipients, key in
             held.wait()
-            return try SopsBridge.updateRecipients(contents, to: recipients, agePrivateKey: key)
+            return try SopsBridge.updateRecipients(contents, format: format, to: recipients, agePrivateKey: key)
         })
         let model = ProjectAccessModel(projectRoot: root, keyStore: keyStore, applier: applier)
 

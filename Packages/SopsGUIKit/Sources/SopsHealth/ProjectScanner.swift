@@ -1,23 +1,35 @@
 import Darwin
 import Foundation
+import SopsEngine
 
 /// A candidate file paired with the tail bytes already read from it, so
 /// callers that need the content (`recipientFinding`) don't re-open and
 /// re-read the file a second time after `encryptedFiles(under:)` already
 /// paid that cost once.
+///
+/// `format` names which on-disk shape `tail` decoded from — `.yaml` or
+/// `.dotenv`, the two serializations this build can read recipients out of
+/// (`EncryptedFileMetadata`) and, for YAML today, edit. JSON and INI sops
+/// documents never produce a `SniffedFile` at all — see
+/// `ScannedTree.encryptedInOtherFormats` — so `format` here is never
+/// anything else. `SopsFileFormat` has no default anywhere in this app (see
+/// its own doc comment), and this is no exception: every `SniffedFile` states
+/// which shape it is, rather than a caller assuming YAML.
 public struct SniffedFile: Sendable {
     public let url: URL
     let tail: String
+    public let format: SopsFileFormat
 }
 
 /// What one walk of a project tree found.
 public struct ScannedTree: Sendable {
-    /// Files carrying a YAML `sops:` metadata block — the shape this
-    /// build can read recipients out of.
+    /// Files carrying sops metadata this build can read recipients out of —
+    /// a YAML `sops:` metadata block or a dotenv `sops_`-prefixed one. See
+    /// `SniffedFile.format` for which.
     public var encrypted: [SniffedFile] = []
-    /// Files carrying sops metadata in some other serialization
-    /// (dotenv, JSON, INI). Recorded, not ignored: they are reported as
-    /// unverifiable rather than quietly left out of the count.
+    /// Files carrying sops metadata in some other serialization (JSON, INI).
+    /// Recorded, not ignored: they are reported as unverifiable rather than
+    /// quietly left out of the count.
     public var encryptedInOtherFormats: [URL] = []
     /// Files whose *names* conventionally hold plaintext secrets and
     /// which carry no sops metadata at all.
@@ -643,12 +655,32 @@ public struct ProjectScanner {
             // decode was indistinguishable from a tail that failed to read —
             // and so, now, does a structural mismatch: a file that merely
             // *mentions* a sops block is not one.
-            return .encrypted(SniffedFile(url: url, tail: text))
+            return .encrypted(SniffedFile(url: url, tail: text, format: .yaml))
         }
         if Self.looksSopsEncryptedInAnotherFormat(tail),
-           let text = text(),
-           SopsMetadataShape.isNonYAMLMetadata(text) {
-            return .otherFormat(url)
+           let text = text() {
+            // `nonYAMLKind` is the same structural confirmation
+            // `isNonYAMLMetadata` used to collapse into a bare `Bool` — now
+            // it also says *which* non-YAML store wrote it, which is what
+            // lets dotenv take a different branch than JSON/INI below.
+            switch SopsMetadataShape.nonYAMLKind(text) {
+            case .dotenv:
+                // Dotenv is the second format this build can actually read
+                // recipients out of (`EncryptedFileMetadata`, taught the
+                // `sops_age__list_N__map_recipient=` shape alongside this
+                // task) — so it belongs in `tree.encrypted`, verified,
+                // rather than `encryptedInOtherFormats`, unverifiable. JSON
+                // and INI stay unverifiable: nothing on the Swift side reads
+                // their metadata shape yet.
+                return .encrypted(SniffedFile(url: url, tail: text, format: .dotenv))
+            case .json, .ini:
+                return .otherFormat(url)
+            case nil:
+                // The byte-level marker matched, but nothing sops actually
+                // wrote confirmed it structurally — the same "merely
+                // mentions it" case the YAML branch above guards against.
+                break
+            }
         }
         return nil
     }
@@ -1139,9 +1171,14 @@ public struct ProjectScanner {
     }
 
     /// Cheap byte-level prefilter for sops metadata as written by its
-    /// non-YAML stores. A hit here is a *candidate*, confirmed structurally by
-    /// `SopsMetadataShape.isNonYAMLMetadata` — on its own this matches any
-    /// file that happens to contain the bytes, including this very file.
+    /// non-YAML stores — dotenv, JSON, INI alike. A hit here is a
+    /// *candidate*, confirmed structurally and disambiguated by
+    /// `SopsMetadataShape.nonYAMLKind` — on its own this matches any file
+    /// that happens to contain the bytes, including this very file. Which of
+    /// the three it actually is (and therefore whether the caller routes it
+    /// to `tree.encrypted` or `tree.encryptedInOtherFormats`) is decided
+    /// after this filter, not by it — this stays one shared cheap filter
+    /// for all three rather than three separate per-file byte scans.
     ///
     /// Operates on raw bytes, not a decoded `String` — see `classify`'s doc
     /// comment for why.

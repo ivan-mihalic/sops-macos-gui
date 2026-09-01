@@ -114,8 +114,8 @@ type LeafEncryptionSummary struct {
 //
 // Errors exactly as `Recipients` does: the document has no sops metadata at
 // all, or could not be parsed as YAML. Never requires an age identity.
-func InspectLeafEncryption(encrypted []byte) (LeafEncryptionSummary, error) {
-	sf, err := FormatYAML.toSopsFormat()
+func InspectLeafEncryption(encrypted []byte, format Format) (LeafEncryptionSummary, error) {
+	sf, err := format.toSopsFormat()
 	if err != nil {
 		return LeafEncryptionSummary{}, err
 	}
@@ -173,8 +173,8 @@ func narrowingRuleState(m sops.Metadata) (narrowing bool, uncompilable bool) {
 }
 
 // InspectLeafEncryptionJSON is the C-safe form of InspectLeafEncryption.
-func InspectLeafEncryptionJSON(encrypted []byte) ([]byte, error) {
-	summary, err := InspectLeafEncryption(encrypted)
+func InspectLeafEncryptionJSON(encrypted []byte, format Format) ([]byte, error) {
+	summary, err := InspectLeafEncryption(encrypted, format)
 	if err != nil {
 		return nil, err
 	}

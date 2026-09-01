@@ -48,7 +48,7 @@ func TestUpdateRecipientsRewrapsForExactlyTheRequestedPeople(t *testing.T) {
 		"--encrypt", "--age", owner.Public+","+removed.Public,
 		writeTemp(t, "secrets.yaml", []byte(plainYAML)))
 
-	rewrapped, err := UpdateRecipients(encrypted, []string{kept.Public, added.Public}, owner.Private)
+	rewrapped, err := UpdateRecipients(encrypted, FormatYAML, []string{kept.Public, added.Public}, owner.Private)
 	if err != nil {
 		t.Fatalf("UpdateRecipients: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestRecipientsReadsTheDocumentMetadata(t *testing.T) {
 		"--encrypt", "--age", first.Public+","+second.Public,
 		writeTemp(t, "secrets.yaml", []byte(plainYAML)))
 
-	got, err := Recipients(encrypted)
+	got, err := Recipients(encrypted, FormatYAML)
 	if err != nil {
 		t.Fatalf("Recipients: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestUpdateRecipientsRefusesUnsafeRecipientArguments(t *testing.T) {
 		"whitespace item": {[]string{owner.Public, " \t\n "}, errRecipientInvalid},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := UpdateRecipients(encrypted, tc.recipients, owner.Private)
+			_, err := UpdateRecipients(encrypted, FormatYAML, tc.recipients, owner.Private)
 			if err == nil {
 				t.Fatal("unsafe recipients were accepted")
 			}
@@ -133,10 +133,10 @@ func TestRecipientAPIsRefuseNonNativeAgeOnlyMetadata(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			malformed := mutateRecipientMetadata(t, encrypted, mutate)
 
-			_, err := Recipients(malformed)
+			_, err := Recipients(malformed, FormatYAML)
 			assertRecipientMetadataRefusal(t, "Recipients", err, owner)
 
-			_, err = UpdateRecipients(malformed, []string{owner.Public}, owner.Private)
+			_, err = UpdateRecipients(malformed, FormatYAML, []string{owner.Public}, owner.Private)
 			assertRecipientMetadataRefusal(t, "UpdateRecipients", err, owner)
 		})
 	}

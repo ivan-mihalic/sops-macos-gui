@@ -309,12 +309,12 @@ struct EditorCompatibilityTests {
         let before = try CLI.decrypt(encrypted, identities: keys)
         #expect(before == fixture.plaintext, "the CLI did not round-trip its own fixture")
         // And the bridge agrees about the starting document.
-        let rowsBefore = try SopsBridge.decryptToRows(encrypted, agePrivateKey: keys[0].private)
+        let rowsBefore = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: keys[0].private)
         #expect(!rowsBefore.isEmpty)
 
         // ---- 2. Edit one value through the bridge. ----------------------
         let saved = try SopsBridge.applyEdits(
-            encrypted, edits: [fixture.edit], agePrivateKey: keys[0].private)
+            encrypted, format: .yaml, edits: [fixture.edit], agePrivateKey: keys[0].private)
 
         // ---- 3. `sops --decrypt` the result. ----------------------------
         // Once per recipient, separately: a save that dropped a recipient
@@ -419,8 +419,8 @@ struct EditorCompatibilityTests {
             after, recipients: keys, encryptedRegex: fixture.encryptedRegex)
         #expect(try CLI.decrypt(reEncrypted, identities: keys) == after)
 
-        let rowsFromOurSave = try SopsBridge.decryptToRows(saved, agePrivateKey: keys[0].private)
-        let rowsFromTheCLI = try SopsBridge.decryptToRows(reEncrypted, agePrivateKey: keys[0].private)
+        let rowsFromOurSave = try SopsBridge.decryptToRows(saved, format: .yaml, agePrivateKey: keys[0].private)
+        let rowsFromTheCLI = try SopsBridge.decryptToRows(reEncrypted, format: .yaml, agePrivateKey: keys[0].private)
         #expect(
             rowsFromTheCLI == rowsFromOurSave,
             "the bridge reads its own save and the CLI's re-encryption differently")
@@ -441,7 +441,7 @@ struct EditorCompatibilityTests {
 
         let saved = try SopsBridge.applyChanges(
             encrypted,
-            changes: SecretChangeSet(
+            format: .yaml, changes: SecretChangeSet(
                 adds: [
                     SecretAddition(
                         parent: ["db"], key: "replica", value: "replica.internal", kind: .string)
@@ -483,8 +483,8 @@ struct EditorCompatibilityTests {
         // The CLI can re-encrypt the result and the bridge still reads it.
         let reEncrypted = try CLI.encrypt(after, recipients: keys, encryptedRegex: nil)
         #expect(
-            try SopsBridge.decryptToRows(reEncrypted, agePrivateKey: keys[1].private)
-                == SopsBridge.decryptToRows(saved, agePrivateKey: keys[1].private))
+            try SopsBridge.decryptToRows(reEncrypted, format: .yaml, agePrivateKey: keys[1].private)
+                == SopsBridge.decryptToRows(saved, format: .yaml, agePrivateKey: keys[1].private))
     }
 
     @Test(
@@ -496,12 +496,12 @@ struct EditorCompatibilityTests {
 
         let saved = try SopsBridge.applyChanges(
             encrypted,
-            changes: SecretChangeSet(removes: [SecretRemoval(path: ["ports", "0"])]),
+            format: .yaml, changes: SecretChangeSet(removes: [SecretRemoval(path: ["ports", "0"])]),
             agePrivateKey: key.private)
 
         // MAC verified by the CLI, and the survivors kept their order.
         let after = try CLI.decrypt(saved, identities: [key])
-        let rows = try SopsBridge.decryptToRows(saved, agePrivateKey: key.private)
+        let rows = try SopsBridge.decryptToRows(saved, format: .yaml, agePrivateKey: key.private)
         #expect(rows.filter { $0.path.first == "ports" }.map(\.value) == ["8443", "9090"])
         #expect(rows.filter { $0.path.first == "ports" }.map { $0.path[1] } == ["0", "1"])
 
@@ -521,8 +521,8 @@ struct EditorCompatibilityTests {
         // Re-encrypted by the CLI, still ours to read.
         let reEncrypted = try CLI.encrypt(after, recipients: [key], encryptedRegex: nil)
         #expect(
-            try SopsBridge.decryptToRows(reEncrypted, agePrivateKey: key.private)
-                == SopsBridge.decryptToRows(saved, agePrivateKey: key.private))
+            try SopsBridge.decryptToRows(reEncrypted, format: .yaml, agePrivateKey: key.private)
+                == SopsBridge.decryptToRows(saved, format: .yaml, agePrivateKey: key.private))
         #expect(try CLI.decrypt(reEncrypted, identities: [key]) == after)
     }
 
@@ -537,7 +537,7 @@ struct EditorCompatibilityTests {
 
         let saved = try SopsBridge.applyChanges(
             encrypted,
-            changes: SecretChangeSet(adds: [
+            format: .yaml, changes: SecretChangeSet(adds: [
                 // Matches the rule: must land as ciphertext.
                 SecretAddition(parent: ["db"], key: "token", value: "added-secret", kind: .string),
                 // Does not match: must land in cleartext.
@@ -557,7 +557,7 @@ struct EditorCompatibilityTests {
         #expect(after.contains("token: added-secret"))
         #expect(after.contains("region: eu-central"))
 
-        let rows = try SopsBridge.decryptToRows(saved, agePrivateKey: key.private)
+        let rows = try SopsBridge.decryptToRows(saved, format: .yaml, agePrivateKey: key.private)
         #expect(rows.first { $0.path == ["db", "token"] }?.isEncrypted == true)
         #expect(rows.first { $0.path == ["db", "region"] }?.isEncrypted == false)
 
@@ -565,7 +565,7 @@ struct EditorCompatibilityTests {
         // the same rows come back.
         let reEncrypted = try CLI.encrypt(after, recipients: [key], encryptedRegex: regex)
         #expect(
-            try SopsBridge.decryptToRows(reEncrypted, agePrivateKey: key.private) == rows,
+            try SopsBridge.decryptToRows(reEncrypted, format: .yaml, agePrivateKey: key.private) == rows,
             "the bridge reads its own save and the CLI's re-encryption differently")
     }
 
@@ -579,7 +579,7 @@ struct EditorCompatibilityTests {
         let encrypted = try CLI.encrypt(plainYAMLFixture, recipients: [key], encryptedRegex: nil)
         let saved = try SopsBridge.applyEdits(
             encrypted,
-            edits: [SecretEdit(path: ["db", "password"], value: "rotated-plain", kind: .string)],
+            format: .yaml, edits: [SecretEdit(path: ["db", "password"], value: "rotated-plain", kind: .string)],
             agePrivateKey: key.private)
 
         // Roll one value back to the ciphertext it had *before* the edit and
@@ -608,7 +608,7 @@ struct EditorCompatibilityTests {
         // Our own bridge refuses it too, rather than presenting a form the
         // user might save back over their file.
         #expect(throws: SopsBridgeError.self) {
-            try SopsBridge.decryptToRows(tampered, agePrivateKey: key.private)
+            try SopsBridge.decryptToRows(tampered, format: .yaml, agePrivateKey: key.private)
         }
     }
 }

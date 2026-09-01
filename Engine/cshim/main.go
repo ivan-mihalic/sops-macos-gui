@@ -138,12 +138,18 @@ func result(out **C.char, payload []byte, err error) (status C.int) {
 	return statusOK
 }
 
-//export sops_encrypt_yaml
-func sops_encrypt_yaml(plain *C.char, recipientsCSV *C.char, encryptedRegex *C.char, out **C.char) C.int {
+// sops_encrypt turns plain into a SOPS-encrypted file. format selects the
+// document's on-disk shape — "yaml" or "dotenv" — and is converted with
+// gobridge.Format and handed straight to gobridge.Encrypt, which validates it
+// (Format.toSopsFormat) before touching plain at all. An unrecognized format
+// therefore surfaces as an ordinary error through result(), never a panic.
+//
+//export sops_encrypt
+func sops_encrypt(plain *C.char, format *C.char, recipientsCSV *C.char, encryptedRegex *C.char, out **C.char) C.int {
 	encrypted, err := gobridge.Guard(gobridge.OpEncrypting, func() ([]byte, error) {
 		return gobridge.Encrypt(
 			[]byte(C.GoString(plain)),
-			gobridge.FormatYAML,
+			gobridge.Format(C.GoString(format)),
 			gobridge.EncryptOpts{
 				AgeRecipients:  gobridge.SplitRecipients(C.GoString(recipientsCSV)),
 				EncryptedRegex: C.GoString(encryptedRegex),
@@ -153,12 +159,16 @@ func sops_encrypt_yaml(plain *C.char, recipientsCSV *C.char, encryptedRegex *C.c
 	return result(out, encrypted, err)
 }
 
-//export sops_decrypt_yaml
-func sops_decrypt_yaml(encrypted *C.char, agePrivateKey *C.char, out **C.char) C.int {
+// sops_decrypt is sops_encrypt's inverse. format identifies encrypted's shape
+// the same way — "yaml" or "dotenv" — and is validated by gobridge.Decrypt
+// before the document is parsed.
+//
+//export sops_decrypt
+func sops_decrypt(encrypted *C.char, format *C.char, agePrivateKey *C.char, out **C.char) C.int {
 	plain, err := gobridge.Guard(gobridge.OpReading, func() ([]byte, error) {
 		return gobridge.Decrypt(
 			[]byte(C.GoString(encrypted)),
-			gobridge.FormatYAML,
+			gobridge.Format(C.GoString(format)),
 			C.GoString(agePrivateKey),
 		)
 	})
@@ -166,25 +176,26 @@ func sops_decrypt_yaml(encrypted *C.char, agePrivateKey *C.char, out **C.char) C
 }
 
 // sops_recipients returns the document's native age recipient list as JSON.
-// Metadata is public, so this operation never needs an age identity.
+// Metadata is public, so this operation never needs an age identity. format
+// selects encrypted's on-disk shape ("yaml" or "dotenv").
 //
 //export sops_recipients
-func sops_recipients(encrypted *C.char, out **C.char) C.int {
+func sops_recipients(encrypted *C.char, format *C.char, out **C.char) C.int {
 	payload, err := gobridge.Guard(gobridge.OpReading, func() ([]byte, error) {
-		return gobridge.RecipientsJSON([]byte(C.GoString(encrypted)))
+		return gobridge.RecipientsJSON([]byte(C.GoString(encrypted)), gobridge.Format(C.GoString(format)))
 	})
 	return result(out, payload, err)
 }
 
 // sops_update_recipients explicitly replaces the document's recipient list.
 // recipientsJSON is a JSON string array; accepting a structured list avoids
-// comma-delimited ambiguity at the C boundary.
+// comma-delimited ambiguity at the C boundary. format selects encrypted's
+// on-disk shape ("yaml" or "dotenv").
 //
 //export sops_update_recipients
-func sops_update_recipients(encrypted *C.char, recipientsJSON *C.char, agePrivateKey *C.char, out **C.char) C.int {
+func sops_update_recipients(encrypted *C.char, format *C.char, recipientsJSON *C.char, agePrivateKey *C.char, out **C.char) C.int {
 	payload, err := gobridge.Guard(gobridge.OpSaving, func() ([]byte, error) {
-		return gobridge.UpdateRecipientsJSON(
-			[]byte(C.GoString(encrypted)),
+		return gobridge.UpdateRecipientsJSON([]byte(C.GoString(encrypted)), gobridge.Format(C.GoString(format)),
 			[]byte(C.GoString(recipientsJSON)),
 			C.GoString(agePrivateKey),
 		)
@@ -247,28 +258,29 @@ func sops_update_config_recipients(
 	return result(out, payload, err)
 }
 
-// sops_decrypt_to_rows decrypts a SOPS YAML document into the ordered list of
-// editable rows the editor renders. On success *out carries the JSON encoding
-// of a []gobridge.Row (see gobridge/document.go) — always an array, never
-// null. The document is parsed and emitted only by sops's own stores; nothing
-// on the Swift side ever re-parses the user's YAML.
+// sops_decrypt_to_rows decrypts a SOPS document into the ordered list of
+// editable rows the editor renders. format selects encrypted's on-disk shape
+// ("yaml" or "dotenv"). On success *out carries the JSON encoding of a
+// []gobridge.Row (see gobridge/document.go) — always an array, never null.
+// The document is parsed and emitted only by sops's own stores; nothing on
+// the Swift side ever re-parses the user's document.
 //
 // agePrivateKey must be a native AGE-SECRET-KEY-1… identity. An argument that
 // yields no identity is an error, never a signal to consult the environment.
 //
 //export sops_decrypt_to_rows
-func sops_decrypt_to_rows(encrypted *C.char, agePrivateKey *C.char, out **C.char) C.int {
+func sops_decrypt_to_rows(encrypted *C.char, format *C.char, agePrivateKey *C.char, out **C.char) C.int {
 	payload, err := gobridge.Guard(gobridge.OpReading, func() ([]byte, error) {
-		return gobridge.DecryptToRowsJSON(
-			[]byte(C.GoString(encrypted)),
+		return gobridge.DecryptToRowsJSON([]byte(C.GoString(encrypted)), gobridge.Format(C.GoString(format)),
 			C.GoString(agePrivateKey),
 		)
 	})
 	return result(out, payload, err)
 }
 
-// sops_apply_edits applies edited values to an existing SOPS YAML document and
-// returns the re-encrypted file in *out. editsJSON is the JSON encoding of a
+// sops_apply_edits applies edited values to an existing SOPS document and
+// returns the re-encrypted file in *out. format selects encrypted's on-disk
+// shape ("yaml" or "dotenv"). editsJSON is the JSON encoding of a
 // []gobridge.Edit.
 //
 // The saved file keeps its own metadata — recipients, encrypted_regex, MAC
@@ -277,10 +289,9 @@ func sops_decrypt_to_rows(encrypted *C.char, agePrivateKey *C.char, out **C.char
 // read it without saying so, which is `updatekeys`' job (M4).
 //
 //export sops_apply_edits
-func sops_apply_edits(encrypted *C.char, editsJSON *C.char, agePrivateKey *C.char, out **C.char) C.int {
+func sops_apply_edits(encrypted *C.char, format *C.char, editsJSON *C.char, agePrivateKey *C.char, out **C.char) C.int {
 	payload, err := gobridge.Guard(gobridge.OpSaving, func() ([]byte, error) {
-		return gobridge.ApplyEditsJSON(
-			[]byte(C.GoString(encrypted)),
+		return gobridge.ApplyEditsJSON([]byte(C.GoString(encrypted)), gobridge.Format(C.GoString(format)),
 			[]byte(C.GoString(editsJSON)),
 			C.GoString(agePrivateKey),
 		)
@@ -289,9 +300,9 @@ func sops_apply_edits(encrypted *C.char, editsJSON *C.char, agePrivateKey *C.cha
 }
 
 // sops_apply_changes is sops_apply_edits plus the two operations that change
-// a document's shape. changesJSON is the JSON encoding of a
-// gobridge.ChangeSet: `sets` (the same []Edit sops_apply_edits takes), `adds`
-// and `removes`.
+// a document's shape. format selects encrypted's on-disk shape ("yaml" or
+// "dotenv"). changesJSON is the JSON encoding of a gobridge.ChangeSet: `sets`
+// (the same []Edit sops_apply_edits takes), `adds` and `removes`.
 //
 // The same metadata guarantee holds: the saved file keeps its own recipients,
 // encrypted_regex, MAC settings and shamir_threshold, and a newly added value
@@ -303,10 +314,9 @@ func sops_apply_edits(encrypted *C.char, editsJSON *C.char, agePrivateKey *C.cha
 // guessed at — see gobridge/documentchanges.go's header for the rule.
 //
 //export sops_apply_changes
-func sops_apply_changes(encrypted *C.char, changesJSON *C.char, agePrivateKey *C.char, out **C.char) C.int {
+func sops_apply_changes(encrypted *C.char, format *C.char, changesJSON *C.char, agePrivateKey *C.char, out **C.char) C.int {
 	payload, err := gobridge.Guard(gobridge.OpSaving, func() ([]byte, error) {
-		return gobridge.ApplyChangesJSON(
-			[]byte(C.GoString(encrypted)),
+		return gobridge.ApplyChangesJSON([]byte(C.GoString(encrypted)), gobridge.Format(C.GoString(format)),
 			[]byte(C.GoString(changesJSON)),
 			C.GoString(agePrivateKey),
 		)
@@ -319,11 +329,12 @@ func sops_apply_changes(encrypted *C.char, changesJSON *C.char, agePrivateKey *C
 // see gobridge.LeafEncryptionSummary's doc comment for why this exists
 // (ticket #5) and what it does and does not conclude. Needs no age
 // identity: only the document's own on-disk shape is read, never decrypted.
+// format selects that shape ("yaml" or "dotenv").
 //
 //export sops_leaf_encryption_summary
-func sops_leaf_encryption_summary(encrypted *C.char, out **C.char) C.int {
+func sops_leaf_encryption_summary(encrypted *C.char, format *C.char, out **C.char) C.int {
 	payload, err := gobridge.Guard(gobridge.OpReading, func() ([]byte, error) {
-		return gobridge.InspectLeafEncryptionJSON([]byte(C.GoString(encrypted)))
+		return gobridge.InspectLeafEncryptionJSON([]byte(C.GoString(encrypted)), gobridge.Format(C.GoString(format)))
 	})
 	return result(out, payload, err)
 }

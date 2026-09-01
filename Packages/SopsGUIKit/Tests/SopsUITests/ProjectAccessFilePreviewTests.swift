@@ -66,8 +66,8 @@ private func makeNestedProject(owner: PreviewAgeKeyPair) throws -> URL {
               - \(owner.public)
 
         """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
-    let encrypted = try SopsBridge.encryptYAML(
-        "database:\n    password: correct-horse-battery-staple\n", recipients: [owner.public])
+    let encrypted = try SopsBridge.encrypt(
+        "database:\n    password: correct-horse-battery-staple\n", format: .yaml, recipients: [owner.public])
     for directory in ["dev", "prod"] {
         try FileManager.default.createDirectory(
             at: root.appendingPathComponent(directory), withIntermediateDirectories: true)
@@ -121,9 +121,9 @@ struct ProjectAccessFilePreviewTests {
 
         let plan = try #require(model.plan)
         let scanned = try #require(model.filesToApply.first)
-        try #require(!scanned.path.hasPrefix(plan.projectRoot.path),
+        try #require(!scanned.url.path.hasPrefix(plan.projectRoot.path),
                      "precondition: the scan and the root really do disagree on the spelling")
-        #expect(ProjectAccessView.previewPath(of: scanned, in: plan.projectRoot) == "dev/db.yaml")
+        #expect(ProjectAccessView.previewPath(of: scanned.url, in: plan.projectRoot) == "dev/db.yaml")
     }
 
     /// A preview whose cost grows with the project is not a preview a project

@@ -126,6 +126,28 @@ struct CanCreateTests {
     }
 }
 
+@Suite("NewSecretFileSheet.targetFormatText — the target-format line's copy (SOPS-38)")
+@MainActor
+struct TargetFormatTextTests {
+
+    @Test("no name typed yet renders nothing")
+    func nilFormatRendersNothing() {
+        #expect(NewSecretFileSheet.targetFormatText(for: nil) == nil)
+    }
+
+    @Test("a YAML target names YAML")
+    func yamlFormatRendersYAMLSentence() {
+        #expect(NewSecretFileSheet.targetFormatText(for: .yaml) == LocalizedKey.newFileTargetFormatYAML.text)
+    }
+
+    @Test("a dotenv target names dotenv, distinctly from the YAML sentence")
+    func dotenvFormatRendersDotenvSentence() {
+        let text = NewSecretFileSheet.targetFormatText(for: .dotenv)
+        #expect(text == LocalizedKey.newFileTargetFormatDotEnv.text)
+        #expect(text != NewSecretFileSheet.targetFormatText(for: .yaml))
+    }
+}
+
 @Suite("NewSecretFileSheet.shouldResolve — the debounce's own guard")
 @MainActor
 struct ShouldResolveTests {
@@ -713,7 +735,7 @@ struct CreateFromSourceTests {
         #expect(destination.path == root.appendingPathComponent("secret.yaml").path)
 
         let encrypted = try String(contentsOf: destination, encoding: .utf8)
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
         let password = try #require(rows.first { $0.path == ["db", "password"] })
         #expect(password.value == "correct-horse-battery-staple-EXAMPLE")
     }
@@ -779,12 +801,69 @@ struct CreateFromSourceTests {
         let destination = try #require(created, "create() must succeed for a loaded .env source")
 
         let encrypted = try String(contentsOf: destination, encoding: .utf8)
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
         let dbPassword = try #require(rows.first { $0.path == ["DB_PASSWORD"] })
         let apiKey = try #require(rows.first { $0.path == ["API_KEY"] })
         #expect(dbPassword.value == "correct-horse-battery-staple-EXAMPLE")
         #expect(apiKey.value == "sk_live_EXAMPLE")
         // Exactly the two entries — nothing extra, nothing dropped.
+        #expect(rows.count == 2)
+    }
+
+    /// Task SOPS-38, end to end through the model: naming the target
+    /// `.sops.env` — rather than `.yaml`, `dotEnvCreatesAReadableFile`'s own
+    /// destination above — is what makes `create()` write a genuine dotenv
+    /// document instead of a flat YAML map, purely because of
+    /// `NewSecretFileModel.targetFormat`/`SecretFileCreator`'s own name-based
+    /// decision. No `.sops.yaml` exists in this fixture on purpose: the
+    /// point is that the *destination name* decides the format, not
+    /// anything about how the recipients were resolved — `.noConfig` with a
+    /// manually-chosen recipient exercises `readiness`/`create()`'s other
+    /// major path (`RecipientPicker`'s own), proving the two concerns
+    /// (recipients, format) are genuinely independent.
+    @Test(".env source into a .sops.env target creates a genuine dotenv document, not YAML")
+    func dotEnvSourceIntoDotEnvTargetCreatesGenuineDotenv() async throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try scratchDirectory()
+        let keyStore = try makeKeyStore(importing: owner.private)
+        let model = NewSecretFileModel(projectRoot: root, keyStore: keyStore)
+
+        let picked = try sourceFile(
+            named: "input.env",
+            containing: "DB_PASSWORD=correct-horse-battery-staple-EXAMPLE\nAPI_KEY=sk_live_EXAMPLE\n")
+        model.loadDotEnv(from: picked)
+        try #require(model.dotEnvParsed?.entries.count == 2, "precondition: both entries parsed")
+
+        model.sourceChoice = .dotEnv
+        model.relativeName = ".sops.env"
+        await model.resolvePlan()
+        #expect(model.plan == .noConfig, "precondition: no .sops.yaml in this fixture")
+        #expect(model.targetFormat == .dotenv)
+
+        model.manuallyChosenRecipients = [owner.public]
+        guard case .ready = model.readiness else {
+            Issue.record("expected .ready once a recipient is chosen by hand, got \(model.readiness)")
+            return
+        }
+
+        let created = await model.create()
+        let destination = try #require(created, "create() must succeed")
+        #expect(destination.path == root.appendingPathComponent(".sops.env").path)
+
+        let encrypted = try String(contentsOf: destination, encoding: .utf8)
+
+        // Genuinely dotenv: reading it back as YAML must fail, the same
+        // discriminating proof `SecretFileCreatorTests
+        // .dotEnvTargetIsGenuineDotenv` uses at the layer below this one.
+        #expect(throws: SopsBridgeError.self) {
+            _ = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
+        }
+
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .dotenv, agePrivateKey: owner.private)
+        let dbPassword = try #require(rows.first { $0.path == ["DB_PASSWORD"] })
+        let apiKey = try #require(rows.first { $0.path == ["API_KEY"] })
+        #expect(dbPassword.value == "correct-horse-battery-staple-EXAMPLE")
+        #expect(apiKey.value == "sk_live_EXAMPLE")
         #expect(rows.count == 2)
     }
 
@@ -1029,7 +1108,7 @@ struct CreateFromSourceTests {
         let destination = try #require(created, "create() must not need the source file to still exist")
 
         let encrypted = try String(contentsOf: destination, encoding: .utf8)
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
         #expect(rows.count == previewedEntries.count)
         for entry in previewedEntries {
             let row = try #require(rows.first { $0.path == [entry.key] })
@@ -1109,7 +1188,7 @@ struct CreateFromSourceTests {
         let destination = try #require(created)
 
         let encrypted = try String(contentsOf: destination, encoding: .utf8)
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
         #expect(rows.isEmpty)
     }
 }
@@ -1194,7 +1273,7 @@ struct StaleVerdictTests {
         // And it is not merely cosmetic: creating now actually works.
         let destination = try #require(await model.create())
         let encrypted = try String(contentsOf: destination, encoding: .utf8)
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: owner.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: owner.private)
         #expect(rows.first { $0.path == ["db", "password"] }?.value == "fine-EXAMPLE")
     }
 

@@ -34,9 +34,9 @@ struct ProjectHealthCheckRealBridgeTests {
         let key1 = try realAgePublicKey()
         let key2 = try realAgePublicKey()
 
-        let encrypted = try SopsBridge.encryptYAML(
+        let encrypted = try SopsBridge.encrypt(
             "password: hunter2\napi_key: sk-live-abc123\n",
-            recipients: [key1, key2])
+            format: .yaml, recipients: [key1, key2])
 
         let recipients = EncryptedFileMetadata.recipients(inEncryptedFile: encrypted)
 

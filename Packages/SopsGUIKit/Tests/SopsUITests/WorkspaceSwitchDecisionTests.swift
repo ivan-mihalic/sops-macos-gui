@@ -147,6 +147,7 @@ struct WorkspaceSwitchDecisionTests {
             try store.importKey(fixture.privateKey)
             let model = SecretDocumentViewModel(
                 fileURL: WorkspaceSwitchDecisionTests.fileA,
+                format: .yaml,
                 keyStore: store, readFile: { _ in fixture.encrypted },
                 // No expectation to check, and nothing on disk to check it
                 // against: these fixtures never touch the filesystem.
@@ -419,8 +420,8 @@ private struct EncryptedFixture: Sendable {
 
 private let sharedFixture: EncryptedFixture? = {
     guard let key = try? SwitchAgeKey.generate(),
-          let encrypted = try? SopsBridge.encryptYAML(
-            WorkspaceSwitchDecisionTests.plaintext, recipients: [key.public])
+          let encrypted = try? SopsBridge.encrypt(
+            WorkspaceSwitchDecisionTests.plaintext, format: .yaml, recipients: [key.public])
     else { return nil }
     return EncryptedFixture(encrypted: encrypted, privateKey: key.private)
 }()

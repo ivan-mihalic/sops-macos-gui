@@ -54,7 +54,7 @@ struct SopsDocumentChangesTests {
 
         let saved = try SopsBridge.applyChanges(
             encrypted,
-            changes: SecretChangeSet(
+            format: .yaml, changes: SecretChangeSet(
                 sets: [SecretEdit(path: ["service"], value: "api-v2", kind: .string)],
                 adds: [
                     SecretAddition(parent: ["db"], key: "replica", value: "replica.internal", kind: .string)
@@ -78,17 +78,17 @@ struct SopsDocumentChangesTests {
 
         let appended = try SopsBridge.applyChanges(
             encrypted,
-            changes: SecretChangeSet(adds: [SecretAddition(parent: ["ports"], value: "9443", kind: .int)]),
+            format: .yaml, changes: SecretChangeSet(adds: [SecretAddition(parent: ["ports"], value: "9443", kind: .int)]),
             agePrivateKey: key.private)
-        var rows = try SopsBridge.decryptToRows(appended, agePrivateKey: key.private)
+        var rows = try SopsBridge.decryptToRows(appended, format: .yaml, agePrivateKey: key.private)
         #expect(try row(rows, "ports", "3").value == "9443")
         #expect(try row(rows, "ports", "3").kind == .int)
 
         let removed = try SopsBridge.applyChanges(
             appended,
-            changes: SecretChangeSet(removes: [SecretRemoval(path: ["ports", "0"])]),
+            format: .yaml, changes: SecretChangeSet(removes: [SecretRemoval(path: ["ports", "0"])]),
             agePrivateKey: key.private)
-        rows = try SopsBridge.decryptToRows(removed, agePrivateKey: key.private)
+        rows = try SopsBridge.decryptToRows(removed, format: .yaml, agePrivateKey: key.private)
         #expect(rows.filter { $0.path.first == "ports" }.map(\.value) == ["8443", "9090", "9443"])
     }
 
@@ -97,7 +97,7 @@ struct SopsDocumentChangesTests {
         let key = try AgeKeyPair.generate()
         let encrypted = try encryptWithCLI(
             "lookalike:\n    \"0\": zero\nreal:\n    - first\n", key: key)
-        let rows = try SopsBridge.decryptToRows(encrypted, agePrivateKey: key.private)
+        let rows = try SopsBridge.decryptToRows(encrypted, format: .yaml, agePrivateKey: key.private)
 
         #expect(try !row(rows, "lookalike", "0").isInList)
         #expect(try row(rows, "real", "0").isInList)
@@ -111,7 +111,7 @@ struct SopsDocumentChangesTests {
         #expect(throws: SopsBridgeError.self) {
             try SopsBridge.applyChanges(
                 encrypted,
-                changes: SecretChangeSet(
+                format: .yaml, changes: SecretChangeSet(
                     sets: [SecretEdit(path: ["ports", "2"], value: "9091", kind: .int)],
                     removes: [SecretRemoval(path: ["ports", "1"])]),
                 agePrivateKey: key.private)
@@ -120,7 +120,7 @@ struct SopsDocumentChangesTests {
         do {
             _ = try SopsBridge.applyChanges(
                 encrypted,
-                changes: SecretChangeSet(
+                format: .yaml, changes: SecretChangeSet(
                     sets: [SecretEdit(path: ["ports", "2"], value: "9091", kind: .int)],
                     removes: [SecretRemoval(path: ["ports", "1"])]),
                 agePrivateKey: key.private)
@@ -139,7 +139,7 @@ struct SopsDocumentChangesTests {
         do {
             _ = try SopsBridge.applyChanges(
                 encrypted,
-                changes: SecretChangeSet(removes: [SecretRemoval(path: ["db", "nope"])]),
+                format: .yaml, changes: SecretChangeSet(removes: [SecretRemoval(path: ["db", "nope"])]),
                 agePrivateKey: key.private)
             Issue.record("removing a key that is not there was reported as a success")
         } catch let error as SopsBridgeError {
@@ -155,7 +155,7 @@ struct SopsDocumentChangesTests {
         do {
             _ = try SopsBridge.applyChanges(
                 encrypted,
-                changes: SecretChangeSet(
+                format: .yaml, changes: SecretChangeSet(
                     adds: [SecretAddition(parent: ["db"], key: "host", value: "elsewhere", kind: .string)]),
                 agePrivateKey: key.private)
             Issue.record("a duplicate key was added")
@@ -173,7 +173,7 @@ struct SopsDocumentChangesTests {
         do {
             _ = try SopsBridge.applyChanges(
                 encrypted,
-                changes: SecretChangeSet(adds: [
+                format: .yaml, changes: SecretChangeSet(adds: [
                     SecretAddition(parent: ["db"], key: "<<", value: "anything", kind: .string)
                 ]),
                 agePrivateKey: key.private)
@@ -191,12 +191,12 @@ struct SopsDocumentChangesTests {
 
         let saved = try SopsBridge.applyChanges(
             encrypted,
-            changes: SecretChangeSet(
+            format: .yaml, changes: SecretChangeSet(
                 adds: [SecretAddition(parent: ["db"], key: "host", value: "5432", kind: .int)],
                 removes: [SecretRemoval(path: ["db", "host"])]),
             agePrivateKey: key.private)
 
-        let rows = try SopsBridge.decryptToRows(saved, agePrivateKey: key.private)
+        let rows = try SopsBridge.decryptToRows(saved, format: .yaml, agePrivateKey: key.private)
         #expect(rows.filter { $0.path == ["db", "host"] }.count == 1)
         #expect(try row(rows, "db", "host").kind == .int)
         #expect(try cliDecrypt(saved, key: key).contains("host: 5432"))
@@ -209,7 +209,7 @@ struct SopsDocumentChangesTests {
 
         let saved = try SopsBridge.applyEdits(
             encrypted,
-            edits: [SecretEdit(path: ["db", "password"], value: "rotated", kind: .string)],
+            format: .yaml, edits: [SecretEdit(path: ["db", "password"], value: "rotated", kind: .string)],
             agePrivateKey: key.private)
         #expect(try cliDecrypt(saved, key: key).contains("password: rotated"))
     }
@@ -222,7 +222,7 @@ struct SopsDocumentChangesTests {
 
         let saved = try SopsBridge.applyChanges(
             encrypted,
-            changes: SecretChangeSet(adds: [
+            format: .yaml, changes: SecretChangeSet(adds: [
                 SecretAddition(parent: ["db"], key: "token", value: "t-123", kind: .string),
                 SecretAddition(parent: ["db"], key: "region", value: "eu", kind: .string),
             ]),
@@ -230,7 +230,7 @@ struct SopsDocumentChangesTests {
 
         #expect(!saved.contains("t-123"))
         #expect(saved.contains("region: eu"))
-        let rows = try SopsBridge.decryptToRows(saved, agePrivateKey: key.private)
+        let rows = try SopsBridge.decryptToRows(saved, format: .yaml, agePrivateKey: key.private)
         #expect(try row(rows, "db", "token").isEncrypted)
         #expect(try !row(rows, "db", "region").isEncrypted)
     }
@@ -244,7 +244,7 @@ struct SopsDocumentChangesTests {
             #expect(throws: SopsBridgeError.self) {
                 try SopsBridge.applyChanges(
                     encrypted,
-                    changes: SecretChangeSet(removes: [SecretRemoval(path: ["service"])]),
+                    format: .yaml, changes: SecretChangeSet(removes: [SecretRemoval(path: ["service"])]),
                     agePrivateKey: bad)
             }
         }
@@ -286,7 +286,7 @@ struct DocumentChangeHygieneTests {
             let (message, stderrText) = try capturingStandardError { () -> String in
                 do {
                     _ = try SopsBridge.applyChanges(
-                        encrypted, changes: changes, agePrivateKey: key.private)
+                        encrypted, format: .yaml, changes: changes, agePrivateKey: key.private)
                     return ""
                 } catch let error as SopsBridgeError {
                     return error.description

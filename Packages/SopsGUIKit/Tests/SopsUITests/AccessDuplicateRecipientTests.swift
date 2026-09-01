@@ -13,8 +13,8 @@ import Testing
 // hand-written string — the discipline every suite on this surface follows.
 // Only key generation shells out.
 //
-// The duplicate itself is real, not simulated: `SopsBridge.encryptYAML(_,
-// recipients: [x, x])` writes the key twice and `SopsBridge.recipients(in:)`
+// The duplicate itself is real, not simulated: `SopsBridge.encrypt(_,
+// format: .yaml, recipients: [x, x])` writes the key twice and `SopsBridge.recipients(in:)`
 // reads it back twice, verified directly before this suite was written. sops
 // does not deduplicate a flat age list, in a file's metadata or in a
 // `.sops.yaml` creation rule, so both panels can be handed one.
@@ -97,15 +97,15 @@ struct FileAccessDuplicateRecipientTests {
     func duplicateCollapsesToOneEntry() async throws {
         let owner = try DuplicateAgeKeyPair.generate()
         let other = try DuplicateAgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(
-            duplicatePlainYAML, recipients: [owner.public, other.public, owner.public])
+        let encrypted = try SopsBridge.encrypt(
+            duplicatePlainYAML, format: .yaml, recipients: [owner.public, other.public, owner.public])
         try #require(
-            try SopsBridge.recipients(in: encrypted).count == 3,
+            try SopsBridge.recipients(in: encrypted, format: .yaml).count == 3,
             "precondition: sops really did write the duplicate — this test is vacuous without it")
 
         let model = RecipientAccessModel(
             fileURL: URL(fileURLWithPath: "/dev/null/duplicate.yaml"), projectURL: nil,
-            keyStore: SessionKeyStore(), readFile: { _ in encrypted })
+            keyStore: SessionKeyStore(), format: .yaml, readFile: { _ in encrypted })
         await model.load()
 
         #expect(model.currentRecipients == [owner.public, other.public])
@@ -127,22 +127,22 @@ struct FileAccessDuplicateRecipientTests {
         let added = try DuplicateAgeKeyPair.generate()
         let root = try duplicateScratchDirectory("access-duplicate-apply")
         let file = root.appendingPathComponent("secrets.yaml")
-        try SopsBridge.encryptYAML(duplicatePlainYAML, recipients: [owner.public, owner.public])
+        try SopsBridge.encrypt(duplicatePlainYAML, format: .yaml, recipients: [owner.public, owner.public])
             .write(to: file, atomically: true, encoding: .utf8)
         try #require(
-            try SopsBridge.recipients(in: String(contentsOf: file, encoding: .utf8)) == [
+            try SopsBridge.recipients(in: String(contentsOf: file, encoding: .utf8), format: .yaml) == [
                 owner.public, owner.public,
             ])
 
         let keyStore = SessionKeyStore()
         try keyStore.importKey(owner.private)
-        let model = RecipientAccessModel(fileURL: file, projectURL: nil, keyStore: keyStore)
+        let model = RecipientAccessModel(fileURL: file, projectURL: nil, keyStore: keyStore, format: .yaml)
         await model.load()
         model.stageAdd(added.public)
 
         #expect(await model.apply() == .applied)
 
-        let after = try SopsBridge.recipients(in: String(contentsOf: file, encoding: .utf8))
+        let after = try SopsBridge.recipients(in: String(contentsOf: file, encoding: .utf8), format: .yaml)
         #expect(after.sorted() == [owner.public, added.public].sorted())
         #expect(after.count == 2, "the duplicate was carried forward into the rewrapped file")
     }
@@ -150,12 +150,12 @@ struct FileAccessDuplicateRecipientTests {
     @Test("the panel says the file lists a key more than once")
     func thePanelDisclosesTheDuplicate() async throws {
         let owner = try DuplicateAgeKeyPair.generate()
-        let encrypted = try SopsBridge.encryptYAML(
-            duplicatePlainYAML, recipients: [owner.public, owner.public])
+        let encrypted = try SopsBridge.encrypt(
+            duplicatePlainYAML, format: .yaml, recipients: [owner.public, owner.public])
 
         let model = RecipientAccessModel(
             fileURL: URL(fileURLWithPath: "/dev/null/duplicate-disclosure.yaml"), projectURL: nil,
-            keyStore: SessionKeyStore(), readFile: { _ in encrypted })
+            keyStore: SessionKeyStore(), format: .yaml, readFile: { _ in encrypted })
         let host = GatingHost(size: CGSize(width: 460, height: 520)) {
             AnyView(RecipientAccessView(model: model, onClose: {}, onApplied: {}))
         }
@@ -186,7 +186,7 @@ struct ProjectAccessDuplicateRecipientTests {
             : "      - \(owner.public)\n"
         try ("creation_rules:\n  - path_regex: .*\\.yaml$\n    age:\n" + ageList)
             .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
-        let encrypted = try SopsBridge.encryptYAML(duplicatePlainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(duplicatePlainYAML, format: .yaml, recipients: [owner.public])
         try encrypted.write(to: root.appendingPathComponent("a.yaml"), atomically: true, encoding: .utf8)
         return root
     }

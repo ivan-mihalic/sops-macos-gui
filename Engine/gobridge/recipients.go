@@ -25,8 +25,8 @@ var (
 // Recipients returns the native age public recipients embedded in encrypted's
 // SOPS metadata. This does not decrypt the document and never consults config,
 // environment variables, key files or plugins.
-func Recipients(encrypted []byte) ([]string, error) {
-	sf, err := FormatYAML.toSopsFormat()
+func Recipients(encrypted []byte, format Format) ([]string, error) {
+	sf, err := format.toSopsFormat()
 	if err != nil {
 		return nil, err
 	}
@@ -39,8 +39,8 @@ func Recipients(encrypted []byte) ([]string, error) {
 
 // RecipientsJSON is the C-safe form of Recipients. JSON keeps a list's
 // boundaries intact across the string-only bridge.
-func RecipientsJSON(encrypted []byte) ([]byte, error) {
-	recipients, err := Recipients(encrypted)
+func RecipientsJSON(encrypted []byte, format Format) ([]byte, error) {
+	recipients, err := Recipients(encrypted, format)
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +54,7 @@ func RecipientsJSON(encrypted []byte) ([]byte, error) {
 // UpdateRecipients replaces the document's sole age key group and re-wraps
 // its existing data key. It deliberately never derives recipients from a
 // project config: changing access is explicit user intent.
-func UpdateRecipients(encrypted []byte, recipients []string, agePrivateKey string) ([]byte, error) {
+func UpdateRecipients(encrypted []byte, format Format, recipients []string, agePrivateKey string) ([]byte, error) {
 	masterKeys, err := nativeAgeMasterKeys(recipients)
 	if err != nil {
 		return nil, err
@@ -62,11 +62,11 @@ func UpdateRecipients(encrypted []byte, recipients []string, agePrivateKey strin
 	// Refuse unsupported metadata before handling an identity or decrypting any
 	// document content. The re-wrap operation is only defined for one native age
 	// key group.
-	if _, err := Recipients(encrypted); err != nil {
+	if _, err := Recipients(encrypted, format); err != nil {
 		return nil, err
 	}
 
-	doc, err := loadAndDecrypt(encrypted, agePrivateKey)
+	doc, err := loadAndDecrypt(encrypted, format, agePrivateKey)
 	if err != nil {
 		return nil, err
 	}
@@ -100,12 +100,12 @@ func UpdateRecipients(encrypted []byte, recipients []string, agePrivateKey strin
 
 // UpdateRecipientsJSON accepts the C bridge's JSON list without ever putting
 // its contents in an error message.
-func UpdateRecipientsJSON(encrypted, recipientsJSON []byte, agePrivateKey string) ([]byte, error) {
+func UpdateRecipientsJSON(encrypted []byte, format Format, recipientsJSON []byte, agePrivateKey string) ([]byte, error) {
 	var recipients []string
 	if err := json.Unmarshal(recipientsJSON, &recipients); err != nil {
 		return nil, errors.New("the recipient list is not valid JSON")
 	}
-	return UpdateRecipients(encrypted, recipients, agePrivateKey)
+	return UpdateRecipients(encrypted, format, recipients, agePrivateKey)
 }
 
 func recipientsFromMetadata(metadata sops.Metadata) ([]string, error) {

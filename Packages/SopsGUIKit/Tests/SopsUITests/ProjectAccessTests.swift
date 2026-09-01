@@ -80,7 +80,7 @@ private func makeProject(owner: ProjectAgeKeyPair) throws -> (root: URL, config:
 
         """
     try config.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
-    let encrypted = try SopsBridge.encryptYAML(projectPlainYAML, recipients: [owner.public])
+    let encrypted = try SopsBridge.encrypt(projectPlainYAML, format: .yaml, recipients: [owner.public])
     for name in ["a.yaml", "b.yaml"] {
         try encrypted.write(to: root.appendingPathComponent(name), atomically: true, encoding: .utf8)
     }
@@ -250,7 +250,7 @@ struct ProjectAccessApplySeparationTests {
         for name in ["a.yaml", "b.yaml"] {
             let bytes = try String(contentsOf: root.appendingPathComponent(name), encoding: .utf8)
             #expect(bytes == fileBytes)
-            #expect(try SopsBridge.recipients(in: bytes) == [owner.public])
+            #expect(try SopsBridge.recipients(in: bytes, format: .yaml) == [owner.public])
         }
     }
 
@@ -273,8 +273,8 @@ struct ProjectAccessApplySeparationTests {
         #expect(model.fileResults.allSatisfy { $0.outcome == .updated })
         for name in ["a.yaml", "b.yaml"] {
             let bytes = try String(contentsOf: root.appendingPathComponent(name), encoding: .utf8)
-            #expect(Set(try SopsBridge.recipients(in: bytes)) == Set([owner.public, added.public]))
-            #expect(try SopsBridge.decryptYAML(bytes, agePrivateKey: added.private) == projectPlainYAML)
+            #expect(Set(try SopsBridge.recipients(in: bytes, format: .yaml)) == Set([owner.public, added.public]))
+            #expect(try SopsBridge.decrypt(bytes, format: .yaml, agePrivateKey: added.private) == projectPlainYAML)
         }
         // The config is byte-identical: it was never part of this action.
         #expect(try String(contentsOf: root.appendingPathComponent(".sops.yaml"), encoding: .utf8) == config)
@@ -293,8 +293,8 @@ struct ProjectAccessApplySeparationTests {
                   - \(removed.public)
             """
         try config.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
-        let encrypted = try SopsBridge.encryptYAML(
-            projectPlainYAML, recipients: [owner.public, removed.public])
+        let encrypted = try SopsBridge.encrypt(
+            projectPlainYAML, format: .yaml, recipients: [owner.public, removed.public])
         for name in ["a.yaml", "b.yaml"] {
             try encrypted.write(to: root.appendingPathComponent(name), atomically: true, encoding: .utf8)
         }
@@ -379,7 +379,7 @@ struct ProjectAccessApplySeparationTests {
             """
         try config.write(
             to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
-        let encrypted = try SopsBridge.encryptYAML(projectPlainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(projectPlainYAML, format: .yaml, recipients: [owner.public])
         try encrypted.write(
             to: root.appendingPathComponent("a.yaml"), atomically: true, encoding: .utf8)
 
@@ -505,9 +505,9 @@ struct ProjectAccessQueuedRunTests {
         try keyStore.importKey(owner.private)
 
         let gate = FirstCallGate()
-        let applier = ProjectRecipientApplier(rewrapRecipients: { contents, recipients, key in
+        let applier = ProjectRecipientApplier(rewrapRecipients: { contents, format, recipients, key in
             gate.waitIfFirst()
-            return try SopsBridge.updateRecipients(contents, to: recipients, agePrivateKey: key)
+            return try SopsBridge.updateRecipients(contents, format: format, to: recipients, agePrivateKey: key)
         })
         let model = ProjectAccessModel(projectRoot: root, keyStore: keyStore, applier: applier)
         await model.load()
@@ -545,14 +545,14 @@ struct ProjectAccessQueuedRunTests {
         await waitUntil {
             ["a.yaml", "b.yaml"].allSatisfy { name in
                 (try? String(contentsOf: root.appendingPathComponent(name), encoding: .utf8))
-                    .flatMap { try? SopsBridge.recipients(in: $0) }
+                    .flatMap { try? SopsBridge.recipients(in: $0, format: .yaml) }
                     .map { Set($0) == Set([owner.public, addedSecond.public]) } ?? false
             }
         }
 
         for name in ["a.yaml", "b.yaml"] {
             let bytes = try String(contentsOf: root.appendingPathComponent(name), encoding: .utf8)
-            #expect(Set(try SopsBridge.recipients(in: bytes)) == Set([owner.public, addedSecond.public]),
+            #expect(Set(try SopsBridge.recipients(in: bytes, format: .yaml)) == Set([owner.public, addedSecond.public]),
                     "\(name) must end up re-wrapped for the set staged by the time the queued run actually started")
         }
         #expect(refusals.isEmpty,
@@ -573,9 +573,9 @@ struct ProjectAccessQueuedRunTests {
         try keyStore.importKey(owner.private)
 
         let gate = FirstCallGate()
-        let applier = ProjectRecipientApplier(rewrapRecipients: { contents, recipients, key in
+        let applier = ProjectRecipientApplier(rewrapRecipients: { contents, format, recipients, key in
             gate.waitIfFirst()
-            return try SopsBridge.updateRecipients(contents, to: recipients, agePrivateKey: key)
+            return try SopsBridge.updateRecipients(contents, format: format, to: recipients, agePrivateKey: key)
         })
         let model = ProjectAccessModel(projectRoot: root, keyStore: keyStore, applier: applier)
         await model.load()
@@ -643,7 +643,7 @@ struct ProjectAccessRunRecordTests {
                   - \(owner.public)
 
             """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
-        let encrypted = try SopsBridge.encryptYAML(projectPlainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(projectPlainYAML, format: .yaml, recipients: [owner.public])
         for name in ["a.yaml", "b.yaml", "c.yaml"] {
             try encrypted.write(to: root.appendingPathComponent(name), atomically: true, encoding: .utf8)
         }
@@ -651,9 +651,9 @@ struct ProjectAccessRunRecordTests {
         let keyStore = SessionKeyStore()
         try keyStore.importKey(owner.private)
         let gate = FirstCallGate()
-        let applier = ProjectRecipientApplier(rewrapRecipients: { contents, recipients, key in
+        let applier = ProjectRecipientApplier(rewrapRecipients: { contents, format, recipients, key in
             gate.waitIfFirst()
-            return try SopsBridge.updateRecipients(contents, to: recipients, agePrivateKey: key)
+            return try SopsBridge.updateRecipients(contents, format: format, to: recipients, agePrivateKey: key)
         })
         let model = ProjectAccessModel(projectRoot: root, keyStore: keyStore, applier: applier)
         await model.load()
@@ -907,7 +907,7 @@ struct ProjectAccessScopeFallbackTests {
                 age: \(owner.public)
 
             """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
-        let encrypted = try SopsBridge.encryptYAML(projectPlainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(projectPlainYAML, format: .yaml, recipients: [owner.public])
         try encrypted.write(
             to: root.appendingPathComponent("secret.yaml"), atomically: true, encoding: .utf8)
 
@@ -920,7 +920,7 @@ struct ProjectAccessScopeFallbackTests {
         #expect(model.plan?.configRefusal?.contains("creation rule") == true)
         // The point: nothing was worked out about the rule, which must not be
         // read as "the rule covers no files" and quietly apply to nothing.
-        #expect(model.filesToApply.map(\.lastPathComponent) == ["secret.yaml"])
+        #expect(model.filesToApply.map { $0.url.lastPathComponent } == ["secret.yaml"])
 
         model.stageAdd(added.public)
         #expect(await model.applyToFiles() == nil)
@@ -931,7 +931,7 @@ struct ProjectAccessScopeFallbackTests {
     func configlessProjectStillHasFilesInScope() async throws {
         let owner = try ProjectAgeKeyPair.generate()
         let root = try projectScratchDirectory()
-        let encrypted = try SopsBridge.encryptYAML(projectPlainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(projectPlainYAML, format: .yaml, recipients: [owner.public])
         for name in ["a.yaml", "b.yaml"] {
             try encrypted.write(to: root.appendingPathComponent(name), atomically: true, encoding: .utf8)
         }
@@ -977,7 +977,7 @@ struct ProjectAccessScopeDisclosureTests {
     func scopeIsStatedWithoutAConfig() async throws {
         let owner = try ProjectAgeKeyPair.generate()
         let root = try projectScratchDirectory()
-        let encrypted = try SopsBridge.encryptYAML(projectPlainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(projectPlainYAML, format: .yaml, recipients: [owner.public])
         for name in ["a.yaml", "b.yaml"] {
             try encrypted.write(to: root.appendingPathComponent(name), atomically: true, encoding: .utf8)
         }
@@ -1009,7 +1009,7 @@ struct ProjectAccessScopeDisclosureTests {
                 age: \(owner.public)
 
             """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
-        let encrypted = try SopsBridge.encryptYAML(projectPlainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(projectPlainYAML, format: .yaml, recipients: [owner.public])
         try encrypted.write(
             to: root.appendingPathComponent("secret.yaml"), atomically: true, encoding: .utf8)
 
@@ -1077,7 +1077,7 @@ struct ProjectAccessCollapsedDuplicateFilesTests {
 
             """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
         let target = root.appendingPathComponent("db.yaml")
-        try SopsBridge.encryptYAML(projectPlainYAML, recipients: [owner.public])
+        try SopsBridge.encrypt(projectPlainYAML, format: .yaml, recipients: [owner.public])
             .write(to: target, atomically: true, encoding: .utf8)
         try FileManager.default.createSymbolicLink(
             at: root.appendingPathComponent("alias.yaml"), withDestinationURL: target)
@@ -1297,7 +1297,7 @@ private func makeCrossRuleProject(owner: ProjectAgeKeyPair) throws -> URL {
             age: \(owner.public)
 
         """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
-    let encrypted = try SopsBridge.encryptYAML(projectPlainYAML, recipients: [owner.public])
+    let encrypted = try SopsBridge.encrypt(projectPlainYAML, format: .yaml, recipients: [owner.public])
     for directory in ["dev", "prod"] {
         try FileManager.default.createDirectory(
             at: root.appendingPathComponent(directory), withIntermediateDirectories: true)
@@ -1478,7 +1478,7 @@ struct ProjectAccessWidenedScopeAcknowledgementTests {
                 age: \(owner.public)
 
             """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
-        let encrypted = try SopsBridge.encryptYAML(projectPlainYAML, recipients: [owner.public])
+        let encrypted = try SopsBridge.encrypt(projectPlainYAML, format: .yaml, recipients: [owner.public])
         try encrypted.write(
             to: root.appendingPathComponent("secret.yaml"), atomically: true, encoding: .utf8)
 
@@ -1550,7 +1550,7 @@ struct RecipientKindDisplayTests {
 
         let model = RecipientAccessModel(
             fileURL: root.appendingPathComponent("a.yaml"), projectURL: root,
-            keyStore: SessionKeyStore())
+            keyStore: SessionKeyStore(), format: .yaml)
         let host = GatingHost(size: CGSize(width: 460, height: 520)) {
             AnyView(RecipientAccessView(model: model, onClose: {}, onApplied: {}))
         }

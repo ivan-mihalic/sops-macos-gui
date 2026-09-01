@@ -1,5 +1,6 @@
 import Foundation
 import ScratchCleanup
+import SopsEngine
 import Testing
 @testable import SopsUI
 
@@ -41,6 +42,24 @@ ScratchDirectoryRegistry.shared.register(root)
                 - recipient: age1exampleexampleexampleexampleexampleexampleexampleexamplex
             mac: ENC[AES256_GCM,data:AAAA,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
             version: 3.13.3
+        """.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// The dotenv counterpart to `writeSopsLike` — hand-written text carrying
+    /// the shape sops's dotenv store actually writes (`sops_`-prefixed
+    /// `KEY=value` lines, no `sops:` block at all), for the same reason
+    /// `writeSopsLike` is hand-written rather than bridge-encrypted: this
+    /// suite is about `FileListModel`'s own wiring, not sops's file format —
+    /// `ProjectScanner`'s and `EncryptedFileMetadata`'s own suites already
+    /// hold the dotenv *shape itself* to the real-bridge standard.
+    private func writeDotenvSopsLike(_ root: URL, at relativePath: String) throws {
+        let url = root.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try """
+        KEY=ENC[AES256_GCM,data:Zm9v,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
+        sops_age__list_0__map_recipient=age1exampleexampleexampleexampleexampleexampleexampleexamplex
+        sops_mac=ENC[AES256_GCM,data:AAAA,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
+        sops_version=3.13.3
         """.write(to: url, atomically: true, encoding: .utf8)
     }
 
@@ -102,6 +121,33 @@ ScratchDirectoryRegistry.shared.register(root)
                 "a readable project was reported as only partially scanned")
     }
 
+    /// Task 5 (SOPS-38) put a dotenv sops file into `ScannedTree.encrypted`
+    /// (verified, `format == .dotenv`), not `encryptedInOtherFormats` — but
+    /// left it filtered out of `files` because the editor could not open it
+    /// yet. Task 6 taught `SecretDocumentViewModel` a document's format
+    /// (threaded through to the bridge), so that TEMPORARY filter in
+    /// `FileListView.swift`'s `refresh()` is gone: a dotenv file is listed
+    /// and openable exactly like YAML, carrying its own format so the
+    /// editor opens it correctly, and `otherFormatCount` goes back to
+    /// counting only what this build genuinely cannot verify at all
+    /// (JSON/INI).
+    @Test("a dotenv sops file is listed as openable, carrying its own format")
+    func dotenvFileIsListedAndOpenable() async throws {
+        let root = try makeProject()
+        try writeSopsLike(root, at: "config/secrets.yaml")
+        try writeDotenvSopsLike(root, at: "config/secrets.env")
+
+        let model = FileListModel(projectRoot: root)
+        await model.refresh()
+
+        #expect(model.files.count == 2)
+        let dotenvFile = try #require(model.files.first { $0.url.lastPathComponent == "secrets.env" })
+        #expect(dotenvFile.format == .dotenv)
+        let yamlFile = try #require(model.files.first { $0.url.lastPathComponent == "secrets.yaml" })
+        #expect(yamlFile.format == .yaml)
+        #expect(model.otherFormatCount == 0)
+    }
+
     /// `.git` exists in every real repository, so this list is almost never
     /// empty — and it used to be rendered only inside the truncation banner,
     /// which fires only on the rare walk that exhausts the file budget.
@@ -154,7 +200,7 @@ ScratchDirectoryRegistry.shared.register(root)
         #expect(model.hasScanned)
         #expect(model.files.count == 1)
         let found = try #require(model.files.first)
-        #expect(model.relativePath(for: found) == "config/secrets.yaml")
+        #expect(model.relativePath(for: found.url) == "config/secrets.yaml")
     }
 
     @Test("files are sorted by their relative path")
@@ -167,7 +213,7 @@ ScratchDirectoryRegistry.shared.register(root)
         let model = FileListModel(projectRoot: root)
         await model.refresh()
 
-        #expect(model.files.map { model.relativePath(for: $0) } == [
+        #expect(model.files.map { model.relativePath(for: $0.url) } == [
             "a-first.yaml", "middle/b.yaml", "z-last.yaml",
         ])
     }

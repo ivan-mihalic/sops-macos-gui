@@ -1,34 +1,74 @@
 package main
 
-// The exported entry points cannot be called from a Go test: `go test` refuses
-// cgo in _test.go files ("use of cgo in test not supported"), so there is no
-// way to construct a *C.char here. Their behaviour is proved from both sides
-// instead — gobridge/enginefault_test.go exercises the guard itself against the
-// real hostile document, and Tests/SopsEngineTests/HostileDocumentTests.swift
-// drives the actual C symbols through the built xcframework.
+// The exported entry points cannot be called the normal way from a Go test:
+// `go test` refuses cgo in _test.go files ("use of cgo in test not
+// supported"), so this file cannot itself `import "C"` to build a *C.char.
+// Their behaviour used to be proved from both sides instead —
+// gobridge/enginefault_test.go exercises the guard itself against the real
+// hostile document, and Tests/SopsEngineTests/HostileDocumentTests.swift
+// drives the actual C symbols through the built xcframework — with nothing
+// in between calling the //export functions from Go.
 //
-// What is left for this file is the thing neither of those can see: whether
-// every //export is *wired* to the guard. That is the failure mode with a
-// future — a thirteenth entry point added without one, six months from now, by
-// someone who never read this. So it is checked structurally, against the
-// source, rather than trusted to review.
+// What is left for the *rest* of this file (the guard-wiring checks below)
+// is the thing neither of those can see: whether every //export is *wired* to
+// the guard. That is the failure mode with a future — a thirteenth entry
+// point added without one, six months from now, by someone who never read
+// this. So it is checked structurally, against the source, rather than
+// trusted to review.
 //
 // # Why this is an AST check and not a strings.Contains
 //
 // It used to be `strings.Contains(body, "gobridge.Guard(")`, and that check was
-// vacuous. Verified, not suspected: delete the guard from sops_decrypt_yaml,
-// leave the comment `// TODO: wrap in gobridge.Guard( ... ) one day` behind,
-// and `go test ./cshim/` reported ok. Hoisting the real work above an
-// otherwise-intact guard passed too. Since this test is the sole evidence for
-// PROPOSAL §9's claim that all twelve entry points recover, a check that a
-// comment can satisfy is worse than no check — it is a claim nobody will
-// re-examine.
+// vacuous. Verified, not suspected: delete the guard from sops_decrypt_yaml
+// (this package's entry point of that name, before SOPS-38 generalized it to
+// sops_decrypt), leave the comment `// TODO: wrap in gobridge.Guard( ... ) one
+// day` behind, and `go test ./cshim/` reported ok. Hoisting the real work
+// above an otherwise-intact guard passed too. Since this test is the sole
+// evidence for PROPOSAL §9's claim that all twelve entry points recover, a
+// check that a comment can satisfy is worse than no check — it is a claim
+// nobody will re-examine.
 //
 // So the shape is asserted instead, in `complaintsAbout` below, and the
 // mutations that used to slip through are in `TestGuardWiringCatchesMutations`
 // as permanent cases rather than as something a reviewer once tried by hand.
+//
+// # SOPS-38: calling the real //export functions turned out to be possible
+//
+// The claim above — "the exported entry points cannot be called from a Go
+// test" — is true of the direct route (`import "C"` in this file) and stays
+// true. But cgo preprocessing main.go's own `import "C"` generates ordinary
+// Go type declarations for every C type it uses, under names of its own
+// (`_Ctype_char` for `C.char`), and those land in a normal generated .go file
+// that becomes part of this package exactly like any other. A _test.go file
+// may refer to a package-level type without itself producing any cgo
+// directive — the restriction is on `import "C"` appearing in the test file,
+// not on using types cgo already put in the package elsewhere. Verified
+// directly on this toolchain (go1.26.5, darwin/arm64) with a two-file scratch
+// package before relying on it here: a `//export`ed cgo function plus a
+// same-package _test.go referencing `_Ctype_char` (no cgo import of its own)
+// builds and runs `go test` cleanly; adding `import "C"` to that same test
+// file reproduces the documented failure verbatim.
+//
+// `cToGoString`/`goToCString` below reimplement C.GoString/C.CString's memory
+// shape (a NUL-terminated byte run) using unsafe.Add/unsafe.Slice rather than
+// the uintptr-arithmetic pattern `go vet`'s unsafeptr check exists to flag.
+// goToCString hands back ordinary Go-heap memory the garbage collector already
+// owns — nothing here calls C.malloc, so there is nothing to free on the
+// input side. The one pointer this file must release is whatever an export
+// writes into *out, and that goes through the real sops_free — a genuine cgo
+// function defined in main.go — so freeing still exercises production code,
+// not a test-only stand-in for it.
+//
+// This does not replace the AST checks: they are the only thing that can
+// assert every entry point is wired the same way, cheaply, without a fixture
+// per function. What the two behavioural tests below exist for is the one
+// thing an AST walk cannot see — whether the `format` string an export
+// receives actually reaches the gobridge call that switches on it, as opposed
+// to a stray unconverted use or a leftover hardcoded gobridge.FormatYAML the
+// AST check has no opinion about either way.
 
 import (
+	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -37,6 +77,11 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"unsafe"
+
+	"filippo.io/age"
+
+	"github.com/ivan-mihalic/sops-macos-gui/engine/gobridge"
 )
 
 // exportedEntryPointCount is asserted rather than derived so that adding an
@@ -61,6 +106,239 @@ func TestEveryExportedEntryPointRecoversFromPanics(t *testing.T) {
 
 	for _, complaint := range complaints {
 		t.Errorf("%s", complaint)
+	}
+}
+
+// goToCString copies s into a NUL-terminated byte run and returns it typed as
+// cgo's own *C.char, spelled under the name cgo generated for it in this
+// package (see this file's header comment for why that is safe here and
+// nowhere near safe as a general trick). The backing array is ordinary
+// Go-heap memory: nothing frees it explicitly, and nothing needs to.
+func goToCString(s string) *_Ctype_char {
+	b := make([]byte, len(s)+1) // trailing NUL; correct even for s == ""
+	copy(b, s)
+	return (*_Ctype_char)(unsafe.Pointer(&b[0]))
+}
+
+// cToGoString reads a NUL-terminated *C.char back into a Go string. It never
+// frees p — see sops_free for the one call in this file that does.
+func cToGoString(p *_Ctype_char) string {
+	if p == nil {
+		return ""
+	}
+	n := 0
+	for *(*byte)(unsafe.Add(unsafe.Pointer(p), n)) != 0 {
+		n++
+	}
+	return string(unsafe.Slice((*byte)(unsafe.Pointer(p)), n))
+}
+
+// newTestAgeKey generates a throwaway X25519 identity, exactly the shape
+// parseDecryptionIdentities requires (AGE-SECRET-KEY-1…). Nothing here is
+// ever written to disk.
+func newTestAgeKey(t *testing.T) (public, private string) {
+	t.Helper()
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatalf("generate age identity: %v", err)
+	}
+	return id.Recipient().String(), id.String()
+}
+
+func mustJSONString(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal %#v: %v", v, err)
+	}
+	return string(b)
+}
+
+// TestBogusFormatFailsCleanlyAcrossEveryFormatTakingExport calls every
+// //export that takes a format string with format="bogus" and checks the one
+// thing PROPOSAL and this task's brief both require: statusFailure, a message
+// (never a crash), and no echo of the document content or key material this
+// test seeds each call with as a canary.
+//
+// Every one of these gobridge functions validates format via
+// Format.toSopsFormat() before parsing any document content (bridge.go,
+// document.go's loadAndDecrypt, recipients.go, leafencryption.go all do this
+// as one of their first steps — see gobridge for the exact call sites) and
+// returns an ordinary error, so nothing here needs a second, cshim-side
+// validation layer: the existing gobridge.Guard/result plumbing already turns
+// that error into statusFailure. This test is what proves that, rather than
+// assuming it from reading the source.
+func TestBogusFormatFailsCleanlyAcrossEveryFormatTakingExport(t *testing.T) {
+	public, private := newTestAgeKey(t)
+	const canary = "canary-document-content-should-never-appear-in-an-error-3f81c2"
+
+	format := goToCString("bogus")
+	recipientsJSON := goToCString(mustJSONString(t, []string{public}))
+	key := goToCString(private)
+	encrypted := goToCString(canary)
+	plain := goToCString(canary)
+
+	cases := []struct {
+		name string
+		call func() (status _Ctype_int, out *_Ctype_char)
+	}{
+		{"sops_encrypt", func() (_Ctype_int, *_Ctype_char) {
+			var out *_Ctype_char
+			status := sops_encrypt(plain, format, goToCString(public), goToCString(""), &out)
+			return status, out
+		}},
+		{"sops_decrypt", func() (_Ctype_int, *_Ctype_char) {
+			var out *_Ctype_char
+			status := sops_decrypt(encrypted, format, key, &out)
+			return status, out
+		}},
+		{"sops_decrypt_to_rows", func() (_Ctype_int, *_Ctype_char) {
+			var out *_Ctype_char
+			status := sops_decrypt_to_rows(encrypted, format, key, &out)
+			return status, out
+		}},
+		{"sops_apply_edits", func() (_Ctype_int, *_Ctype_char) {
+			var out *_Ctype_char
+			status := sops_apply_edits(encrypted, format, goToCString("[]"), key, &out)
+			return status, out
+		}},
+		{"sops_apply_changes", func() (_Ctype_int, *_Ctype_char) {
+			var out *_Ctype_char
+			status := sops_apply_changes(encrypted, format, goToCString("{}"), key, &out)
+			return status, out
+		}},
+		{"sops_recipients", func() (_Ctype_int, *_Ctype_char) {
+			var out *_Ctype_char
+			status := sops_recipients(encrypted, format, &out)
+			return status, out
+		}},
+		{"sops_update_recipients", func() (_Ctype_int, *_Ctype_char) {
+			var out *_Ctype_char
+			status := sops_update_recipients(encrypted, format, recipientsJSON, key, &out)
+			return status, out
+		}},
+		{"sops_leaf_encryption_summary", func() (_Ctype_int, *_Ctype_char) {
+			var out *_Ctype_char
+			status := sops_leaf_encryption_summary(encrypted, format, &out)
+			return status, out
+		}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			status, out := c.call()
+			if status != statusFailure {
+				t.Fatalf("format=%q: expected statusFailure, got status %v", "bogus", status)
+			}
+			if out == nil {
+				t.Fatal("statusFailure but *out was left nil: Swift sees \"bridge returned no result\" instead of a message")
+			}
+			envelopeJSON := cToGoString(out)
+			sops_free(out)
+
+			// *out on failure is a JSON errorEnvelope, not err.Error() raw
+			// (see result() in main.go) — decode it the way the Swift side
+			// does rather than substring-matching the JSON-escaped text.
+			var envelope errorEnvelope
+			if err := json.Unmarshal([]byte(envelopeJSON), &envelope); err != nil {
+				t.Fatalf("*out on failure did not decode as an error envelope: %v\nraw: %s", err, envelopeJSON)
+			}
+			if !strings.Contains(envelope.Message, "unsupported format") || !strings.Contains(envelope.Message, "bogus") {
+				t.Errorf("expected the error envelope to name the unsupported format, got: %q", envelope.Message)
+			}
+			if strings.Contains(envelope.Message, canary) {
+				t.Errorf("error envelope echoed the document/key canary value: %q", envelope.Message)
+			}
+			if strings.Contains(envelope.Message, private) {
+				t.Errorf("error envelope echoed the private key")
+			}
+		})
+	}
+}
+
+// TestDotenvFormatReachesGobridgeThroughDecryptToRowsAndUpdateRecipients is
+// the positive half: format="dotenv" must actually select the dotenv store,
+// not merely fail to crash. It proves this two ways at once — a call that
+// should succeed does, with dotenv-shaped output, and the *same* encrypted
+// document handed to the *same* export with format="yaml" fails. If the
+// format parameter were ignored (e.g. a leftover hardcoded gobridge.FormatYAML
+// after the SOPS-38 rewrite), both calls would behave identically; they do
+// not, so the string genuinely reaches gobridge.
+func TestDotenvFormatReachesGobridgeThroughDecryptToRowsAndUpdateRecipients(t *testing.T) {
+	owner, ownerPrivate := newTestAgeKey(t)
+	const dotenvPlain = "DB_URL=postgres://x\nAPI_KEY=secret\n"
+
+	encryptedBytes, err := gobridge.Encrypt([]byte(dotenvPlain), gobridge.FormatDotenv,
+		gobridge.EncryptOpts{AgeRecipients: []string{owner}})
+	if err != nil {
+		t.Fatalf("seed fixture: gobridge.Encrypt: %v", err)
+	}
+
+	encrypted := goToCString(string(encryptedBytes))
+	dotenvFormat := goToCString("dotenv")
+	yamlFormat := goToCString("yaml")
+	key := goToCString(ownerPrivate)
+
+	// format="dotenv" on a genuinely dotenv document succeeds and returns the
+	// flat, one-segment-path rows only the dotenv store produces (see
+	// gobridge/dotenv_test.go).
+	var rowsOut *_Ctype_char
+	status := sops_decrypt_to_rows(encrypted, dotenvFormat, key, &rowsOut)
+	if status != statusOK {
+		t.Fatalf("sops_decrypt_to_rows(format=dotenv) failed: %s", cToGoString(rowsOut))
+	}
+	rowsJSON := cToGoString(rowsOut)
+	sops_free(rowsOut)
+
+	var rows []struct {
+		Path  []string `json:"path"`
+		Value string   `json:"value"`
+	}
+	if err := json.Unmarshal([]byte(rowsJSON), &rows); err != nil {
+		t.Fatalf("rows JSON did not decode: %v\n%s", err, rowsJSON)
+	}
+	got := map[string]string{}
+	for _, row := range rows {
+		if len(row.Path) != 1 {
+			t.Fatalf("dotenv row has a nested path %v; dotenv has no nesting", row.Path)
+		}
+		got[row.Path[0]] = row.Value
+	}
+	if got["DB_URL"] != "postgres://x" || got["API_KEY"] != "secret" {
+		t.Fatalf("dotenv rows did not round-trip the fixture: %v", got)
+	}
+
+	// The discriminating half: the same bytes, same export, format="yaml"
+	// instead. The dotenv store's on-disk shape is not valid YAML, so this
+	// must fail — proving the parameter, not a hardcoded default, decided
+	// which store parsed encrypted.
+	var wrongFormatOut *_Ctype_char
+	status = sops_decrypt_to_rows(encrypted, yamlFormat, key, &wrongFormatOut)
+	if status != statusFailure {
+		t.Fatalf("sops_decrypt_to_rows(format=yaml) on a dotenv document unexpectedly succeeded: "+
+			"the format parameter is not reaching gobridge (status=%v)", status)
+	}
+	sops_free(wrongFormatOut)
+
+	// sops_update_recipients: format="dotenv" must both read and re-emit
+	// dotenv, and the result must decrypt under the *new* recipient.
+	newRecipient, newPrivate := newTestAgeKey(t)
+	recipientsJSON := goToCString(mustJSONString(t, []string{newRecipient}))
+
+	var updatedOut *_Ctype_char
+	status = sops_update_recipients(encrypted, dotenvFormat, recipientsJSON, key, &updatedOut)
+	if status != statusOK {
+		t.Fatalf("sops_update_recipients(format=dotenv) failed: %s", cToGoString(updatedOut))
+	}
+	rewrapped := cToGoString(updatedOut)
+	sops_free(updatedOut)
+
+	dec, err := gobridge.Decrypt([]byte(rewrapped), gobridge.FormatDotenv, newPrivate)
+	if err != nil {
+		t.Fatalf("re-decrypting the rewrapped document with the new recipient failed: %v", err)
+	}
+	if !strings.Contains(string(dec), "DB_URL=postgres://x") || !strings.Contains(string(dec), "API_KEY=secret") {
+		t.Fatalf("rewrapped dotenv document lost content: %s", dec)
 	}
 }
 

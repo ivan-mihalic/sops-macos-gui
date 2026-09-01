@@ -64,6 +64,25 @@ public struct ProjectRecipientApplier: Sendable {
         }
     }
 
+    /// A file `apply(files:recipients:agePrivateKey:onFileFinished:)` should
+    /// re-wrap, paired with the on-disk document shape the scan sniffed it as
+    /// (`SniffedFile.format`). Carrying the format alongside the URL — rather
+    /// than `apply` assuming or re-sniffing it — is what lets each file reach
+    /// `SopsBridge.recipients`/`updateRecipients` with *its own* format:
+    /// widening `Plan.filesInScope` to include dotenv files (SOPS-38) would
+    /// otherwise mean either guessing wrong for every dotenv file or the run
+    /// re-sniffing every file a second time, having already paid that cost in
+    /// `plan(projectRoot:recipients:)`.
+    public struct ScopedFile: Equatable, Sendable {
+        public let url: URL
+        public let format: SopsFileFormat
+
+        public init(url: URL, format: SopsFileFormat) {
+            self.url = url
+            self.format = format
+        }
+    }
+
     public struct RunResult: Equatable, Sendable {
         /// One entry per file actually attempted, in the order given.
         public let results: [FileResult]
@@ -107,10 +126,10 @@ public struct ProjectRecipientApplier: Sendable {
         /// is the text for *this* list and no other — anything writing it must
         /// check this field first. See `ProjectAccessModel.applyConfig()`.
         public let requestedRecipients: [String]
-        /// Every sops-encrypted YAML file the scan found, sorted ascending by
-        /// path relative to `projectRoot` — the order the user already sees in
-        /// the file list, and the order `targetFile` is taken from. See
-        /// `sortedByProjectRelativePath`.
+        /// Every sops-encrypted file the scan found — YAML and dotenv alike
+        /// (SOPS-38) — sorted ascending by path relative to `projectRoot` —
+        /// the order the user already sees in the file list, and the order
+        /// `targetFile` is taken from. See `sortedByProjectRelativePath`.
         ///
         /// One entry per file, not per name: a project holding both a symlink
         /// and its target holds one file, and it appears once, under the name
@@ -124,6 +143,13 @@ public struct ProjectRecipientApplier: Sendable {
         /// the scan actually found, and that gap deserves a word. See
         /// `ProjectAccessView`'s disclosure.
         public let duplicateFileNameCount: Int
+        /// Every entry in `encryptedFiles` (and therefore `matchedFiles`,
+        /// `unmatchedFiles`, `filesGovernedByOtherRules` too — all subsets of
+        /// it) mapped to the on-disk document shape the scan sniffed it as.
+        /// What `filesInScope` reads to pair each URL it returns with its
+        /// format, so a caller can hand `apply(files:...)` files whose
+        /// per-file bridge call never has to guess.
+        let fileFormats: [URL: SopsFileFormat]
         /// The subset of `encryptedFiles` governed by the same creation rule
         /// as `targetFile` — identified by the rule's *position* in
         /// `creation_rules`, not by two rules happening to name the same keys.
@@ -214,8 +240,20 @@ public struct ProjectRecipientApplier: Sendable {
         /// creation-rule boundaries, pulling in files whose keys another rule
         /// decides. `filesGovernedByOtherRules` names how many, and the panel
         /// and its confirmation both say so before anything is re-wrapped.
-        public var filesInScope: [URL] {
-            governingRuleIdentified ? matchedFiles : encryptedFiles
+        ///
+        /// Format-tagged (`ScopedFile`, not bare `URL`) since Task 7
+        /// (SOPS-38): a project's files in scope are no longer only YAML —
+        /// `apply(files:...)` needs each file's own format to read and
+        /// rewrap it correctly, and `fileFormats` is where this reads it
+        /// from. Every URL returned here came from `encryptedFiles`, which is
+        /// itself built from the same scan that populated `fileFormats`, so
+        /// the fallback below is not expected ever to be taken — it exists
+        /// only so a future inconsistency here fails safe (treated as YAML,
+        /// the format every file in this app was until this task) rather than
+        /// crashing a project-wide run.
+        public var filesInScope: [ScopedFile] {
+            let urls = governingRuleIdentified ? matchedFiles : encryptedFiles
+            return urls.map { ScopedFile(url: $0, format: fileFormats[$0] ?? .yaml) }
         }
     }
 
@@ -229,8 +267,8 @@ public struct ProjectRecipientApplier: Sendable {
     private let readFile: @Sendable (URL) throws -> String
     private let fingerprintFile: @Sendable (URL) -> FileFingerprint?
     private let writeFile: @Sendable (String, URL, FileFingerprint?) throws -> Void
-    private let readRecipients: @Sendable (String) throws -> [String]
-    private let rewrapRecipients: @Sendable (String, [String], String) throws -> String
+    private let readRecipients: @Sendable (String, SopsFileFormat) throws -> [String]
+    private let rewrapRecipients: @Sendable (String, SopsFileFormat, [String], String) throws -> String
     private let scanProject: @Sendable (URL) async -> ScannedTree
     private let proposeConfig: @Sendable (String, String, [String], [String]) throws -> ConfigRecipientUpdate
 
@@ -243,11 +281,11 @@ public struct ProjectRecipientApplier: Sendable {
             contents, url, expecting in
             try AtomicFileWriter.write(contents, to: url, expecting: expecting)
         },
-        readRecipients: @escaping @Sendable (String) throws -> [String] = {
-            try SopsBridge.recipients(in: $0)
+        readRecipients: @escaping @Sendable (String, SopsFileFormat) throws -> [String] = {
+            try SopsBridge.recipients(in: $0, format: $1)
         },
-        rewrapRecipients: @escaping @Sendable (String, [String], String) throws -> String = {
-            try SopsBridge.updateRecipients($0, to: $1, agePrivateKey: $2)
+        rewrapRecipients: @escaping @Sendable (String, SopsFileFormat, [String], String) throws -> String = {
+            try SopsBridge.updateRecipients($0, format: $1, to: $2, agePrivateKey: $3)
         },
         scanProject: @escaping @Sendable (URL) async -> ScannedTree = {
             await ProjectScanner.scan(root: $0, maxScannedFiles: ScanBudgetSetting.current())
@@ -284,6 +322,16 @@ public struct ProjectRecipientApplier: Sendable {
     /// produces the text.
     public func plan(projectRoot: URL, recipients: [String]) async -> Plan {
         let tree = await scanProject(projectRoot)
+        // `tree.encrypted` has carried dotenv files alongside YAML ones since
+        // Task 5 (SOPS-38) — this is the task that stopped filtering them
+        // back out. `readRecipients`/`rewrapRecipients` are now format-aware
+        // (see `apply`/`applyToOne`, which read each file's format off
+        // `ScopedFile` rather than assuming `.yaml`), and
+        // `SopsBridge.updateConfigRecipients` (behind `proposeConfig`) never
+        // needed a format at all — it resolves a creation rule purely from
+        // paths, never from a document's contents.
+        var fileFormats: [URL: SopsFileFormat] = [:]
+        for file in tree.encrypted { fileFormats[file.url] = file.format }
         let encryptedFiles = Self.sortedByProjectRelativePath(
             Self.deduplicatedByResolvedPath(
                 Self.sortedByProjectRelativePath(tree.encrypted.map(\.url), under: projectRoot)),
@@ -291,7 +339,10 @@ public struct ProjectRecipientApplier: Sendable {
         // How many names the dedup above dropped. Computed once and reused
         // across every return below, including the ones that pass `[]` for
         // `encryptedFiles` — those are only reached when the scan itself
-        // found nothing, so this is 0 there too.
+        // found nothing, so this is 0 there too. Measured against the full
+        // `tree.encrypted` — every format the scan found now reaches
+        // `encryptedFiles`, so this is once again the whole gap between what
+        // the scan found and what survived deduplication.
         let duplicateFileNameCount = tree.encrypted.count - encryptedFiles.count
         let configURL = projectRoot.appendingPathComponent(".sops.yaml")
         let configExists = FileManager.default.fileExists(atPath: configURL.path)
@@ -301,6 +352,7 @@ public struct ProjectRecipientApplier: Sendable {
                 projectRoot: projectRoot, configURL: configURL, configExists: false,
                 requestedRecipients: recipients,
                 encryptedFiles: encryptedFiles, duplicateFileNameCount: duplicateFileNameCount,
+                fileFormats: fileFormats,
                 matchedFiles: [], unmatchedFiles: encryptedFiles,
                 filesGovernedByOtherRules: [],
                 targetFile: encryptedFiles.first, incompleteScanReason: tree.incompleteScanReason,
@@ -322,6 +374,7 @@ public struct ProjectRecipientApplier: Sendable {
                 projectRoot: projectRoot, configURL: configURL, configExists: true,
                 requestedRecipients: recipients,
                 encryptedFiles: [], duplicateFileNameCount: duplicateFileNameCount,
+                fileFormats: fileFormats,
                 matchedFiles: [], unmatchedFiles: [],
                 filesGovernedByOtherRules: [],
                 targetFile: nil, incompleteScanReason: tree.incompleteScanReason,
@@ -340,6 +393,7 @@ public struct ProjectRecipientApplier: Sendable {
                 projectRoot: projectRoot, configURL: configURL, configExists: true,
                 requestedRecipients: recipients,
                 encryptedFiles: encryptedFiles, duplicateFileNameCount: duplicateFileNameCount,
+                fileFormats: fileFormats,
                 matchedFiles: [], unmatchedFiles: encryptedFiles,
                 filesGovernedByOtherRules: [],
                 targetFile: targetFile, incompleteScanReason: tree.incompleteScanReason,
@@ -351,6 +405,7 @@ public struct ProjectRecipientApplier: Sendable {
                 projectRoot: projectRoot, configURL: configURL, configExists: true,
                 requestedRecipients: recipients,
                 encryptedFiles: encryptedFiles, duplicateFileNameCount: duplicateFileNameCount,
+                fileFormats: fileFormats,
                 matchedFiles: [], unmatchedFiles: encryptedFiles,
                 filesGovernedByOtherRules: [],
                 targetFile: targetFile, incompleteScanReason: tree.incompleteScanReason,
@@ -372,6 +427,7 @@ public struct ProjectRecipientApplier: Sendable {
             projectRoot: projectRoot, configURL: configURL, configExists: true,
             requestedRecipients: recipients,
             encryptedFiles: encryptedFiles, duplicateFileNameCount: duplicateFileNameCount,
+            fileFormats: fileFormats,
             matchedFiles: matched, unmatchedFiles: unmatched,
             filesGovernedByOtherRules: governedElsewhere,
             targetFile: targetFile, incompleteScanReason: tree.incompleteScanReason,
@@ -550,8 +606,14 @@ public struct ProjectRecipientApplier: Sendable {
     /// progressing instead of a spinner that reveals everything at the end.
     /// It is `async` so a `@MainActor` model can update its own state from it
     /// without a detached hop of its own.
+    ///
+    /// `files` carries each URL's own document format (`ScopedFile`) rather
+    /// than a bare `URL` — since Task 7 (SOPS-38) `Plan.filesInScope` can mix
+    /// YAML and dotenv files, and each has to reach
+    /// `SopsBridge.recipients`/`updateRecipients` with *its own* `format`,
+    /// never a project-wide assumption.
     public func apply(
-        files: [URL],
+        files: [ScopedFile],
         recipients: [String],
         agePrivateKey: String,
         onFileFinished: @escaping @Sendable (FileResult) async -> Void = { _ in }
@@ -559,9 +621,9 @@ public struct ProjectRecipientApplier: Sendable {
         var results: [FileResult] = []
         results.reserveCapacity(files.count)
 
-        for (offset, url) in files.enumerated() {
+        for (offset, file) in files.enumerated() {
             if Task.isCancelled {
-                return RunResult(results: results, notAttempted: Array(files[offset...]))
+                return RunResult(results: results, notAttempted: files[offset...].map(\.url))
             }
             // One file's decrypt/re-encrypt is hundreds of milliseconds of
             // blocking work; a project-wide run is that many times over. Left
@@ -573,9 +635,9 @@ public struct ProjectRecipientApplier: Sendable {
             // that the cancellation check above stays a real suspension point
             // between files.
             let outcome = await Self.runOffCooperativePool {
-                applyToOne(url, recipients, agePrivateKey)
+                applyToOne(file.url, file.format, recipients, agePrivateKey)
             }
-            let result = FileResult(url: url, outcome: outcome)
+            let result = FileResult(url: file.url, outcome: outcome)
             results.append(result)
             await onFileFinished(result)
         }
@@ -601,7 +663,13 @@ public struct ProjectRecipientApplier: Sendable {
     /// One file's whole read-check-rewrap-write cycle. Every failure path
     /// returns rather than throws, because a project run must not be able to
     /// end early by accident.
-    private func applyToOne(_ url: URL, _ recipients: [String], _ key: String) -> FileOutcome {
+    ///
+    /// `format` is this file's own — `readRecipients`/`rewrapRecipients` pass
+    /// it straight to the bridge, never `.yaml` regardless of what `url`
+    /// actually is. See `apply`'s doc comment.
+    private func applyToOne(
+        _ url: URL, _ format: SopsFileFormat, _ recipients: [String], _ key: String
+    ) -> FileOutcome {
         let fingerprint = fingerprintFile(url)
 
         let contents: String
@@ -634,7 +702,7 @@ public struct ProjectRecipientApplier: Sendable {
 
         let current: [String]
         do {
-            current = try readRecipients(contents)
+            current = try readRecipients(contents, format)
         } catch let error as SopsBridgeError {
             return .failed(error.description)
         } catch {
@@ -649,7 +717,7 @@ public struct ProjectRecipientApplier: Sendable {
 
         let rewrapped: String
         do {
-            rewrapped = try rewrapRecipients(contents, recipients, key)
+            rewrapped = try rewrapRecipients(contents, format, recipients, key)
         } catch let error as SopsBridgeError {
             return .failed(error.description)
         } catch {

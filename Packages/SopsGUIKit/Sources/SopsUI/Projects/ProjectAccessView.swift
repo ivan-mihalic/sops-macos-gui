@@ -465,7 +465,7 @@ public struct ProjectAccessView: View {
     @ViewBuilder
     private var filesPreview: some View {
         if let plan = model.plan, !model.filesToApply.isEmpty {
-            let preview = Self.previewedFiles(model.filesToApply)
+            let preview = Self.previewedFiles(model.filesToApply.map(\.url))
             VStack(alignment: .leading, spacing: 2) {
                 Text(.projectAccessFilesPreviewTitle).font(.caption.weight(.semibold))
                 ScrollView {
