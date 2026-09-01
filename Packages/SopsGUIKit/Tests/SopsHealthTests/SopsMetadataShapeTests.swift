@@ -3,12 +3,6 @@ import Testing
 import SopsEngine
 @testable import SopsHealth
 
-private let sopsBinary = ["/opt/homebrew/bin/sops", "/usr/local/bin/sops", "/usr/bin/sops"]
-    .first { FileManager.default.isExecutableFile(atPath: $0) }
-
-private let needsSopsCLI = Comment(
-    rawValue: "needs the real sops binary: the JSON and INI stores are not reachable through this app's bridge (YAML and dotenv only, as of Task 5/SOPS-38), so the only honest fixture for them is output the shipping sops actually wrote")
-
 /// PROPOSAL.md §3 metadata sniffing, second finding of the Task 14 brief.
 ///
 /// `ProjectScanner` finds encrypted files by searching every file's tail for a
@@ -37,17 +31,6 @@ struct SopsMetadataShapeTests {
         try ProjectFixture.write(contents, to: root, at: name)
         defer { try? FileManager.default.removeItem(at: root) }
         return await ProjectScanner.scan(root: root)
-    }
-
-    /// `sops -e` on a document of the given format, as text.
-    private func sopsEncrypted(_ plain: String, extension ext: String) throws -> String {
-        let sops = try #require(sopsBinary)
-        let dir = try ProjectFixture.makeDirectory("sops-cli")
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let file = dir.appendingPathComponent("doc.\(ext)")
-        try plain.write(to: file, atomically: true, encoding: .utf8)
-        let key = try ProjectFixture.ageKeyPair()
-        return try ProjectFixture.run(sops, ["-e", "--age", key.public, file.path])
     }
 
     // MARK: - Nothing sops wrote may stop being recognised
@@ -106,22 +89,41 @@ struct SopsMetadataShapeTests {
         #expect(tree.plaintextCandidates.isEmpty, "an encrypted .env is not a plaintext leak")
     }
 
-    @Test("a real sops JSON file is recognised", .enabled(if: sopsBinary != nil, needsSopsCLI))
+    /// SOPS-38 phase F2 task 3: JSON now reaches the real in-process bridge
+    /// (F2 task 2), and `EncryptedFileMetadata` learned its metadata shape
+    /// alongside this scanner change — so a JSON sops file is now
+    /// *verifiable*, `tree.encrypted`, not `tree.encryptedInOtherFormats`.
+    /// Mirrors `realDotenvIsRecognised` above; the CLI-only fixture this
+    /// test used before F2 task 3 is retired in favour of the bridge, the
+    /// same real-fixture standard the rest of this suite already holds
+    /// dotenv to.
+    @Test("a real sops JSON file is recognised as encrypted, not as another format")
     func realJSONIsRecognised() async throws {
-        let cipherText = try sopsEncrypted("{\"db\": \"hunter2\"}", extension: "json")
+        let key = try ProjectFixture.ageKeyPair()
+        let cipherText = try ProjectFixture.encryptedJSON("{\"db\": \"hunter2\"}", to: [key.public])
 
         let tree = try await scanOne("secrets.json", cipherText)
 
-        #expect(tree.encryptedInOtherFormats.count == 1)
+        #expect(tree.encrypted.count == 1,
+                "got: encrypted=\(tree.encrypted.count) other=\(tree.encryptedInOtherFormats.count)")
+        #expect(tree.encrypted.first?.format == .json)
+        #expect(tree.encryptedInOtherFormats.isEmpty)
+        #expect(EncryptedFileMetadata.recipients(inEncryptedFile: tree.encrypted[0].tail) == [key.public])
     }
 
-    @Test("a real sops INI file is recognised", .enabled(if: sopsBinary != nil, needsSopsCLI))
+    /// See `realJSONIsRecognised`'s doc comment — same change, INI side.
+    @Test("a real sops INI file is recognised as encrypted, not as another format")
     func realINIIsRecognised() async throws {
-        let cipherText = try sopsEncrypted("[db]\npassword=hunter2\n", extension: "ini")
+        let key = try ProjectFixture.ageKeyPair()
+        let cipherText = try ProjectFixture.encryptedINI("[db]\npassword=hunter2\n", to: [key.public])
 
         let tree = try await scanOne("secrets.ini", cipherText)
 
-        #expect(tree.encryptedInOtherFormats.count == 1)
+        #expect(tree.encrypted.count == 1,
+                "got: encrypted=\(tree.encrypted.count) other=\(tree.encryptedInOtherFormats.count)")
+        #expect(tree.encrypted.first?.format == .ini)
+        #expect(tree.encryptedInOtherFormats.isEmpty)
+        #expect(EncryptedFileMetadata.recipients(inEncryptedFile: tree.encrypted[0].tail) == [key.public])
     }
 
     // MARK: - Nothing that merely mentions sops may be recognised

@@ -52,6 +52,20 @@ ScratchDirectoryRegistry.shared.register(root)
         """.write(to: url, atomically: true, encoding: .utf8)
     }
 
+    /// The JSON counterpart to `writeSopsLike` — hand-written text carrying
+    /// the structural shape `SopsMetadataShape.isJSONMetadata` requires
+    /// (a `sops` object with `mac` and `version`), for the same reason
+    /// `writeSopsLike` is hand-written rather than bridge-encrypted: this
+    /// suite is about `FileListView`'s own wiring, not sops's file format.
+    private func writeJSONSopsLike(_ root: URL, at relativePath: String) throws {
+        let url = root.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try """
+        {"key":"ENC[AES256_GCM,data:Zm9v,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]","sops":{"age":[{"recipient":"age1exampleexampleexampleexampleexampleexampleexampleexamplex","enc":"-----BEGIN AGE ENCRYPTED FILE-----\\n-----END AGE ENCRYPTED FILE-----\\n"}],"mac":"ENC[AES256_GCM,data:AAAA,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]","version":"3.13.3"}}
+        """.write(to: url, atomically: true, encoding: .utf8)
+    }
+
     /// The canary. Without a populated tree every assertion here would pass by
     /// finding nothing — the same trap `AXProbe`'s own doc comment describes.
     @Test("the probe renders this view at all")
@@ -152,32 +166,38 @@ ScratchDirectoryRegistry.shared.register(root)
                 "a readable project was warned about")
     }
 
-    /// A project whose only sops file is one this build genuinely cannot
-    /// open — JSON, not dotenv — used to hit the empty placeholder with the
-    /// note explaining why rendered in a branch it could never reach.
+    /// A project whose only sops file is JSON used to hit the empty
+    /// placeholder with the "other format" note rendered in a branch it
+    /// could never reach — this test used to pin exactly that.
     ///
-    /// This fixture was a dotenv-shaped file until Task 6 (SOPS-38): the
-    /// editor now opens dotenv too, so a dotenv file is no longer "another
-    /// format" — it is listed and openable exactly like YAML, and asserting
-    /// this fixture's original shape here would now assert something false.
-    /// JSON is a real, still-unsupported "other format", the same shape
-    /// `SopsMetadataShapeTests.nonYAMLKindReadsJSON` uses.
-    @Test("a project holding only other-format sops files is told why the list is empty",
-          .enabled(if: LocalizationTests.bundleHasMacOSLayout,
-                   "this asserts on text a *format* key produces, and swift test's native build system never compiles .xcstrings — every key falls back to its own raw value, which carries no %@ to substitute into; run under xcodebuild or swift test --build-system swiftbuild"),)
-    func otherFormatNoteSurvivesAnEmptyList() async throws {
-        let root = try project("other-format")
-        try """
-        {"password":"ENC[AES256_GCM,data:abc,iv:def,tag:ghi,type:str]","sops":{"mac":"ENC[AES256_GCM,data:xyz,iv:uvw,tag:rst,type:str]","version":"3.13.3"}}
-        """.write(to: root.appendingPathComponent("secrets.json"), atomically: true, encoding: .utf8)
+    /// This fixture was a dotenv-shaped file until Task 6 (SOPS-38), then a
+    /// JSON-shaped one from Task 6 onward: the editor opened dotenv first,
+    /// so a dotenv file stopped being "another format" — it is listed and
+    /// openable exactly like YAML — and asserting a dotenv fixture's
+    /// original shape here would have asserted something false, so the
+    /// fixture moved to JSON, then the last real "other format" this build
+    /// had. SOPS-38 phase F2 task 3 closed that gap too:
+    /// `ProjectScanner.classify` now routes JSON into `tree.encrypted` and
+    /// `EncryptedFileMetadata` reads its recipients, so JSON is listed and
+    /// openable exactly like YAML and dotenv are — there is no longer a
+    /// real sops document shape this build classifies as "another format"
+    /// at all (see `ScannedTree.encryptedInOtherFormats`'s own doc comment).
+    /// The test now pins the opposite of what it used to: the same fixture
+    /// demonstrates the claim that replaced the old one, rather than being
+    /// deleted outright and losing the "json used to be the one" history.
+    @Test("a project holding only a json sops file lists it, not the empty-with-note placeholder")
+    func jsonFileIsListedNotHiddenBehindOtherFormatNote() async throws {
+        let root = try project("json-listed")
+        try writeJSONSopsLike(root, at: "config/secrets.json")
 
         let model = FileListModel(projectRoot: root)
         await model.refresh()
-        try #require(model.files.isEmpty && model.otherFormatCount == 1,
-                     "precondition: nothing openable, one file in another format")
 
-        let shown = text(of: model)
-        #expect(shown.contains("sops format") || shown.contains("dotenv"),
-                "the user was told the project is empty with no mention of the file that is there")
+        #expect(model.otherFormatCount == 0,
+                "json stopped being \"another format\" as of SOPS-38 phase F2 task 3")
+        #expect(!model.files.isEmpty, "a json sops file must be listed exactly like yaml and dotenv are")
+
+        #expect(text(of: model).contains("config/secrets.json"),
+                "a json sops file must appear in the rendered file list, not behind a note about a format nothing here produces any more")
     }
 }

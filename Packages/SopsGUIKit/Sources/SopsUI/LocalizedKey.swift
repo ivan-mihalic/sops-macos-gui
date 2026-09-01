@@ -196,8 +196,10 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // Formatted with the comma-joined list of directory names never entered —
     // see `FileListView.footnotes`.
     case filesSkippedDirectoriesNote = "files.skipped-directories.note"
-    // Formatted with the count of sops files this build can't open (dotenv/
-    // JSON/INI — YAML-only for v1) — see `FileListModel.otherFormatCount`.
+    // Formatted with the count of sops files this build does not recognise
+    // as any of its four known formats (YAML/dotenv/JSON/INI) — reserved for
+    // a future sops store, so this is expected to be 0 today. See
+    // `FileListModel.otherFormatCount` / `ScannedTree.encryptedInOtherFormats`.
     case filesOtherFormatNote = "files.other-format.note"
     // Ticket #25 claim 2. Formatted with the symlink's own relative path and
     // its resolved target — see `FileListView.unfollowedSymlinkFootnote`.

@@ -136,10 +136,13 @@ public final class FileListModel {
         // it a document's `format` (threaded through to the bridge from
         // `ListedFile.format`, via `ProjectWorkspaceView.activateFile` in
         // `AppShell.swift`), so that is no longer true and the filter is
-        // gone: `otherFormatCount` goes back to covering only what this
-        // build genuinely cannot verify at all — JSON/INI
-        // (`tree.encryptedInOtherFormats`), the same bucket it always meant
-        // before Task 5's dotenv classification existed.
+        // gone. SOPS-38 phase F2 task 3 did the same for JSON and INI on the
+        // scanner side (`ProjectScanner.classify` now routes all four
+        // formats into `tree.encrypted`), so `otherFormatCount` — still
+        // `tree.encryptedInOtherFormats.count` below — is now expected to be
+        // 0 for every project this build can classify at all. It stays a
+        // real field rather than being removed: see
+        // `ScannedTree.encryptedInOtherFormats`'s own doc comment for why.
         files = tree.encrypted
             .map { ListedFile(url: $0.url, format: $0.format) }
             .sorted { relativePath(for: $0.url) < relativePath(for: $1.url) }

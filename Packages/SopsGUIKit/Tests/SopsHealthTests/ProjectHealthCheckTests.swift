@@ -227,6 +227,136 @@ struct ProjectHealthCheckTests {
         #expect(stale.detail.contains(removedColleague.public))
     }
 
+    // SOPS-38 phase F2 task 3: JSON and INI sops files used to be reported
+    // "unverifiable" wholesale (`tree.encryptedInOtherFormats`, "JSON and
+    // INI are not supported"). They now go through the exact same recipient
+    // comparison a YAML or dotenv file does — real bridge output, never a
+    // hand-written fixture, mirroring the dotenv tests above.
+
+    @Test("a JSON file whose recipients match its rule is OK, not unverifiable")
+    func healthyJSONFileIsOK() async throws {
+        let encrypted = try ProjectFixture.encryptedJSON("{\"api_key\": \"hunter2\"}", to: [devKey])
+        let root = try makeProject(
+            sopsYAML: """
+            creation_rules:
+              - path_regex: secrets/.*\\.json$
+                age: \(devKey)
+            """,
+            files: ["secrets/prod.json": encrypted])
+        let check = ProjectHealthCheck(source: FakeProjects(
+            projects: [InspectedProject(name: "demo", rootPath: root)]))
+        let findings = await check.run()
+
+        let stale = finding(findings, suffix: "stale-recipients")
+        #expect(stale.status == .ok, "got: \(stale.status), detail: \(stale.detail)")
+        #expect(stale.detail.contains("Checked 1 encrypted file"))
+        #expect(!stale.detail.contains("does not recognise"))
+        #expect(!stale.detail.contains("unverifiable"))
+    }
+
+    @Test("a JSON file encrypted to a recipient no longer in .sops.yaml is a problem, not unverifiable")
+    func staleJSONRecipientIsAProblem() async throws {
+        let removedColleague = try ProjectFixture.ageKeyPair()
+        let encrypted = try ProjectFixture.encryptedJSON(
+            "{\"api_key\": \"hunter2\"}", to: [devKey, removedColleague.public])
+        let root = try makeProject(
+            sopsYAML: """
+            creation_rules:
+              - path_regex: secrets/.*\\.json$
+                age: \(devKey)
+            """,
+            files: ["secrets/prod.json": encrypted])
+        let check = ProjectHealthCheck(source: FakeProjects(
+            projects: [InspectedProject(name: "demo", rootPath: root)]))
+
+        let stale = finding(await check.run(), suffix: "stale-recipients")
+        #expect(stale.status == .problem, "got: \(stale.status), detail: \(stale.detail)")
+        #expect(stale.detail.contains("secrets/prod.json"))
+        #expect(stale.detail.contains(removedColleague.public))
+    }
+
+    @Test("an INI file whose recipients match its rule is OK, not unverifiable")
+    func healthyINIFileIsOK() async throws {
+        let encrypted = try ProjectFixture.encryptedINI("[data]\napi_key = hunter2\n", to: [devKey])
+        let root = try makeProject(
+            sopsYAML: """
+            creation_rules:
+              - path_regex: secrets/.*\\.ini$
+                age: \(devKey)
+            """,
+            files: ["secrets/prod.ini": encrypted])
+        let check = ProjectHealthCheck(source: FakeProjects(
+            projects: [InspectedProject(name: "demo", rootPath: root)]))
+        let findings = await check.run()
+
+        let stale = finding(findings, suffix: "stale-recipients")
+        #expect(stale.status == .ok, "got: \(stale.status), detail: \(stale.detail)")
+        #expect(stale.detail.contains("Checked 1 encrypted file"))
+        #expect(!stale.detail.contains("does not recognise"))
+        #expect(!stale.detail.contains("unverifiable"))
+    }
+
+    @Test("an INI file encrypted to a recipient no longer in .sops.yaml is a problem, not unverifiable")
+    func staleINIRecipientIsAProblem() async throws {
+        let removedColleague = try ProjectFixture.ageKeyPair()
+        let encrypted = try ProjectFixture.encryptedINI(
+            "[data]\napi_key = hunter2\n", to: [devKey, removedColleague.public])
+        let root = try makeProject(
+            sopsYAML: """
+            creation_rules:
+              - path_regex: secrets/.*\\.ini$
+                age: \(devKey)
+            """,
+            files: ["secrets/prod.ini": encrypted])
+        let check = ProjectHealthCheck(source: FakeProjects(
+            projects: [InspectedProject(name: "demo", rootPath: root)]))
+
+        let stale = finding(await check.run(), suffix: "stale-recipients")
+        #expect(stale.status == .problem, "got: \(stale.status), detail: \(stale.detail)")
+        #expect(stale.detail.contains("secrets/prod.ini"))
+        #expect(stale.detail.contains(removedColleague.public))
+    }
+
+    /// A project whose encrypted files span all four sops formats at once —
+    /// the health check must treat every one of them identically: checked,
+    /// verified, `.ok`. Nothing here may fall into `encryptedInOtherFormats`
+    /// any more.
+    @Test("a project with all four sops formats — YAML, dotenv, JSON, INI — is checked identically and reports OK")
+    func mixedFourFormatProjectIsOK() async throws {
+        let yaml = encryptedFile(recipients: [devKey])
+        let dotenv = try ProjectFixture.encryptedDotenv("API_KEY=hunter2\n", to: [devKey])
+        let json = try ProjectFixture.encryptedJSON("{\"api_key\": \"hunter2\"}", to: [devKey])
+        let ini = try ProjectFixture.encryptedINI("[data]\napi_key = hunter2\n", to: [devKey])
+        let root = try makeProject(
+            sopsYAML: """
+            creation_rules:
+              - path_regex: secrets/.*
+                age: \(devKey)
+            """,
+            files: [
+                "secrets/prod.yaml": yaml,
+                "secrets/prod.env": dotenv,
+                "secrets/prod.json": json,
+                "secrets/prod.ini": ini,
+            ])
+        let check = ProjectHealthCheck(source: FakeProjects(
+            projects: [InspectedProject(name: "demo", rootPath: root)]))
+        let findings = await check.run()
+
+        let stale = finding(findings, suffix: "stale-recipients")
+        #expect(stale.status == .ok, "got: \(stale.status), detail: \(stale.detail)")
+        #expect(stale.detail.contains("Checked 4 encrypted files"), "detail: \(stale.detail)")
+        #expect(!stale.detail.contains("does not recognise"))
+        #expect(!stale.detail.contains("unverifiable"))
+
+        // The encryption (leaf) finding must agree: every file's values are
+        // genuinely encrypted, not just its metadata, across all four
+        // formats — `SopsBridge.inspectLeafEncryption` reads all four.
+        let encryption = finding(findings, suffix: "encryption")
+        #expect(encryption.status == .ok, "got: \(encryption.status), detail: \(encryption.detail)")
+        #expect(encryption.detail.contains("Checked 4 encrypted files"), "detail: \(encryption.detail)")
+    }
+
     @Test("a plaintext .env inside the project that is not gitignored is a problem")
     func ungitignoredPlaintextIsAProblem() async throws {
         let root = try makeProject(

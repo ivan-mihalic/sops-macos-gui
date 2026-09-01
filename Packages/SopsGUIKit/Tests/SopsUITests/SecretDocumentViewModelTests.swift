@@ -1920,3 +1920,60 @@ struct SecretDocumentDotenvTests {
     }
 }
 
+/// SOPS-38 phase F2 task 3: json/ini sops files now reach `tree.encrypted`
+/// (`ProjectScanner.classify`) with their own `SopsFileFormat`, so they
+/// reach this view model exactly the way a YAML or dotenv file does — same
+/// constructor, same `load()`. The editor's own per-format capability
+/// matrix (`supportsNestedStructure`, `allowedAddKinds`) is deliberately
+/// conservative for both today (json defaults to the yaml comparison
+/// failing, ini to the dotenv-shaped restriction — see that property's own
+/// doc comment; F2 task 4 owns sharpening it), which is fine and intended.
+/// What matters here, and what these two smoke tests exist to pin, is that
+/// opening one at all — decrypting it through the real in-process bridge
+/// and populating `rows` — actually works end to end, not just that the
+/// scanner classifies the file correctly.
+@Suite("SecretDocumentViewModel opens json and ini documents")
+@MainActor
+struct SecretDocumentJSONAndINISmokeTests {
+
+    @Test("a json sops document loads through the view model with non-empty rows")
+    func jsonDocumentLoads() async throws {
+        let key = try AgeKeyPair.generate()
+        let encrypted = try SopsBridge.encrypt(
+            "{\"db\": \"hunter2\", \"user\": \"admin\"}", format: .json, recipients: [key.public])
+        let dir = try scratchDirectory("json-fixture")
+        let fileURL = dir.appendingPathComponent("secret.json")
+        try encrypted.write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .json, keyStore: store)
+        await vm.load()
+
+        #expect(vm.loadState == .loaded, "got: \(vm.loadState)")
+        #expect(!vm.rows.isEmpty)
+        #expect(vm.rows.first { $0.path == ["db"] }?.value == "hunter2")
+        #expect(vm.rows.first { $0.path == ["user"] }?.value == "admin")
+    }
+
+    @Test("an ini sops document loads through the view model with non-empty rows")
+    func iniDocumentLoads() async throws {
+        let key = try AgeKeyPair.generate()
+        let encrypted = try SopsBridge.encrypt(
+            "[db]\nurl = postgres://x\npassword = hunter2\n", format: .ini, recipients: [key.public])
+        let dir = try scratchDirectory("ini-fixture")
+        let fileURL = dir.appendingPathComponent("secret.ini")
+        try encrypted.write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let vm = SecretDocumentViewModel(fileURL: fileURL, format: .ini, keyStore: store)
+        await vm.load()
+
+        #expect(vm.loadState == .loaded, "got: \(vm.loadState)")
+        #expect(!vm.rows.isEmpty)
+        #expect(vm.rows.first { $0.path == ["db", "url"] }?.value == "postgres://x")
+        #expect(vm.rows.first { $0.path == ["db", "password"] }?.value == "hunter2")
+    }
+}
+

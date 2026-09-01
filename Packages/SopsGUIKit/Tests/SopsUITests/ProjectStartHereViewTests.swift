@@ -761,38 +761,26 @@ struct FileListViewStartHereWiringTests {
 
     /// A project holding only a sops file in an unsupported format used to
     /// hit the empty placeholder with `otherFormatCount`'s note nested where
-    /// the branch could never reach it (`FileListViewWiringTests
-    /// .otherFormatNoteSurvivesAnEmptyList` pins the model-and-view
-    /// combination for the old placeholder branch). This pins the same
-    /// property for the new branch, and that the note appears exactly once —
-    /// `FileListView.footnotes` and `ProjectStartHereView` both know about
-    /// `otherFormatCount`, and only one of them may say it out loud.
+    /// the branch could never reach it, and this test used to pin that the
+    /// note appeared exactly once across `FileListView.footnotes` and
+    /// `ProjectStartHereView` — both know about `otherFormatCount`, and only
+    /// one of them may say it out loud.
     ///
-    /// This fixture was a dotenv-shaped file until Task 6 (SOPS-38): the
-    /// editor now opens dotenv too, so it is no longer "another format" —
-    /// it is listed and openable exactly like YAML. JSON is a real,
-    /// still-unsupported one, the same shape
-    /// `SopsMetadataShapeTests.nonYAMLKindReadsJSON` uses.
-    @Test("an other-format-only project shows the note exactly once, alongside the guidance")
-    func otherFormatNoteAppearsOnceAlongsideGuidance() async throws {
-        let root = try project("other-format")
-        try """
-        {"password":"ENC[AES256_GCM,data:abc,iv:def,tag:ghi,type:str]","sops":{"mac":"ENC[AES256_GCM,data:xyz,iv:uvw,tag:rst,type:str]","version":"3.13.3"}}
-        """.write(to: root.appendingPathComponent("secrets.json"), atomically: true, encoding: .utf8)
-
-        let model = FileListModel(projectRoot: root)
-        await model.refresh()
-        try #require(model.files.isEmpty && model.otherFormatCount == 1)
-
-        let nodes = AXProbe.tree(size: Self.size) {
-            FileListView(model: model, selection: .constant(nil), onNewFile: {})
-        }
-        let shown = nodes.map { $0.label + " " + $0.value + " " + $0.help }.joined(separator: "\n")
-        #expect(shown.contains(LocalizedKey.newFileInfoNoConfig.text),
-                "the tree did not populate — this test would be vacuous: \(shown)")
-
-        let noteText = String(format: LocalizedKey.filesOtherFormatNote.text, 1)
-        let occurrences = nodes.filter { $0.value == noteText || $0.label == noteText }.count
-        #expect(occurrences == 1, "the other-format note appeared \(occurrences) times, expected exactly 1: \(shown)")
-    }
+    /// The fixture behind that scenario moved twice, and each move is real
+    /// project history worth keeping rather than a test quietly deleted: it
+    /// was dotenv-shaped until Task 6 (SOPS-38) taught the editor to open
+    /// dotenv too, so dotenv stopped being "another format" and the fixture
+    /// became JSON, the last real "other format" this build had. SOPS-38
+    /// phase F2 task 3 closed that gap as well —
+    /// `FileListViewWiringTests.jsonFileIsListedNotHiddenBehindOtherFormatNote`
+    /// is JSON's own version of exactly this move — and with it, the
+    /// combination this test pinned (a real file, `showsStartHere` true,
+    /// `otherFormatCount` positive) is no longer reachable through any real
+    /// sops document at all: `ScannedTree.encryptedInOtherFormats` is empty
+    /// for every project this build can classify (see that field's own doc
+    /// comment). Retired rather than rewritten a third time around a fixture
+    /// that would have to lie about being sops's own output to keep failing
+    /// this way — `otherFormatCountIsSurfaced` above still pins
+    /// `ProjectStartHereView`'s own rendering of a positive count directly,
+    /// which is the part of this claim that remains testable without one.
 }

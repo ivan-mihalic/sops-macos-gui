@@ -509,16 +509,20 @@ public struct ProjectHealthCheck: HealthCheck {
             return root.appendingPathComponent(relative).path
         }
 
-        // Encrypted files this build still cannot read at all. YAML and
-        // dotenv sops documents both reach `tree.encrypted` now and are
-        // checked in the loop below — `EncryptedFileMetadata` reads
-        // recipients out of either shape. JSON and INI are what is left in
-        // `tree.encryptedInOtherFormats`: nothing on the Swift side parses
-        // their metadata yet. Saying so is the point: silently omitting them
-        // from the count and then reporting OK is the same vacuous verdict
-        // this whole finding was rewritten to stop producing.
+        // Encrypted files this build still cannot read at all. As of SOPS-38
+        // phase F2 task 3, every one of sops's own four stores — YAML,
+        // dotenv, JSON, INI — reaches `tree.encrypted` and is checked in the
+        // loop below; `EncryptedFileMetadata` reads recipients out of all
+        // four shapes. `tree.encryptedInOtherFormats` is reserved for a
+        // sops store this app has not been taught yet, so in practice it is
+        // empty for every project this build can classify at all — see that
+        // field's own doc comment. Still walked and reported, not silently
+        // dropped: omitting a file this app genuinely cannot read from the
+        // count and then reporting OK would be the same vacuous verdict
+        // this whole finding was rewritten to stop producing, whether or
+        // not any file lands here today.
         for url in tree.encryptedInOtherFormats {
-            unverifiable.append("\(relativeName(url)) is sops-encrypted in a format this app does not read yet — JSON and INI are not supported — so its recipient list was not checked.")
+            unverifiable.append("\(relativeName(url)) is sops-encrypted in a format this app does not recognise, so its recipient list was not checked.")
         }
 
         for sniffed in tree.encrypted {
@@ -1097,8 +1101,14 @@ public struct ProjectHealthCheck: HealthCheck {
         var unverifiable: [String] = []
         var verifiedCount = 0
 
+        // See `recipientFinding`'s identical loop for why this is expected
+        // to be empty for every project this build can classify at all as
+        // of SOPS-38 phase F2 task 3 (JSON and INI now reach `tree.encrypted`,
+        // and `SopsBridge.inspectLeafEncryption` already reads both — see
+        // `sniffed.format` below), and why it stays a real, reported branch
+        // rather than being removed.
         for url in tree.encryptedInOtherFormats {
-            unverifiable.append("\(relativeName(url)) is sops-encrypted in a format this app does not read yet — JSON and INI are not supported — so its values were not checked.")
+            unverifiable.append("\(relativeName(url)) is sops-encrypted in a format this app does not recognise, so its values were not checked.")
         }
 
         for sniffed in tree.encrypted {

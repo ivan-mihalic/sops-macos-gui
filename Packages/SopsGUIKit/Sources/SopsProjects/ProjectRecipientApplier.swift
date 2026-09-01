@@ -322,11 +322,13 @@ public struct ProjectRecipientApplier: Sendable {
     /// produces the text.
     public func plan(projectRoot: URL, recipients: [String]) async -> Plan {
         let tree = await scanProject(projectRoot)
-        // `tree.encrypted` has carried dotenv files alongside YAML ones since
-        // Task 5 (SOPS-38) — this is the task that stopped filtering them
-        // back out. `readRecipients`/`rewrapRecipients` are now format-aware
-        // (see `apply`/`applyToOne`, which read each file's format off
-        // `ScopedFile` rather than assuming `.yaml`), and
+        // `tree.encrypted` carries all four sops formats — YAML and dotenv
+        // since Task 5, JSON and INI since SOPS-38 phase F2 task 3 — because
+        // those tasks stopped filtering the non-YAML ones back out.
+        // `readRecipients`/`rewrapRecipients` are format-aware (see
+        // `apply`/`applyToOne`, which read each file's format off
+        // `ScopedFile` rather than assuming `.yaml`), so nothing here needed
+        // to change again for the newer two, and
         // `SopsBridge.updateConfigRecipients` (behind `proposeConfig`) never
         // needed a format at all — it resolves a creation rule purely from
         // paths, never from a document's contents.

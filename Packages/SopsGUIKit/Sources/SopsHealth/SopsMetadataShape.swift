@@ -86,12 +86,12 @@ enum SopsMetadataShape {
     }
 
     /// Which non-YAML sops store, if any, wrote `text`'s metadata — `nil` for
-    /// neither. Recognising *which* is what lets a caller route dotenv (this
-    /// build reads its recipients — see `EncryptedFileMetadata`) differently
-    /// from JSON/INI (still reported honestly as unverifiable) without a
-    /// second structural pass: `isYAMLMetadata`/the old boolean
+    /// none of them. Recognising *which* is what lets a caller (`EncryptedFile
+    /// Metadata`, `ProjectScanner.classify`) give each its own `SopsFileFormat`
+    /// without a second structural pass: `isYAMLMetadata`/the old boolean
     /// `isNonYAMLMetadata` only ever answered "is this a sops document",
-    /// never "which store wrote it".
+    /// never "which store wrote it". As of SOPS-38 phase F2 task 3, this
+    /// build reads recipients out of all three — dotenv, JSON and INI.
     enum Kind {
         case dotenv, json, ini
     }

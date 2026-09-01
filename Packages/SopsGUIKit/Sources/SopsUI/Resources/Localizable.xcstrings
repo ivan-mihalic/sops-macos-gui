@@ -1738,13 +1738,13 @@
               "one": {
                 "stringUnit": {
                   "state": "translated",
-                  "value": "%d file uses a sops format this app doesn't open yet (JSON or INI)."
+                  "value": "%d file is sops-encrypted in a format this app does not recognise."
                 }
               },
               "other": {
                 "stringUnit": {
                   "state": "translated",
-                  "value": "%d files use a sops format this app doesn't open yet (JSON or INI)."
+                  "value": "%d files are sops-encrypted in a format this app does not recognise."
                 }
               }
             }
