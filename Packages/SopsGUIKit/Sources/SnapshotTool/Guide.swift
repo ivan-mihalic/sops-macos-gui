@@ -84,9 +84,11 @@ enum Guide {
     /// .yaml`, and `services/worker.secrets.env`.
     ///
     /// The `.env` file is in the fixture on purpose. sops writes dotenv files
-    /// too, this app is YAML-only for v1, and a reader whose real project has
-    /// one needs to see the footnote the file list draws for it rather than
-    /// wonder why a file they can see in Finder is missing from the list.
+    /// too, and this app opens them exactly like the YAML files next to it
+    /// (SOPS-38) — the file list draws no footnote for it at all, which is
+    /// the point: a reader whose real project has one should see it listed
+    /// and openable, not wonder why a file they can see in Finder is missing
+    /// from the list.
     private static func demoProjectRoot() throws -> URL {
         // The UUID goes on the *parent*, never on the project directory
         // itself: `ProjectSidebar` shows a project by its last path
@@ -114,18 +116,16 @@ enum Guide {
         try write("config/production.secrets.yaml", productionPlaintext)
         try write("config/staging.secrets.yaml", stagingPlaintext)
 
-        // sops's dotenv store, whose markers are what
-        // `ProjectScanner.looksSopsEncryptedInAnotherFormat` keys on. Written
-        // literally because the bridge encrypts YAML — this file exists to be
-        // *counted*, never opened.
+        // Real sops dotenv ciphertext through the in-process bridge — same
+        // discipline as `write()` above, and the same values `docs/GUIDE.md`
+        // has the reader put in this exact file. `ProjectScanner` classifies
+        // it as `.dotenv` (SOPS-38) and the file list shows it as openable,
+        // right alongside the two YAML files.
         let dotenv = root.appendingPathComponent("services/worker.secrets.env")
         try FileManager.default.createDirectory(
             at: dotenv.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try """
-            REDIS_URL=ENC[AES256_GCM,data:Zm9v,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
-            sops_mac=ENC[AES256_GCM,data:AAAA,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
-            sops_version=3.13.3
-            """.write(to: dotenv, atomically: true, encoding: .utf8)
+        let encryptedDotenv = try SopsBridge.encrypt(workerDotenvPlaintext, format: .dotenv, recipients: [key.public])
+        try encryptedDotenv.write(to: dotenv, atomically: true, encoding: .utf8)
 
         return root
     }
@@ -183,6 +183,13 @@ enum Guide {
             url: postgres://demo:staging-not-real@db.staging.example.invalid:5432/demo
         api:
             stripe_key: sk_test_DEMOxxxxxxxxxxxxxxxxxxxx
+        """
+
+    /// The same values `docs/GUIDE.md`'s setup script puts in
+    /// `services/worker.secrets.env` — see `demoProjectRoot()`.
+    private static let workerDotenvPlaintext = """
+        REDIS_URL=redis://cache.example.invalid:6379/0
+        WORKER_TOKEN=demo-worker-token-0000
         """
 
     private static func editorModel() async throws -> SecretDocumentViewModel {

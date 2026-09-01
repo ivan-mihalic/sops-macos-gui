@@ -421,6 +421,10 @@ with a reason until their milestone lands.
   byte-compatible against the CLI in both directions. Adding dotenv or JSON later is a new
   `Format` case — sops ships a store for each — not a rewrite, but each needs its own
   round-trip tests against the real CLI, which is what took the longest in M0.
+  **Overturned in part (2026-09-01, SOPS-38 F1):** dotenv is now a first-class format —
+  opened, edited, created and access-managed exactly like YAML, verified byte-compatible
+  against the real CLI the same way YAML was. JSON and INI remain future work; a sops file
+  in either is still counted-but-not-listed rather than hidden.
 - **Minimum macOS?** 26.0 (2026-08-07), matching §3 and §4's "HIG for macOS 26+ including
   Liquid Glass". The build had sat at 14.0, which was chosen only to silence linker warnings
   and contradicted the spec.

@@ -824,8 +824,10 @@ private struct ProjectWorkspaceView: View {
             // ever reached for a file this switch did not learn about from a
             // scan — unreachable in practice (every `url` this function is
             // ever called with came from `fileListModel.files` itself, via
-            // this binding or `NewSecretFileSheet`'s `onCreated`, and a new
-            // file this app creates is always YAML today) — not a real
+            // this binding or `NewSecretFileSheet`'s `onCreated`, and both
+            // call sites refresh the list *before* switching — see
+            // `onCreated`'s own comment above, "The list is refreshed first"
+            // — so the lookup above never actually misses) — not a real
             // "guess when unsure".
             let format = fileListModel?.files.first(where: { $0.url == url })?.format ?? .yaml
             let vm = SecretDocumentViewModel(fileURL: url, format: format, keyStore: keyStore)
