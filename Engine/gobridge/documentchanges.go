@@ -414,8 +414,13 @@ func validateAdd(branches sops.TreeBranches, format Format, add Add, beingRemove
 		if err := refuseReservedKey(add); err != nil {
 			return nil, err
 		}
-		if format == FormatDotenv {
+		switch format {
+		case FormatDotenv:
 			if err := refuseInvalidDotenvKey(add); err != nil {
+				return nil, err
+			}
+		case FormatINI:
+			if err := refuseInvalidINIKey(add); err != nil {
 				return nil, err
 			}
 		}
@@ -503,6 +508,72 @@ func refuseInvalidDotenvKey(add Add) error {
 			"%s: a dotenv key cannot contain a line break — this file's own format reads "+
 				"each line as a separate entry, so it would split into more than one",
 			where)
+	}
+	return nil
+}
+
+// refuseInvalidINIKey rejects a new key sops's own INI store
+// (gopkg.in/ini.v1, vendored transitively through this app's pinned sops
+// v3.13.3) cannot round-trip. Found by probing the real writer directly
+// (encodeTree in stores/ini/store.go, which calls straight through to
+// ini.v1's own File.WriteTo) with every hostile character this project's
+// dotenv guard above already knew to check, plus the two INI-specific
+// comment markers — not assumed to transfer from dotenv's rule, because it
+// does not: INI's hazards are a different three shapes.
+//
+//   - An embedded "\n" is not escaped at all by ini.v1's key-name quoting
+//     (which only triggers on '"', a KeyValueDelimiters character, or a
+//     backtick) — the newline lands raw in the middle of a "key = value"
+//     line, splitting it into two, and the resulting file fails to decrypt
+//     at all afterwards: "this file could not be read as a SOPS document",
+//     for every value in it, not just this one.
+//   - An embedded "\r" is silently absent from the written output — probed
+//     directly: a key of "weird\rcr" writes and reads back as "weirdcr",
+//     with no error at any stage. The entry ends up saved under a name
+//     other than the one the user just typed, exactly the "key you typed is
+//     not the key you get back" hazard the dotenv guard's own doc comment
+//     warns about, just via a different mechanism (silent drop, not a split).
+//   - A key starting with "#" or ";" is written as a genuine INI comment
+//     line — ini.v1's LoadSources reads it as one — so the key/value pair
+//     that renders on screen and the bytes the file's own message
+//     authentication code was computed over disagree. Probed directly: the
+//     save succeeds with no error, but decrypting the result afterwards
+//     fails with "this file does not match its own message authentication
+//     code: it has been modified since it was encrypted, or it is damaged"
+//     — for the whole file, the same blast radius as the newline case.
+//
+// "=", a backtick, a double quote and ":" are deliberately NOT refused here:
+// ini.v1's writer backtick- or triple-quotes a key containing any of them
+// (observed directly, and pinned at the bridge layer by
+// TestINIApplyChangesAcceptsKeysDotenvWouldRefuse), so they round-trip
+// safely without a guard. Neither are "[" or "]" — probed directly, a key
+// containing either writes and reads back unchanged, because a *key* line
+// inside a section has no bracket syntax of its own; only a *section
+// header* line does, and this app's Add API has no way to create a new
+// section at all (see AddCapabilities on the Swift side), so a hostile
+// section name is not a shape this function needs to guard against.
+//
+// This mirrors SecretDocumentViewModel.isValidINIKey on the Swift side —
+// same four checks, same reason — so the sheet and the save can never
+// disagree about a name this format can hold. Values are never named in the
+// message (CLAUDE.md): only the key, which the user just typed and already
+// sees on screen.
+func refuseInvalidINIKey(add Add) error {
+	newPath := append(append([]string{}, add.Parent...), add.Key)
+	where := pathText(add.Document, newPath)
+	switch {
+	case strings.ContainsAny(add.Key, "\n\r"):
+		return fmt.Errorf(
+			"%s: an INI key cannot contain a line break — this file's own format either splits "+
+				"it into more than one entry or silently drops the line break, so the key that "+
+				"would be read back is not the one just typed",
+			where)
+	case strings.HasPrefix(add.Key, "#") || strings.HasPrefix(add.Key, ";"):
+		return fmt.Errorf(
+			"%s: an INI key cannot start with %q or %q — this file's own format reads a line "+
+				"starting with either as a comment, which would desync the file from its own "+
+				"authenticity check and make the whole file fail to decrypt afterwards",
+			where, "#", ";")
 	}
 	return nil
 }

@@ -449,3 +449,128 @@ func TestINIApplyChangesAddAtDocumentRootProducesCleanError(t *testing.T) {
 		t.Errorf("refusal echoes the value that would have been written: %q", err.Error())
 	}
 }
+
+// -----------------------------------------------------------------------
+// SOPS-38 phase F2 task 4: refuseInvalidINIKey
+// -----------------------------------------------------------------------
+//
+// These four shapes were found by probing gopkg.in/ini.v1's real writer
+// directly (a throwaway test, not committed) rather than assumed from
+// dotenv's own rule — see refuseInvalidINIKey's doc comment
+// (documentchanges.go) for exactly what each shape does when it is not
+// refused. The two negative-side tests below (TestINIApplyChangesAcceptsKeys
+// DotenvWouldRefuse above, and TestINIApplyChangesAcceptsBracketsAndBacktick
+// below) are the discriminating half: if this guard were accidentally wider
+// than these four shapes, one of them would fail instead of passing for the
+// wrong reason.
+
+// TestINIApplyChangesRefusesKeyContainingNewline proves the "\n" case: an
+// embedded newline is not escaped by ini.v1's key-name quoting at all, so it
+// lands raw in the middle of a "key = value" line — probed directly, the
+// resulting file fails to decrypt afterwards with "this file could not be
+// read as a SOPS document", not just for this entry but for the whole file.
+func TestINIApplyChangesRefusesKeyContainingNewline(t *testing.T) {
+	key := newAgeKeyPair(t)
+	encrypted, err := Encrypt([]byte(iniPlain), FormatINI, EncryptOpts{AgeRecipients: []string{key.Public}})
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	_, err = ApplyChangesAndEncrypt(encrypted, FormatINI, ChangeSet{
+		Adds: []Add{{Parent: []string{"db"}, Key: "weird\nnewline", Value: "v", Kind: KindString}},
+	}, key.Private)
+	if err == nil {
+		t.Fatal("an INI key containing a line break was accepted")
+	}
+	if strings.Contains(err.Error(), "v") && strings.Contains(err.Error(), "weird\nnewline=v") {
+		t.Fatalf("refusal echoes more than the key: %q", err.Error())
+	}
+}
+
+// TestINIApplyChangesRefusesKeyContainingCarriageReturn proves the "\r"
+// case: probed directly, ini.v1's writer silently drops the "\r" from the
+// key it writes — "weird\rcr" saves and reads back as "weirdcr", with no
+// error at any stage — so the entry would end up under a name other than
+// the one the user just typed. This is refused even though nothing here
+// makes the *file* undecryptable, for the same reason
+// refuseInvalidDotenvKey refuses dotenv's newline case: the key that comes
+// back is not the key that went in.
+func TestINIApplyChangesRefusesKeyContainingCarriageReturn(t *testing.T) {
+	key := newAgeKeyPair(t)
+	encrypted, err := Encrypt([]byte(iniPlain), FormatINI, EncryptOpts{AgeRecipients: []string{key.Public}})
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	_, err = ApplyChangesAndEncrypt(encrypted, FormatINI, ChangeSet{
+		Adds: []Add{{Parent: []string{"db"}, Key: "weird\rcr", Value: "v", Kind: KindString}},
+	}, key.Private)
+	if err == nil {
+		t.Fatal("an INI key containing a carriage return was accepted")
+	}
+}
+
+// TestINIApplyChangesRefusesKeyStartingWithHashOrSemicolon proves the "#"/
+// ";" case: both are INI comment markers, so a key starting with either is
+// written as a comment line — probed directly, the save itself reports no
+// error, but decrypting the result afterwards fails with "this file does
+// not match its own message authentication code", because the bytes the MAC
+// covers and the key/value pair rendered on screen have desynced. Worse than
+// the dotenv equivalent (TestDotenvApplyChangesRefusesKeyStartingWithHash,
+// where only the one entry silently disappears): here the whole file stops
+// decrypting.
+func TestINIApplyChangesRefusesKeyStartingWithHashOrSemicolon(t *testing.T) {
+	key := newAgeKeyPair(t)
+	encrypted, err := Encrypt([]byte(iniPlain), FormatINI, EncryptOpts{AgeRecipients: []string{key.Public}})
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	for _, name := range []string{"#hashprefix", ";semiprefix"} {
+		_, err = ApplyChangesAndEncrypt(encrypted, FormatINI, ChangeSet{
+			Adds: []Add{{Parent: []string{"db"}, Key: name, Value: "v", Kind: KindString}},
+		}, key.Private)
+		if err == nil {
+			t.Fatalf("an INI key starting with a comment marker (%q) was accepted", name)
+		}
+	}
+}
+
+// TestINIApplyChangesAcceptsBracketsAndBacktick is the discriminating
+// negative case for the two tests above: "[", "]" and a backtick round-trip
+// through the real CLI unchanged, because a *key* line inside a section has
+// no bracket syntax of its own (only a section *header* line does, and this
+// app's Add API can never create one — see refuseInvalidINIKey's doc
+// comment) and ini.v1's writer triple-quotes a key containing a backtick.
+// If refuseInvalidINIKey were accidentally refusing these too, this test
+// would fail instead of the two above passing for the wrong reason.
+func TestINIApplyChangesAcceptsBracketsAndBacktick(t *testing.T) {
+	key := newAgeKeyPair(t)
+	encrypted, err := Encrypt([]byte(iniPlain), FormatINI, EncryptOpts{AgeRecipients: []string{key.Public}})
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	out, err := ApplyChangesAndEncrypt(encrypted, FormatINI, ChangeSet{
+		Adds: []Add{
+			{Parent: []string{"db"}, Key: "weird]bracket", Value: "v1", Kind: KindString},
+			{Parent: []string{"db"}, Key: "weird[bracket", Value: "v2", Kind: KindString},
+			{Parent: []string{"db"}, Key: "weird`tick", Value: "v3", Kind: KindString},
+		},
+	}, key.Private)
+	if err != nil {
+		t.Fatalf("ApplyChangesAndEncrypt refused a key this format can hold safely: %v", err)
+	}
+
+	rows, err := DecryptToRows(out, FormatINI, key.Private)
+	if err != nil {
+		t.Fatalf("DecryptToRows: %v", err)
+	}
+	for _, tc := range []struct{ key, value string }{
+		{"weird]bracket", "v1"}, {"weird[bracket", "v2"}, {"weird`tick", "v3"},
+	} {
+		if got := rowByPath(t, rows, "db", tc.key).Value; got != tc.value {
+			t.Errorf("db.%q = %q, want %q", tc.key, got, tc.value)
+		}
+	}
+}
