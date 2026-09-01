@@ -121,9 +121,9 @@ struct ProjectAccessFilePreviewTests {
 
         let plan = try #require(model.plan)
         let scanned = try #require(model.filesToApply.first)
-        try #require(!scanned.path.hasPrefix(plan.projectRoot.path),
+        try #require(!scanned.url.path.hasPrefix(plan.projectRoot.path),
                      "precondition: the scan and the root really do disagree on the spelling")
-        #expect(ProjectAccessView.previewPath(of: scanned, in: plan.projectRoot) == "dev/db.yaml")
+        #expect(ProjectAccessView.previewPath(of: scanned.url, in: plan.projectRoot) == "dev/db.yaml")
     }
 
     /// A preview whose cost grows with the project is not a preview a project

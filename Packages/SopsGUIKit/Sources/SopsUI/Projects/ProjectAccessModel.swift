@@ -203,10 +203,12 @@ public final class ProjectAccessModel {
         fileResults.filter { if case .failed = $0.outcome { true } else { false } }.count
     }
 
-    /// The files an apply would touch. See
-    /// `ProjectRecipientApplier.Plan.filesInScope` for why a project whose
-    /// config governs nothing still has files in scope.
-    public var filesToApply: [URL] { plan?.filesInScope ?? [] }
+    /// The files an apply would touch, each paired with its own document
+    /// format (`ProjectRecipientApplier.ScopedFile`) since Task 7 (SOPS-38) —
+    /// see `ProjectRecipientApplier.Plan.filesInScope` for why a project
+    /// whose config governs nothing still has files in scope, and for why
+    /// this is format-tagged rather than bare `URL`.
+    public var filesToApply: [ProjectRecipientApplier.ScopedFile] { plan?.filesInScope ?? [] }
 
     /// Whether the current plan needs `widenedScopeAcknowledged` before
     /// `applyToFiles()` will run at all — ticket #24 claim 1.

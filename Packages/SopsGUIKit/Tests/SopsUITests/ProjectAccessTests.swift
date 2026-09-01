@@ -505,9 +505,9 @@ struct ProjectAccessQueuedRunTests {
         try keyStore.importKey(owner.private)
 
         let gate = FirstCallGate()
-        let applier = ProjectRecipientApplier(rewrapRecipients: { contents, recipients, key in
+        let applier = ProjectRecipientApplier(rewrapRecipients: { contents, format, recipients, key in
             gate.waitIfFirst()
-            return try SopsBridge.updateRecipients(contents, format: .yaml, to: recipients, agePrivateKey: key)
+            return try SopsBridge.updateRecipients(contents, format: format, to: recipients, agePrivateKey: key)
         })
         let model = ProjectAccessModel(projectRoot: root, keyStore: keyStore, applier: applier)
         await model.load()
@@ -573,9 +573,9 @@ struct ProjectAccessQueuedRunTests {
         try keyStore.importKey(owner.private)
 
         let gate = FirstCallGate()
-        let applier = ProjectRecipientApplier(rewrapRecipients: { contents, recipients, key in
+        let applier = ProjectRecipientApplier(rewrapRecipients: { contents, format, recipients, key in
             gate.waitIfFirst()
-            return try SopsBridge.updateRecipients(contents, format: .yaml, to: recipients, agePrivateKey: key)
+            return try SopsBridge.updateRecipients(contents, format: format, to: recipients, agePrivateKey: key)
         })
         let model = ProjectAccessModel(projectRoot: root, keyStore: keyStore, applier: applier)
         await model.load()
@@ -651,9 +651,9 @@ struct ProjectAccessRunRecordTests {
         let keyStore = SessionKeyStore()
         try keyStore.importKey(owner.private)
         let gate = FirstCallGate()
-        let applier = ProjectRecipientApplier(rewrapRecipients: { contents, recipients, key in
+        let applier = ProjectRecipientApplier(rewrapRecipients: { contents, format, recipients, key in
             gate.waitIfFirst()
-            return try SopsBridge.updateRecipients(contents, format: .yaml, to: recipients, agePrivateKey: key)
+            return try SopsBridge.updateRecipients(contents, format: format, to: recipients, agePrivateKey: key)
         })
         let model = ProjectAccessModel(projectRoot: root, keyStore: keyStore, applier: applier)
         await model.load()
@@ -920,7 +920,7 @@ struct ProjectAccessScopeFallbackTests {
         #expect(model.plan?.configRefusal?.contains("creation rule") == true)
         // The point: nothing was worked out about the rule, which must not be
         // read as "the rule covers no files" and quietly apply to nothing.
-        #expect(model.filesToApply.map(\.lastPathComponent) == ["secret.yaml"])
+        #expect(model.filesToApply.map { $0.url.lastPathComponent } == ["secret.yaml"])
 
         model.stageAdd(added.public)
         #expect(await model.applyToFiles() == nil)

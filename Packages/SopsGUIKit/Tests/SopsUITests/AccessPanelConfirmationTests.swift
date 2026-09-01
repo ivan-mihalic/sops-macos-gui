@@ -293,9 +293,9 @@ struct ApplyingSpinnerAccessibilityTests {
         // or a cooperative-pool thread. The `plan` path does not call this seam
         // at all, so loading the panel is unaffected.
         let held = DispatchSemaphore(value: 0)
-        let applier = ProjectRecipientApplier(rewrapRecipients: { contents, recipients, key in
+        let applier = ProjectRecipientApplier(rewrapRecipients: { contents, format, recipients, key in
             held.wait()
-            return try SopsBridge.updateRecipients(contents, format: .yaml, to: recipients, agePrivateKey: key)
+            return try SopsBridge.updateRecipients(contents, format: format, to: recipients, agePrivateKey: key)
         })
         let model = ProjectAccessModel(projectRoot: root, keyStore: keyStore, applier: applier)
 
