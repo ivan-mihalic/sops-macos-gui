@@ -3860,6 +3860,28 @@
           }
         }
       }
+    },
+    "editor.add.invalid-ini-key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This key cannot be saved in an INI file: it has a line break, or starts with “#” or “;”, and this format would read it back differently — or stop decrypting the whole file. Choose a different name."
+          }
+        }
+      }
+    },
+    "editor.add.unsupported-for-format": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This document's own format cannot hold a new entry here. For an INI file, select an existing section first — a new key can only go inside one."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

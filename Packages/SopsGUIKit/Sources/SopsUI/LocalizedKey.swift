@@ -327,6 +327,18 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // error and can never be decrypted again. Mirrors `refuseInvalidDotenvKey`
     // in the bridge — see `AddRowRefusal.invalidDotenvKey`.
     case editorAddInvalidDotenvKey = "editor.add.invalid-dotenv-key"
+    // SOPS-38 phase F2 task 4: an INI document's own store either corrupts
+    // the whole file or silently changes the key that gets saved for a
+    // different set of hazardous shapes than dotenv's. Mirrors
+    // `refuseInvalidINIKey` in the bridge — see
+    // `AddRowRefusal.invalidINIKey`.
+    case editorAddInvalidINIKey = "editor.add.invalid-ini-key"
+    // SOPS-38 phase F2 task 4: shown for `AddRowRefusal.unsupportedForFormat`
+    // — in practice reachable from this sheet only for an INI document's own
+    // root, where sops's INI store requires every entry to be a section and
+    // this app has no way to create one. See `AddCapabilities` on
+    // `SecretDocumentViewModel`.
+    case editorAddUnsupportedForFormat = "editor.add.unsupported-for-format"
     // Shown instead of a padlock on a row added in this session — see
     // `SecretEditorView`'s doc comment for why neither padlock would be true.
     case editorNewRowBadge = "editor.new-row-badge"

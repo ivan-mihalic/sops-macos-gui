@@ -29,11 +29,13 @@ import Foundation
 /// falling through a `default:`.
 ///
 /// `.json` and `.ini` are not yet reachable from `forDestinationName` below
-/// (that is F2 task 5) or from the editor's real capability matrix — the
-/// nested-add/section rules for INI in particular (F2 task 4) — or from the
-/// health scanner's classification (F2 task 3). This task (F2 task 2) only
-/// makes the wire value exist and prove itself through the bridge; every
-/// compile site it touched to get there is documented at that site.
+/// (that is F2 task 5) — a new file of either format still cannot be
+/// *created* from this app. Both are fully reachable everywhere else: the
+/// health scanner's classification (F2 task 3) and the editor's own
+/// per-format capability matrix (`SecretDocumentViewModel.AddCapabilities`,
+/// F2 task 4) both treat them as first-class formats. This task (F2 task 2)
+/// only made the wire value exist and prove itself through the bridge;
+/// every compile site it touched to get there is documented at that site.
 public enum SopsFileFormat: String, Sendable, Codable {
     case yaml
     case dotenv

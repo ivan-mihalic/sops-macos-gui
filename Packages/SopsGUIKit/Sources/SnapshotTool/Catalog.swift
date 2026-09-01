@@ -360,6 +360,8 @@ enum Catalog {
         let (pending, pendingSelection) = try await Fixtures.editorPendingChangesViewModel()
         let (revealed, revealedRowIDs) = try await Fixtures.editorRevealedRowViewModel()
         let dotenv = try await Fixtures.editorDotenvViewModel()
+        let json = try await Fixtures.editorJSONViewModel()
+        let ini = try await Fixtures.editorINIViewModel()
 
         let editorSize = CGSize(width: 760, height: 560)
         func editor(_ name: String, _ model: SecretDocumentViewModel, fileName: String) -> Snapshot {
@@ -439,6 +441,17 @@ enum Catalog {
             // legitimate there.
             Snapshot("editor-add-sheet-dotenv", size: CGSize(width: 460, height: 330)) {
                 Fixtures.addRowSheetDotenv()
+            },
+            // SOPS-38 phase F2 task 4: the real per-format capability matrix
+            // for json and ini — json renders exactly like YAML (nested map,
+            // list); ini shows two sections, and its own add sheet at the
+            // root state shows the message this app gives instead of a dead
+            // end, since sops's INI store requires every root entry to be a
+            // section and this app's Add API can never create one.
+            editor("editor-json", json, fileName: "production.secrets.json"),
+            editor("editor-ini", ini, fileName: "production.secrets.ini"),
+            Snapshot("editor-add-sheet-ini-root-refused", size: CGSize(width: 460, height: 330)) {
+                Fixtures.addRowSheetINIRootRefused()
             },
         ]
     }
