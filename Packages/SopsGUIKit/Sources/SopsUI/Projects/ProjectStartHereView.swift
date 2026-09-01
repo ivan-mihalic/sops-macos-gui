@@ -274,6 +274,18 @@ public struct ProjectStartHereView: View {
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            // SOPS-38 phase F3 task 3 (spec §7 b.1, F2 review I4): which
+            // formats this app opens is a fact about the app, not about
+            // this project's `.sops.yaml` — so, like `otherFormatCount`'s
+            // note just above, it is a sibling of `if let configState`
+            // rather than nested inside it, and shows even before
+            // `configState` resolves (see the `nil` paragraph in this
+            // type's own doc comment).
+            Text(LocalizedKey.startHereSupportedFormats.text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)

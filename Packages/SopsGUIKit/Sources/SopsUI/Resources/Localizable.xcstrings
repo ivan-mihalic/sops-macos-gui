@@ -3970,6 +3970,17 @@
           }
         }
       }
+    },
+    "start-here.supported-formats": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opens sops files in YAML, dotenv, JSON and INI."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

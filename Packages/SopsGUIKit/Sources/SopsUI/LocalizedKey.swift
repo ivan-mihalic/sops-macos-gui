@@ -275,6 +275,14 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // accessibility text, and this screen's whole point is that there is
     // nothing to open yet.
     case startHereCreateFirstFileButton = "start-here.create-first-file-button"
+    // SOPS-38 phase F3 task 3 (spec §7 b.1, F2 review I4): a first-time user
+    // looking at an empty project has no way to learn which sops formats
+    // this app actually opens. One factual sentence, shown regardless of
+    // `configState` — it is a fact about the app, not about this project's
+    // rules, so it belongs alongside `otherFormatCount`'s note as a sibling
+    // of the `if let configState` branch, not nested inside it. See
+    // `ProjectStartHereView.content`'s own comment on that placement.
+    case startHereSupportedFormats = "start-here.supported-formats"
 
     // MARK: Task 9 — editor
 

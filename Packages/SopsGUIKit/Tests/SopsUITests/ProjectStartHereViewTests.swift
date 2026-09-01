@@ -449,6 +449,23 @@ struct ProjectStartHereViewRenderTests {
         }
     }
 
+    /// SOPS-38 phase F3 task 3 (spec §7 b.1, F2 review I4): a first-time user
+    /// looking at an empty project has no way to learn which sops formats
+    /// this app actually opens — this factual sentence names all four
+    /// (YAML/dotenv/JSON/INI). Independent of `configState`: it is a fact
+    /// about the app, not about this project's rules, so it shows even
+    /// before `configState` resolves — the same reasoning
+    /// `FileListView.footnotes`'s own `otherFormatCount` note already
+    /// applies one guard up.
+    @Test("names the four sops formats this app opens, regardless of configState")
+    func namesSupportedFormats() {
+        for configState: CreationPlan? in [nil, .noConfig, .noRuleMatched] {
+            let shown = text(configState)
+            #expect(shown.contains(LocalizedKey.startHereSupportedFormats.text),
+                    "configState \(String(describing: configState)) did not show the supported-formats sentence: \(shown)")
+        }
+    }
+
     @Test(".noConfig shows its title and the create-first-file button")
     func noConfigRenders() {
         let shown = text(.noConfig)
