@@ -297,6 +297,12 @@ is a pending change until Save.
 Editing values is not the only thing you can do to an open file. Changing *who
 can read it* is Part 5.
 
+Not every file in the list is one your key can open. A file whose recipients
+don't include you shows a padlock badge in the file list; select it anyway and
+it opens read-only — "You can't decrypt this file", the raw encrypted contents
+underneath, and who *can* decrypt it, so you know whom to ask. There is
+nothing to edit here: Save, +, and − all stay disabled.
+
 ---
 
 ## Part 4 — Settings and About

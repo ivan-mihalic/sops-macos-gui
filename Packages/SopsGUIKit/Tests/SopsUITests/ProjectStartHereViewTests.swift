@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import ScratchCleanup
+import SopsEngine
 import SopsHealth
 import SopsProjects
 import SwiftUI
@@ -238,6 +239,37 @@ struct ProjectStartHereViewPresentationTests {
             return
         }
         #expect(message.detail.contains("yaml: line 3"))
+    }
+
+    /// `start-here.supported-formats` names the formats this app opens by
+    /// hand-written prose ("Opens sops files in YAML, dotenv, JSON and
+    /// INI.") with no compiler tie back to `SopsFileFormat` — the catalog
+    /// entry and the enum can drift apart silently. This guards the drift:
+    /// the `switch` below has no `default:`, so a fifth `SopsFileFormat`
+    /// case fails *this test's own compile* with no mapping to reach for,
+    /// which is a louder failure than a runtime miss would be. Ablation:
+    /// deleting one branch's expected token (or adding a fake one nothing in
+    /// the sentence satisfies) turns this red — verified by hand before
+    /// filing this test.
+    @Test("start-here.supported-formats mentions every SopsFileFormat case",
+          .enabled(if: LocalizationTests.bundleHasMacOSLayout,
+                   "this asserts on the real catalog sentence, and swift test's native build system never compiles .xcstrings — every key falls back to its own raw value (\"start-here.supported-formats\"), which contains none of the format tokens; run under xcodebuild or swift test --build-system swiftbuild"))
+    func supportedFormatsSentenceMentionsEverySopsFileFormat() {
+        func expectedToken(for format: SopsFileFormat) -> String {
+            switch format {
+            case .yaml: return "YAML"
+            case .dotenv: return "dotenv"
+            case .json: return "JSON"
+            case .ini: return "INI"
+            }
+        }
+
+        let sentence = LocalizedKey.startHereSupportedFormats.text
+        for format in SopsFileFormat.allCases {
+            let token = expectedToken(for: format)
+            #expect(sentence.contains(token),
+                    "start-here.supported-formats must mention \(format.rawValue) (expected \"\(token)\"): \(sentence)")
+        }
     }
 }
 

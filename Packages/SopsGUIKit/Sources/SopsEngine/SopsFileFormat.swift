@@ -36,7 +36,7 @@ import Foundation
 /// .AddCapabilities`, F2 task 4) both already treated them as first-class
 /// formats — this task is the last piece, closing the one place that still
 /// could not name either.
-public enum SopsFileFormat: String, Sendable, Codable {
+public enum SopsFileFormat: String, Sendable, Codable, CaseIterable {
     case yaml
     case dotenv
     case json
