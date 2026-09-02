@@ -894,6 +894,52 @@ struct ProjectRecipientApplierOrderingTests {
         #expect(plan.unmatchedFiles.first?.path.contains("/zulu/") == true)
     }
 
+    @Test("an explicit target file picks that file's rule, not the first file's")
+    func explicitTargetFileSelectsItsRule() async throws {
+        let alpha = try AgeKeyPair.generate()
+        let zulu = try AgeKeyPair.generate()
+        let root = try applierScratchDirectory()
+        try """
+            creation_rules:
+              - path_regex: zulu/.*\\.yaml$
+                age: \(zulu.public)
+              - path_regex: alpha/.*\\.yaml$
+                age: \(alpha.public)
+
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        for (directory, key) in [("zulu", zulu), ("alpha", alpha)] {
+            let dir = root.appendingPathComponent(directory, isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let encrypted = try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [key.public])
+            try encrypted.write(to: dir.appendingPathComponent("secret.yaml"), atomically: true, encoding: .utf8)
+        }
+        let zuluFile = root.appendingPathComponent("zulu/secret.yaml")
+
+        let plan = await ProjectRecipientApplier().plan(projectRoot: root, recipients: [], targetFile: zuluFile)
+
+        #expect(plan.targetFile == zuluFile)
+        #expect(plan.targetFileWasSubstituted == false)
+        #expect(plan.configRecipients == [zulu.public])
+        #expect(plan.matchedFiles == [zuluFile])
+        #expect(plan.filesGovernedByOtherRules.count == 1)
+    }
+
+    @Test("a target file the scan did not find falls back to the first file, and says so")
+    func unknownTargetFileFallsBackToFirst() async throws {
+        let alpha = try AgeKeyPair.generate()
+        let root = try applierScratchDirectory()
+        try "creation_rules:\n  - path_regex: .*\n    age: \(alpha.public)\n"
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let encrypted = try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [alpha.public])
+        try encrypted.write(to: root.appendingPathComponent("a.yaml"), atomically: true, encoding: .utf8)
+
+        let plan = await ProjectRecipientApplier().plan(
+            projectRoot: root, recipients: [], targetFile: root.appendingPathComponent("missing.yaml"))
+
+        #expect(plan.targetFile?.lastPathComponent == "a.yaml")
+        #expect(plan.targetFileWasSubstituted == true)
+    }
+
     @Test("every file list a plan reports is in project-relative path order")
     func everyReportedListIsSorted() async throws {
         let owner = try AgeKeyPair.generate()

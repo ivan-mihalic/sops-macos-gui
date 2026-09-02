@@ -169,10 +169,17 @@ public struct ProjectRecipientApplier: Sendable {
         /// what lets the panel say so before an apply rather than after. See
         /// `filesInScope`.
         public let filesGovernedByOtherRules: [URL]
-        /// The file whose governing rule this plan is about — the first
-        /// encrypted file in project-relative path order, which is the first
-        /// one the user sees in the file list. `nil` when the scan found none.
+        /// The file whose governing rule this plan is about — the caller's
+        /// requested file when the scan found it, otherwise the first
+        /// encrypted file in project-relative path order (the first one the
+        /// user sees in the file list). `nil` when the scan found none.
         public let targetFile: URL?
+        /// True when the caller asked for a target file the scan did not find
+        /// (deleted, outside the root, dedup'd away) and this plan fell back
+        /// to the first file instead. The UI must say so — a panel "about
+        /// prod" that is really about local is the exact confusion this flag
+        /// exists to prevent.
+        public let targetFileWasSubstituted: Bool
         /// Why nothing derived from this scan may claim to cover the whole
         /// project. `nil` when the walk did cover it.
         public let incompleteScanReason: String?
@@ -320,7 +327,7 @@ public struct ProjectRecipientApplier: Sendable {
     /// than only at write time because the answer a user has to see — "this
     /// rule can be updated / here is why it cannot" — is the same call that
     /// produces the text.
-    public func plan(projectRoot: URL, recipients: [String]) async -> Plan {
+    public func plan(projectRoot: URL, recipients: [String], targetFile requested: URL? = nil) async -> Plan {
         let tree = await scanProject(projectRoot)
         // `tree.encrypted` carries all four sops formats — YAML and dotenv
         // since Task 5, JSON and INI since SOPS-38 phase F2 task 3 — because
@@ -357,7 +364,8 @@ public struct ProjectRecipientApplier: Sendable {
                 fileFormats: fileFormats,
                 matchedFiles: [], unmatchedFiles: encryptedFiles,
                 filesGovernedByOtherRules: [],
-                targetFile: encryptedFiles.first, incompleteScanReason: tree.incompleteScanReason,
+                targetFile: encryptedFiles.first, targetFileWasSubstituted: false,
+                incompleteScanReason: tree.incompleteScanReason,
                 configRecipients: [], configRefusal: nil, configUpdateText: nil,
                 configFingerprint: nil, configError: nil,
                 rootMissing: tree.rootMissing, rootUnreadable: tree.rootUnreadable)
@@ -369,9 +377,32 @@ public struct ProjectRecipientApplier: Sendable {
         // refuses rather than clobbers.
         let configFingerprint = fingerprintFile(configURL)
 
-        guard let targetFile = encryptedFiles.first else {
+        // The caller's requested file wins over the first-in-order file when
+        // the scan actually found it. Both sides go through
+        // `standardizedFileURL.resolvingSymlinksInPath()` for the comparison
+        // because the scan's URLs come back with symlinks in the directory
+        // prefix resolved and a caller-supplied URL (e.g. from the open-file
+        // picker) may not — but `requestedFound` yields `requested` itself,
+        // not the scan's copy, so the plan echoes back exactly the URL the
+        // caller has rather than an incidental resolved variant of it.
+        let resolvedRequest = requested.map { $0.standardizedFileURL.resolvingSymlinksInPath() }
+        let requestFoundInScan = encryptedFiles.contains {
+            $0.standardizedFileURL.resolvingSymlinksInPath() == resolvedRequest
+        }
+        let requestedFound = requestFoundInScan ? requested : nil
+        let targetFileWasSubstituted = requested != nil && requestedFound == nil
+        // Every list below that can name the target file echoes `requested`
+        // in its place too, for the same reason.
+        let displayFile: (URL) -> URL = { url in
+            resolvedRequest != nil && url.standardizedFileURL.resolvingSymlinksInPath() == resolvedRequest
+                ? requested! : url
+        }
+
+        guard let targetFile = requestedFound ?? encryptedFiles.first else {
             // No file to resolve a rule for. The config is not an error and
-            // not a refusal — there is simply nothing to ask about it.
+            // not a refusal — there is simply nothing to ask about it. And
+            // nothing to have substituted, either: there is no fallback file
+            // for a requested target to have been substituted with.
             return Plan(
                 projectRoot: projectRoot, configURL: configURL, configExists: true,
                 requestedRecipients: recipients,
@@ -379,7 +410,8 @@ public struct ProjectRecipientApplier: Sendable {
                 fileFormats: fileFormats,
                 matchedFiles: [], unmatchedFiles: [],
                 filesGovernedByOtherRules: [],
-                targetFile: nil, incompleteScanReason: tree.incompleteScanReason,
+                targetFile: nil, targetFileWasSubstituted: false,
+                incompleteScanReason: tree.incompleteScanReason,
                 configRecipients: [], configRefusal: nil, configUpdateText: nil,
                 configFingerprint: configFingerprint, configError: nil,
                 rootMissing: tree.rootMissing, rootUnreadable: tree.rootUnreadable)
@@ -398,7 +430,8 @@ public struct ProjectRecipientApplier: Sendable {
                 fileFormats: fileFormats,
                 matchedFiles: [], unmatchedFiles: encryptedFiles,
                 filesGovernedByOtherRules: [],
-                targetFile: targetFile, incompleteScanReason: tree.incompleteScanReason,
+                targetFile: targetFile, targetFileWasSubstituted: targetFileWasSubstituted,
+                incompleteScanReason: tree.incompleteScanReason,
                 configRecipients: [], configRefusal: nil, configUpdateText: nil,
                 configFingerprint: configFingerprint, configError: error.description,
                 rootMissing: tree.rootMissing, rootUnreadable: tree.rootUnreadable)
@@ -410,7 +443,8 @@ public struct ProjectRecipientApplier: Sendable {
                 fileFormats: fileFormats,
                 matchedFiles: [], unmatchedFiles: encryptedFiles,
                 filesGovernedByOtherRules: [],
-                targetFile: targetFile, incompleteScanReason: tree.incompleteScanReason,
+                targetFile: targetFile, targetFileWasSubstituted: targetFileWasSubstituted,
+                incompleteScanReason: tree.incompleteScanReason,
                 configRecipients: [], configRefusal: nil, configUpdateText: nil,
                 configFingerprint: configFingerprint,
                 configError: "this project's .sops.yaml could not be read",
@@ -419,11 +453,13 @@ public struct ProjectRecipientApplier: Sendable {
 
         let matchedPaths = Set(update.matchedFiles)
         let matched = encryptedFiles.filter { matchedPaths.contains(Self.ruleMatchingPath($0)) }
+            .map(displayFile)
         let unmatched = encryptedFiles.filter { !matchedPaths.contains(Self.ruleMatchingPath($0)) }
+            .map(displayFile)
         let otherRulePaths = Set(update.filesGovernedByOtherRules)
         let governedElsewhere = encryptedFiles.filter {
             otherRulePaths.contains(Self.ruleMatchingPath($0))
-        }
+        }.map(displayFile)
 
         return Plan(
             projectRoot: projectRoot, configURL: configURL, configExists: true,
@@ -432,7 +468,8 @@ public struct ProjectRecipientApplier: Sendable {
             fileFormats: fileFormats,
             matchedFiles: matched, unmatchedFiles: unmatched,
             filesGovernedByOtherRules: governedElsewhere,
-            targetFile: targetFile, incompleteScanReason: tree.incompleteScanReason,
+            targetFile: targetFile, targetFileWasSubstituted: targetFileWasSubstituted,
+            incompleteScanReason: tree.incompleteScanReason,
             configRecipients: update.currentRecipients,
             configRefusal: update.writable ? nil : update.reason,
             configUpdateText: update.writable && update.changed ? update.config : nil,

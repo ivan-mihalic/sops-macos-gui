@@ -136,6 +136,11 @@ public final class ProjectAccessModel {
     public let projectRoot: URL
     private let keyStore: SessionKeyStore
     private let applier: ProjectRecipientApplier
+    /// The file the panel should describe the governing rule of — typically
+    /// whichever file is selected in the file list. `nil` falls back to
+    /// `ProjectRecipientApplier.plan`'s own default: the first file in
+    /// project-relative path order.
+    private let targetFile: URL?
     private let loadRegistry: (URL) -> (records: [RecipientRecord], quarantineNotice: String?)
     private var runTask: Task<Void, Never>?
     /// Which refresh is allowed to publish its result.
@@ -158,6 +163,9 @@ public final class ProjectAccessModel {
     ///   - applier: The scan/plan/apply engine. Injectable for the same
     ///     reason `RecipientAccessModel`'s seams are: a test drives failure
     ///     paths without filesystem permission tricks.
+    ///   - targetFile: The file the panel should describe the governing rule
+    ///     of. `nil` falls back to the first file in project-relative path
+    ///     order — see `ProjectRecipientApplier.plan`.
     ///   - loadRegistry: How labels are read. Deliberately non-throwing — a
     ///     registry this cannot read degrades to "no labels" rather than
     ///     hiding recipients the config itself names. Returns a notice
@@ -167,11 +175,13 @@ public final class ProjectAccessModel {
         projectRoot: URL,
         keyStore: SessionKeyStore,
         applier: ProjectRecipientApplier = ProjectRecipientApplier(),
+        targetFile: URL? = nil,
         loadRegistry: @escaping (URL) -> (records: [RecipientRecord], quarantineNotice: String?) = { project in
             RecipientRegistry.loadOrQuarantine(in: project)
         }
     ) {
         self.projectRoot = projectRoot
+        self.targetFile = targetFile
         self.keyStore = keyStore
         self.applier = applier
         self.loadRegistry = loadRegistry
@@ -292,7 +302,8 @@ public final class ProjectAccessModel {
         configWritten = false
         widenedScopeAcknowledged = false
 
-        let inspected = await applier.plan(projectRoot: projectRoot, recipients: stagedRecipients)
+        let inspected = await applier.plan(
+            projectRoot: projectRoot, recipients: stagedRecipients, targetFile: targetFile)
 
         // A walk that never happened produces the same empty result as a walk
         // that found nothing, so these two are checked before anything
@@ -367,7 +378,8 @@ public final class ProjectAccessModel {
         guard loadState == .loaded else { return }
         planGeneration &+= 1
         let generation = planGeneration
-        let fresh = await applier.plan(projectRoot: projectRoot, recipients: stagedRecipients)
+        let fresh = await applier.plan(
+            projectRoot: projectRoot, recipients: stagedRecipients, targetFile: targetFile)
         guard generation == planGeneration else { return }
         plan = fresh
         // See `widenedScopeAcknowledged`'s own doc comment: cleared

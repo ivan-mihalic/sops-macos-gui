@@ -642,7 +642,8 @@ private struct ProjectWorkspaceView: View {
             Divider()
             Button {
                 projectAccessRequest = ProjectAccessRequest(
-                    model: ProjectAccessModel(projectRoot: projectRoot, keyStore: keyStore))
+                    model: ProjectAccessModel(
+                        projectRoot: projectRoot, keyStore: keyStore, targetFile: selectedFileURL))
             } label: {
                 Label(.projectAccessButton, systemImage: "person.2.badge.key")
                     .frame(maxWidth: .infinity)
