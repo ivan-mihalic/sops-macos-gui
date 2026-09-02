@@ -989,21 +989,15 @@ enum Fixtures {
         try text.write(to: url, atomically: true, encoding: .utf8)
     }
 
+    /// The one-recipient spelling most fixtures here want. Delegates rather
+    /// than repeating the file shape: two copies of a sops metadata block is
+    /// how one of them drifts into a shape the scanner stops recognising,
+    /// and the scanner requires structure, not a marker (Task 14).
     private static func writeSopsLikeYAML(
         _ root: URL, at relativePath: String,
         recipient: String = "age1exampleexampleexampleexampleexampleexampleexampleexamplex"
     ) throws {
-        let url = root.appendingPathComponent(relativePath)
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try """
-            key: ENC[AES256_GCM,data:Zm9v,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
-            sops:
-                age:
-                    - recipient: \(recipient)
-                mac: ENC[AES256_GCM,data:AAAA,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
-                version: 3.13.3
-            """.write(to: url, atomically: true, encoding: .utf8)
+        try writeSopsLikeYAML(root, at: relativePath, recipients: [recipient])
     }
 
     /// A dotenv-shaped sops file — `ProjectScanner.looksSopsEncryptedInAnotherFormat`

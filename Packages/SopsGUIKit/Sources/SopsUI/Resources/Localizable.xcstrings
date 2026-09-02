@@ -388,6 +388,17 @@
         }
       }
     },
+    "access.rewrap.rule-not-staged": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "One rule was left alone: its recipients could not be staged exactly as it declares them, and a partial set is worse than none."
+          }
+        }
+      }
+    },
     "access.rules.all-in-sync": {
       "extractionState": "manual",
       "localizations": {

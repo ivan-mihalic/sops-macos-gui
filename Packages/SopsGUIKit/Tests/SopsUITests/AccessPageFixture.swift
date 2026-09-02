@@ -44,6 +44,13 @@ enum AccessPageFixture {
         let prod: URL
         /// In sync with rule 1.
         let local: URL
+        /// Encrypted, but matched by no rule at all — `nil` unless the
+        /// fixture was asked for one.
+        let stray: URL?
+        /// Drifted under a rule that declares no age recipient, so a rewrap
+        /// of it must be refused rather than applied empty. `nil` unless the
+        /// fixture was asked for one.
+        let legacy: URL?
         let studio: KeyPair
         let laptop: KeyPair
         let vps: KeyPair
@@ -86,13 +93,63 @@ enum AccessPageFixture {
         return KeyPair(private: priv, public: pub)
     }
 
-    static func momentakShaped() async throws -> Project {
+    /// - Parameters:
+    ///   - includeUngoverned: adds `stray.env` — genuinely encrypted, and
+    ///     matched by no `path_regex` in the config. The page has to say so
+    ///     somewhere; organised by rule, it would otherwise show the file
+    ///     nowhere at all.
+    ///   - includeRefusingRule: adds a **first** rule that declares only a
+    ///     pgp recipient and no age one, governing `legacy/old.sops.env`.
+    ///     Its files drift (the rule wants an empty age set) and re-wrapping
+    ///     them must be refused, not applied — `applyToFiles` returns
+    ///     `.emptyRecipients`. First on purpose: a rewrap that gave up on the
+    ///     first refusal would then never reach `prod`, which is exactly the
+    ///     regression `RewrapCoordinatorTests` pins.
+    ///   - inlineCatchAllRecipients: writes the catch-all rule's two
+    ///     recipients as literal keys rather than aliases, so the rule is not
+    ///     `usesAnchors` and the page will offer to edit it. Every rule in
+    ///     this fixture goes through anchors otherwise — which is what
+    ///     momentak's real config does, and which makes the whole page
+    ///     read-only.
+    static func momentakShaped(
+        includeUngoverned: Bool = false, includeRefusingRule: Bool = false,
+        inlineCatchAllRecipients: Bool = false
+    ) async throws -> Project {
         let studio = try generateKey()
         let laptop = try generateKey()
         let vps = try generateKey()
 
+        // ⚠️ These URLs are the *unresolved* spelling. On this machine
+        // `$TMPDIR` lives under a symlinked `/var`, while
+        // `FileManager.enumerator` — what the scanner walks with — hands back
+        // `/private/var/…`, and `URL.resolvingSymlinksInPath()` deliberately
+        // maps `/private/var` back to `/var`, so there is no spelling that
+        // makes both sides equal. Compare by `FileAccess.relativePath` (or
+        // `lastPathComponent`), never by `url ==`: the same hazard
+        // `ProjectRecipientApplier.ruleMatchingPath` exists for.
         let root = try ScratchDirectoryRegistry.shared.makeDirectory("access-page")
 
+        let catchAllRule = inlineCatchAllRecipients ? """
+              - path_regex: \\.sops\\.(env|ya?ml|json)$
+                age:
+                  - \(studio.public)
+                  - \(laptop.public)
+
+            """ : """
+              - path_regex: \\.sops\\.(env|ya?ml|json)$
+                age:
+                  - *studio
+                  - *laptop
+
+            """
+        // A pgp-only rule: sops accepts it, `ConfigRules.Rule.recipients`
+        // (age only) comes back empty, and every file under it therefore
+        // reads as drifted against an empty wanted set.
+        let refusingRule = includeRefusingRule ? """
+              - path_regex: legacy/.*\\.sops\\.env$
+                pgp: 85D77543B3D624B63CEA9E6DBC17301B491B3F21
+
+            """ : ""
         let config = """
             keys:
               - &studio \(studio.public)
@@ -100,6 +157,7 @@ enum AccessPageFixture {
               - &vps \(vps.public)
 
             creation_rules:
+            """ + "\n" + refusingRule + """
               # Production secrets: everyone, including the deploy host.
               - path_regex: secrets/prod\\.sops\\.env$
                 key_groups:
@@ -107,12 +165,7 @@ enum AccessPageFixture {
                       - *studio
                       - *laptop
                       - *vps
-              - path_regex: \\.sops\\.(env|ya?ml|json)$
-                age:
-                  - *studio
-                  - *laptop
-
-            """
+            """ + "\n" + catchAllRule
         try config.write(
             to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
 
@@ -132,11 +185,35 @@ enum AccessPageFixture {
             recipients: [studio.public, laptop.public]
         ).write(to: local, atomically: true, encoding: .utf8)
 
+        var stray: URL?
+        if includeUngoverned {
+            // Named so no rule's `path_regex` can reach it — it is the
+            // `.sops.` infix every rule here keys on that it lacks, not the
+            // directory.
+            let url = root.appendingPathComponent("stray.env")
+            try SopsBridge.encrypt(
+                "STRAY=1\n", format: .dotenv, recipients: [studio.public]
+            ).write(to: url, atomically: true, encoding: .utf8)
+            stray = url
+        }
+
+        var legacy: URL?
+        if includeRefusingRule {
+            let dir = root.appendingPathComponent("legacy", isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let url = dir.appendingPathComponent("old.sops.env")
+            try SopsBridge.encrypt(
+                "LEGACY=1\n", format: .dotenv, recipients: [studio.public]
+            ).write(to: url, atomically: true, encoding: .utf8)
+            legacy = url
+        }
+
         let keyStore = SessionKeyStore()
         try keyStore.importKey(studio.private)
 
         return Project(
             root: root, keyStore: keyStore, prod: prod, local: local,
+            stray: stray, legacy: legacy,
             studio: studio, laptop: laptop, vps: vps)
     }
 }

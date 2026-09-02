@@ -76,6 +76,7 @@ public struct ProjectAccessPage: View {
                     rewrapBanner(inventory)
                     namedKeys(inventory)
                     rules(inventory)
+                    ungoverned(inventory)
                 }
             }
             .frame(maxWidth: 980, alignment: .leading)
@@ -84,15 +85,21 @@ public struct ProjectAccessPage: View {
         }
         .task { await model.load() }
         .sheet(isPresented: $showingRewrap) {
-            RewrapSheet(
-                coordinator: rewrap ?? makeCoordinator(),
-                onClose: {
-                    showingRewrap = false
-                    Task {
-                        await model.load()
-                        onFilesApplied()
-                    }
-                })
+            // `if let` rather than a fallback coordinator: a coordinator built
+            // here would be a second, empty one that never ran, so the sheet
+            // would sit at "nothing happened" while the real run reported into
+            // an instance nothing is showing.
+            if let rewrap {
+                RewrapSheet(
+                    coordinator: rewrap,
+                    onClose: {
+                        showingRewrap = false
+                        Task {
+                            await model.load()
+                            onFilesApplied()
+                        }
+                    })
+            }
         }
         .sheet(item: $labelEdit) { request in
             RecipientLabelEditorView(
@@ -289,13 +296,23 @@ public struct ProjectAccessPage: View {
 
     // MARK: - Derived
 
-    /// Which rule the selected file falls under, or — when the file the page
-    /// was opened for is gone — whichever rule the plan fell back to.
+    /// Which rule the page is *about*: the one governing the selected file,
+    /// or — when no file is selected, or the selected one is no longer in the
+    /// project — the one governing whatever file the plan itself fell back to.
+    ///
+    /// The fallback is not cosmetic. `ProjectAccessModel` stages against the
+    /// rule governing `plan.targetFile`, and `plan()` picks the first file in
+    /// path order when it was given none. Returning `nil` here for a page
+    /// opened before any file was ever selected — the ordinary case, since the
+    /// sidebar's Access row is reachable from a project the user has only just
+    /// added — left every rule read-only and said nothing about why, while the
+    /// model was perfectly willing to stage.
     private func selectedRuleIndex(in inventory: AccessInventory) -> Int? {
         if let selectedFile, let match = inventory.files.first(where: { $0.url == selectedFile }) {
             return match.ruleIndex
         }
-        return nil
+        guard let target = model.plan?.targetFile else { return nil }
+        return inventory.files.first { $0.url == target }?.ruleIndex
     }
 
     /// Whether `rule` is the one this model's staged set belongs to — the rule
@@ -355,16 +372,82 @@ public struct ProjectAccessPage: View {
         return Color(hue: Double(hash % 360) / 360, saturation: 0.55, brightness: 0.85)
     }
 
+    // MARK: - Files no rule governs
+
+    /// Encrypted files that fall under no creation rule at all — no
+    /// `path_regex` matches them, or there is no readable config.
+    ///
+    /// They were invisible before: the page is organised by rule, and a file
+    /// belonging to no rule therefore appeared nowhere, while the sidebar's
+    /// own status dot has flagged exactly this condition since task 6
+    /// (`sidebar.file-ungoverned`). A file nothing governs is not a tidy
+    /// case — it is the one whose recipients no rule will ever correct, so
+    /// it is listed with the keys it is actually wrapped for.
+    @ViewBuilder
+    private func ungoverned(_ inventory: AccessInventory) -> some View {
+        let orphans = inventory.files.filter { $0.status == .ungoverned }
+        if !orphans.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(.accessUngoverned).font(.headline)
+                ForEach(orphans) { file in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        // Verbatim: a path is not translatable, and resolved
+                        // through the catalog it would vanish under a build
+                        // system that copies `.xcstrings` uncompiled.
+                        Text(verbatim: file.relativePath)
+                            .font(.system(.caption, design: .monospaced))
+                        HStack(spacing: 6) {
+                            ForEach(file.encryptedFor, id: \.self) { recipient in
+                                HStack(spacing: 4) {
+                                    Circle()
+                                        .fill(Self.colour(for: recipient))
+                                        .frame(width: 7, height: 7)
+                                    Text(verbatim: displayName(recipient, in: inventory))
+                                        .font(.caption)
+                                        .help(recipient)
+                                }
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(Capsule().fill(.quaternary))
+                            }
+                        }
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - Actions
 
     private func makeCoordinator() -> RewrapCoordinator {
         RewrapCoordinator(projectRoot: model.projectRoot, keyStore: model.keyStore)
     }
 
+    /// Stages a typed recipient, and says so when it will not.
+    ///
+    /// A refusal used to be dropped on the floor here: pasting a key that is
+    /// already in the rule cleared nothing and reported nothing, so the only
+    /// reading available to the user was that the app had stopped responding.
+    /// The explanation is the same `LocalizedKey` the per-file panel uses
+    /// (`RecipientAccessView.explanation(for:)`) — `.empty` and `.notLoaded`
+    /// have none, because neither is reachable from a control that is only
+    /// enabled for non-empty text on a loaded page.
     private func addStagedRecipient() {
-        if model.stageAdd(newRecipientText) == nil {
+        guard let refusal = model.stageAdd(newRecipientText) else {
             newRecipientText = ""
             model.startRefreshingPlan()
+            return
+        }
+        if let explanation = Self.explanation(for: refusal) {
+            errorMessage = explanation.text
+        }
+    }
+
+    static func explanation(for refusal: RecipientAccessModel.StageAddRefusal) -> LocalizedKey? {
+        switch refusal {
+        case .duplicate: .accessAddDuplicate
+        case .empty, .notLoaded: nil
         }
     }
 

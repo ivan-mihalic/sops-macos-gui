@@ -64,4 +64,70 @@ struct ProjectAccessPageTests {
                 in: String(contentsOf: f.prod, encoding: .utf8), format: .dotenv
             ).count == 3)
     }
+
+    @Test("a file no rule governs is listed under its own heading, with the keys it is wrapped for")
+    func ungovernedFilesAreListed() async throws {
+        let f = try await AccessPageFixture.momentakShaped(includeUngoverned: true)
+        _ = try #require(f.stray)
+        let model = ProjectAccessModel(projectRoot: f.root, keyStore: f.keyStore, targetFile: f.prod)
+        await model.load()
+        // The premise: this really is ungoverned, not merely absent from the
+        // rule cards for some other reason. Found by relative path — see
+        // `AccessPageFixture` on why `url ==` does not hold here.
+        #expect(
+            model.inventory?.files.first { $0.relativePath == "stray.env" }?.status
+                == .ungoverned)
+
+        let nodes = AXProbe.tree(size: CGSize(width: 1000, height: 900)) {
+            ProjectAccessPage(model: model, selectedFile: f.prod, onFilesApplied: {})
+        }
+        let flat = nodes.map { $0.label + " " + $0.value + " " + $0.help }.joined(separator: "\n")
+
+        #expect(flat.contains(LocalizedKey.accessUngoverned.text))
+        #expect(flat.contains("stray.env"))
+        // And who can read it — the question a file outside every rule
+        // actually raises.
+        #expect(flat.contains("studio"))
+    }
+
+    @Test("opening Access before any file was selected still offers the plan's own rule for editing")
+    func noSelectedFileFallsBackToThePlansTarget() async throws {
+        // Inline recipients on the catch-all rule: with anchors it would be
+        // read-only for a reason that has nothing to do with what is under
+        // test, and the add control would be absent either way.
+        let f = try await AccessPageFixture.momentakShaped(inlineCatchAllRecipients: true)
+        let model = ProjectAccessModel(projectRoot: f.root, keyStore: f.keyStore)
+        await model.load()
+        // No `targetFile` was given, so the plan picked the first file in
+        // path order — the rule the model stages against.
+        let target = try #require(model.plan?.targetFile)
+        #expect(model.inventory?.files.first { $0.url == target }?.ruleIndex != nil,
+                "the plan's own target must be a file the inventory knows")
+
+        let nodes = AXProbe.tree(size: CGSize(width: 1000, height: 900)) {
+            ProjectAccessPage(model: model, selectedFile: nil, onFilesApplied: {})
+        }
+        let flat = nodes.map { $0.label + " " + $0.value + " " + $0.help }.joined(separator: "\n")
+
+        // The add button and the per-chip remove control are the visible
+        // consequences of a rule being editable, and neither appeared
+        // anywhere at all before this fell back to the plan's own target.
+        //
+        // Not the text field's placeholder: an empty `TextField` vends no
+        // label of its own to the accessibility tree, so asserting on it
+        // would fail for a reason that has nothing to do with editability.
+        #expect(flat.contains(LocalizedKey.actionAdd.text))
+        #expect(flat.contains(LocalizedKey.accessRemoveRecipient.text))
+    }
+
+    @Test("a recipient the rule already names is refused out loud, not swallowed")
+    func duplicateRecipientIsExplained() {
+        // The refusal the page routes to its alert. Pinned as a pure
+        // function because a `.alert`'s own body is not reachable from a
+        // unit test — the same documented limitation
+        // `ProjectAccessView.fileApplyConfirmationMessage` is tested around.
+        #expect(ProjectAccessPage.explanation(for: .duplicate) == .accessAddDuplicate)
+        #expect(ProjectAccessPage.explanation(for: .empty) == nil)
+        #expect(ProjectAccessPage.explanation(for: .notLoaded) == nil)
+    }
 }

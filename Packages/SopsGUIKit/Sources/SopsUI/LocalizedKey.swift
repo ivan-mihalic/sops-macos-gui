@@ -555,6 +555,10 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case accessRewrapDetail = "access.rewrap.detail"
     case accessRewrapButton = "access.rewrap.button"
     case accessRewrapNote = "access.rewrap.note"
+    // A rule whose own recipient list could not be staged exactly. Shown in
+    // the rewrap sheet instead of applying a partial set — see
+    // `RewrapCoordinator.rewrap(_:)`.
+    case accessRewrapRuleNotStaged = "access.rewrap.rule-not-staged"
     case accessUngoverned = "access.ungoverned"
     case accessTargetSubstituted = "access.target-substituted"
 

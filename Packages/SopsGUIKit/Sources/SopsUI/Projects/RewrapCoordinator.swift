@@ -80,8 +80,20 @@ public final class RewrapCoordinator {
             for recipient in model.stagedRecipients where !wanted.contains(recipient) {
                 model.stageRemove(recipient)
             }
+            var stagingRefused = false
             for recipient in wanted where !model.stagedRecipients.contains(recipient) {
-                model.stageAdd(recipient)
+                if model.stageAdd(recipient) != nil { stagingRefused = true }
+            }
+
+            // Never apply a partial set. Every recipient the rule names is
+            // one this rewrap is claiming to restore, so a staged set that
+            // does not equal the rule's is not "close enough" — applying it
+            // would re-wrap files for fewer keys than the config declares and
+            // report the result as a success. Compared as sets, for the same
+            // reason `ProjectAccessModel.isDirty` is: order is not membership.
+            guard !stagingRefused, Set(model.stagedRecipients) == Set(wanted) else {
+                skipped.append(LocalizedKey.accessRewrapRuleNotStaged.text)
+                continue
             }
 
             if let refusal = await model.applyToFiles() {
