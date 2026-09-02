@@ -38,4 +38,70 @@ struct ConfigRulesInspectionTests {
         #expect(rules.rules[1].recipients == [.init(name: "", recipient: a)])
         #expect(rules.governedBy[prod] == 0)
     }
+
+    /// The write half of SOPS-39 task 9, proved by the read half: an alias
+    /// added to an anchored rule has to come back out of `inspectConfigRules`
+    /// under the *name* it was added by, or the Access page cannot show it.
+    @Test("adding an alias to an anchored rule shows up in inspection with its name")
+    func aliasAdditionIsVisible() throws {
+        let root = try ScratchDirectoryRegistry.shared.makeDirectory("config-alias")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let studio = try AgeKeyPair.generate().public
+        let laptop = try AgeKeyPair.generate().public
+        let conf = root.appendingPathComponent(".sops.yaml")
+        try """
+            keys:
+              - &studio \(studio)
+              - &laptop \(laptop)
+            creation_rules:
+              # production
+              - path_regex: prod\\.env$
+                key_groups:
+                  - age: [*studio]
+              - path_regex: .*
+                age:
+                  - \(studio)
+
+            """.write(to: conf, atomically: true, encoding: .utf8)
+
+        let text = try SopsBridge.addAliasRecipient(
+            configPath: conf.path, ruleIndex: 1, anchor: "laptop")
+        // Nothing was written by the bridge — the caller writes, always.
+        #expect(try String(contentsOf: conf, encoding: .utf8).contains("*laptop") == false)
+        try text.write(to: conf, atomically: true, encoding: .utf8)
+
+        let rules = try SopsBridge.inspectConfigRules(
+            configPath: conf.path, candidateFilePaths: [])
+        #expect(rules.rules[1].recipients.map(\.name) == ["", "laptop"])
+        #expect(rules.rules[1].recipients.map(\.recipient) == [studio, laptop])
+        // The rule that was not touched, and the comment above it, are intact.
+        #expect(rules.rules[0].recipients.map(\.name) == ["studio"])
+        #expect(rules.rules[0].comment == "production")
+    }
+
+    @Test("the bridge refuses an unknown anchor, a duplicate and an out-of-range rule")
+    func aliasAdditionRefusals() throws {
+        let root = try ScratchDirectoryRegistry.shared.makeDirectory("config-alias-refuse")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let studio = try AgeKeyPair.generate().public
+        let conf = root.appendingPathComponent(".sops.yaml")
+        try """
+            keys:
+              - &studio \(studio)
+            creation_rules:
+              - path_regex: .*
+                age: [*studio]
+
+            """.write(to: conf, atomically: true, encoding: .utf8)
+
+        #expect(throws: (any Error).self) {
+            try SopsBridge.addAliasRecipient(configPath: conf.path, ruleIndex: 0, anchor: "nobody")
+        }
+        #expect(throws: (any Error).self) {
+            try SopsBridge.addAliasRecipient(configPath: conf.path, ruleIndex: 0, anchor: "studio")
+        }
+        #expect(throws: (any Error).self) {
+            try SopsBridge.addAliasRecipient(configPath: conf.path, ruleIndex: 9, anchor: "studio")
+        }
+    }
 }

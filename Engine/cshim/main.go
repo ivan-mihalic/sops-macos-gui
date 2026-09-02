@@ -272,6 +272,33 @@ func sops_update_config_recipients(
 	return result(out, payload, err)
 }
 
+// sops_add_alias_recipient computes what the .sops.yaml at confPath would
+// look like with an alias of the `keys:` anchor named `anchor` appended to
+// creation rule ruleIndex's age list — the one edit an anchored rule
+// supports, since nothing is removed or resolved by it.
+//
+// It never writes anything: on success *out carries the proposed file text
+// (plain text, not JSON) and the Swift side writes it, atomically and only
+// after the user has confirmed. An unknown anchor, an out-of-range rule, a
+// rule that already names that key, or a rule spread across several key
+// groups is an error carrying a sentence saying which — see
+// gobridge.AddAliasRecipient.
+//
+//export sops_add_alias_recipient
+func sops_add_alias_recipient(
+	confPath *C.char, ruleIndex C.int, anchor *C.char, out **C.char,
+) C.int {
+	payload, err := gobridge.Guard(gobridge.OpUpdatingConfig, func() ([]byte, error) {
+		text, err := gobridge.AddAliasRecipient(
+			C.GoString(confPath), int(ruleIndex), C.GoString(anchor))
+		if err != nil {
+			return nil, err
+		}
+		return []byte(text), nil
+	})
+	return result(out, payload, err)
+}
+
 // sops_decrypt_to_rows decrypts a SOPS document into the ordered list of
 // editable rows the editor renders. format selects encrypted's on-disk shape
 // ("yaml" or "dotenv"). On success *out carries the JSON encoding of a

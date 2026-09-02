@@ -483,6 +483,39 @@ public enum SopsBridge {
         }
     }
 
+    /// Computes what the `.sops.yaml` at `configPath` would hold with an
+    /// alias of the named key `anchor` appended to creation rule `ruleIndex`,
+    /// and returns that text.
+    ///
+    /// **This writes nothing**, like every other config call here: the text
+    /// comes back and the caller writes it — atomically, and only after the
+    /// user has confirmed.
+    ///
+    /// The one edit an anchored rule supports. `updateConfigRecipients`
+    /// refuses a rule built from anchors or `key_groups` because it rewrites
+    /// the whole list and would have to decide which group each key belongs
+    /// in and whether an alias may be replaced by the literal behind it.
+    /// Appending one alias asks neither question: nothing is removed, nothing
+    /// is resolved, and the anchor the user picked is what lands in the file.
+    /// Comments, indent width and line endings survive.
+    ///
+    /// Throws — with the bridge's own fixed, value-free sentence — when
+    /// `anchor` is not declared under the config's `keys:`, `ruleIndex` names
+    /// no rule, the rule already names that key, or the rule is spread across
+    /// more than one key group (several possible destinations, so it refuses
+    /// rather than guessing who gains access).
+    public static func addAliasRecipient(
+        configPath: String, ruleIndex: Int, anchor: String
+    ) throws -> String {
+        try call { out in
+            configPath.withGoString { confPtr in
+                anchor.withGoString { anchorPtr in
+                    sops_add_alias_recipient(confPtr, Int32(ruleIndex), anchorPtr, out)
+                }
+            }
+        }
+    }
+
     /// Computes what the `.sops.yaml` at `configPath` would look like if the
     /// creation rule governing `targetFilePath` declared exactly `recipients`
     /// as its age recipient list, and reports which of
