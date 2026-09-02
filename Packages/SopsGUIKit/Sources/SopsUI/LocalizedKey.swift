@@ -523,6 +523,41 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case accessRotationDebtHeading = "access.rotation-debt.heading"
     case accessRotationDebtAcknowledgeButton = "access.rotation-debt.acknowledge-button"
 
+    // SOPS-39 task 8: the Access *page* — the destination the sidebar's
+    // Access row navigates to. It says three things the old sheet could not:
+    // what the project's keys are called (`keys:` anchors, which are public
+    // by construction — they sit in a file everyone on the team reads), what
+    // every creation rule declares rather than only the governing one, and
+    // which files have drifted from the rule that governs them.
+    case accessPageTitle = "access.page.title"
+    case accessKeysTitle = "access.keys.title"
+    case accessKeysNote = "access.keys.note"
+    case accessKeysColumnName = "access.keys.column.name"
+    case accessKeysColumnKey = "access.keys.column.key"
+    case accessKeysColumnLabel = "access.keys.column.label"
+    case accessKeysColumnUsedIn = "access.keys.column.used-in"
+    case accessKeysNone = "access.keys.none"
+    case accessRulesTitle = "access.rules.title"
+    case accessRulesNote = "access.rules.note"
+    case accessRulesGoverns = "access.rules.governs"
+    case accessRulesGovernsNone = "access.rules.governs-none"
+    case accessRulesRecipients = "access.rules.recipients"
+    case accessRulesComment = "access.rules.comment"
+    case accessRulesAllInSync = "access.rules.all-in-sync"
+    case accessRulesNeedsRewrap = "access.rules.needs-rewrap"
+    case accessRulesEncryptedForOf = "access.rules.encrypted-for-of"
+    // A rule declared through YAML anchors or `key_groups` is one this app
+    // reads and refuses to rewrite — see `ConfigRules.Rule.usesKeyGroups`.
+    // Said before the user tries, next to a button that opens the file.
+    case accessRulesAnchoredReadOnly = "access.rules.anchored-read-only"
+    case accessRulesRevealConfig = "access.rules.reveal-config"
+    case accessRewrapBanner = "access.rewrap.banner"
+    case accessRewrapDetail = "access.rewrap.detail"
+    case accessRewrapButton = "access.rewrap.button"
+    case accessRewrapNote = "access.rewrap.note"
+    case accessUngoverned = "access.ungoverned"
+    case accessTargetSubstituted = "access.target-substituted"
+
     // MARK: Task 4 (recipient management) — project access panel
 
     case projectAccessButton = "project-access.button"

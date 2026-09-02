@@ -134,7 +134,11 @@ public final class ProjectAccessModel {
     /// The project this panel is about. Readable so the label editor knows
     /// which project's `.sops-gui/recipients.json` a name would be written to.
     public let projectRoot: URL
-    private let keyStore: SessionKeyStore
+    /// Where the session's decryption identity comes from. Readable so
+    /// `RewrapCoordinator` can build the per-rule models a project-wide
+    /// rewrap needs from the same store this model was given — the key
+    /// itself never leaves `SessionKeyStore.withKey`'s lending API.
+    public let keyStore: SessionKeyStore
     private let applier: ProjectRecipientApplier
     /// The file the panel should describe the governing rule of — typically
     /// whichever file is selected in the file list. `nil` falls back to
@@ -196,6 +200,15 @@ public final class ProjectAccessModel {
     public var isDirty: Bool { Set(stagedRecipients) != Set(configRecipients) }
 
     public var keyConfigured: Bool { keyStore.state == .configured }
+
+    /// Everything the Access page shows that a `Plan` alone does not: the
+    /// project's named keys, every creation rule (not only the governing
+    /// one), and each encrypted file's own recipients measured against the
+    /// rule that governs it. Built by the same scan `plan()` already ran —
+    /// see `AccessInventory` — so reading it costs nothing beyond a load
+    /// that has happened anyway, and `nil` exactly while no load has
+    /// succeeded yet.
+    public var inventory: AccessInventory? { plan?.inventory }
 
     /// Live tallies over `fileResults`. The canonical place `ProjectAccessView`
     /// reads these from, rather than re-filtering `fileResults` itself —

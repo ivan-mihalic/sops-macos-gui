@@ -156,6 +156,83 @@
         }
       }
     },
+    "access.keys.column.key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Public key"
+          }
+        }
+      }
+    },
+    "access.keys.column.label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Label"
+          }
+        }
+      }
+    },
+    "access.keys.column.name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Name"
+          }
+        }
+      }
+    },
+    "access.keys.column.used-in": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Used in"
+          }
+        }
+      }
+    },
+    "access.keys.none": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This .sops.yaml has no keys: list. Recipients are written inline in each rule."
+          }
+        }
+      }
+    },
+    "access.keys.note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Public age keys from .sops.yaml → keys. The name is the YAML anchor, so anyone reading the file in an editor sees it too. These are not secrets."
+          }
+        }
+      }
+    },
+    "access.keys.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Named keys"
+          }
+        }
+      }
+    },
     "access.load-failed.title": {
       "extractionState": "manual",
       "localizations": {
@@ -174,6 +251,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Add your age private key in Settings › Key to apply access changes. Reading who has access doesn't need one."
+          }
+        }
+      }
+    },
+    "access.page.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Access"
           }
         }
       }
@@ -244,6 +332,206 @@
         }
       }
     },
+    "access.rewrap.banner": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Changing .sops.yaml re-encrypts nothing by itself."
+          }
+        }
+      }
+    },
+    "access.rewrap.button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Rewrap %lld file…"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Rewrap %lld files…"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "access.rewrap.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ is encrypted for %2$@, its rule wants %3$@."
+          }
+        }
+      }
+    },
+    "access.rewrap.note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The same thing sops updatekeys does. Needs your private key. A removed recipient keeps what it already read."
+          }
+        }
+      }
+    },
+    "access.rules.all-in-sync": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All files in sync"
+          }
+        }
+      }
+    },
+    "access.rules.anchored-read-only": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This rule uses anchors or key_groups. Edit .sops.yaml by hand to change it."
+          }
+        }
+      }
+    },
+    "access.rules.comment": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Comment"
+          }
+        }
+      }
+    },
+    "access.rules.encrypted-for-of": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "encrypted for %lld of %lld"
+          }
+        }
+      }
+    },
+    "access.rules.governs": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Governs"
+          }
+        }
+      }
+    },
+    "access.rules.governs-none": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No file in this project"
+          }
+        }
+      }
+    },
+    "access.rules.needs-rewrap": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld file needs rewrap"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld files need rewrap"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "access.rules.note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Order matters: sops takes the first path_regex that matches. The selected file falls under the highlighted rule."
+          }
+        }
+      }
+    },
+    "access.rules.recipients": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recipients"
+          }
+        }
+      }
+    },
+    "access.rules.reveal-config": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show .sops.yaml in Finder"
+          }
+        }
+      }
+    },
+    "access.rules.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Creation rules"
+          }
+        }
+      }
+    },
+    "access.target-substituted": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The file you had open is no longer in this project; showing the first file's rule."
+          }
+        }
+      }
+    },
     "access.title": {
       "extractionState": "manual",
       "localizations": {
@@ -273,6 +561,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Keep this recipient"
+          }
+        }
+      }
+    },
+    "access.ungoverned": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No rule governs this file"
           }
         }
       }

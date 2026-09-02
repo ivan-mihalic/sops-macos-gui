@@ -1,0 +1,453 @@
+import AppKit
+import SopsEngine
+import SopsProjects
+import SwiftUI
+
+/// The Access page: who can read this project's secrets, said in the
+/// project's own vocabulary.
+///
+/// SOPS-39 task 8. This is a **destination** — the pane the sidebar's Access
+/// row navigates to — not a sheet. It replaces the inline `ProjectAccessView`
+/// the shell used to render there, and it answers three questions that panel
+/// could not:
+///
+/// 1. **What are the keys called?** A `.sops.yaml` that declares its keys
+///    under a top-level `keys:` list gives each one a YAML anchor, and that
+///    anchor is the name the team already uses ("studio", "vps"). Rendering
+///    three `age1…` strings instead throws that away. The anchor is not a
+///    secret by construction: it sits in a file everyone reading the repo
+///    sees, next to the public key it names.
+/// 2. **Which rule governs what?** The old panel described exactly one rule —
+///    the one governing the selected file — so a project with a production
+///    rule and a catch-all rule looked like a project with one rule.
+/// 3. **Has anything drifted?** A creation rule says who *new* files are
+///    encrypted for. It says nothing about the files already on disk, and
+///    those two answers diverge the moment someone edits the config. The
+///    per-rule pill and the rewrap banner are that divergence, named.
+///
+/// ## The model comes from the store
+/// Never constructed in this body: a model built here is replaced by a fresh,
+/// unloaded one on any re-render while the view's identity — and therefore
+/// its `.task` — stays put. `ProjectTreeStore.accessModel(for:targetFile:)`
+/// owns it. The one deliberate exception in this feature is
+/// `RewrapCoordinator`, which builds one model per drifted rule; see its doc
+/// comment for why a project-wide rewrap is the operation that genuinely
+/// spans rules, and why that makes it the only place `targetFile` is used for
+/// more than one rule.
+///
+/// ## Editing is scoped to the rule the model is about
+/// `ProjectAccessModel` holds a single staged recipient set, and it belongs
+/// to the rule governing `targetFile`. So the `×` and add controls appear on
+/// that rule only, and only when the rule is a flat `age:` list this app can
+/// rewrite. Every other rule renders read-only rather than offering an edit
+/// that would silently be applied to a different rule's key list.
+///
+/// No `SnapshotTool` entry is missing here — `Catalog.projectAccessPage()`
+/// renders it against a momentak-shaped fixture with one drifted file.
+public struct ProjectAccessPage: View {
+    @Bindable private var model: ProjectAccessModel
+    private let selectedFile: URL?
+    private let onFilesApplied: () -> Void
+
+    @State private var labelEdit: RecipientLabelEditRequest?
+    @State private var newRecipientText = ""
+    @State private var rewrap: RewrapCoordinator?
+    @State private var showingRewrap = false
+    @State private var errorMessage: String?
+
+    public init(
+        model: ProjectAccessModel,
+        selectedFile: URL?,
+        onFilesApplied: @escaping () -> Void
+    ) {
+        self.model = model
+        self.selectedFile = selectedFile
+        self.onFilesApplied = onFilesApplied
+    }
+
+    public var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                header
+                if let inventory = model.inventory {
+                    if let error = inventory.configError {
+                        configErrorBox(error)
+                    }
+                    rewrapBanner(inventory)
+                    namedKeys(inventory)
+                    rules(inventory)
+                }
+            }
+            .frame(maxWidth: 980, alignment: .leading)
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .task { await model.load() }
+        .sheet(isPresented: $showingRewrap) {
+            RewrapSheet(
+                coordinator: rewrap ?? makeCoordinator(),
+                onClose: {
+                    showingRewrap = false
+                    Task {
+                        await model.load()
+                        onFilesApplied()
+                    }
+                })
+        }
+        .sheet(item: $labelEdit) { request in
+            RecipientLabelEditorView(
+                model: request.model,
+                onClose: { labelEdit = nil },
+                onChanged: { model.reloadRegistry() })
+        }
+        .alert(
+            LocalizedKey.projectAccessErrorTitle.text,
+            isPresented: Binding(
+                get: { errorMessage != nil },
+                set: { if !$0 { errorMessage = nil } })
+        ) {
+            Button(LocalizedKey.actionDone.text) { errorMessage = nil }
+        } message: {
+            Text(errorMessage ?? "")
+        }
+    }
+
+    // MARK: - Header
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(.accessPageTitle).font(.title2.weight(.semibold))
+            Spacer()
+            Button(LocalizedKey.projectAccessUpdateConfigButton.text) {
+                Task { await applyConfig() }
+            }
+            // Nothing has been staged, so there is nothing this could write.
+            // Disabled rather than hidden: the control is the answer to
+            // "where do I save this?", and it has to be visible before there
+            // is something to save for that answer to arrive in time.
+            .disabled(!model.isDirty)
+        }
+    }
+
+    private func configErrorBox(_ error: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Label(.projectAccessConfigErrorTitle, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.red)
+            Text(error).font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.red.opacity(0.10))
+    }
+
+    // MARK: - Rewrap banner
+
+    /// Shown only when at least one file's own recipients differ from what
+    /// its rule declares. A config edit changes who *new* files are encrypted
+    /// for and nothing else — this is the sentence that stops "I updated
+    /// .sops.yaml" from being mistaken for "I rotated access".
+    @ViewBuilder
+    private func rewrapBanner(_ inventory: AccessInventory) -> some View {
+        let drifted = inventory.filesNeedingRewrap
+        if !drifted.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Label(.accessRewrapBanner, systemImage: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.orange)
+
+                ForEach(drifted) { file in
+                    if case .ruleDiffers(let has, let wants) = file.status {
+                        Text(
+                            String(
+                                format: LocalizedKey.accessRewrapDetail.text,
+                                file.relativePath, names(has, in: inventory),
+                                names(wants, in: inventory))
+                        )
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                HStack(spacing: 10) {
+                    Button(String(format: LocalizedKey.accessRewrapButton.text, drifted.count)) {
+                        let coordinator = makeCoordinator()
+                        rewrap = coordinator
+                        showingRewrap = true
+                        Task { await coordinator.rewrap(inventory) }
+                    }
+                    .disabled(!model.keyConfigured)
+                    Text(.accessRewrapNote).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.orange.opacity(0.12))
+        }
+    }
+
+    // MARK: - Named keys
+
+    @ViewBuilder
+    private func namedKeys(_ inventory: AccessInventory) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(.accessKeysTitle).font(.headline)
+            Text(.accessKeysNote).font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if inventory.keys.isEmpty {
+                Text(.accessKeysNone).font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                // A `Grid` rather than a `Table`: `Table` is a scroll view,
+                // and neither the headless snapshot renderer nor `AXProbe`
+                // sees past a scroll view's own laid-out frame (CLAUDE.md,
+                // "What it still cannot see"). A key list that cannot be
+                // verified is a key list nothing guards.
+                Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 6) {
+                    GridRow {
+                        columnHeader(.accessKeysColumnName)
+                        columnHeader(.accessKeysColumnKey)
+                        columnHeader(.accessKeysColumnLabel)
+                        columnHeader(.accessKeysColumnUsedIn)
+                    }
+                    ForEach(inventory.keys) { key in
+                        GridRow {
+                            HStack(spacing: 6) {
+                                Circle()
+                                    .fill(Self.colour(for: key.recipient))
+                                    .frame(width: 8, height: 8)
+                                Text(verbatim: key.name.isEmpty ? "—" : key.name)
+                                    .font(.system(.body, design: .monospaced))
+                            }
+                            // Selectable rather than behind a copy button:
+                            // this module has no shared copy control, and a
+                            // new one here would be a second clipboard path
+                            // next to the audited one in `CopyFeedback`. A
+                            // public key is not a secret, so selection is
+                            // enough — the whole key is in `.help` too.
+                            Text(verbatim: Self.short(key.recipient))
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                                .help(key.recipient)
+                            Button {
+                                editLabel(for: key.recipient)
+                            } label: {
+                                Text(verbatim: label(for: key.recipient) ?? "—")
+                                    .foregroundStyle(
+                                        label(for: key.recipient) == nil ? .secondary : .primary)
+                            }
+                            .buttonStyle(.plain)
+                            Text(verbatim: usedIn(key.recipient, in: inventory))
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func columnHeader(_ key: LocalizedKey) -> some View {
+        Text(key).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+    }
+
+    // MARK: - Creation rules
+
+    @ViewBuilder
+    private func rules(_ inventory: AccessInventory) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(.accessRulesTitle).font(.headline)
+            Text(.accessRulesNote).font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if model.plan?.targetFileWasSubstituted == true {
+                Text(.accessTargetSubstituted).font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            ForEach(inventory.rules) { rule in
+                AccessRuleCard(
+                    rule: rule, inventory: inventory,
+                    isSelected: selectedRuleIndex(in: inventory) == rule.index,
+                    isEditable: isEditable(rule, in: inventory),
+                    stagedRecipients: model.stagedRecipients,
+                    configURL: model.projectRoot.appendingPathComponent(".sops.yaml"),
+                    displayName: { displayName($0, in: inventory) },
+                    onRemove: { recipient in
+                        model.stageRemove(recipient)
+                        model.startRefreshingPlan()
+                    },
+                    newRecipientText: $newRecipientText,
+                    onAdd: addStagedRecipient)
+            }
+        }
+    }
+
+    // MARK: - Derived
+
+    /// Which rule the selected file falls under, or — when the file the page
+    /// was opened for is gone — whichever rule the plan fell back to.
+    private func selectedRuleIndex(in inventory: AccessInventory) -> Int? {
+        if let selectedFile, let match = inventory.files.first(where: { $0.url == selectedFile }) {
+            return match.ruleIndex
+        }
+        return nil
+    }
+
+    /// Whether `rule` is the one this model's staged set belongs to — the rule
+    /// governing its target file. See the type's doc comment.
+    private func isEditable(_ rule: ConfigRules.Rule, in inventory: AccessInventory) -> Bool {
+        guard model.plan?.configRefusal == nil else { return false }
+        return selectedRuleIndex(in: inventory) == rule.index
+    }
+
+    private func label(for recipient: String) -> String? {
+        model.registryRecords.first { $0.ageRecipient == recipient }?.label
+    }
+
+    /// What a recipient is called on this page: its anchor name when the
+    /// config gave it one, its registry label when the user named it, and its
+    /// shortened public key otherwise. Never nothing — a recipient with no
+    /// name is still a recipient.
+    private func displayName(_ recipient: String, in inventory: AccessInventory) -> String {
+        inventory.name(for: recipient) ?? label(for: recipient) ?? Self.short(recipient)
+    }
+
+    private func names(_ recipients: [String], in inventory: AccessInventory) -> String {
+        recipients.map { displayName($0, in: inventory) }.joined(separator: ", ")
+    }
+
+    /// The `path_regex` of every rule that names this key — how a reader
+    /// answers "what does the vps key actually unlock?" without reading the
+    /// config themselves.
+    private func usedIn(_ recipient: String, in inventory: AccessInventory) -> String {
+        let regexes = inventory.rules
+            .filter { $0.recipients.contains { $0.recipient == recipient } }
+            .map(\.pathRegex)
+        return regexes.isEmpty ? "—" : regexes.joined(separator: ", ")
+    }
+
+    /// First 10 and last 6 characters of an age public key. Public keys are
+    /// not secrets, so this is legibility rather than masking — the full key
+    /// is in `.help` and one click away in the clipboard.
+    static func short(_ recipient: String) -> String {
+        guard recipient.count > 18 else { return recipient }
+        return recipient.prefix(10) + "…" + recipient.suffix(6)
+    }
+
+    /// A stable colour per recipient, so the same key reads as the same key
+    /// in the table and in every rule's chips.
+    ///
+    /// Hashed from the key's own scalars rather than from `hashValue`:
+    /// Swift's `Hashable` is seeded per process, so a `hashValue`-derived
+    /// colour changes between launches — and a snapshot of it would differ on
+    /// every run for reasons that have nothing to do with the change under
+    /// review.
+    static func colour(for recipient: String) -> Color {
+        var hash: UInt64 = 5381
+        for scalar in recipient.unicodeScalars {
+            hash = hash &* 33 &+ UInt64(scalar.value)
+        }
+        return Color(hue: Double(hash % 360) / 360, saturation: 0.55, brightness: 0.85)
+    }
+
+    // MARK: - Actions
+
+    private func makeCoordinator() -> RewrapCoordinator {
+        RewrapCoordinator(projectRoot: model.projectRoot, keyStore: model.keyStore)
+    }
+
+    private func addStagedRecipient() {
+        if model.stageAdd(newRecipientText) == nil {
+            newRecipientText = ""
+            model.startRefreshingPlan()
+        }
+    }
+
+    private func editLabel(for recipient: String) {
+        labelEdit = RecipientLabelEditRequest(
+            model: RecipientLabelEditorModel(
+                projectURL: model.projectRoot,
+                ageRecipient: recipient,
+                existing: model.registryRecords.first { $0.ageRecipient == recipient }))
+    }
+
+    private func applyConfig() async {
+        switch await model.applyConfig() {
+        case .written, .nothingToWrite:
+            break
+        case .refusedEmptyRecipients:
+            errorMessage = LocalizedKey.projectAccessErrorEmptyRecipients.text
+        case .refusedStalePlan:
+            errorMessage = LocalizedKey.projectAccessErrorStalePlan.text
+        case .failed(let message):
+            errorMessage = message
+        }
+    }
+}
+
+/// What a project-wide rewrap is doing, and what it did.
+///
+/// A sheet rather than inline content: a rewrap rewrites files, so it holds
+/// the user's attention until it is finished or has reported why it is not.
+struct RewrapSheet: View {
+    @Bindable var coordinator: RewrapCoordinator
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(.projectAccessResultsTitle).font(.headline)
+
+            if coordinator.isRunning {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(.projectAccessApplyingLabel).foregroundStyle(.secondary)
+                }
+            }
+
+            ForEach(coordinator.results) { result in
+                HStack(spacing: 6) {
+                    Text(verbatim: result.url.lastPathComponent)
+                        .font(.system(.caption, design: .monospaced))
+                    Spacer()
+                    Text(Self.outcomeLabel(result.outcome))
+                        .font(.caption2)
+                        .foregroundStyle(result.outcome == .updated ? Color.green : .secondary)
+                }
+            }
+
+            ForEach(coordinator.skipped, id: \.self) { reason in
+                Text(verbatim: reason).font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if !coordinator.isRunning, coordinator.updatedCount > 0 {
+                Text(.projectAccessResultsCommitNote).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Spacer()
+                Button(LocalizedKey.actionDone.text, action: onClose)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(coordinator.isRunning)
+            }
+        }
+        .padding(16)
+        .frame(width: 480)
+    }
+
+    private static func outcomeLabel(_ outcome: ProjectRecipientApplier.FileOutcome)
+        -> LocalizedKey
+    {
+        switch outcome {
+        case .updated: .projectAccessResultUpdated
+        case .unchanged: .projectAccessResultUnchanged
+        case .failed: .projectAccessResultFailed
+        }
+    }
+}

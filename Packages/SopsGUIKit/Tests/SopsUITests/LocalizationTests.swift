@@ -199,6 +199,12 @@ struct LocalizationTests {
             "%d is a line number, not a count",
         "dotenv-preview.suspicion.duplicate-key":
             "%1$d is the winning entry's own line number, not a count",
+        // SOPS-39 task 8. "encrypted for 2 of 3" — two bare tallies inside a
+        // pill, with no noun or verb agreeing with either. "encrypted for 1
+        // of 3" reads correctly as it stands, and a plural split would need
+        // two substitutions to produce the identical string in every form.
+        "access.rules.encrypted-for-of":
+            "two bare tallies in a pill, with no noun or verb agreeing with them",
     ]
 
     @Test("every string that formats a count pluralizes on it")
