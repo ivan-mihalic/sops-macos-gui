@@ -412,10 +412,10 @@ struct ProjectTreeSidebarStatusDotTests {
     }
 }
 
-/// The Access panel's model outlives a re-render.
+/// The Access page's model outlives a re-render.
 ///
 /// ## The defect this exists to forbid
-/// `ProjectAccessView` holds its model as `@Bindable` and loads it from a
+/// `ProjectAccessPage` holds its model as `@Bindable` and loads it from a
 /// bare `.task { await model.load() }` — no `id:`, so it runs once per view
 /// *identity*. The identity of the Access pane does not change when
 /// `AppShell`'s body is merely re-evaluated (another project's scan

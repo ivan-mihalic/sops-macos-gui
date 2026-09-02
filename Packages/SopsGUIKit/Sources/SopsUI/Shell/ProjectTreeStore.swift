@@ -53,11 +53,11 @@ public final class ProjectTreeStore {
         return model
     }
 
-    /// The Access panel's model for `project` — created on first use and
-    /// **reused** for every later render of the same panel.
+    /// The Access page's model for `project` — created on first use and
+    /// **reused** for every later render of the same page.
     ///
     /// ## Why this cannot be built in a view body
-    /// `ProjectAccessView` holds its model as `@Bindable` and loads it from a
+    /// `ProjectAccessPage` holds its model as `@Bindable` and loads it from a
     /// bare `.task { await model.load() }` — no `id:`. A `.task` without an
     /// `id:` runs once per view *identity*, and the identity of the Access
     /// pane does not change when `AppShell`'s body is merely re-evaluated

@@ -140,8 +140,11 @@ public struct ProjectRecipientApplier: Sendable {
         /// Zero for a project with no such alias. Not itself a warning: a
         /// symlink inside a project is unremarkable, but the count the user
         /// sees in `encryptedFiles.count` is smaller than the number of paths
-        /// the scan actually found, and that gap deserves a word. See
-        /// `ProjectAccessView`'s disclosure.
+        /// the scan actually found, and that gap deserves a word.
+        ///
+        /// ⚠️ Computed and tested, but drawn by nothing since SOPS-39 task 10
+        /// retired `ProjectAccessView`, which was the only surface that said
+        /// it. See `docs/adr/0005`, "Consequences".
         public let duplicateFileNameCount: Int
         /// Every entry in `encryptedFiles` (and therefore `matchedFiles`,
         /// `unmatchedFiles`, `filesGovernedByOtherRules` too — all subsets of

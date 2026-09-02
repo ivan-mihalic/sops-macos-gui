@@ -40,9 +40,11 @@ import SwiftUI
 /// — never the source file the user picked, which this app never modifies.
 /// A recipient in `losing` still reads the source exactly as before; what
 /// they lose is the ability to read the *new* copy. Losing that distinction
-/// in the wording is exactly the mistake `ProjectAccessView`'s own
-/// `project-access.update-config-confirm.loses` sentence was written to
-/// avoid for the identical shape of confusion one screen over — this task
+/// in the wording is exactly the mistake the project panel's own
+/// "…loses access" confirmation sentence was written to avoid for the
+/// identical shape of confusion one screen over (that panel, and that
+/// sentence, were retired in SOPS-39 task 10 — this file is where the
+/// distinction now has to be kept) — this task
 /// borrowed that sentence's vocabulary without the clarifying half, and an
 /// earlier version of this file both dropped that clause and stopped
 /// showing which file was even selected once unlocked (`.unlocked` used to
@@ -187,8 +189,8 @@ public struct EncryptedImportPreview: View {
     /// The disclosure itself — spec §4.1, decision 4. Every non-empty
     /// section is shown; an empty one (no recipients gained, say) is simply
     /// omitted rather than rendered as an empty sentence, the same
-    /// conditional-parts pattern `ProjectAccessView
-    /// .configUpdateConfirmationMessage` uses for its own gains/loses.
+    /// conditional-parts pattern the project panel's own gains/loses
+    /// confirmation used, before SOPS-39 task 10 retired it.
     ///
     /// ## What this deliberately does *not* repeat
     ///

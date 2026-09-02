@@ -229,8 +229,8 @@ public final class ProjectAccessModel {
     /// succeeded yet.
     public var inventory: AccessInventory? { plan?.inventory }
 
-    /// Live tallies over `fileResults`. The canonical place `ProjectAccessView`
-    /// reads these from, rather than re-filtering `fileResults` itself —
+    /// Live tallies over `fileResults`. The canonical place a view reads
+    /// these from, rather than re-filtering `fileResults` itself —
     /// which is what it used to do, alongside `ProjectRecipientApplier
     /// .RunResult`'s own (uncalled) `updatedCount`/`failedCount`: two
     /// expressions of the same fact, computed two different ways, is how they

@@ -206,8 +206,9 @@ struct AccessRuleCard: View {
                     HStack(spacing: 6) {
                         // A path is not translatable, and resolved through the
                         // catalog it would vanish under whichever build system
-                        // copies `.xcstrings` uncompiled — see
-                        // `ProjectAccessView.filesPreview`.
+                        // copies `.xcstrings` uncompiled — the same reason
+                        // `ProjectAccessPage.ungoverned` draws its paths this
+                        // way.
                         Text(verbatim: file.relativePath)
                             .font(.system(.caption, design: .monospaced))
                         if case .ruleDiffers(let has, let wants) = file.status {

@@ -459,7 +459,8 @@ struct LocalizationTests {
     /// file never modifies the source, only creates a new one — a recipient
     /// named in `newFileEncryptedImportLoses` still reads the source exactly
     /// as before, and only loses the ability to read the *new* copy. The
-    /// borrowed "gains"/"loses" vocabulary from `ProjectAccessView` came
+    /// borrowed "gains"/"loses" vocabulary from the project panel (retired
+    /// with `ProjectAccessView` in SOPS-39 task 10) came
     /// without this clarification the first time; this pins that it is
     /// there, the same shape `configUpdateRemovalSentenceDisclaimsRevocation`
     /// already pins for the sibling sentence one screen over.

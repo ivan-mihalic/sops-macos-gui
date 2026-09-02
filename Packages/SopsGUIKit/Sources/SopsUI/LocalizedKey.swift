@@ -513,8 +513,8 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // does not change meaning between the per-file and project-wide screen.
     // The notice body itself is never a catalog string: it carries the
     // registry's real path, composed at runtime by `RecipientRegistry` and
-    // shown verbatim, the same treatment `ProjectAccessView.explanation(_:_
-    // :tint:)` gives a config error.
+    // shown verbatim, the same treatment `ProjectAccessPage.configErrorBox(_:)`
+    // gives a config error.
     case accessRegistryQuarantineTitle = "access.registry-quarantine.title"
 
     // Ticket #3: a recipient removal this panel already applied may have
@@ -895,8 +895,10 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // Unlocking an `.encryptedYAML` source and disclosing exactly who gains
     // and loses access by re-encrypting it for the target plan's recipients
     // — spec §4.1, decision 4. See `EncryptedImportPreview`'s own doc
-    // comment: the language deliberately matches `ProjectAccessView`'s own
-    // "gains"/"loses" sentences (`projectAccessConfigGains`/`.Loses`), even
+    // comment: the language was borrowed from the project panel's own
+    // "gains"/"loses" confirmation sentences — retired with
+    // `ProjectAccessView` in SOPS-39 task 10, so this pair is now the only
+    // place that vocabulary survives — even
     // though this is a different action (importing one file, not rewriting
     // a creation rule) and so gets its own keys rather than reusing theirs.
 

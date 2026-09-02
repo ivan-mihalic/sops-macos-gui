@@ -125,7 +125,9 @@ struct ProjectAccessPageTests {
         // The refusal the page routes to its alert. Pinned as a pure
         // function because a `.alert`'s own body is not reachable from a
         // unit test — the same documented limitation
-        // `ProjectAccessView.fileApplyConfirmationMessage` is tested around.
+        // `WorkspaceSwitchDecisionTests` states for a `.confirmationDialog`,
+        // and the reason the string a dialog is *handed* is the last thing
+        // that can be pinned.
         #expect(ProjectAccessPage.explanation(for: .duplicate) == .accessAddDuplicate)
         #expect(ProjectAccessPage.explanation(for: .empty) == nil)
         #expect(ProjectAccessPage.explanation(for: .notLoaded) == nil)
