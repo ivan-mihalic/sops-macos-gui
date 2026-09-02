@@ -524,6 +524,50 @@ public final class ProjectAccessModel {
         return outcome
     }
 
+    /// Removes a named key from creation rule `ruleIndex`, then reloads —
+    /// the inverse of `addAliasToRule`, immediate for the same reason: the
+    /// staged set belongs to the rule this model is *about*, and this may be
+    /// any rule on the page. The confirmation is the card's, before the call.
+    public func removeAliasFromRule(ruleIndex: Int, anchor: String) async
+        -> ProjectRecipientApplier.ConfigWriteOutcome
+    {
+        guard let plan else { return .nothingToWrite }
+        let outcome = applier.removeAliasFromRule(
+            configURL: plan.configURL, ruleIndex: ruleIndex, anchor: anchor,
+            expecting: plan.configFingerprint)
+        await refreshPlan()
+        if case .written = outcome { configWritten = true }
+        return outcome
+    }
+
+    /// Declares a new named key and aliases it into rule `ruleIndex` (or
+    /// only declares it, for -1), then reloads. `label`, when given, goes
+    /// to the recipient registry — the same place the Label column reads —
+    /// through `RecipientLabelEditorModel`, the one guarded writer of that
+    /// file. A label that fails to save does not undo a config that was
+    /// written: the key is in the file and the page says so; the label can
+    /// be added again from the Name button.
+    public func addNamedKey(name: String, recipient: String, label: String?, ruleIndex: Int) async
+        -> ProjectRecipientApplier.ConfigWriteOutcome
+    {
+        guard let plan else { return .nothingToWrite }
+        let outcome = applier.addNamedKey(
+            configURL: plan.configURL, name: name, recipient: recipient.trimmingCharacters(in: .whitespacesAndNewlines),
+            ruleIndex: ruleIndex, expecting: plan.configFingerprint)
+        if case .written = outcome,
+           let label = label?.trimmingCharacters(in: .whitespacesAndNewlines), !label.isEmpty {
+            let editor = RecipientLabelEditorModel(
+                projectURL: projectRoot, ageRecipient: recipient.trimmingCharacters(in: .whitespacesAndNewlines),
+                existing: registryRecords.first { $0.ageRecipient == recipient })
+            editor.label = label
+            _ = await editor.save()
+            reloadRegistry()
+        }
+        await refreshPlan()
+        if case .written = outcome { configWritten = true }
+        return outcome
+    }
+
     /// Re-wraps every file in `filesToApply` for exactly `stagedRecipients`.
     /// Never touches `.sops.yaml`.
     ///

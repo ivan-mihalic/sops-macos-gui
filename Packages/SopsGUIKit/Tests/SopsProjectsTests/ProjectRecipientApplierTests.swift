@@ -1236,3 +1236,71 @@ struct ProjectRecipientApplierAliasTests {
         #expect(local.status == .ruleDiffers(fileHas: [a.public], ruleWants: [b.public]))
     }
 }
+
+@Suite("ProjectRecipientApplier — removing an alias and declaring a named key (SOPS-42)")
+struct ProjectRecipientApplierNamedKeyTests {
+
+    @Test("removing an alias writes the proposed text atomically and refuses a changed file")
+    func removalWritesAtomicallyAndGuardsTheFingerprint() throws {
+        let root = try applierScratchDirectory("applier-remove-alias")
+        let conf = root.appendingPathComponent(".sops.yaml")
+        try "keys:\n  - &a age1aaa\ncreation_rules:\n  - path_regex: x$\n    age: [*a]\n"
+            .write(to: conf, atomically: true, encoding: .utf8)
+        let tally = CallTally()
+        let applier = ProjectRecipientApplier(
+            proposeAliasRemoval: { path, index, anchor in
+                tally.record("propose \(index) \(anchor)")
+                return "proposed removal of \(anchor)\n"
+            })
+        let fresh = FileFingerprint.of(conf)
+        #expect(applier.removeAliasFromRule(configURL: conf, ruleIndex: 0, anchor: "a", expecting: fresh) == .written)
+        #expect(try String(contentsOf: conf, encoding: .utf8) == "proposed removal of a\n")
+        #expect(tally.count("propose 0 a") == 1)
+
+        // The file moved on since `fresh`; the second write must refuse.
+        try "keys:\n  - &b age1bbb\n".write(to: conf, atomically: true, encoding: .utf8)
+        if case .failed = applier.removeAliasFromRule(configURL: conf, ruleIndex: 0, anchor: "a", expecting: fresh) {
+        } else {
+            Issue.record("a changed config must not be overwritten")
+        }
+        #expect(try String(contentsOf: conf, encoding: .utf8) == "keys:\n  - &b age1bbb\n")
+    }
+
+    @Test("a bridge refusal on removal is reported verbatim and writes nothing")
+    func removalRefusalIsVerbatim() throws {
+        let root = try applierScratchDirectory("applier-remove-alias-refused")
+        let conf = root.appendingPathComponent(".sops.yaml")
+        let body = "keys:\n  - &a age1aaa\ncreation_rules:\n  - path_regex: x$\n    age: [*a]\n"
+        try body.write(to: conf, atomically: true, encoding: .utf8)
+        // The real bridge, deliberately: the sentence the page shows is the
+        // bridge's own, and this pins that it arrives untranslated.
+        let applier = ProjectRecipientApplier(
+            writeFile: { _, _, _ in Issue.record("a refusal must not write") })
+        guard case .failed(let reason) = applier.removeAliasFromRule(
+            configURL: conf, ruleIndex: 0, anchor: "b", expecting: FileFingerprint.of(conf))
+        else {
+            Issue.record("an unknown anchor must be refused")
+            return
+        }
+        #expect(reason.contains("no key named \"b\""), "\(reason)")
+        #expect(try String(contentsOf: conf, encoding: .utf8) == body)
+    }
+
+    @Test("adding a named key writes the proposed text atomically")
+    func namedKeyWritesAtomically() throws {
+        let root = try applierScratchDirectory("applier-named-key")
+        let conf = root.appendingPathComponent(".sops.yaml")
+        try "creation_rules: []\n".write(to: conf, atomically: true, encoding: .utf8)
+        let tally = CallTally()
+        let applier = ProjectRecipientApplier(
+            proposeNamedKey: { _, name, recipient, index in
+                tally.record("propose \(name) \(recipient.prefix(4)) \(index)")
+                return "keys:\n  - &\(name) \(recipient)\n"
+            })
+        let outcome = applier.addNamedKey(
+            configURL: conf, name: "deploy", recipient: "age1zzz", ruleIndex: -1, expecting: FileFingerprint.of(conf))
+        #expect(outcome == .written)
+        #expect(try String(contentsOf: conf, encoding: .utf8) == "keys:\n  - &deploy age1zzz\n")
+        #expect(tally.count("propose deploy age1 -1") == 1)
+    }
+}

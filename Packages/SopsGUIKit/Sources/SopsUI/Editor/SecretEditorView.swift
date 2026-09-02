@@ -97,12 +97,11 @@ public struct SecretEditorView: View {
 
     private let fileName: String
 
-    /// What `RecipientAccessView` needs to act on the same file this editor
-    /// has open. `nil` disables the toolbar's Access button rather than
-    /// failing — a fixture or test host that never supplies these (most of
-    /// the snapshot catalog, the older editor tests) still renders exactly
-    /// as it did before this feature existed, instead of every existing call
-    /// site needing an update for a feature it does not exercise.
+    /// Where this file lives and which project it belongs to — the
+    /// read-only ciphertext view's registry root and the column layout's
+    /// key come from here. The toolbar's Access button that this used to
+    /// feed is gone (SOPS-42): recipients are managed on the project's
+    /// Access page, the one place that also knows the `.sops.yaml` rule.
     private let recipientAccess: RecipientAccessContext?
 
     /// What the project scan knows about this file, for the inspector's
@@ -122,7 +121,6 @@ public struct SecretEditorView: View {
     @State private var selection = RowSelection()
     @State private var saveErrorMessage: String?
     @State private var addRequest: AddRowRequest?
-    @State private var accessRequest: AccessRequest?
     /// The pending auto-hide. Held so each reveal or edit can restart it
     /// rather than stacking a second timer on top of the first.
     @State private var autoHide: Task<Void, Never>?
@@ -139,12 +137,10 @@ public struct SecretEditorView: View {
         let destination: SecretDocumentViewModel.AddDestination
     }
 
-    /// What `SecretEditorView` needs from its caller to offer the Access
-    /// button — the file `RecipientAccessModel` reads/writes and the session
-    /// key it re-wraps with, alongside an optional project for registry
-    /// labels. Passed explicitly rather than read off `viewModel`, matching
-    /// how `fileName` already arrives as its own parameter instead of this
-    /// view reaching into the document model's internals.
+    /// The file, its project and its format, as the caller knows them.
+    /// Passed explicitly rather than read off `viewModel`, matching how
+    /// `fileName` already arrives as its own parameter instead of this view
+    /// reaching into the document model's internals.
     public struct RecipientAccessContext {
         let fileURL: URL
         let keyStore: SessionKeyStore
@@ -165,65 +161,6 @@ public struct SecretEditorView: View {
         }
     }
 
-    /// The Access sheet's subject: a fresh model built from `recipientAccess`
-    /// at the moment the button is pressed, so it always starts from
-    /// whatever the file's metadata says right now rather than a copy that
-    /// could have drifted since the editor opened.
-    private struct AccessRequest: Identifiable {
-        let id = UUID()
-        let model: RecipientAccessModel
-    }
-
-    /// Whether the toolbar's Access button may be pressed right now.
-    ///
-    /// Requires a **clean** document (`!isDirty`), not just a loaded one.
-    /// `RecipientAccessModel` reads and writes this file independently of
-    /// `SecretDocumentViewModel`'s own save path, and a successful apply
-    /// reloads the open document (`.sheet(item: $accessRequest)`'s
-    /// `onApplied` above) so its save-time fingerprint resyncs with the
-    /// rewrapped bytes. That reload calls `SecretDocumentViewModel.load()`,
-    /// which discards every pending edit, addition and removal — so without
-    /// this gate, typing an unsaved change into a row, then adding a
-    /// recipient and pressing Apply, silently threw the typed value away
-    /// with no prompt, no error and no dirty indicator surviving to warn
-    /// the user. Pulled out as a pure function — mirroring
-    /// `WorkspaceSwitchDecision`/`QuitRequest` elsewhere in this module — so
-    /// the gate is directly testable without a rendered view. The `!isDirty
-    /// && !isSaving` half of the question is `UnsavedWorkGate.isClear`, not
-    /// written out here — see that type's doc comment (ticket #23) for why
-    /// three hand-written copies of it used to exist.
-    static func canOpenAccessPanel(loadState: LoadState, isDirty: Bool, isSaving: Bool) -> Bool {
-        loadState == .loaded && UnsavedWorkGate.isClear(isDirty: isDirty, isSaving: isSaving)
-    }
-
-    /// The Access button's help text — its tooltip when enabled, and its
-    /// *reason* for being disabled otherwise. `canOpenAccessPanel` collapses
-    /// several distinct reasons into one boolean (not loaded, dirty,
-    /// saving); this is honest about the one of them worth naming
-    /// separately.
-    ///
-    /// SOPS-38 phase F3 finding: before this existed, a `.readOnlyCiphertext`
-    /// document's Access button was disabled — correctly, `loadState !=
-    /// .loaded` already refuses it — but explained itself with
-    /// `accessDisabledUnsavedChanges` ("Save your changes before managing
-    /// access."), which is false here: this document was never decrypted, so
-    /// there is nothing to save, and no amount of saving would make Access
-    /// reachable. A disabled control with an honest reason ("you can't change
-    /// access to a file you can't decrypt") beats a vanished one, which is
-    /// why this state hides nothing — see `CiphertextReadOnlyView`'s own doc
-    /// comment for why there genuinely is no path from that view to a
-    /// recipient change.
-    ///
-    /// Pulled out as a pure function — mirroring `canOpenAccessPanel` and
-    /// this module's other `WorkspaceSwitchDecision`/`QuitRequest`-shaped
-    /// helpers — so the distinction is directly testable without rendering
-    /// this view.
-    static func accessButtonHelpText(loadState: LoadState, canOpenAccess: Bool) -> LocalizedKey {
-        guard !canOpenAccess else { return .accessToolbarButton }
-        if case .readOnlyCiphertext = loadState { return .accessDisabledReadOnlyCiphertext }
-        return .accessDisabledUnsavedChanges
-    }
-
     /// - Parameters:
     ///   - initiallySelectedRowID: which row starts selected. The app leaves
     ///     this `nil`; it exists because the toolbar's `-` is enabled only
@@ -239,11 +176,9 @@ public struct SecretEditorView: View {
     ///   - revealTimeout: how long a reveal lasts untouched. Injectable only
     ///     so a test does not have to wait 30 real seconds to prove the timer
     ///     exists; nothing in the app passes it.
-    ///   - recipientAccess: the file/key/project the toolbar's Access button
-    ///     needs. `nil` — the default — hides that button; see
-    ///     `RecipientAccessContext`'s doc comment for why this is optional
-    ///     rather than a required parameter every existing call site would
-    ///     need to grow.
+    ///   - recipientAccess: the file, its project and its format. `nil` —
+    ///     the default — only means the read-only view shows no registry
+    ///     labels and the column layout is not persisted.
     public init(
         viewModel: SecretDocumentViewModel,
         fileName: String,
@@ -352,25 +287,6 @@ public struct SecretEditorView: View {
                     addRequest = nil
                 })
         }
-        .sheet(item: $accessRequest) { request in
-            RecipientAccessView(
-                model: request.model,
-                onClose: { accessRequest = nil },
-                onApplied: {
-                    // The file's bytes changed under the document view
-                    // model's own fingerprint — a rewrap that never touches
-                    // row values still moves the file's identity, and the
-                    // next `Save` would otherwise refuse it as changed on
-                    // disk. Reloading resyncs it, exactly as
-                    // `SecretDocumentViewModel.save()` reloads itself after
-                    // its own write. See `RecipientAccessModel`'s doc
-                    // comment ("Reading needs no key; applying does") for why
-                    // this is a separate reader/writer of the same file
-                    // rather than reaching into the document model's own
-                    // private state.
-                    Task { await viewModel.load() }
-                })
-        }
         // Reveal state is per open file, not persisted across a switch —
         // Task 9's brief is explicit ("Reveal is per row and does not
         // persist across file switches"). Leaving `.loaded` is already an
@@ -472,22 +388,6 @@ public struct SecretEditorView: View {
 
             Spacer()
 
-            if let recipientAccess {
-                let canOpenAccess = Self.canOpenAccessPanel(
-                    loadState: viewModel.loadState, isDirty: viewModel.isDirty, isSaving: isSaving)
-                Button {
-                    let model = RecipientAccessModel(
-                        fileURL: recipientAccess.fileURL,
-                        projectURL: recipientAccess.projectURL,
-                        keyStore: recipientAccess.keyStore,
-                        format: recipientAccess.format)
-                    accessRequest = AccessRequest(model: model)
-                } label: {
-                    Label(.accessToolbarButton, systemImage: "person.2.badge.key")
-                }
-                .disabled(!canOpenAccess)
-                .help(Self.accessButtonHelpText(loadState: viewModel.loadState, canOpenAccess: canOpenAccess).text)
-            }
 
             Button {
                 if let selectedRowID { viewModel.removeRow(id: selectedRowID) }

@@ -287,6 +287,8 @@ public struct ProjectRecipientApplier: Sendable {
     private let scanProject: @Sendable (URL) async -> ScannedTree
     private let proposeConfig: @Sendable (String, String, [String], [String]) throws -> ConfigRecipientUpdate
     private let proposeAlias: @Sendable (String, Int, String) throws -> String
+    private let proposeAliasRemoval: @Sendable (String, Int, String) throws -> String
+    private let proposeNamedKey: @Sendable (String, String, String, Int) throws -> String
 
     public init(
         readFile: @escaping @Sendable (URL) throws -> String = {
@@ -316,8 +318,20 @@ public struct ProjectRecipientApplier: Sendable {
             configPath, ruleIndex, anchor in
             try SopsBridge.addAliasRecipient(
                 configPath: configPath, ruleIndex: ruleIndex, anchor: anchor)
+        },
+        proposeAliasRemoval: @escaping @Sendable (String, Int, String) throws -> String = {
+            configPath, ruleIndex, anchor in
+            try SopsBridge.removeAliasRecipient(
+                configPath: configPath, ruleIndex: ruleIndex, anchor: anchor)
+        },
+        proposeNamedKey: @escaping @Sendable (String, String, String, Int) throws -> String = {
+            configPath, name, recipient, ruleIndex in
+            try SopsBridge.addNamedKey(
+                configPath: configPath, name: name, recipient: recipient, ruleIndex: ruleIndex)
         }
     ) {
+        self.proposeAliasRemoval = proposeAliasRemoval
+        self.proposeNamedKey = proposeNamedKey
         self.readFile = readFile
         self.fingerprintFile = fingerprintFile
         self.writeFile = writeFile
@@ -658,18 +672,48 @@ public struct ProjectRecipientApplier: Sendable {
     public func addAliasToRule(
         configURL: URL, ruleIndex: Int, anchor: String, expecting: FileFingerprint?
     ) -> ConfigWriteOutcome {
+        writeProposedConfig({ try proposeAlias(configURL.path, ruleIndex, anchor) },
+                            to: configURL, expecting: expecting)
+    }
+
+    /// The inverse of `addAliasToRule`: drops the alias of `anchor` from
+    /// creation rule `ruleIndex` and writes the result atomically under the
+    /// same fingerprint guard. Re-encrypts nothing — a removed recipient
+    /// keeps what it already read, which is the rewrap banner's whole point.
+    public func removeAliasFromRule(
+        configURL: URL, ruleIndex: Int, anchor: String, expecting: FileFingerprint?
+    ) -> ConfigWriteOutcome {
+        writeProposedConfig({ try proposeAliasRemoval(configURL.path, ruleIndex, anchor) },
+                            to: configURL, expecting: expecting)
+    }
+
+    /// Declares a new named key under `keys:` and — unless `ruleIndex` is
+    /// -1 — aliases it into creation rule `ruleIndex`, in one write.
+    public func addNamedKey(
+        configURL: URL, name: String, recipient: String, ruleIndex: Int, expecting: FileFingerprint?
+    ) -> ConfigWriteOutcome {
+        writeProposedConfig({ try proposeNamedKey(configURL.path, name, recipient, ruleIndex) },
+                            to: configURL, expecting: expecting)
+    }
+
+    /// The one shape every anchored-config edit shares: ask the bridge for
+    /// the proposed text, then write it atomically, refusing if the file
+    /// changed since `expecting` was taken.
+    ///
+    /// A refusal from the bridge comes back as `.failed` carrying its own
+    /// sentence verbatim: it names a key and a rule, never a value. Anything
+    /// else is not a refusal this app can quote — `String(describing:)` over
+    /// an arbitrary error prints its *type* at the user, and a type name is
+    /// neither an explanation nor something to act on.
+    private func writeProposedConfig(
+        _ propose: () throws -> String, to configURL: URL, expecting: FileFingerprint?
+    ) -> ConfigWriteOutcome {
         let text: String
         do {
-            text = try proposeAlias(configURL.path, ruleIndex, anchor)
+            text = try propose()
         } catch let error as SopsBridgeError {
-            // The bridge's own sentence, verbatim: it names the anchor and
-            // the rule it refused, which no fixed translation could.
             return .failed(error.description)
         } catch {
-            // Anything else is not a refusal this app can quote. Typed the
-            // same way `writeConfig` is (SOPS-39 task 10): `String(describing:)`
-            // over an arbitrary error prints its *type* at the user, and a
-            // type name is neither an explanation nor something to act on.
             return .failed("this project's .sops.yaml could not be read")
         }
         do {

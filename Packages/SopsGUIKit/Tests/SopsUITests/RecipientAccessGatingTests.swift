@@ -7,9 +7,10 @@ import Testing
 
 @testable import SopsUI
 
-/// The two pure decision functions gating the Access flow, and one
-/// end-to-end view check that the first of them is actually wired into a
-/// rendered `SecretEditorView` — not just correct in isolation.
+/// The pure decision function gating the per-file Apply, and the per-file
+/// panel's own rendering. The editor toolbar's Access button — and its
+/// `canOpenAccessPanel` gate, once tested here — went with SOPS-42:
+/// recipients are managed on the project's Access page now.
 ///
 /// ## Finding C1 — applying access changes silently discarded unsaved edits
 /// `SecretEditorView`'s toolbar used to disable the Access button only on
@@ -25,40 +26,6 @@ import Testing
 /// this module. `theAccessButtonIsUnreachableWhileTheDocumentIsDirty` then
 /// checks the same property through an actually-rendered editor, because a
 /// correct pure function that nothing calls is not a fix.
-@Suite("SecretEditorView.canOpenAccessPanel — the Access button's gate")
-struct CanOpenAccessPanelTests {
-
-    @Test("a loaded, clean, idle document may open Access")
-    func loadedCleanIdleOpens() {
-        #expect(SecretEditorView.canOpenAccessPanel(loadState: .loaded, isDirty: false, isSaving: false))
-    }
-
-    /// The exact repro for finding C1.
-    @Test("a loaded but dirty document may not open Access")
-    func dirtyDocumentIsRefused() {
-        #expect(!SecretEditorView.canOpenAccessPanel(loadState: .loaded, isDirty: true, isSaving: false))
-    }
-
-    @Test("a document mid-save may not open Access")
-    func savingDocumentIsRefused() {
-        #expect(!SecretEditorView.canOpenAccessPanel(loadState: .loaded, isDirty: false, isSaving: true))
-    }
-
-    @Test("a document that is not loaded may not open Access")
-    func notLoadedIsRefused() {
-        #expect(!SecretEditorView.canOpenAccessPanel(loadState: .idle, isDirty: false, isSaving: false))
-        #expect(!SecretEditorView.canOpenAccessPanel(loadState: .loading, isDirty: false, isSaving: false))
-        #expect(!SecretEditorView.canOpenAccessPanel(loadState: .needsKey, isDirty: false, isSaving: false))
-        #expect(!SecretEditorView.canOpenAccessPanel(loadState: .failed("x"), isDirty: false, isSaving: false))
-    }
-
-    /// Both bad conditions at once must not cancel out.
-    @Test("dirty and saving together are still refused")
-    func dirtyAndSavingIsRefused() {
-        #expect(!SecretEditorView.canOpenAccessPanel(loadState: .loaded, isDirty: true, isSaving: true))
-    }
-}
-
 @Suite("RecipientAccessView.canApply — the Apply button's gate")
 struct CanApplyTests {
 
@@ -333,70 +300,6 @@ final class GatingHost {
     func finish() {
         NSApplication.shared.accessibilitySetValue(false, forAttribute: Self.enhanced)
         window.contentView = nil
-    }
-}
-
-@Suite("The Access button, through a real rendered editor")
-@MainActor
-struct AccessButtonWiringTests {
-
-    private static let plaintext = "db:\n    password: fixture-EXAMPLE\n"
-
-    private func loadedEditor(makeDirty: Bool) async throws -> SecretDocumentViewModel {
-        let key = try AgeKeyPairForTests.generate()
-        let encrypted = try SopsBridge.encrypt(Self.plaintext, format: .yaml, recipients: [key.public])
-        let store = SessionKeyStore()
-        try store.importKey(key.private)
-        let model = SecretDocumentViewModel(
-            fileURL: URL(fileURLWithPath: "/dev/null/access-gating.yaml"),
-            format: .yaml,
-            keyStore: store, readFile: { _ in encrypted })
-        await model.load()
-        if makeDirty {
-            let row = try #require(model.rows.first)
-            model.update(rowID: row.id, to: "typed-but-never-saved")
-        }
-        return model
-    }
-
-    /// The regression test for finding C1, through the real toolbar wiring
-    /// rather than the pure function alone.
-    @Test("the Access button explains itself as unavailable while the document has unsaved edits")
-    func theAccessButtonIsUnreachableWhileTheDocumentIsDirty() async throws {
-        let model = try await loadedEditor(makeDirty: true)
-        try #require(model.isDirty, "precondition: the edit made the document dirty")
-
-        let nodes = GatingAXProbe.tree(size: CGSize(width: 760, height: 400)) {
-            SecretEditorView(
-                viewModel: model, fileName: "production.secrets.yaml", unsavedChanges: UnsavedChangesTracker(),
-                recipientAccess: SecretEditorView.RecipientAccessContext(
-                    fileURL: URL(fileURLWithPath: "/dev/null/access-gating.yaml"), keyStore: SessionKeyStore(),
-                    format: .yaml))
-        }
-
-        let accessButton = nodes.first { $0.label == LocalizedKey.accessToolbarButton.text }
-        #expect(accessButton != nil, "the Access button did not render — this test would be vacuous")
-        #expect(
-            accessButton?.help == LocalizedKey.accessDisabledUnsavedChanges.text,
-            "a dirty document must show the disabled explanation, not the normal help text")
-    }
-
-    @Test("the Access button offers its normal help text over a clean document")
-    func theAccessButtonIsReachableWhenClean() async throws {
-        let model = try await loadedEditor(makeDirty: false)
-        try #require(!model.isDirty, "precondition: nothing was edited")
-
-        let nodes = GatingAXProbe.tree(size: CGSize(width: 760, height: 400)) {
-            SecretEditorView(
-                viewModel: model, fileName: "production.secrets.yaml", unsavedChanges: UnsavedChangesTracker(),
-                recipientAccess: SecretEditorView.RecipientAccessContext(
-                    fileURL: URL(fileURLWithPath: "/dev/null/access-gating.yaml"), keyStore: SessionKeyStore(),
-                    format: .yaml))
-        }
-
-        let accessButton = nodes.first { $0.label == LocalizedKey.accessToolbarButton.text }
-        #expect(accessButton != nil, "the Access button did not render — this test would be vacuous")
-        #expect(accessButton?.help == LocalizedKey.accessToolbarButton.text)
     }
 }
 

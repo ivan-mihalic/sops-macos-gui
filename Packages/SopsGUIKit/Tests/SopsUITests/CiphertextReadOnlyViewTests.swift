@@ -207,32 +207,6 @@ struct CiphertextReadOnlyViewTests {
 
     // MARK: - The Access button: disabled, with an honest reason
 
-    @Test("the Access button is disabled with an honest reason over a read-only ciphertext document")
-    func accessButtonExplainsItselfHonestly() async throws {
-        let (model, _) = try await readOnlyModel()
-
-        let nodes = AXProbe.tree(size: Self.size) {
-            SecretEditorView(
-                viewModel: model, fileName: "wrong-key.secrets.yaml", unsavedChanges: UnsavedChangesTracker(),
-                recipientAccess: SecretEditorView.RecipientAccessContext(
-                    fileURL: URL(fileURLWithPath: "/dev/null/wrong-key.secrets.yaml"), keyStore: SessionKeyStore(),
-                    format: .yaml))
-        }
-        let accessButton = nodes.first { $0.label == LocalizedKey.accessToolbarButton.text }
-        #expect(accessButton != nil, "the Access button did not render — this test would be vacuous")
-        #expect(
-            accessButton?.help == LocalizedKey.accessDisabledReadOnlyCiphertext.text,
-            "a read-only ciphertext document must not blame \"unsaved changes\" for the button being disabled")
-        // And the pure function this view calls, directly — mirroring
-        // `CanOpenAccessPanelTests`.
-        #expect(!SecretEditorView.canOpenAccessPanel(
-            loadState: model.loadState, isDirty: model.isDirty, isSaving: model.isSaving))
-        #expect(SecretEditorView.accessButtonHelpText(loadState: model.loadState, canOpenAccess: false)
-            == .accessDisabledReadOnlyCiphertext)
-    }
-
-    // MARK: - Accessibility: nothing decrypted ever reaches the tree
-
     /// This state never decrypts by construction (`CiphertextReadOnlyView`'s
     /// own doc comment), so this is defense in depth rather than a live
     /// hazard — the same discipline `AccessibilityTreeTests

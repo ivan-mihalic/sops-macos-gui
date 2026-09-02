@@ -88,7 +88,7 @@ struct UnsavedWorkGateCoverageTests {
     /// `WorkspaceSwitchGate.decision` — already on this list, as a delegator
     /// — rather than by a gate of its own. One fewer place to get it wrong,
     /// not one fewer guard.
-    private static let knownGateFunctionCount = 7
+    private static let knownGateFunctionCount = 6  // SOPS-42 removed SecretEditorView.canOpenAccessPanel
 
     /// See the type-level doc comment's "What counts as a gate of this
     /// shape" section for what belongs here and why: each entry's whole body

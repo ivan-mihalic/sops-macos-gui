@@ -42,109 +42,292 @@ import (
 // document is round-tripped through the same node encoder
 // `UpdateConfigRecipients` uses.
 func AddAliasRecipient(confPath string, ruleIndex int, anchor string) (string, error) {
+	doc, err := loadConfigDocument(confPath)
+	if err != nil {
+		return "", err
+	}
+	target := anchoredKey(doc.document, anchor)
+	if target == nil {
+		return "", fmt.Errorf("no key named %q under keys: in %s", anchor, doc.name)
+	}
+	if err := appendAlias(doc, ruleIndex, anchor, target); err != nil {
+		return "", err
+	}
+	return doc.emit()
+}
+
+// RemoveAliasRecipient returns what confPath would contain with the alias of
+// the `keys:` anchor named `anchor` removed from creation rule `ruleIndex` —
+// the inverse of AddAliasRecipient, under the same rules.
+//
+// Refused, with an error naming what was found:
+//   - `anchor` is not declared under `keys:`,
+//   - `ruleIndex` is outside the creation rule list,
+//   - the rule uses `key_groups` holding more than one group,
+//   - the rule does not alias that anchor. When it names the key the anchor
+//     stands for *literally*, the refusal says so: editing a literal is a
+//     different operation and is not done here,
+//   - removing it would leave the rule's `age:` empty. A rule with no age
+//     recipient is one nobody can decrypt files under; sops refuses to
+//     encrypt with it, and this app does not write a config it knows to be
+//     unusable.
+//
+// Never writes.
+func RemoveAliasRecipient(confPath string, ruleIndex int, anchor string) (string, error) {
+	doc, err := loadConfigDocument(confPath)
+	if err != nil {
+		return "", err
+	}
+	target := anchoredKey(doc.document, anchor)
+	if target == nil {
+		return "", fmt.Errorf("no key named %q under keys: in %s", anchor, doc.name)
+	}
+	holder, rule, err := ruleAgeHolder(doc, ruleIndex)
+	if err != nil {
+		return "", err
+	}
+	age := mappingValue(holder, "age")
+	sequence, err := ageSequence(age)
+	if err != nil {
+		return "", fmt.Errorf("creation rule %d in %s: %w", ruleIndex, doc.name, err)
+	}
+	targetValue := ""
+	if scalar := scalarOf(target); scalar != nil {
+		targetValue = scalar.Value
+	}
+	kept := make([]*yaml.Node, 0, len(sequence.Content))
+	removed := false
+	literal := false
+	for _, item := range sequence.Content {
+		switch {
+		case item.Kind == yaml.AliasNode && item.Value == anchor:
+			removed = true
+		case targetValue != "" && item.Kind == yaml.ScalarNode && item.Value == targetValue:
+			literal = true
+			kept = append(kept, item)
+		default:
+			kept = append(kept, item)
+		}
+	}
+	if !removed {
+		if literal {
+			return "", fmt.Errorf(
+				"creation rule %d in %s names the key %q stands for literally, so it is not removed here",
+				ruleIndex, doc.name, anchor)
+		}
+		return "", fmt.Errorf("creation rule %d in %s does not name %q", ruleIndex, doc.name, anchor)
+	}
+	if len(kept) == 0 {
+		return "", fmt.Errorf(
+			"removing %q would leave creation rule %d in %s with no age recipient",
+			anchor, ruleIndex, doc.name)
+	}
+	_ = rule
+	sequence.Content = kept
+	setMappingValue(holder, "age", sequence)
+	return doc.emit()
+}
+
+// AddNamedKey returns what confPath would contain with a new `keys:` entry
+// `- &name recipient` and, unless ruleIndex is -1, an alias of it appended to
+// creation rule `ruleIndex` exactly as AddAliasRecipient would.
+//
+// Refused, with an error naming what was found:
+//   - `name` is empty, carries whitespace, or a character YAML does not allow
+//     in an anchor,
+//   - `keys:` already declares an entry anchored `name`,
+//   - `recipient` is not a native age public key — a private identity, a
+//     plugin recipient and garbage are all refused, and the error never
+//     quotes the value,
+//   - `keys:` already declares that same public key under another name. The
+//     error names that anchor, not the key.
+//
+// A config with no `keys:` gets one, placed before `creation_rules` so the
+// anchors are defined before the aliases that use them. Never writes.
+func AddNamedKey(confPath string, name string, recipient string, ruleIndex int) (string, error) {
+	doc, err := loadConfigDocument(confPath)
+	if err != nil {
+		return "", err
+	}
+	if err := validateAnchorName(name); err != nil {
+		return "", err
+	}
+	if anchoredKey(doc.document, name) != nil {
+		return "", fmt.Errorf("keys: in %s already declares a key named %q", doc.name, name)
+	}
+	recipient = strings.TrimSpace(recipient)
+	if _, err := validAgeRecipients([]string{recipient}); err != nil {
+		return "", fmt.Errorf("the public key for %q is not usable: %w", name, err)
+	}
+
+	keys := mappingValue(doc.document, "keys")
+	if keys == nil {
+		keys = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		insertMappingValueFirst(doc.document, "keys", keys)
+	} else if keys.Kind != yaml.SequenceNode {
+		return "", fmt.Errorf("keys: in %s is not a list", doc.name)
+	}
+	for _, entry := range keys.Content {
+		if scalar := scalarOf(entry); scalar != nil && scalar.Value == recipient {
+			label := entry.Anchor
+			if label == "" {
+				label = "an unnamed entry"
+			} else {
+				label = fmt.Sprintf("%q", label)
+			}
+			return "", fmt.Errorf("keys: in %s already declares that key as %s", doc.name, label)
+		}
+	}
+	target := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: recipient, Anchor: name}
+	keys.Content = append(keys.Content, target)
+
+	if ruleIndex != -1 {
+		if err := appendAlias(doc, ruleIndex, name, target); err != nil {
+			return "", err
+		}
+	}
+	return doc.emit()
+}
+
+// configDocument is a parsed `.sops.yaml` plus what emit() needs to write it
+// back the way it was found: the file's own line endings and indent.
+type configDocument struct {
+	name     string
+	root     yaml.Node
+	document *yaml.Node
+	crlf     bool
+}
+
+// loadConfigDocument reads and parses confPath, refusing a file that mixes
+// line endings (there is no single right answer for what to emit) and one
+// with no top-level mapping.
+func loadConfigDocument(confPath string) (*configDocument, error) {
 	name := filepath.Base(confPath)
 	raw, err := os.ReadFile(confPath)
 	if err != nil {
-		return "", fmt.Errorf("read %s: %w", confPath, err)
+		return nil, fmt.Errorf("read %s: %w", confPath, err)
 	}
 	crlf := bytes.Count(raw, []byte("\r\n"))
 	bareLF := bytes.Count(raw, []byte("\n")) - crlf
 	if crlf > 0 && bareLF > 0 {
-		return "", fmt.Errorf("%s mixes line endings, so it is not rewritten here", name)
+		return nil, fmt.Errorf("%s mixes line endings, so it is not rewritten here", name)
 	}
+	doc := &configDocument{name: name, crlf: crlf > 0}
+	if err := yaml.Unmarshal(raw, &doc.root); err != nil {
+		return nil, fmt.Errorf("could not read %s: %w", name, err)
+	}
+	doc.document = documentMapping(&doc.root)
+	if doc.document == nil {
+		return nil, fmt.Errorf("%s declares no creation rules", name)
+	}
+	return doc, nil
+}
 
-	var root yaml.Node
-	if err := yaml.Unmarshal(raw, &root); err != nil {
-		return "", fmt.Errorf("could not read %s: %w", name, err)
+func (d *configDocument) emit() (string, error) {
+	emitted, err := encodeConfig(&d.root, inferIndent(d.document))
+	if err != nil {
+		return "", fmt.Errorf("could not write out %s: %w", d.name, err)
 	}
-	document := documentMapping(&root)
-	if document == nil {
-		return "", fmt.Errorf("%s declares no creation rules", name)
+	if d.crlf {
+		emitted = strings.ReplaceAll(emitted, "\n", "\r\n")
 	}
+	return emitted, nil
+}
 
-	target := anchoredKey(document, anchor)
-	if target == nil {
-		return "", fmt.Errorf("no key named %q under keys: in %s", anchor, name)
-	}
-
-	rulesNode := mappingValue(document, "creation_rules")
+// ruleAgeHolder finds creation rule ruleIndex and the mapping whose `age:`
+// the rule's recipients live in: the rule itself when it has an `age:`,
+// otherwise its single key group. Two groups is a refusal — with several
+// there is no single answer to "who gains access", and a rule spelling both
+// forms is one this app does not claim to understand well enough to edit.
+func ruleAgeHolder(doc *configDocument, ruleIndex int) (holder, rule *yaml.Node, err error) {
+	rulesNode := mappingValue(doc.document, "creation_rules")
 	if rulesNode == nil || rulesNode.Kind != yaml.SequenceNode {
-		return "", fmt.Errorf("%s declares no creation rules", name)
+		return nil, nil, fmt.Errorf("%s declares no creation rules", doc.name)
 	}
 	if ruleIndex < 0 || ruleIndex >= len(rulesNode.Content) {
-		return "", fmt.Errorf("%s has no creation rule %d", name, ruleIndex)
+		return nil, nil, fmt.Errorf("%s has no creation rule %d", doc.name, ruleIndex)
 	}
-	rule := rulesNode.Content[ruleIndex]
+	rule = rulesNode.Content[ruleIndex]
 	if rule.Kind != yaml.MappingNode {
-		return "", fmt.Errorf("creation rule %d in %s is not a rule", ruleIndex, name)
+		return nil, nil, fmt.Errorf("creation rule %d in %s is not a rule", ruleIndex, doc.name)
 	}
-
-	// Where the alias goes: the rule's own `age:` when it has one, otherwise
-	// the single key group's. Two groups is the refusal above.
-	holder := rule
+	holder = rule
 	if groups := mappingValue(rule, "key_groups"); groups != nil {
 		if groups.Kind != yaml.SequenceNode || len(groups.Content) == 0 {
-			return "", fmt.Errorf("creation rule %d in %s declares no usable key group", ruleIndex, name)
+			return nil, nil, fmt.Errorf("creation rule %d in %s declares no usable key group", ruleIndex, doc.name)
 		}
-		// Refused whether or not the rule also carries a top-level `age:`:
-		// with several groups there is no single answer to "who gains
-		// access", and a rule spelling both forms is one this app does not
-		// claim to understand well enough to add to.
 		if len(groups.Content) > 1 {
-			return "", fmt.Errorf(
+			return nil, nil, fmt.Errorf(
 				"creation rule %d in %s has more than one key group, so there is no single place to add a key",
-				ruleIndex, name)
+				ruleIndex, doc.name)
 		}
 		if mappingValue(rule, "age") == nil {
 			if groups.Content[0].Kind != yaml.MappingNode {
-				return "", fmt.Errorf("creation rule %d in %s declares no usable key group", ruleIndex, name)
+				return nil, nil, fmt.Errorf("creation rule %d in %s declares no usable key group", ruleIndex, doc.name)
 			}
 			holder = groups.Content[0]
 		}
 	}
+	return holder, rule, nil
+}
 
+// appendAlias is the in-memory core AddAliasRecipient and AddNamedKey share:
+// an alias of target (anchored `anchor`) goes to the end of rule ruleIndex's
+// age list, unless the rule already names that key in either spelling.
+//
+// Two spellings of "already there": `*studio` (an alias to the anchor) and
+// the literal public key that anchor stands for, written out in the rule —
+// what a config looks like when someone pasted the key into the rule by hand
+// and declared it under `keys:` afterwards. The rule already grants that
+// recipient access, so appending an alias adds an entry that grants nothing
+// and leaves the rule reading as if two people can decrypt. Compared through
+// scalarOf, which resolves an alias to the scalar behind it.
+func appendAlias(doc *configDocument, ruleIndex int, anchor string, target *yaml.Node) error {
+	holder, _, err := ruleAgeHolder(doc, ruleIndex)
+	if err != nil {
+		return err
+	}
 	age := mappingValue(holder, "age")
 	sequence, err := ageSequence(age)
 	if err != nil {
-		return "", fmt.Errorf("creation rule %d in %s: %w", ruleIndex, name, err)
+		return fmt.Errorf("creation rule %d in %s: %w", ruleIndex, doc.name, err)
 	}
-	// Two spellings of "already there", and only the first was checked
-	// before: `*studio` (an alias to the anchor) and the literal public key
-	// that anchor stands for, written out in the rule. The second is what a
-	// config looks like when someone pasted the key into the rule by hand and
-	// declared it under `keys:` afterwards — the rule already grants that
-	// recipient access, so appending an alias adds an entry that grants
-	// nothing and leaves the rule reading as if two people can decrypt.
-	// Compared through `scalarOf`, which resolves an alias to the scalar
-	// behind it, so both spellings are compared as the one thing they are.
 	targetValue := ""
 	if scalar := scalarOf(target); scalar != nil {
 		targetValue = scalar.Value
 	}
 	for _, item := range sequence.Content {
 		if item.Kind == yaml.AliasNode && item.Value == anchor {
-			return "", fmt.Errorf("creation rule %d in %s already names %q", ruleIndex, name, anchor)
+			return fmt.Errorf("creation rule %d in %s already names %q", ruleIndex, doc.name, anchor)
 		}
 		// The value is never quoted into the message: it is the recipient's
 		// public key, and a refusal names the anchor instead.
 		if targetValue != "" && item.Kind == yaml.ScalarNode && item.Value == targetValue {
-			return "", fmt.Errorf(
+			return fmt.Errorf(
 				"creation rule %d in %s already names the key %q stands for",
-				ruleIndex, name, anchor)
+				ruleIndex, doc.name, anchor)
 		}
 	}
 	sequence.Content = append(sequence.Content,
 		&yaml.Node{Kind: yaml.AliasNode, Value: anchor, Alias: target})
 	setMappingValue(holder, "age", sequence)
+	return nil
+}
 
-	emitted, err := encodeConfig(&root, inferIndent(document))
-	if err != nil {
-		return "", fmt.Errorf("could not write out %s: %w", name, err)
+// validateAnchorName applies the rule yaml.v3's *emitter* enforces — ASCII
+// letters, digits, `_` and `-` only — rather than the parser's looser one,
+// since an anchor the encoder refuses is a config that cannot be written.
+func validateAnchorName(name string) error {
+	if name == "" {
+		return fmt.Errorf("a named key needs a name")
 	}
-	if crlf > 0 {
-		emitted = strings.ReplaceAll(emitted, "\n", "\r\n")
+	for _, r := range name {
+		ok := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-'
+		if !ok {
+			return fmt.Errorf("%q is not usable as a YAML anchor name: letters, digits, _ and - only", name)
+		}
 	}
-	return emitted, nil
+	return nil
 }
 
 // anchoredKey finds the `keys:` entry carrying `anchor`. Deliberately scoped

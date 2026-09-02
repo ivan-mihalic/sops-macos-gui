@@ -442,13 +442,11 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
 
     // MARK: Task 3 (recipient management) — file access panel
 
-    case accessToolbarButton = "access.toolbar-button"
     // Shown as the Access button's help text (and used to gate it disabled)
     // while the open document has unsaved edits — see
     // `SecretEditorView.canOpenAccessPanel`'s doc comment for the data-loss
     // finding this closes: applying a recipient change reloads the open
     // document, which discards anything mid-edit and never saved.
-    case accessDisabledUnsavedChanges = "access.disabled-unsaved-changes"
     // SOPS-38 phase F3: shown instead of `accessDisabledUnsavedChanges` when
     // the open document is `LoadState.readOnlyCiphertext` — that document has
     // no unsaved edits to save first, and saying so would be false. Applying
@@ -456,7 +454,6 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // exactly what this state cannot do — see `SecretEditorView
     // .canOpenAccessPanel`, whose `loadState == .loaded` half already
     // disables the button here; this only makes the *reason* honest.
-    case accessDisabledReadOnlyCiphertext = "access.disabled-read-only-ciphertext"
     case accessTitle = "access.title"
     case accessLoadFailedTitle = "access.load-failed.title"
     case accessAddRecipientField = "access.add-recipient-field"
@@ -543,18 +540,36 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case accessKeysNone = "access.keys.none"
     case accessRulesTitle = "access.rules.title"
     case accessRulesNote = "access.rules.note"
-    case accessRulesGoverns = "access.rules.governs"
-    case accessRulesGovernsNone = "access.rules.governs-none"
     case accessRulesRecipients = "access.rules.recipients"
-    case accessRulesComment = "access.rules.comment"
     case accessRulesAllInSync = "access.rules.all-in-sync"
     case accessRulesNeedsRewrap = "access.rules.needs-rewrap"
     case accessRulesEncryptedForOf = "access.rules.encrypted-for-of"
     // A rule declared through YAML anchors or `key_groups` is one this app
     // reads and refuses to rewrite — see `ConfigRules.Rule.usesKeyGroups`.
     // Said before the user tries, next to a button that opens the file.
-    case accessRulesAnchoredReadOnly = "access.rules.anchored-read-only"
     case accessRulesRevealConfig = "access.rules.reveal-config"
+    // SOPS-42: an anchored rule is edited by adding and removing named
+    // keys; the header is the files it governs, the pattern a caption.
+    case accessRulesAnchoredNote = "access.rules.anchored-note"
+    case accessRulesCommentFromConfig = "access.rules.comment-from-config"
+    case accessRulesRegexHelp = "access.rules.regex-help"
+    case accessRulesMatchesNone = "access.rules.matches-none"
+    case accessKeysUsedInNoFiles = "access.keys.used-in.no-files"
+    case accessRemoveNamedTitle = "access.remove-named.title"
+    case accessRemoveNamedMessage = "access.remove-named.message"
+    case accessRemoveNamedConfirm = "access.remove-named.confirm"
+    case accessAddNamedModeExisting = "access.add-named.mode.existing"
+    case accessAddNamedModeNew = "access.add-named.mode.new"
+    case accessAddNamedFieldName = "access.add-named.field.name"
+    case accessAddNamedFieldKey = "access.add-named.field.key"
+    case accessAddNamedFieldLabel = "access.add-named.field.label"
+    case accessAddNamedCreate = "access.add-named.create"
+    case accessAddNamedRefusalInvalidAnchor = "access.add-named.refusal.invalid-anchor"
+    case accessAddNamedRefusalNameTaken = "access.add-named.refusal.name-taken"
+    case accessAddNamedRefusalInvalidKey = "access.add-named.refusal.invalid-key"
+    case accessAddNamedRefusalPrivateKey = "access.add-named.refusal.private-key"
+    case accessAddNamedRefusalKeyDeclared = "access.add-named.refusal.key-declared"
+    case accessUngovernedHint = "access.ungoverned.hint"
     // The one edit an anchored rule supports (SOPS-39 task 9): appending an
     // alias of a key the config already declares. Offered next to the
     // read-only sentence above, because "edit the file by hand" is not the

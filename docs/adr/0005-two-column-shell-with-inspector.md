@@ -102,6 +102,28 @@ Two consequences were not cosmetic:
   filed against no longer exists and `targetFile` is now explicit, so the report needs
   re-measuring on the page before it is either closed or re-filed.
 
+## Addendum — SOPS-42 (2026-09-02): the Access page is the only place recipients change
+
+Three of the bullets above are amended by SOPS-42, after Ivan's first live pass over 0.3.0:
+
+- **An anchored rule is editable by adding *and removing* a named key.** `Remove` was missing;
+  the Go side gained `RemoveAliasRecipient` (the inverse of `AddAliasRecipient`, refusing a
+  literal spelling and the rule's last age recipient) and `AddNamedKey`, which declares a new
+  `- &name age1…` under `keys:` (creating the list before `creation_rules` when absent) and
+  aliases it into the rule in one text. Both are behind the same fingerprint-guarded atomic
+  write as the alias addition; removal is behind a confirmation naming the key and the files.
+- **The editor toolbar's Access button is gone.** It was a second writer of a file's
+  recipients that knew nothing about the rule governing the file — the exact split this ADR
+  set out to end. `RecipientAccessView`/`RecipientAccessModel` are no longer reachable from
+  the app; they and their tests are left for a separate cleanup so this change stays
+  reviewable. A file no rule governs is listed on the page with a sentence saying a rule has
+  to be added by hand and a button that reveals `.sops.yaml`.
+- **Rules are headed by the files they govern, not by their `path_regex`.** The pattern is
+  what sops matches on, not what a person recognises a file by; it stays as a caption with a
+  tooltip. The "Used in" column of the named-keys table lists files the same way. A rule's
+  `.sops.yaml` comment is labelled as such, with a quote glyph, so the user's own prose
+  (in whatever language they wrote it) is never read as the app's.
+
 ## Related
 
 - PROPOSAL.md §4 (window layout) and §5.4 (project access)

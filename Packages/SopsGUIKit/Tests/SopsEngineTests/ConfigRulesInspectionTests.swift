@@ -121,4 +121,129 @@ struct ConfigRulesInspectionTests {
             #expect(!sentence.contains(studio), "a refusal must not quote a key")
         }
     }
+
+    // MARK: - SOPS-42: removing an alias, declaring a new named key
+
+    @Test("removing an alias from an anchored rule disappears from inspection")
+    func aliasRemovalIsVisible() throws {
+        let root = try ScratchDirectoryRegistry.shared.makeDirectory("config-alias-remove")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let studio = try AgeKeyPair.generate().public
+        let laptop = try AgeKeyPair.generate().public
+        let conf = root.appendingPathComponent(".sops.yaml")
+        try """
+            keys:
+              - &studio \(studio)
+              - &laptop \(laptop)
+            creation_rules:
+              # production
+              - path_regex: prod\\.env$
+                age:
+                  - *studio
+                  - *laptop
+
+            """.write(to: conf, atomically: true, encoding: .utf8)
+
+        let text = try SopsBridge.removeAliasRecipient(configPath: conf.path, ruleIndex: 0, anchor: "laptop")
+        #expect(try String(contentsOf: conf, encoding: .utf8).contains("*laptop"), "the bridge never writes")
+        try text.write(to: conf, atomically: true, encoding: .utf8)
+
+        let rules = try SopsBridge.inspectConfigRules(configPath: conf.path, candidateFilePaths: [])
+        #expect(rules.rules[0].recipients.map(\.name) == ["studio"])
+        #expect(rules.keys.map(\.name) == ["studio", "laptop"], "keys: keeps the declaration")
+        #expect(rules.rules[0].comment == "production")
+    }
+
+    @Test("the bridge refuses removing the last recipient and an absent alias, naming no key")
+    func aliasRemovalRefusals() throws {
+        let root = try ScratchDirectoryRegistry.shared.makeDirectory("config-alias-remove-refuse")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let studio = try AgeKeyPair.generate().public
+        let laptop = try AgeKeyPair.generate().public
+        let conf = root.appendingPathComponent(".sops.yaml")
+        try """
+            keys:
+              - &studio \(studio)
+              - &laptop \(laptop)
+            creation_rules:
+              - path_regex: prod\\.env$
+                age:
+                  - *studio
+
+            """.write(to: conf, atomically: true, encoding: .utf8)
+        for (anchor, expected) in [("studio", "no age recipient"), ("laptop", "does not name \"laptop\""), ("nobody", "no key named")] {
+            var sentence = ""
+            do {
+                _ = try SopsBridge.removeAliasRecipient(configPath: conf.path, ruleIndex: 0, anchor: anchor)
+                Issue.record("removing \(anchor) must be refused")
+                continue
+            } catch {
+                sentence = String(describing: error)
+            }
+            #expect(sentence.contains(expected), "refusal for \(anchor) read: \(sentence)")
+            #expect(!sentence.contains(studio) && !sentence.contains(laptop), "a refusal must not quote a key")
+        }
+    }
+
+    @Test("adding a named key declares it and aliases it in one text")
+    func namedKeyAdditionIsVisible() throws {
+        let root = try ScratchDirectoryRegistry.shared.makeDirectory("config-named-key")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let studio = try AgeKeyPair.generate().public
+        let deploy = try AgeKeyPair.generate().public
+        let conf = root.appendingPathComponent(".sops.yaml")
+        try """
+            keys:
+              - &studio \(studio)
+            creation_rules:
+              - path_regex: prod\\.env$
+                age:
+                  - *studio
+
+            """.write(to: conf, atomically: true, encoding: .utf8)
+
+        let text = try SopsBridge.addNamedKey(configPath: conf.path, name: "deploy", recipient: deploy, ruleIndex: 0)
+        #expect(!(try String(contentsOf: conf, encoding: .utf8)).contains("deploy"), "the bridge never writes")
+        try text.write(to: conf, atomically: true, encoding: .utf8)
+
+        let rules = try SopsBridge.inspectConfigRules(configPath: conf.path, candidateFilePaths: [])
+        #expect(rules.keys.map(\.name) == ["studio", "deploy"])
+        #expect(rules.keys.map(\.recipient) == [studio, deploy])
+        #expect(rules.rules[0].recipients.map(\.name) == ["studio", "deploy"])
+    }
+
+    @Test("the bridge refuses a taken anchor, a private identity and a key keys: already declares")
+    func namedKeyRefusals() throws {
+        let root = try ScratchDirectoryRegistry.shared.makeDirectory("config-named-key-refuse")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let studio = try AgeKeyPair.generate()
+        let deploy = try AgeKeyPair.generate()
+        let conf = root.appendingPathComponent(".sops.yaml")
+        try """
+            keys:
+              - &studio \(studio.public)
+            creation_rules:
+              - path_regex: prod\\.env$
+                age: [*studio]
+
+            """.write(to: conf, atomically: true, encoding: .utf8)
+        for (name, recipient, expected) in [
+            ("studio", deploy.public, "already declares a key named \"studio\""),
+            ("deploy", deploy.private, "not usable"),
+            ("deploy", studio.public, "already declares that key as \"studio\""),
+            ("two words", deploy.public, "anchor"),
+        ] {
+            var sentence = ""
+            do {
+                _ = try SopsBridge.addNamedKey(configPath: conf.path, name: name, recipient: recipient, ruleIndex: 0)
+                Issue.record("\(name) must be refused")
+                continue
+            } catch {
+                sentence = String(describing: error)
+            }
+            #expect(sentence.contains(expected), "refusal for \(name) read: \(sentence)")
+            #expect(!sentence.contains(studio.public) && !sentence.contains(deploy.public)
+                    && !sentence.contains(deploy.private), "a refusal must not quote a key")
+        }
+    }
 }
