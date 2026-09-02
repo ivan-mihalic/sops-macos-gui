@@ -147,9 +147,30 @@ public struct AccessInventory: Equatable, Sendable {
                 configError: nil)
         }
 
+        // Both the config path and every candidate go through
+        // `ProjectRecipientApplier.ruleMatchingPath` before crossing into the
+        // bridge — the same seam `plan()`'s own `proposeConfig` call already
+        // uses (`ProjectRecipientApplier.swift`, `Self.ruleMatchingPath`).
+        // sops's Go side matches a creation rule by stripping the config's
+        // *own directory* off a file's path as a literal prefix
+        // (`parseCreationRuleForFile`), which only works if both paths are
+        // spelled the same way. `FileManager.enumerator` (what populated
+        // `files` here) hands back entries with symlinks in the directory
+        // prefix already resolved (`/var/…` → `/private/var/…` — true of
+        // every scratch directory on this machine), while `projectRoot` and
+        // therefore `configURL` keep whatever form they were constructed
+        // with. Left unresolved, the prefix strip is a no-op, every rule is
+        // matched against an absolute path, and an anchored `path_regex`
+        // like `^secrets/` matches nothing — every file comes back
+        // `.ungoverned` regardless of what the config actually says. Reading
+        // `rules.governedBy` back keyed by the identical resolved string
+        // keeps the lookup consistent with what was actually sent.
+        let resolvedConfigPath = ProjectRecipientApplier.ruleMatchingPath(configURL)
+        let resolvedPath = { (u: URL) in ProjectRecipientApplier.ruleMatchingPath(u) }
+
         let rules: ConfigRules
         do {
-            rules = try inspect(configURL.path, sorted.map(\.url.path))
+            rules = try inspect(resolvedConfigPath, sorted.map { resolvedPath($0.url) })
         } catch {
             return AccessInventory(
                 keys: [], rules: [],
@@ -158,7 +179,8 @@ public struct AccessInventory: Equatable, Sendable {
         }
 
         let fileAccesses = sorted.map {
-            fileAccess($0, ruleIndex: rules.governedBy[$0.url.path], rules: rules.rules, rel: rel)
+            fileAccess(
+                $0, ruleIndex: rules.governedBy[resolvedPath($0.url)], rules: rules.rules, rel: rel)
         }
         return AccessInventory(
             keys: rules.keys, rules: rules.rules, files: fileAccesses, configError: nil)
@@ -167,6 +189,13 @@ public struct AccessInventory: Equatable, Sendable {
     private static func fileAccess(
         _ file: EncryptedFile, ruleIndex: Int?, rules: [ConfigRules.Rule], rel: (URL) -> String
     ) -> FileAccess {
+        // `has == wants` below is a sorted-*list* comparison, deliberately
+        // not a `Set` one: a rule or a file listing the same age recipient
+        // twice is itself a shape worth flagging as drift rather than
+        // silently collapsing away, and neither `ConfigRules` (Task 3) nor
+        // `SniffedFile.recipients` promises deduplication on this app's
+        // behalf. Sorting alone is enough to make the comparison
+        // order-insensitive without hiding a duplicate.
         let has = file.recipients.sorted()
         let status: FileStatus
         // `ruleIndex` bounds-checked against `rules.count` rather than

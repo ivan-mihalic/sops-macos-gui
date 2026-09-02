@@ -1187,4 +1187,52 @@ struct ProjectRecipientApplierAliasTests {
         let kind = try FileManager.default.attributesOfItem(atPath: alias.path)[.type] as? FileAttributeType
         #expect(kind == .typeSymbolicLink)
     }
+
+    // SOPS-39 task 4, review round 1: `plan.inventory` is built from a real
+    // scan (`applierScratchDirectory()`, always under `$TMPDIR`, which is
+    // itself a symlink — `/var` → `/private/var` on this machine), so this
+    // exercises the resolved-path fix directly: an anchored `path_regex`
+    // like `^secrets/prod\.yaml$` only matches at all if `AccessInventory
+    // .build` sends the bridge the same resolved form `ProjectScanner`'s
+    // enumerator already returned, matching what `plan()`'s own
+    // `proposeConfig` call has always done. Before that fix this failed with
+    // every file `.ungoverned` — an anchored regex against an unresolved,
+    // symlinked-prefix path matches nothing.
+    @Test("Plan.inventory reports rules and per-file drift from a real, symlink-prefixed scan")
+    func inventoryReflectsRealScanThroughASymlinkedRoot() async throws {
+        let a = try AgeKeyPair.generate()
+        let b = try AgeKeyPair.generate()
+        let root = try applierScratchDirectory("inventory-plan")
+
+        try """
+            creation_rules:
+              - path_regex: ^secrets/prod\\.yaml$
+                age: \(a.public)
+              - path_regex: ^secrets/
+                age: \(b.public)
+
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+
+        let secrets = root.appendingPathComponent("secrets", isDirectory: true)
+        try FileManager.default.createDirectory(at: secrets, withIntermediateDirectories: true)
+        // Governed by rule 0 (`^secrets/prod\.yaml$`) and encrypted for
+        // exactly what that rule declares — in sync.
+        try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [a.public])
+            .write(to: secrets.appendingPathComponent("prod.yaml"), atomically: true, encoding: .utf8)
+        // Governed by rule 1 (`^secrets/`, the only other rule that matches
+        // a path under `secrets/` that isn't `prod.yaml`) but still
+        // encrypted for `a`, not the `b` that rule declares — drift.
+        try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [a.public])
+            .write(to: secrets.appendingPathComponent("local.yaml"), atomically: true, encoding: .utf8)
+
+        let plan = await ProjectRecipientApplier().plan(projectRoot: root, recipients: [a.public])
+
+        #expect(plan.inventory.rules.count == 2)
+        #expect(plan.inventory.files(governedBy: 0).map(\.relativePath) == ["secrets/prod.yaml"])
+        #expect(plan.inventory.files(governedBy: 1).map(\.relativePath) == ["secrets/local.yaml"])
+        let prod = try #require(plan.inventory.files.first { $0.relativePath == "secrets/prod.yaml" })
+        #expect(prod.status == .inSync)
+        let local = try #require(plan.inventory.files.first { $0.relativePath == "secrets/local.yaml" })
+        #expect(local.status == .ruleDiffers(fileHas: [a.public], ruleWants: [b.public]))
+    }
 }
