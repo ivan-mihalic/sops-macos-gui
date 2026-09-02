@@ -197,10 +197,9 @@ public struct AppShell: View {
 
         case .access(let projectID):
             if let project = project(for: projectID) {
-                // Task 8 replaces this with a full Access *page*. Until then
-                // the existing panel renders inline rather than as a sheet:
-                // the pane it sits in is the destination now, and a sheet
-                // over a destination the user explicitly navigated to is a
+                // SOPS-39 task 8: the Access *page*, not a sheet — the pane
+                // it sits in is the destination the sidebar navigated to, and
+                // a sheet over a destination the user explicitly chose is a
                 // modal with nothing behind it.
                 //
                 // The model comes from `ProjectTreeStore`, never from here: a
@@ -208,13 +207,14 @@ public struct AppShell: View {
                 // unloaded one on any re-render, while the view's identity —
                 // and therefore its `.task`, which is what loads it — stayed
                 // put. See `ProjectTreeStore.accessModel(for:targetFile:)`.
-                ProjectAccessView(
+                ProjectAccessPage(
                     model: trees.accessModel(
                         for: project, targetFile: lastSelectedFile[projectID]),
-                    onClose: { requestSwitch(to: .projectHome(projectID)) },
+                    selectedFile: lastSelectedFile[projectID],
                     onFilesApplied: {
-                        // A project apply may have re-wrapped files whose
-                        // recipients the tree shows status dots for.
+                        // A rewrap re-encrypts files whose status dots the
+                        // tree draws, so the tree is re-scanned rather than
+                        // left showing the drift that was just closed.
                         Task { await trees.refresh(project) }
                     })
             } else {

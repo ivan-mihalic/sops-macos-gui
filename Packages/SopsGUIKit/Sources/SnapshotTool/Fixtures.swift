@@ -882,6 +882,81 @@ enum Fixtures {
         return (projects, trees)
     }
 
+    /// A loaded `ProjectAccessModel` over a momentak-shaped project: three
+    /// age keys named by YAML anchor under a top-level `keys:` list, two
+    /// creation rules referencing them by alias, and two encrypted files —
+    /// one of which has **drifted** from the rule that governs it.
+    ///
+    /// The drift is the point. A snapshot in which every rule is in sync
+    /// shows a page whose per-rule pill and rewrap banner never appear,
+    /// which is exactly the half of the layout worth looking at, so
+    /// `prod.secrets.yaml` is wrapped for two of the three keys its rule
+    /// declares.
+    ///
+    /// Sops-*like* files rather than genuinely encrypted ones — the same
+    /// compromise every other fixture here makes. The page reads recipients
+    /// out of a file's sops metadata and compares them against what sops's
+    /// own config parser resolves the rule to; neither step decrypts
+    /// anything, so real ciphertext would buy the image nothing and cost the
+    /// run a keygen per snapshot.
+    ///
+    /// Pre-`load()`ed for the reason every model here is: this tool's
+    /// offscreen render never drives a `.task`.
+    static func projectAccessPageModel() async throws -> ProjectAccessModel {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("snapshot-access-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        try """
+            keys:
+              - &studio \(studioRecipient)
+              - &laptop \(laptopRecipient)
+              - &vps \(vpsRecipient)
+
+            creation_rules:
+              # Production secrets: everyone, including the deploy host.
+              - path_regex: secrets/prod\\.secrets\\.yaml$
+                key_groups:
+                  - age:
+                      - *studio
+                      - *laptop
+                      - *vps
+              - path_regex: \\.secrets\\.yaml$
+                age:
+                  - *studio
+                  - *laptop
+
+            """.write(to: root.appendingPathComponent(".sops.yaml"),
+                      atomically: true, encoding: .utf8)
+
+        try writeSopsLikeYAML(
+            root, at: "secrets/prod.secrets.yaml",
+            recipients: [studioRecipient, laptopRecipient])
+        try writeSopsLikeYAML(
+            root, at: "secrets/local.secrets.yaml",
+            recipients: [studioRecipient, laptopRecipient])
+
+        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
+        await model.load()
+        return model
+    }
+
+    /// The three named keys `projectAccessPageModel` declares.
+    ///
+    /// Real age **public** keys, unlike the shape-only strings the other
+    /// fixtures here use — and that is load-bearing, not decoration: sops's
+    /// own config parser resolves a creation rule's recipients, and a string
+    /// that is not valid bech32 makes the whole inspection fail, so the page
+    /// renders with no keys and no rules at all. Found the hard way, in the
+    /// first render of this snapshot. Their private halves were discarded at
+    /// generation and exist nowhere; a public key is not a secret.
+    private static let studioRecipient =
+        "age1g7r4eqmn6mt4p7c96q36j4rsxym4xkcv995cuacn0xe6k8tl4vtsw9wewc"
+    private static let laptopRecipient =
+        "age16qzxyuspp86muua8dlk8k98rcckgmw5paae6nfyf3kwxhpejp5ssxgvqfk"
+    private static let vpsRecipient =
+        "age1a550syju40rqlsnylryng0wgrpm2qtjh57p3xwrt3f3hr8fq6shqn25j3j"
+
     /// The recipient `.sops.yaml` declares in `projectTreeFixture`, and the
     /// one a drifted file is wrapped for instead. Both are shape-valid and
     /// inert — no key material, only the public half of nothing.
@@ -889,6 +964,30 @@ enum Fixtures {
         "age1exampleexampleexampleexampleexampleexampleexampleexamplex"
     private static let strangerRecipient =
         "age1strangerstrangerstrangerstrangerstrangerstrangerstrangerx"
+
+    /// The multi-recipient form. Same file shape, an `age:` list with more
+    /// than one entry — what a project whose rule names three keys actually
+    /// has on disk, and what the Access page's "encrypted for 2 of 3" pill is
+    /// computed from.
+    private static func writeSopsLikeYAML(
+        _ root: URL, at relativePath: String, recipients: [String]
+    ) throws {
+        let url = root.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let ageBlock = recipients
+            .map { "        - recipient: \($0)" }
+            .joined(separator: "\n")
+        let text = """
+            key: ENC[AES256_GCM,data:Zm9v,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
+            sops:
+                age:
+            AGE_BLOCK
+                mac: ENC[AES256_GCM,data:AAAA,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
+                version: 3.13.3
+            """.replacingOccurrences(of: "AGE_BLOCK", with: ageBlock)
+        try text.write(to: url, atomically: true, encoding: .utf8)
+    }
 
     private static func writeSopsLikeYAML(
         _ root: URL, at relativePath: String,

@@ -25,6 +25,7 @@ enum Catalog {
         snapshots += try await projectTreeSidebar()
         snapshots += try await secretEditor()
         snapshots += try await projectHome()
+        snapshots += try await projectAccessPage()
         snapshots += try projectStartHere()
         snapshots += dotEnvPreview()
         snapshots += try await newSecretFileSheet()
@@ -319,6 +320,25 @@ enum Catalog {
                 ProjectTreeSidebar(
                     projects: projects, trees: trees, selection: .constant(nil),
                     onNewFile: { _ in }, onAddProjectAtPath: { _ in })
+            },
+        ]
+    }
+
+    // MARK: - The Access page
+
+    /// SOPS-39 task 8. Rendered against a project with one drifted file, so
+    /// the rewrap banner and the orange per-rule pill are both in frame — an
+    /// all-in-sync project would show a page missing the half worth
+    /// reviewing. 1000×900 is roughly the pane the shell gives it on a
+    /// default-sized window.
+    private static func projectAccessPage() async throws -> [Snapshot] {
+        let model = try await Fixtures.projectAccessPageModel()
+        return [
+            Snapshot("project-access-page", size: CGSize(width: 1000, height: 900)) {
+                ProjectAccessPage(
+                    model: model,
+                    selectedFile: model.inventory?.files.first?.url,
+                    onFilesApplied: {})
             },
         ]
     }
