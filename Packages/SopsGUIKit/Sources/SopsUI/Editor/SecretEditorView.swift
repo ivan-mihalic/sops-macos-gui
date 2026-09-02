@@ -113,6 +113,11 @@ public struct SecretEditorView: View {
     /// The registry's label for an age recipient, `nil` when it has none.
     private let recipientNameFor: (String) -> String?
 
+    /// The `path_regex` of the `.sops.yaml` rule governing this file,
+    /// resolved by the caller from the project's `AccessInventory` — `nil`
+    /// when no rule governs it, or before the first scan.
+    private let fileRuleLabel: String?
+
     @State private var revealed = RevealedRows()
     @State private var selection = RowSelection()
     @State private var saveErrorMessage: String?
@@ -249,6 +254,7 @@ public struct SecretEditorView: View {
         recipientAccess: RecipientAccessContext? = nil,
         fileAccess: AccessInventory.FileAccess? = nil,
         recipientNameFor: @escaping (String) -> String? = { _ in nil },
+        fileRuleLabel: String? = nil,
         inspectorInitiallyShown: Bool = true
     ) {
         self.viewModel = viewModel
@@ -258,6 +264,7 @@ public struct SecretEditorView: View {
         self.recipientAccess = recipientAccess
         self.fileAccess = fileAccess
         self.recipientNameFor = recipientNameFor
+        self.fileRuleLabel = fileRuleLabel
         self._showInspector = State(initialValue: inspectorInitiallyShown)
         // Both recorded against the generation the document is in *now*, so
         // they are subject to exactly the same invalidation as a selection the
@@ -282,7 +289,18 @@ public struct SecretEditorView: View {
                 selectedRowID: selectedRowID,
                 fileName: fileName,
                 access: fileAccess,
-                nameFor: recipientNameFor)
+                nameFor: recipientNameFor,
+                ruleLabel: fileRuleLabel,
+                // The same `RevealedRows` the table reads, not a second copy:
+                // the eye in a row and the one in the inspector are one
+                // switch, and one timeout clears both.
+                revealed: revealed,
+                generation: rowGeneration,
+                onToggleReveal: { id in toggleReveal(id) },
+                // Typing and Apply are not changes to `revealed`, so the
+                // countdown's usual owner never hears about them. This is the
+                // one path that has to say so explicitly.
+                onActivity: { restartAutoHide() })
                 .inspectorColumnWidth(min: 260, ideal: 300, max: 420)
         }
         // Opening the inspector is touching the document the same way
@@ -643,12 +661,14 @@ public struct SecretEditorView: View {
             selection: selectionBinding,
             revealed: revealed,
             generation: rowGeneration,
-            onToggleReveal: { id in
-                toggleReveal(id)
-                // A reveal from the table is a reveal like any other: it
-                // restarts the same countdown the row list's eye used to.
-                restartAutoHide()
-            })
+            // No `restartAutoHide()` here, deliberately. `.onChange(of:
+            // revealed, initial: true)` in `body` is the **single owner** of
+            // the countdown for anything that changes what is revealed, and
+            // this toggle changes exactly that. A second call at this site
+            // restarted the same timer twice and, worse, implied the owner
+            // does not cover reveals — which is how a third way of revealing
+            // a row would come to arrive without a deadline attached.
+            onToggleReveal: { id in toggleReveal(id) })
         // A save snapshots the pending changes and then spends a few hundred
         // milliseconds encrypting. An edit made in that window has no
         // baseline it can be expressed against afterwards, so the model
@@ -725,18 +745,21 @@ public struct SecretEditorView: View {
 /// A plain `struct`, so the whole rule is unit-testable without a window —
 /// `RevealedRowsTests` drives it directly, and `RevealedRowTests` drives the
 /// same rule through a real laid-out editor.
-struct RevealedRows: Equatable {
+/// Public for the same narrow reason `SecretRowInspector` is: that view's
+/// `public init` takes one, and the headless snapshot catalog lives in its
+/// own target. Nothing outside this module constructs one.
+public struct RevealedRows: Equatable {
 
     /// `nil` means "nothing is revealed, under any generation".
     private var generation: Int?
     private var ids: Set<String> = []
 
-    init() {}
+    public init() {}
 
     /// The starting state for `SecretEditorView`'s `initiallyRevealedRowIDs`
     /// seam. Empty stays generation-less so an editor constructed with nothing
     /// revealed is `== RevealedRows()` whatever generation it was built in.
-    init(revealing ids: Set<String>, in generation: Int) {
+    public init(revealing ids: Set<String>, in generation: Int) {
         guard !ids.isEmpty else { return }
         self.generation = generation
         self.ids = ids

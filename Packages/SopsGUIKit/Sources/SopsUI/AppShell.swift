@@ -185,7 +185,12 @@ public struct AppShell: View {
                     // format or rule it was not told. See
                     // `ProjectTreeStore.inventory(for:)`.
                     fileAccess: inventory?.files.first { $0.url == url },
-                    recipientNameFor: { inventory?.name(for: $0) })
+                    recipientNameFor: { inventory?.name(for: $0) },
+                    // Resolved here, where the rules actually live:
+                    // `FileAccess` carries only an index into
+                    // `AccessInventory.rules`, and the inspector has no
+                    // inventory to look it up in.
+                    fileRuleLabel: AppShell.ruleLabel(for: url, in: inventory))
             } else {
                 centeredPlaceholder(.editorNoFileSelected)
             }
@@ -385,6 +390,18 @@ public struct AppShell: View {
     /// than constructing `NewSecretFileModel` directly, so there is exactly
     /// one place that decides whether a project is selected — and it is a
     /// pure function a test can drive without rendering a window.
+    /// The `path_regex` of the rule governing `url`, or `nil` when nothing
+    /// governs it, the file is not in the inventory, or there is no
+    /// inventory yet. A pure function, so the index-into-`rules` lookup — and
+    /// its out-of-range guard — is testable without rendering a window.
+    static func ruleLabel(for url: URL, in inventory: AccessInventory?) -> String? {
+        guard let inventory,
+              let file = inventory.files.first(where: { $0.url == url }),
+              let index = file.ruleIndex,
+              inventory.rules.indices.contains(index) else { return nil }
+        return inventory.rules[index].pathRegex
+    }
+
     static func makeNewFileModel(projectRoot: URL?, keyStore: SessionKeyStore) -> NewSecretFileModel? {
         guard let projectRoot else { return nil }
         return NewSecretFileModel(projectRoot: projectRoot, keyStore: keyStore)
@@ -411,6 +428,7 @@ private struct FileDetailView: View {
     /// inspector. `nil` before the first scan completes.
     let fileAccess: AccessInventory.FileAccess?
     let recipientNameFor: (String) -> String?
+    let fileRuleLabel: String?
 
     @State private var viewModel: SecretDocumentViewModel?
 
@@ -426,7 +444,8 @@ private struct FileDetailView: View {
                         projectURL: projectRoot,
                         format: viewModel.format),
                     fileAccess: fileAccess,
-                    recipientNameFor: recipientNameFor)
+                    recipientNameFor: recipientNameFor,
+                    fileRuleLabel: fileRuleLabel)
             } else {
                 Text(.editorNoFileSelected)
                     .foregroundStyle(.secondary)

@@ -4191,6 +4191,50 @@
           }
         }
       }
+    },
+    "inspector.format.yaml": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "YAML"
+          }
+        }
+      }
+    },
+    "inspector.format.dotenv": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "dotenv"
+          }
+        }
+      }
+    },
+    "inspector.format.json": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "JSON"
+          }
+        }
+      }
+    },
+    "inspector.format.ini": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "INI"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

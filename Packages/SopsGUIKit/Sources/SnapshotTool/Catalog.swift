@@ -381,7 +381,14 @@ enum Catalog {
             Snapshot("secretRowInspector", size: CGSize(width: 320, height: 640)) {
                 SecretRowInspector(
                     viewModel: table, selectedRowID: tableSelection,
-                    fileName: "production/.env", access: nil, nameFor: { _ in nil })
+                    fileName: "production/.env", access: nil, nameFor: { _ in nil },
+                    ruleLabel: nil,
+                    // Revealed, because the masked state is the one a
+                    // screenshot cannot tell apart from an empty pane — and
+                    // the value editor is the thing worth reviewing here.
+                    revealed: RevealedRows(revealing: [tableSelection], in: table.rowIdentityGeneration),
+                    generation: table.rowIdentityGeneration,
+                    onToggleReveal: { _ in }, onActivity: {})
             },
             editor("editor-loading", unloaded, fileName: "loading.yaml"),
             editor("editor-loaded", loaded, fileName: "production.secrets.yaml"),

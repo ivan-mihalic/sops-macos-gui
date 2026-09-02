@@ -352,6 +352,16 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case inspectorToggle = "inspector.toggle"
     case inspectorRule = "inspector.rule"
     case inspectorFormat = "inspector.format"
+    // A format's *name*, for the inspector's file section. Deliberately not
+    // `newFileTargetFormat*`: those are whole sentences about a file that is
+    // about to be created ("Will be created as a YAML file."), which is not
+    // what a `LabeledContent` value slot can say. `SopsFileFormat.rawValue`
+    // was what stood here first — an un-localized identifier leaking into
+    // the UI.
+    case inspectorFormatYAML = "inspector.format.yaml"
+    case inspectorFormatDotEnv = "inspector.format.dotenv"
+    case inspectorFormatJSON = "inspector.format.json"
+    case inspectorFormatINI = "inspector.format.ini"
 
     // MARK: SOPS-38 phase F3 — the real read-only ciphertext view
 
