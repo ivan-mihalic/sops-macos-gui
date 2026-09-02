@@ -105,6 +105,19 @@ public struct SecretEditorView: View {
     /// site needing an update for a feature it does not exercise.
     private let recipientAccess: RecipientAccessContext?
 
+    /// What the project scan knows about this file, for the inspector's
+    /// no-selection state. `nil` — the default — simply shows less; nothing
+    /// here guesses a format or a rule it was not told.
+    private let fileAccess: AccessInventory.FileAccess?
+
+    /// The registry's label for an age recipient, `nil` when it has none.
+    private let recipientNameFor: (String) -> String?
+
+    /// The `path_regex` of the `.sops.yaml` rule governing this file,
+    /// resolved by the caller from the project's `AccessInventory` — `nil`
+    /// when no rule governs it, or before the first scan.
+    private let fileRuleLabel: String?
+
     @State private var revealed = RevealedRows()
     @State private var selection = RowSelection()
     @State private var saveErrorMessage: String?
@@ -113,6 +126,11 @@ public struct SecretEditorView: View {
     /// The pending auto-hide. Held so each reveal or edit can restart it
     /// rather than stacking a second timer on top of the first.
     @State private var autoHide: Task<Void, Never>?
+
+    /// Whether the trailing inspector is showing. Open by default: it is
+    /// where a value is edited now, and an editor that opens with no way to
+    /// change anything visible would read as read-only.
+    @State private var showInspector: Bool
 
     /// The `+` sheet's subject, captured when the button is pressed so the
     /// destination cannot drift under the sheet if the selection changes.
@@ -233,13 +251,21 @@ public struct SecretEditorView: View {
         initiallySelectedRowID: String? = nil,
         initiallyRevealedRowIDs: Set<String> = [],
         revealTimeout: Duration = SecretEditorView.revealTimeout,
-        recipientAccess: RecipientAccessContext? = nil
+        recipientAccess: RecipientAccessContext? = nil,
+        fileAccess: AccessInventory.FileAccess? = nil,
+        recipientNameFor: @escaping (String) -> String? = { _ in nil },
+        fileRuleLabel: String? = nil,
+        inspectorInitiallyShown: Bool = true
     ) {
         self.viewModel = viewModel
         self.fileName = fileName
         self.unsavedChanges = unsavedChanges
         self.revealTimeout = revealTimeout
         self.recipientAccess = recipientAccess
+        self.fileAccess = fileAccess
+        self.recipientNameFor = recipientNameFor
+        self.fileRuleLabel = fileRuleLabel
+        self._showInspector = State(initialValue: inspectorInitiallyShown)
         // Both recorded against the generation the document is in *now*, so
         // they are subject to exactly the same invalidation as a selection the
         // user made or a row they revealed by clicking. A seam that started
@@ -256,6 +282,33 @@ public struct SecretEditorView: View {
             toolbar
             Divider()
             body(for: viewModel.loadState)
+        }
+        .inspector(isPresented: $showInspector) {
+            SecretRowInspector(
+                viewModel: viewModel,
+                selectedRowID: selectedRowID,
+                fileName: fileName,
+                access: fileAccess,
+                nameFor: recipientNameFor,
+                ruleLabel: fileRuleLabel,
+                // The same `RevealedRows` the table reads, not a second copy:
+                // the eye in a row and the one in the inspector are one
+                // switch, and one timeout clears both.
+                revealed: revealed,
+                generation: rowGeneration,
+                onToggleReveal: { id in toggleReveal(id) },
+                // Typing and Apply are not changes to `revealed`, so the
+                // countdown's usual owner never hears about them. This is the
+                // one path that has to say so explicitly.
+                onActivity: { restartAutoHide() })
+                .inspectorColumnWidth(min: 260, ideal: 300, max: 420)
+        }
+        // Opening the inspector is touching the document the same way
+        // revealing a row is, so it restarts the auto-hide countdown rather
+        // than letting a reveal age out while the user works in the pane
+        // next to it.
+        .onChange(of: showInspector) { _, isShown in
+            if isShown { restartAutoHide() }
         }
         .alert(
             LocalizedKey.editorSaveErrorTitle.text,
@@ -468,6 +521,14 @@ public struct SecretEditorView: View {
             .accessibilityLabel(LocalizedKey.editorAddRow.text)
 
             Button {
+                showInspector.toggle()
+            } label: {
+                Label(LocalizedKey.inspectorToggle.text, systemImage: "sidebar.trailing")
+            }
+            .help(LocalizedKey.inspectorToggle.text)
+            .accessibilityLabel(LocalizedKey.inspectorToggle.text)
+
+            Button {
                 Task { await save() }
             } label: {
                 if isSaving {
@@ -595,27 +656,25 @@ public struct SecretEditorView: View {
     // MARK: - Rows
 
     private var rowList: some View {
-        List(viewModel.rows, selection: selectionBinding) { row in
-            SecretRowView(
-                row: row,
-                isRevealed: revealed.contains(row.id, in: rowGeneration),
-                onToggleReveal: { toggleReveal(row.id) },
-                onChange: { newValue in
-                    viewModel.update(rowID: row.id, to: newValue)
-                    // Typing counts as touching the reveal: the masked field
-                    // is disabled, so auto-hiding a row mid-edit would take
-                    // the keyboard out from under the user.
-                    restartAutoHide()
-                })
-        }
+        SecretTableView(
+            rows: viewModel.rows,
+            selection: selectionBinding,
+            revealed: revealed,
+            generation: rowGeneration,
+            // No `restartAutoHide()` here, deliberately. `.onChange(of:
+            // revealed, initial: true)` in `body` is the **single owner** of
+            // the countdown for anything that changes what is revealed, and
+            // this toggle changes exactly that. A second call at this site
+            // restarted the same timer twice and, worse, implied the owner
+            // does not cover reveals — which is how a third way of revealing
+            // a row would come to arrive without a deadline attached.
+            onToggleReveal: { id in toggleReveal(id) })
         // A save snapshots the pending changes and then spends a few hundred
         // milliseconds encrypting. An edit made in that window has no
         // baseline it can be expressed against afterwards, so the model
-        // refuses it — and a field that silently ignores what is typed into
+        // refuses it — and a control that silently ignores what is asked of
         // it is worse than one that is plainly unavailable.
         .disabled(isSaving)
-        .listStyle(.inset)
-        .scrollOverflowFade()
     }
 
     /// `List`'s selection binding, translated through the generation so a
@@ -686,18 +745,21 @@ public struct SecretEditorView: View {
 /// A plain `struct`, so the whole rule is unit-testable without a window —
 /// `RevealedRowsTests` drives it directly, and `RevealedRowTests` drives the
 /// same rule through a real laid-out editor.
-struct RevealedRows: Equatable {
+/// Public for the same narrow reason `SecretRowInspector` is: that view's
+/// `public init` takes one, and the headless snapshot catalog lives in its
+/// own target. Nothing outside this module constructs one.
+public struct RevealedRows: Equatable {
 
     /// `nil` means "nothing is revealed, under any generation".
     private var generation: Int?
     private var ids: Set<String> = []
 
-    init() {}
+    public init() {}
 
     /// The starting state for `SecretEditorView`'s `initiallyRevealedRowIDs`
     /// seam. Empty stays generation-less so an editor constructed with nothing
     /// revealed is `== RevealedRows()` whatever generation it was built in.
-    init(revealing ids: Set<String>, in generation: Int) {
+    public init(revealing ids: Set<String>, in generation: Int) {
         guard !ids.isEmpty else { return }
         self.generation = generation
         self.ids = ids
@@ -774,165 +836,6 @@ struct RowSelection: Equatable {
     mutating func clear() {
         generation = nil
         selected = nil
-    }
-}
-
-/// A single key/value/type row.
-///
-/// Kept as its own `View` (rather than inline in `SecretEditorView.rowList`)
-/// so each row's `@State` for its own live-typed text is scoped correctly
-/// per row identity, and so `SecretRowViewLogic`'s pure helpers below stay
-/// unit-testable independent of the enclosing `List`.
-private struct SecretRowView: View {
-    let row: SecretRow
-    let isRevealed: Bool
-    let onToggleReveal: () -> Void
-    let onChange: (String) -> Void
-
-    @State private var text: String
-
-    init(row: SecretRow, isRevealed: Bool, onToggleReveal: @escaping () -> Void, onChange: @escaping (String) -> Void) {
-        self.row = row
-        self.isRevealed = isRevealed
-        self.onToggleReveal = onToggleReveal
-        self.onChange = onChange
-        self._text = State(initialValue: row.value)
-    }
-
-    private var isMergeKeyRow: Bool { SecretRowViewLogic.isMergeKeyRow(row) }
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    Text(SecretRowViewLogic.displayPath(row.path))
-                        .font(.system(.body, design: .monospaced))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-
-                    if isMergeKeyRow {
-                        Image(systemName: "arrow.triangle.merge")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .help(LocalizedKey.editorMergeKeyExplanation.text)
-                            .accessibilityLabel(LocalizedKey.editorMergeKeyBadge.text)
-                    }
-                }
-
-                HStack(spacing: 6) {
-                    Text(SecretRowViewLogic.kindLabel(row.kind).text)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-
-                    if row.isPendingAdd {
-                        // Deliberately not a padlock either way. This row is
-                        // not in the file, so `isEncrypted` is honestly
-                        // false — but an open padlock would say "this value
-                        // is exposed", which the file's own rules will most
-                        // likely contradict the moment it is saved. See the
-                        // enclosing view's doc comment.
-                        Text(.editorNewRowBadge)
-                            .font(.caption2)
-                            .foregroundStyle(.orange)
-                            .help(LocalizedKey.editorNewRowExplanation.text)
-                    } else {
-                        Image(systemName: row.isEncrypted ? "lock.fill" : "lock.open")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .accessibilityLabel(
-                                row.isEncrypted
-                                    ? LocalizedKey.editorValueEncrypted.text
-                                    : LocalizedKey.editorValueNotEncrypted.text)
-                    }
-                }
-            }
-
-            Spacer(minLength: 12)
-
-            if row.kind.isEditable {
-                Group {
-                    if isRevealed {
-                        TextField("", text: $text)
-                    } else {
-                        // Deliberately **not** a `SecureField` bound to
-                        // `$text`. A `SecureField` draws — and publishes to
-                        // the accessibility tree — one bullet per character
-                        // of the value behind it, which hands out the exact
-                        // length of every secret in the file to anything
-                        // reading either channel. See
-                        // `SecretRowViewLogic.maskWidth`.
-                        //
-                        // The cost of a fixed-width mask is that a masked row
-                        // is no longer typed into: the field shows a constant
-                        // that is not the value, so accepting keystrokes into
-                        // it would be editing something the user cannot see.
-                        // Reveal (the eye, right here) is one click, and
-                        // typing a replacement secret over one you were never
-                        // shown was never a good idea — this makes it
-                        // impossible rather than merely unwise. Copy still
-                        // works masked, which is the affordance PROPOSAL.md §4
-                        // actually asks not to be gated on revealing.
-                        TextField("", text: .constant(SecretRowViewLogic.maskedValue(for: text)))
-                            .disabled(true)
-                    }
-                }
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
-                // `minWidth` 100, not 160. The value field and the two
-                // trailing buttons were competing for the same space, and the
-                // field won: rendered at 380 pt the copy button vanished from
-                // some rows and not others — whichever rows had a shorter key
-                // kept theirs — and at 320 pt it was sliced in half by the
-                // pane edge. The field is the thing that can afford to be
-                // narrower; a control the user cannot click is not a layout
-                // trade-off, it is a missing feature.
-                .frame(minWidth: 100, idealWidth: 220)
-                .onChange(of: text) { _, newValue in onChange(newValue) }
-                .onChange(of: row.value) { _, newValue in
-                    // The baseline changed out from under this row — a
-                    // reload, or another row's edit triggering a
-                    // re-render with a fresh `SecretRow` value for this
-                    // one too. Only actually relevant when this row's own
-                    // value changed (`update(rowID:to:)` only touches the
-                    // edited row), but re-syncing unconditionally on the
-                    // rare case is simpler than tracking why, and never
-                    // wrong: `text` and `row.value` are supposed to agree
-                    // whenever no local edit is in flight.
-                    if newValue != text { text = newValue }
-                }
-
-                // Reserved width, so the two controls are laid out before the
-                // field gets what is left instead of after. This is also what
-                // makes them line up down the column: sized to content, each
-                // row's pair sat wherever that row's value field happened to
-                // end, which was visibly ragged.
-                HStack(spacing: 4) {
-                    Button(action: onToggleReveal) {
-                        Image(systemName: isRevealed ? "eye.slash" : "eye")
-                            .frame(width: 20, height: 20)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel(isRevealed ? LocalizedKey.editorHideValue.text : LocalizedKey.editorRevealValue.text)
-
-                    Button {
-                        ClipboardClearing.copy(row.value)
-                    } label: {
-                        Image(systemName: "doc.on.doc")
-                            .frame(width: 20, height: 20)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel(LocalizedKey.actionCopy.text)
-                }
-                .fixedSize()
-            } else {
-                Text(SecretRowViewLogic.kindLabel(row.kind).text)
-                    .font(.system(.body, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.vertical, 4)
     }
 }
 
@@ -1122,7 +1025,8 @@ public struct EditorAddRowSheet: View {
     }
 }
 
-/// Pure, `View`-free helpers `SecretRowView` renders from — split out so
+/// Pure, `View`-free helpers `SecretTableView` and
+/// `SecretRowInspector` render from — split out so
 /// they're directly unit-testable (a `View`'s `body` is not) rather than
 /// only verifiable by looking at a screenshot.
 enum SecretRowViewLogic {

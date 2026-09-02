@@ -16,6 +16,15 @@ for dev in /Applications/Xcode-27.0.0-Beta.4.app /Applications/Xcode.app; do
   [ -d "$dev" ] && export DEVELOPER_DIR="$dev/Contents/Developer" && break
 done
 
+# And the SDK, explicitly. `DEVELOPER_DIR` alone is not enough: SwiftPM
+# compiles Package.swift with an `-sdk` it derives from the environment, and
+# on a machine whose `xcode-select` points at an Xcode beta that inherits the
+# *beta's* SDK — which the chosen toolchain then refuses ("this SDK is not
+# supported by the compiler … built with Apple Swift version 6.4, while this
+# compiler is 6.3.3"). The failure names the Swift standard library and looks
+# nothing like a problem with this project.
+export SDKROOT="$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+
 # `xcrun swift run`, never bare `swift run`: this machine has three Swift
 # compilers (see this repo's CLAUDE.md, "Toolchains" section). Bare `swift`
 # resolves through PATH to a swiftly-managed open-source toolchain that is
@@ -23,6 +32,13 @@ done
 # source with errors like "initializer is inaccessible due to 'private'" that
 # neither Xcode-bundled compiler on this machine raises. `xcrun` picks the
 # right toolchain regardless of what a shell's PATH happens to resolve first.
-xcrun swift run --quiet snapshots .snapshots "$@"
+# `--build-system swiftbuild`, and this is not optional: `swift run`'s
+# default engine (llbuild) copies `Localizable.xcstrings` into the module
+# bundle **uncompiled**, so every `LocalizedKey` resolves to its own raw key
+# and the images come out reading `access.keys.title` instead of "Keys". The
+# same disagreement `Scripts/test.sh` documents at length, in the one place
+# where it is silent rather than red: a snapshot of raw keys still renders
+# (SOPS-39 task 10).
+xcrun swift run --build-system swiftbuild --quiet snapshots .snapshots "$@"
 echo
 echo "snapshots: $(pwd)/.snapshots"

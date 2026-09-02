@@ -102,6 +102,7 @@ Two constraints from that ADR bind everything downstream:
 
 - **Follow Apple HIG for macOS 26+ to the maximum, including Liquid Glass** design language
 - **Sidebar layout** (NavigationSplitView): projects/environments in sidebar; pinned at the bottom: **About** and **Settings**
+- Values are a table with a trailing inspector; the sidebar is a tree of projects → files → Access
 - **Settings** opens with the standard `⌘,` shortcut; today it has three tabs — **Health**
   (re-runnable onboarding report), **Key** (import an age key), **Updates** (a single toggle
   consenting to the engine-freshness/update lookup in §6 B). **Planned, not yet built:** a

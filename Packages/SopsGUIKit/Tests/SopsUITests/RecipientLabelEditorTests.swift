@@ -289,7 +289,7 @@ struct ForgetLabelWordingTests {
 
 // MARK: - Through the rendered panels
 
-@Suite("Both Access panels offer to name a recipient, from the row")
+@Suite("Both Access surfaces offer to name a recipient")
 @MainActor
 struct RecipientLabelEditorWiringTests {
 
@@ -297,56 +297,59 @@ struct RecipientLabelEditorWiringTests {
         nodes.flatMap { [$0.label, $0.value] }
     }
 
-    @Test("an unnamed recipient's row offers to name it; a named one offers to edit")
-    func theRowOffersTheRightControl() async throws {
-        let owner = try LabelAgeKeyPair.generate()
-        let root = try makeLabelProject(owner: owner, label: "recipient-label-wiring")
+    /// SOPS-39 task 10. Ported from `ProjectAccessView`'s recipient rows to
+    /// the Access page's key table, which is where the project-wide naming
+    /// affordance lives now. The cell *is* the button there, and an unnamed
+    /// key's cell reads "—", so the two sentences are carried as the
+    /// button's own accessibility name rather than as visible text.
+    ///
+    /// ⚠️ Driven against an anchored, `keys:`-declaring config
+    /// (`AccessPageFixture`) and not the flat one the rest of this file uses,
+    /// because that is the shape the affordance exists in: the key table is
+    /// built from `.sops.yaml`'s `keys:` list, so a config that writes its
+    /// recipients inline has no rows to name. That is a real limit of the
+    /// page and is recorded here rather than papered over — naming an inline
+    /// recipient is still possible on the per-file panel below.
+    @Test("an unnamed key offers to be named; a named one offers to be edited")
+    func thePageOffersTheRightControl() async throws {
+        let f = try await AccessPageFixture.momentakShaped()
 
-        let unnamed = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
-        let unnamedHost = GatingHost(size: CGSize(width: 560, height: 760)) {
-            AnyView(ProjectAccessView(model: unnamed, onClose: {}, onFilesApplied: {}))
+        let unnamed = ProjectAccessModel(
+            projectRoot: f.root, keyStore: f.keyStore, targetFile: f.prod)
+        await unnamed.load()
+        try #require(unnamed.inventory?.keys.isEmpty == false,
+                     "precondition: this config names its keys, so there are rows to label")
+        let unnamedNodes = AXProbe.tree(size: CGSize(width: 1000, height: 900)) {
+            ProjectAccessPage(model: unnamed, selectedFile: f.prod, onFilesApplied: {})
         }
-        defer { unnamedHost.finish() }
-        await unnamedHost.settle(until: { unnamed.loadState == .loaded })
-        let unnamedLabels = labels(in: unnamedHost.nodes())
-        #expect(unnamedLabels.contains(LocalizedKey.recipientNameThis.text))
-        #expect(!unnamedLabels.contains(LocalizedKey.recipientEditLabel.text))
+        let unnamedText = unnamedNodes.flatMap { [$0.label, $0.value, $0.help] }
+        #expect(unnamedText.contains(LocalizedKey.recipientNameThis.text))
+        #expect(!unnamedText.contains(LocalizedKey.recipientEditLabel.text))
 
         try RecipientRegistry.upsert(
-            RecipientRecord(label: "Alice", kind: .person, ageRecipient: owner.public), in: root)
-        let named = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
-        let namedHost = GatingHost(size: CGSize(width: 560, height: 760)) {
-            AnyView(ProjectAccessView(model: named, onClose: {}, onFilesApplied: {}))
+            RecipientRecord(label: "Alice", kind: .person, ageRecipient: f.studio.public),
+            in: f.root)
+        let named = ProjectAccessModel(
+            projectRoot: f.root, keyStore: f.keyStore, targetFile: f.prod)
+        await named.load()
+        let namedNodes = AXProbe.tree(size: CGSize(width: 1000, height: 900)) {
+            ProjectAccessPage(model: named, selectedFile: f.prod, onFilesApplied: {})
         }
-        defer { namedHost.finish() }
-        await namedHost.settle(until: { named.loadState == .loaded })
-        let namedLabels = labels(in: namedHost.nodes())
-        #expect(namedLabels.contains(LocalizedKey.recipientEditLabel.text))
-        #expect(!namedLabels.contains(LocalizedKey.recipientNameThis.text))
+        let namedText = namedNodes.flatMap { [$0.label, $0.value, $0.help] }
+        #expect(namedText.contains(LocalizedKey.recipientEditLabel.text))
+        // The other two keys are still unnamed, so this offer stays on screen
+        // — what changed is that one row now offers to be *edited*, and that
+        // the name itself is drawn.
+        #expect(namedText.contains(LocalizedKey.recipientNameThis.text))
+        #expect(namedText.contains("Alice"))
     }
 
-    /// A field a user can type into and never see again is a field that quietly
-    /// stops being kept up to date. The editor collects a note, so the rows draw
-    /// one.
-    @Test("a recipient's note is drawn on its row")
-    func theRowDrawsTheNote() async throws {
-        let owner = try LabelAgeKeyPair.generate()
-        let root = try makeLabelProject(owner: owner, label: "recipient-label-note-row")
-        try RecipientRegistry.upsert(
-            RecipientRecord(
-                label: "Alice", kind: .person, ageRecipient: owner.public,
-                note: "rotates every quarter"),
-            in: root)
-
-        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
-        let host = GatingHost(size: CGSize(width: 560, height: 760)) {
-            AnyView(ProjectAccessView(model: model, onClose: {}, onFilesApplied: {}))
-        }
-        defer { host.finish() }
-        await host.settle(until: { model.loadState == .loaded })
-
-        #expect(labels(in: host.nodes()).contains("rotates every quarter"))
-    }
+    // A recipient's *note* is drawn on the per-file panel's rows
+    // (`RecipientRowContent.note`) and was drawn on the project panel's rows
+    // too. The Access page's key table has four columns — name, key, label,
+    // used-in — and no note among them, so that assertion went with
+    // `ProjectAccessView` rather than being ported to a column that does not
+    // exist (SOPS-39 task 10).
 
     @Test("the per-file panel offers the same control")
     func theFilePanelOffersIt() async throws {

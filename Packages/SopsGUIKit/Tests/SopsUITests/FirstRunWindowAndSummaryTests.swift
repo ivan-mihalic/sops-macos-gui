@@ -355,7 +355,7 @@ struct SidebarHitAreaTests {
     @Test("the bottom sections are List rows, not hand-rolled buttons")
     func bottomRowsAreListRows() throws {
         let source = try String(contentsOf: MainWindowSizeTests.repositoryRoot
-            .appendingPathComponent("Packages/SopsGUIKit/Sources/SopsUI/AppShell.swift"),
+            .appendingPathComponent("Packages/SopsGUIKit/Sources/SopsUI/Shell/ProjectTreeSidebar.swift"),
             encoding: .utf8)
 
         #expect(!source.contains("struct PinnedSidebarRow"),
@@ -364,7 +364,8 @@ struct SidebarHitAreaTests {
                 Comment(rawValue: """
                     the sidebar pins rows in a bottom inset again — that is what stopped it                     compressing vertically and left the split group 1301 pt tall in a 612 pt window
                     """))
-        #expect(source.contains("ForEach(Section.pinnedToBottom"),
+        #expect(source.contains(".tag(WorkspaceSelection.about)")
+                && source.contains(".tag(WorkspaceSelection.settings)"),
                 Comment(rawValue: "the About/Settings rows are not in the sidebar list at all"))
     }
 }
@@ -390,7 +391,11 @@ struct ClickTargetTests {
     func addProjectFillsTheFooter() throws {
         let width: CGFloat = 240
         let nodes = AXProbe.tree(size: CGSize(width: width, height: 400)) {
-            ProjectSidebar(model: ProjectSidebarModel(store: ProjectStore(fileURL: Self.throwaway)))
+            ProjectTreeSidebar(
+                projects: ProjectSidebarModel(store: ProjectStore(fileURL: Self.throwaway)),
+                trees: ProjectTreeStore(keyStore: SessionKeyStore()),
+                selection: .constant(nil),
+                onNewFile: { _ in }, onAddProjectAtPath: { _ in })
         }
         guard let button = nodes.first(where: {
             $0.label.hasPrefix("Add Project") && $0.role.contains("Button")
@@ -508,36 +513,40 @@ struct DetailPageHeightTests {
     }
 }
 
-@Suite("Moving the project list to its own column did not unwire its guard")
-struct ThreeColumnGuardWiringTests {
+@Suite("Collapsing the columns did not unwire the project guard")
+struct OneColumnGuardWiringTests {
 
-    /// The project list moved out of `ProjectWorkspaceView`'s `HSplitView` and
-    /// into the window's `content:` column, to make the app a real
-    /// three-column `NavigationSplitView` — measured effect: the minimum window
-    /// width fell from 1138 pt to 910 pt, and columns collapse natively.
+    /// The project list moved out of its own column and into the sidebar
+    /// tree (SOPS-39 task 6); the window is two columns now, measured
+    /// minimum width down from 910 pt again.
     ///
-    /// The whole reason that move was safe is that it changed *where a view
-    /// sits*, not *who asks before discarding a document*. `ProjectSidebar`
-    /// writes `projects.selection`; `ProjectWorkspaceView` observes it and
-    /// routes through `requestProjectSwitch`. Both halves are asserted here,
-    /// because the failure if they ever come apart is silent: a click on
-    /// another project would take the open dirty document with it, which is
-    /// the defect `WorkspaceSwitchDecision` exists for and which this
+    /// The whole reason that move is safe is that it changed *where a row
+    /// sits*, not *who asks before discarding a document*. Selecting another
+    /// project used to write `projects.selection` directly and be caught by
+    /// an `.onChange` observer; it is now a `WorkspaceSelection` written
+    /// through the one guarded binding, so the observer is gone and the
+    /// guard is the binding itself. Both halves are asserted, because the
+    /// failure if they come apart is silent: a click on another project would
+    /// take the open dirty document with it, which is the defect this
     /// milestone has already produced three times by other routes.
-    @Test("the project list writes the selection and the workspace still guards it")
+    @Test("the window is two columns and every project row is a guarded selection")
     func projectGuardStillWired() throws {
-        let source = try String(contentsOf: MainWindowSizeTests.repositoryRoot
+        let shell = try String(contentsOf: MainWindowSizeTests.repositoryRoot
             .appendingPathComponent("Packages/SopsGUIKit/Sources/SopsUI/AppShell.swift"),
             encoding: .utf8)
 
-        #expect(source.contains("} content: {"),
-                Comment(rawValue: "the app is back to a two-column split view"))
-        #expect(source.contains(".onChange(of: projects.selection, initial: true)"),
+        #expect(!shell.contains("} content: {"),
+                Comment(rawValue: "the app has a middle column again — the project list is supposed to be a branch of the sidebar tree"))
+        #expect(shell.contains("selection: guardedSelection"),
                 Comment(rawValue: """
-                    nothing observes the project selection any more — a click on another \
+                    the sidebar is no longer handed the guarded binding — a click on another \
                     project would discard an open dirty document with no prompt
                     """))
-        #expect(source.contains("requestProjectSwitch(to: newValue)"),
-                Comment(rawValue: "the project selection no longer routes through its guard"))
+
+        let sidebar = try String(contentsOf: MainWindowSizeTests.repositoryRoot
+            .appendingPathComponent("Packages/SopsGUIKit/Sources/SopsUI/Shell/ProjectTreeSidebar.swift"),
+            encoding: .utf8)
+        #expect(sidebar.contains(".tag(WorkspaceSelection.projectHome(project.id))"),
+                Comment(rawValue: "a project row is no longer a tagged row of the guarded list, so selecting one writes something else"))
     }
 }

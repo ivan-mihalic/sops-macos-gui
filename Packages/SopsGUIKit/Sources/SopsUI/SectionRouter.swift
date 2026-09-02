@@ -8,10 +8,10 @@ import Observation
 /// pins them to — so a user could end up looking at Settings in two windows
 /// at once, with the sidebar row still saying it owns that pane.
 ///
-/// The menu items now ask for a section instead of opening a window. They
+/// The menu items now ask for a screen instead of opening a window. They
 /// cannot set `AppShell.selection` themselves, and that restriction is the
-/// whole reason this type exists rather than a plain binding: a section
-/// switch has to pass `requestSectionSwitch(to:)`, which is what refuses to
+/// whole reason this type exists rather than a plain binding: a selection
+/// change has to pass `AppShell.requestSwitch(to:)`, which is what refuses to
 /// walk away from a dirty document without asking. A menu item writing
 /// `selection` directly would be a second, unguarded door into the same
 /// state, and it would look right in every case except the one that matters.
@@ -21,18 +21,23 @@ import Observation
 @MainActor
 @Observable
 public final class SectionRouter {
-    /// The section a menu item asked for, or `nil` when nothing is pending.
+    /// The screen a menu item asked for, or `nil` when nothing is pending.
+    ///
+    /// A `WorkspaceSelection` since SOPS-39 task 6 — the same value the
+    /// sidebar selects over, so a menu request and a click are literally the
+    /// same write. The menu only ever asks for `.about`/`.settings`; the type
+    /// is wider because the *binding* it is handed to is.
     ///
     /// Deliberately a single slot rather than a queue: two menu presses land
     /// at most one runloop turn apart, and the user meant the second one.
     /// Queueing would walk them through a section they had already changed
     /// their mind about.
-    public private(set) var requested: AppShell.Section?
+    public private(set) var requested: WorkspaceSelection?
 
     public init() {}
 
-    public func show(_ section: AppShell.Section) {
-        requested = section
+    public func show(_ screen: WorkspaceSelection) {
+        requested = screen
     }
 
     /// Called by whoever handled the request. Idempotent — clearing a router

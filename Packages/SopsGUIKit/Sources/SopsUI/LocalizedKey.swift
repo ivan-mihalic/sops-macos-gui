@@ -6,9 +6,17 @@ import SwiftUI
 /// Views never take a string literal. Adding a case without adding the matching
 /// entry to Localizable.xcstrings fails `everyKeyResolves`.
 public enum LocalizedKey: String, CaseIterable, Sendable {
-    case sidebarProjects = "sidebar.projects"
     case sidebarAbout = "sidebar.about"
     case sidebarSettings = "sidebar.settings"
+    // SOPS-39 task 6: the one sidebar. Each project row carries an Access
+    // child that opens its recipient panel, and each file row can carry a
+    // status dot whose tooltip is one of the two below. The dot alone is
+    // colour, and colour alone is never a message here — see
+    // `ColourIndependenceTests`.
+    case sidebarAccess = "sidebar.access"
+    case sidebarAccessHelp = "sidebar.access-help"
+    case sidebarFileNeedsRewrap = "sidebar.file-needs-rewrap"
+    case sidebarFileUngoverned = "sidebar.file-ungoverned"
     case detailNoSelection = "detail.no-selection"
     case settingsWindowPlaceholder = "settings.window-placeholder"
 
@@ -172,7 +180,10 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
 
     // MARK: Task 9 — file list
 
-    case filesNoProjectSelected = "files.no-project-selected"
+    // `files.no-project-selected` went with `FileListView` in SOPS-39 task 6:
+    // with the tree in the sidebar there is no file-list pane left to hold a
+    // "select a project" placeholder — `AppShell` renders the project tree
+    // and its own empty state instead.
     case filesScanning = "files.scanning"
     // `files.empty.title` ("No encrypted files found in this project.") lived
     // here through M2 but is gone as of Phase 3 Task 2: a *complete* empty
@@ -186,23 +197,28 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // Shown when a walk fell short of the whole tree in a way that blocks any
     // affirmative statement about the list. The *reason* is not a key: it comes
     // from `ScannedTree.incompleteScanReason` — see
-    // `FileListView.incompleteScanBanner`.
+    // `ProjectHomeView.incompleteScanBanner`.
     case filesScanIncompleteTitle = "files.scan-incomplete.title"
     // The empty state over an incomplete walk — the one case
-    // `ProjectStartHereView` never reaches (`FileListView.showsStartHere`
+    // `ProjectStartHereView` never reaches (`FileListModel.showsStartHere`
     // requires `incompleteScanReason == nil`), because "no encrypted files"
     // is not a claim this app can make about a walk that did not finish.
     case filesEmptyPartialTitle = "files.empty-partial.title"
     // Formatted with the comma-joined list of directory names never entered —
-    // see `FileListView.footnotes`.
+    // see `ProjectHomeView.footnotes`.
     case filesSkippedDirectoriesNote = "files.skipped-directories.note"
     // Formatted with the count of sops files this build does not recognise
     // as any of its four known formats (YAML/dotenv/JSON/INI) — reserved for
     // a future sops store, so this is expected to be 0 today. See
     // `FileListModel.otherFormatCount` / `ScannedTree.encryptedInOtherFormats`.
     case filesOtherFormatNote = "files.other-format.note"
+    // SOPS-39 task 6: with the file list living in the sidebar, a project
+    // whose files are all listed there needs the detail pane to say what it
+    // is looking at rather than repeating the list. Format key, one integer.
+    case filesCountSummary = "files.count-summary"
     // Ticket #25 claim 2. Formatted with the symlink's own relative path and
-    // its resolved target — see `FileListView.unfollowedSymlinkFootnote`.
+    // its resolved target — see `ProjectHomeView`'s unfollowed-symlink
+    // footnote.
     case filesUnfollowedSymlinkNote = "files.unfollowed-symlink.note"
     case filesAddSymlinkTargetButton = "files.unfollowed-symlink.add-button"
     // SOPS-38 phase F3: shown next to a row whenever `ListedFile.isReadOnly`
@@ -214,12 +230,12 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
 
     // MARK: Task 7 (F2) — reaching the new-file wizard from the file list
 
-    // The toolbar "+" above the file list, and its ⌘N shortcut. Icon-only —
-    // this text is the accessibility label and the tooltip, never rendered
-    // as a title. Only reachable at all once a project is selected: the
-    // toolbar row lives inside `FileListView`, which `ProjectWorkspaceView`
-    // never constructs without one — see `AppShell.makeNewFileModel(
-    // projectRoot:keyStore:)`.
+    // The new-file control on a project's sidebar row, and its ⌘N shortcut.
+    // Icon-only — this text is the accessibility label and the tooltip,
+    // never rendered as a title. Only reachable once a project exists: the
+    // control is drawn per project row, and ⌘N is attached to the selected
+    // one alone — see `ProjectTreeSidebar.newFileButton(for:)` and
+    // `AppShell.makeNewFileModel(projectRoot:keyStore:)`.
     case filesNewFileButton = "files.new-file-button"
 
     // MARK: Phase 3 Task 2 — ProjectStartHereView
@@ -314,6 +330,42 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case editorKindTimestamp = "editor.kind.timestamp"
     case editorKindEmptyMap = "editor.kind.empty-map"
     case editorKindEmptyList = "editor.kind.empty-list"
+
+    // MARK: SOPS-39 — the value table and its row inspector
+
+    // Column headers for `SecretTableView`. The row list these replaced had
+    // no headers at all: key, value and type were told apart by position and
+    // by font, which is not something a screen reader can read off.
+    case editorColumnKey = "editor.column.key"
+    case editorColumnValue = "editor.column.value"
+    case editorColumnType = "editor.column.type"
+
+    // `SecretRowInspector`. Editing moved here so the value column can have
+    // the width a row-embedded `TextField` never left it.
+    case inspectorTitleFile = "inspector.title.file"
+    case inspectorValue = "inspector.value"
+    case inspectorApply = "inspector.apply"
+    case inspectorRevert = "inspector.revert"
+    case inspectorRemove = "inspector.remove"
+    case inspectorReadableBy = "inspector.readable-by"
+    // Said out loud because the per-row padlocks invite the opposite
+    // conclusion: sops encrypts values per file, against the rule that
+    // governs the file, so there is no per-key recipient list to change here.
+    case inspectorReadableByNote = "inspector.readable-by.note"
+    case inspectorNoSelection = "inspector.no-selection"
+    case inspectorToggle = "inspector.toggle"
+    case inspectorRule = "inspector.rule"
+    case inspectorFormat = "inspector.format"
+    // A format's *name*, for the inspector's file section. Deliberately not
+    // `newFileTargetFormat*`: those are whole sentences about a file that is
+    // about to be created ("Will be created as a YAML file."), which is not
+    // what a `LabeledContent` value slot can say. `SopsFileFormat.rawValue`
+    // was what stood here first — an un-localized identifier leaking into
+    // the UI.
+    case inspectorFormatYAML = "inspector.format.yaml"
+    case inspectorFormatDotEnv = "inspector.format.dotenv"
+    case inspectorFormatJSON = "inspector.format.json"
+    case inspectorFormatINI = "inspector.format.ini"
 
     // MARK: SOPS-38 phase F3 — the real read-only ciphertext view
 
@@ -461,8 +513,8 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // does not change meaning between the per-file and project-wide screen.
     // The notice body itself is never a catalog string: it carries the
     // registry's real path, composed at runtime by `RecipientRegistry` and
-    // shown verbatim, the same treatment `ProjectAccessView.explanation(_:_
-    // :tint:)` gives a config error.
+    // shown verbatim, the same treatment `ProjectAccessPage.configErrorBox(_:)`
+    // gives a config error.
     case accessRegistryQuarantineTitle = "access.registry-quarantine.title"
 
     // Ticket #3: a recipient removal this panel already applied may have
@@ -475,61 +527,69 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case accessRotationDebtHeading = "access.rotation-debt.heading"
     case accessRotationDebtAcknowledgeButton = "access.rotation-debt.acknowledge-button"
 
+    // SOPS-39 task 8: the Access *page* — the destination the sidebar's
+    // Access row navigates to. It says three things the old sheet could not:
+    // what the project's keys are called (`keys:` anchors, which are public
+    // by construction — they sit in a file everyone on the team reads), what
+    // every creation rule declares rather than only the governing one, and
+    // which files have drifted from the rule that governs them.
+    case accessPageTitle = "access.page.title"
+    case accessKeysTitle = "access.keys.title"
+    case accessKeysNote = "access.keys.note"
+    case accessKeysColumnName = "access.keys.column.name"
+    case accessKeysColumnKey = "access.keys.column.key"
+    case accessKeysColumnLabel = "access.keys.column.label"
+    case accessKeysColumnUsedIn = "access.keys.column.used-in"
+    case accessKeysNone = "access.keys.none"
+    case accessRulesTitle = "access.rules.title"
+    case accessRulesNote = "access.rules.note"
+    case accessRulesGoverns = "access.rules.governs"
+    case accessRulesGovernsNone = "access.rules.governs-none"
+    case accessRulesRecipients = "access.rules.recipients"
+    case accessRulesComment = "access.rules.comment"
+    case accessRulesAllInSync = "access.rules.all-in-sync"
+    case accessRulesNeedsRewrap = "access.rules.needs-rewrap"
+    case accessRulesEncryptedForOf = "access.rules.encrypted-for-of"
+    // A rule declared through YAML anchors or `key_groups` is one this app
+    // reads and refuses to rewrite — see `ConfigRules.Rule.usesKeyGroups`.
+    // Said before the user tries, next to a button that opens the file.
+    case accessRulesAnchoredReadOnly = "access.rules.anchored-read-only"
+    case accessRulesRevealConfig = "access.rules.reveal-config"
+    // The one edit an anchored rule supports (SOPS-39 task 9): appending an
+    // alias of a key the config already declares. Offered next to the
+    // read-only sentence above, because "edit the file by hand" is not the
+    // whole truth once this exists.
+    case accessRulesAddNamed = "access.rules.add-named"
+    case accessRulesAddNamedNone = "access.rules.add-named-none"
+    case accessRulesAddNamedNote = "access.rules.add-named-note"
+    case accessRewrapBanner = "access.rewrap.banner"
+    case accessRewrapDetail = "access.rewrap.detail"
+    case accessRewrapButton = "access.rewrap.button"
+    case accessRewrapNote = "access.rewrap.note"
+    // A rule whose own recipient list could not be staged exactly. Shown in
+    // the rewrap sheet instead of applying a partial set — see
+    // `RewrapCoordinator.rewrap(_:)`.
+    case accessRewrapRuleNotStaged = "access.rewrap.rule-not-staged"
+    case accessUngoverned = "access.ungoverned"
+    // The Access page with nothing to organise: a project whose `.sops.yaml`
+    // declares no rule this app can see and which holds no encrypted file.
+    // The no-config half of that pair reuses `newFileInfoNoConfig`.
+    case accessEmptyNoFiles = "access.empty.no-files"
+    case accessTargetSubstituted = "access.target-substituted"
+
     // MARK: Task 4 (recipient management) — project access panel
 
-    case projectAccessButton = "project-access.button"
-    // The project panel re-wraps every file the creation rule governs, which
-    // may include the document open in the editor. Applying while that
-    // document has unsaved edits would rewrite the file underneath them —
-    // the same data-loss shape `SecretEditorView.canOpenAccessPanel` closes
-    // for the single-file panel, and gated the same way.
-    case projectAccessDisabledUnsavedChanges = "project-access.disabled-unsaved-changes"
-    case projectAccessTitle = "project-access.title"
+    // SOPS-39 task 10. `ProjectAccessView` — the project-wide Access *sheet*
+    // — is gone, replaced by `ProjectAccessPage`, and thirty of the keys that
+    // lived here went with it: the sheet's own title and button, its two
+    // confirmation dialogs (the page writes `.sops.yaml` directly and a
+    // rewrap reports into `RewrapSheet`), its scope sentences (the page is
+    // organised by creation rule and states scope per rule), its file
+    // preview, its cancel control and its previous-incomplete-run banner.
+    // Every one was grep-verified unreferenced before removal, and each
+    // catalog entry went with its case. What is left below is what the page,
+    // the rewrap sheet and `ProjectAccessModel` actually use.
     case projectAccessScanning = "project-access.scanning"
-    // Formatted with the count of files the governing rule covers, and the
-    // count of encrypted files found in total.
-    case projectAccessFilesSummary = "project-access.files-summary"
-    // Files that are encrypted but that some *other* creation rule governs.
-    // Stated rather than silently skipped: a project apply that quietly left
-    // files out would be the confident-about-what-it-did-not-touch claim
-    // PROPOSAL §6 D forbids.
-    case projectAccessUnmatchedNote = "project-access.unmatched-note"
-    // What an apply would touch when no governing creation rule could be
-    // identified — no config, an unreadable one, or one whose rules match
-    // nothing here. `Plan.filesInScope` deliberately widens to every encrypted
-    // file in that case (applying to *nothing* and reporting success is the
-    // worse reading), so the panel has to say so before the button is pressed
-    // rather than only in the confirmation dialog.
-    case projectAccessAllFilesInScope = "project-access.all-files-in-scope"
-    // The other half of that widening, and the half the count alone hides:
-    // the fallback scope reaches across creation-rule boundaries, so files
-    // whose keys a *different* rule decides are re-wrapped alongside the ones
-    // no rule governs. Formatted with how many. Shown on the panel and again
-    // in the file-apply confirmation, because
-    // `project-access.unmatched-note` — the sentence that names other rules —
-    // renders only in the branch where a rule *was* identified, which is the
-    // one branch that does not need it.
-    case projectAccessOtherRulesInScope = "project-access.other-rules-in-scope"
-    // Ticket #24 claim 1. Sits directly under `projectAccessOtherRulesInScope`
-    // and requires an explicit check before "Apply to Files" is reachable at
-    // all — see `ProjectAccessModel.requiresWidenedScopeAcknowledgement`.
-    // Stating the fact was never the gap; nothing enforced that it was read.
-    case projectAccessWidenedScopeAcknowledgement = "project-access.widened-scope.acknowledgement"
-    // The heading over the list of files an apply would re-wrap, shown before
-    // the run rather than only as results after it. The counts above it say
-    // how many; this says which — the question a user actually has to answer
-    // before pressing a button that rewrites files.
-    case projectAccessFilesPreviewTitle = "project-access.files-preview.title"
-    // Formatted with how many files in scope the preview did not draw. The
-    // preview is bounded (`ProjectAccessView.filesPreviewLimit`) so a project
-    // with thousands of encrypted files costs what a small one costs; the
-    // remainder is stated rather than left to be inferred from the count above.
-    case projectAccessFilesPreviewMore = "project-access.files-preview.more"
-    case projectAccessScanIncompleteTitle = "project-access.scan-incomplete.title"
-    // Ticket #24 claim 3. Formatted with how many files a previous run left
-    // untouched — `ProjectAccessModel.previousIncompleteRun`, read from
-    // `RunRecordStore` so it survives the panel having been closed.
-    case projectAccessPreviousRunIncomplete = "project-access.previous-run-incomplete"
     // The two ways a project can produce an *empty* scan that is not an
     // answer about anything. Reported rather than folded into "no encrypted
     // files found here", which would be a confident statement about a
@@ -537,84 +597,57 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // this app must never do. See `ScannedTree.rootMissing`/`rootUnreadable`.
     case projectAccessRootMissing = "project-access.root-missing"
     case projectAccessRootUnreadable = "project-access.root-unreadable"
-    case projectAccessNoConfig = "project-access.no-config"
-    case projectAccessNoFiles = "project-access.no-files"
-    case projectAccessConfigSectionTitle = "project-access.config-section.title"
-    // The heading over the sentence the *bridge* produced explaining which
-    // `.sops.yaml` shape it will not rewrite — see
-    // `ProjectRecipientApplier.Plan.configRefusal`. The sentence itself is
-    // engine text shown verbatim, like a health finding's, because it names
-    // the specific shape found.
-    case projectAccessConfigReadOnlyTitle = "project-access.config-read-only.title"
     case projectAccessConfigErrorTitle = "project-access.config-error.title"
-    case projectAccessConfigUpToDate = "project-access.config-up-to-date"
+    // Shown on the Access page after a config write lands. It is the *only*
+    // thing that asks for a commit on that path, which is why it survived the
+    // panel: writing `.sops.yaml` and saying nothing about committing it
+    // leaves the team's own copy disagreeing with the repository's.
+    // `CommitRemindersTests` pins the sentence.
     case projectAccessConfigWritten = "project-access.config-written"
     case projectAccessUpdateConfigButton = "project-access.update-config-button"
+    // Restored after the final SOPS-39 review: these three went with
+    // `ProjectAccessView` in task 10, and with them the only screen that told
+    // a user what rewriting `.sops.yaml` costs. The page wrote on one
+    // unconfirmed click for three commits. See
+    // `ProjectAccessPage.configUpdateConfirmationMessage`, and
+    // `LocalizationTests` for what each sentence has to say.
     case projectAccessUpdateConfigConfirmTitle = "project-access.update-config-confirm.title"
     case projectAccessUpdateConfigConfirmMessage = "project-access.update-config-confirm.message"
-    // Who the rewritten creation rule gains, and who it loses. Formatted with
-    // the comma-joined labels (or public keys, for anyone the registry does not
-    // know), exactly like the other two confirmations in this feature — this
-    // was the one mutating action of the three whose dialog named nobody.
-    //
-    // `…loses` carries the whole point of the distinction: dropping a recipient
-    // from a creation rule takes nothing away from them. Every file already on
-    // disk still decrypts for them, because their key is still in that file's
-    // own SOPS metadata. Only "Apply to Files" changes that.
-    case projectAccessConfigGains = "project-access.update-config-confirm.gains"
-    case projectAccessConfigLoses = "project-access.update-config-confirm.loses"
     case projectAccessUpdateConfigConfirmButton = "project-access.update-config-confirm.button"
-    case projectAccessApplyFilesButton = "project-access.apply-files-button"
-    case projectAccessApplyFilesConfirmTitle = "project-access.apply-files-confirm.title"
-    // Formatted with the number of files that would be re-wrapped.
-    case projectAccessApplyFilesConfirmMessage = "project-access.apply-files-confirm.message"
-    // The destructive variant, formatted with the comma-joined labels (or
-    // public keys) about to lose access *and* the file count. Removing a
-    // recipient across a whole project is the most destructive thing this
-    // panel can do, so it names who loses access before it happens.
-    case projectAccessApplyFilesRemovalMessage = "project-access.apply-files-removal.message"
-    case projectAccessApplyFilesConfirmButton = "project-access.apply-files-confirm.button"
-    case projectAccessCancelRun = "project-access.cancel-run"
+    // The removal half of that disclosure: dropping a key from a creation
+    // rule revokes nothing, because every file already on disk still carries
+    // that key in its own metadata. Points at Rewrap, which is the control on
+    // this page that does change access — the deleted sentence pointed at
+    // "Apply to Files", a button of the panel that no longer exists.
+    case projectAccessConfigLoses = "project-access.update-config-confirm.loses"
     case projectAccessResultsTitle = "project-access.results.title"
     case projectAccessResultUpdated = "project-access.result.updated"
     case projectAccessResultUnchanged = "project-access.result.unchanged"
     case projectAccessResultFailed = "project-access.result.failed"
-    // Formatted with updated / unchanged / failed counts.
-    case projectAccessResultsSummary = "project-access.results.summary"
     case projectAccessResultsCommitNote = "project-access.results.commit-note"
-    // Formatted with the count of files a cancelled run never reached.
-    case projectAccessCancelledNote = "project-access.cancelled-note"
     case projectAccessApplyingLabel = "project-access.applying-label"
     case projectAccessErrorTitle = "project-access.error.title"
     case projectAccessErrorEmptyRecipients = "project-access.error.empty-recipients"
     case projectAccessErrorNoFiles = "project-access.error.no-files"
     // `ProjectAccessModel.ConfigApplyOutcome.refusedStalePlan`: the staged set
-    // moved again while the panel was working out what to write, so the only
+    // moved again while the page was working out what to write, so the only
     // `.sops.yaml` text on hand belongs to an older set. Nothing is written —
     // writing it would drop the recipients staged since, silently.
     case projectAccessErrorStalePlan = "project-access.error.stale-plan"
     // `ProjectAccessModel.FileApplyRefusal.alreadyRunning`: a run was already
-    // in progress the moment this one was requested. Reachable in practice
-    // only by a caller outside this view's own button, which queues behind an
-    // in-flight run rather than asking again — see
-    // `ProjectAccessModel.startApplyingToFiles`.
+    // in progress the moment this one was requested. Named by
+    // `RewrapCoordinator` when it skips a rule for that reason — see
+    // `FileApplyRefusal.explanation`.
     case projectAccessErrorAlreadyRunning = "project-access.error.already-running"
     // `ProjectAccessModel.FileApplyRefusal.widenedScopeNotAcknowledged`:
-    // reachable in practice only if a future caller finds a way to press
-    // Apply while the view's own gate should have disabled it — see
-    // `ProjectAccessView.canApplyToFiles`.
+    // reachable only through a direct `applyToFiles()` call over a plan whose
+    // scope crosses creation-rule boundaries. No surface offers that today —
+    // a rewrap runs per rule — so this is the model refusing on its own
+    // behalf, which is where the refusal always mattered.
     case projectAccessErrorWidenedScopeNotAcknowledged = "project-access.error.widened-scope-not-acknowledged"
     // The creation-rule half of `access.duplicate-recipients`, formatted the
     // same way and for the same reason.
     case projectAccessDuplicateRecipients = "project-access.duplicate-recipients"
-    // Formatted with how many of `encryptedFiles`' names were dropped because
-    // they and a still-listed entry named the same file — a symlink and its
-    // target, most often. Information, not a warning: nothing is wrong with a
-    // project that has a symlink in it, and this only says the count shown is
-    // smaller than the number of paths the scan actually found. See
-    // `ProjectRecipientApplier.Plan.duplicateFileNameCount` and
-    // `.deduplicatedByResolvedPath`.
-    case projectAccessCollapsedDuplicateFiles = "project-access.collapsed-duplicate-files"
 
     // MARK: Recipient kinds — the registry's descriptive role for a key
 
@@ -881,8 +914,10 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // Unlocking an `.encryptedYAML` source and disclosing exactly who gains
     // and loses access by re-encrypting it for the target plan's recipients
     // — spec §4.1, decision 4. See `EncryptedImportPreview`'s own doc
-    // comment: the language deliberately matches `ProjectAccessView`'s own
-    // "gains"/"loses" sentences (`projectAccessConfigGains`/`.Loses`), even
+    // comment: the language was borrowed from the project panel's own
+    // "gains"/"loses" confirmation sentences — retired with
+    // `ProjectAccessView` in SOPS-39 task 10, so this pair is now the only
+    // place that vocabulary survives — even
     // though this is a different action (importing one file, not rewriting
     // a creation rule) and so gets its own keys rather than reusing theirs.
 

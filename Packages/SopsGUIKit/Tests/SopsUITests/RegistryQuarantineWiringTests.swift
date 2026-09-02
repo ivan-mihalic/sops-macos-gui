@@ -16,11 +16,13 @@ import Testing
 ///
 /// ⚠️ This says nothing about the notice being *shown* — it only pins that
 /// every call site *reads* it. SOPS-33 found it set at all six call sites and
-/// rendered at none, and closed that for the two dedicated access panels:
-/// `ProjectAccessView` (`ProjectAccessTests
-/// .thePanelRendersTheRegistryQuarantineBanner`) and `RecipientAccessView`
+/// rendered at none, and closed that for the two dedicated access surfaces:
+/// the project one (`ProjectAccessTests
+/// .thePageRendersTheRegistryQuarantineBanner`) and `RecipientAccessView`
 /// (`RecipientAccessRegistryQuarantineTests.noticeIsRendered`), both through
-/// the shared `RegistryQuarantineBanner`. The three wizard `@State` call
+/// the shared `RegistryQuarantineBanner`. The project half moved from
+/// `ProjectAccessView` to `ProjectAccessPage` in SOPS-39 task 10, and the
+/// page had to grow the banner to receive it. The three wizard `@State` call
 /// sites (`EncryptedImportPreview`, `RecipientPicker`, `NewSecretFileSheet`)
 /// remain store-only by deliberate choice — see `RegistryQuarantineBanner`'s
 /// own doc comment for why a transient file-creation flow is not the place

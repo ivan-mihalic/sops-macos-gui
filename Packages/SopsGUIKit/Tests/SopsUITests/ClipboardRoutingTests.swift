@@ -37,11 +37,19 @@ struct ClipboardRoutingTests {
     /// pasteboard.
     @Test("the editor's copy control routes through ClipboardClearing")
     func editorCopyIsRouted() throws {
-        let text = try source("Editor/SecretEditorView.swift")
+        // SOPS-39 task 7: the copy button moved out of the row and into the
+        // table's action cell, in its own file. The obligation followed it.
+        let text = try source("Editor/SecretTableView.swift")
         #expect(text.contains("ClipboardClearing.copy("),
                 "the editor no longer copies through ClipboardClearing: no deadline, no ConcealedType marker, and Universal Clipboard carries it to every device on the account")
         #expect(!text.contains("NSPasteboard"),
-                "the editor touches NSPasteboard directly; every secret copy must go through ClipboardClearing")
+                "the table touches NSPasteboard directly; every secret copy must go through ClipboardClearing")
+        // The editor and the inspector both hold decrypted values too, and
+        // neither may reach the pasteboard on its own.
+        for neighbour in ["Editor/SecretEditorView.swift", "Editor/SecretRowInspector.swift"] {
+            #expect(!(try source(neighbour)).contains("NSPasteboard"),
+                    "\(neighbour) touches NSPasteboard directly; every secret copy must go through ClipboardClearing")
+        }
     }
 
     /// Ticket #6, claim 3: these two views used to bypass `ClipboardClearing`

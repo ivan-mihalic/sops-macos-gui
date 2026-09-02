@@ -80,6 +80,25 @@ public final class ProjectAccessModel {
         /// comment already calls out as the one way this fallback is not
         /// silent — reading it was never enforced.
         case widenedScopeNotAcknowledged
+
+        /// What this refusal is called on screen.
+        ///
+        /// Lived on `ProjectAccessView` until SOPS-39 task 10 retired that
+        /// panel; it belongs on the refusal itself, so no caller can produce
+        /// one without a sentence to show for it. `RewrapCoordinator` is why
+        /// it has to exist outside a view at all: a rule it cannot re-wrap is
+        /// skipped *by name*, and the name is this.
+        public var explanation: String {
+            switch self {
+            case .emptyRecipients: LocalizedKey.projectAccessErrorEmptyRecipients.text
+            case .noFiles: LocalizedKey.projectAccessErrorNoFiles.text
+            case .noKey: LocalizedKey.accessNeedsKeyBody.text
+            case .notLoaded: LocalizedKey.projectAccessScanning.text
+            case .alreadyRunning: LocalizedKey.projectAccessErrorAlreadyRunning.text
+            case .widenedScopeNotAcknowledged:
+                LocalizedKey.projectAccessErrorWidenedScopeNotAcknowledged.text
+            }
+        }
     }
 
     public private(set) var loadState: LoadState = .idle
@@ -134,8 +153,17 @@ public final class ProjectAccessModel {
     /// The project this panel is about. Readable so the label editor knows
     /// which project's `.sops-gui/recipients.json` a name would be written to.
     public let projectRoot: URL
-    private let keyStore: SessionKeyStore
+    /// Where the session's decryption identity comes from. Readable so
+    /// `RewrapCoordinator` can build the per-rule models a project-wide
+    /// rewrap needs from the same store this model was given — the key
+    /// itself never leaves `SessionKeyStore.withKey`'s lending API.
+    public let keyStore: SessionKeyStore
     private let applier: ProjectRecipientApplier
+    /// The file the panel should describe the governing rule of — typically
+    /// whichever file is selected in the file list. `nil` falls back to
+    /// `ProjectRecipientApplier.plan`'s own default: the first file in
+    /// project-relative path order.
+    private let targetFile: URL?
     private let loadRegistry: (URL) -> (records: [RecipientRecord], quarantineNotice: String?)
     private var runTask: Task<Void, Never>?
     /// Which refresh is allowed to publish its result.
@@ -158,6 +186,9 @@ public final class ProjectAccessModel {
     ///   - applier: The scan/plan/apply engine. Injectable for the same
     ///     reason `RecipientAccessModel`'s seams are: a test drives failure
     ///     paths without filesystem permission tricks.
+    ///   - targetFile: The file the panel should describe the governing rule
+    ///     of. `nil` falls back to the first file in project-relative path
+    ///     order — see `ProjectRecipientApplier.plan`.
     ///   - loadRegistry: How labels are read. Deliberately non-throwing — a
     ///     registry this cannot read degrades to "no labels" rather than
     ///     hiding recipients the config itself names. Returns a notice
@@ -167,11 +198,13 @@ public final class ProjectAccessModel {
         projectRoot: URL,
         keyStore: SessionKeyStore,
         applier: ProjectRecipientApplier = ProjectRecipientApplier(),
+        targetFile: URL? = nil,
         loadRegistry: @escaping (URL) -> (records: [RecipientRecord], quarantineNotice: String?) = { project in
             RecipientRegistry.loadOrQuarantine(in: project)
         }
     ) {
         self.projectRoot = projectRoot
+        self.targetFile = targetFile
         self.keyStore = keyStore
         self.applier = applier
         self.loadRegistry = loadRegistry
@@ -187,8 +220,17 @@ public final class ProjectAccessModel {
 
     public var keyConfigured: Bool { keyStore.state == .configured }
 
-    /// Live tallies over `fileResults`. The canonical place `ProjectAccessView`
-    /// reads these from, rather than re-filtering `fileResults` itself —
+    /// Everything the Access page shows that a `Plan` alone does not: the
+    /// project's named keys, every creation rule (not only the governing
+    /// one), and each encrypted file's own recipients measured against the
+    /// rule that governs it. Built by the same scan `plan()` already ran —
+    /// see `AccessInventory` — so reading it costs nothing beyond a load
+    /// that has happened anyway, and `nil` exactly while no load has
+    /// succeeded yet.
+    public var inventory: AccessInventory? { plan?.inventory }
+
+    /// Live tallies over `fileResults`. The canonical place a view reads
+    /// these from, rather than re-filtering `fileResults` itself —
     /// which is what it used to do, alongside `ProjectRecipientApplier
     /// .RunResult`'s own (uncalled) `updatedCount`/`failedCount`: two
     /// expressions of the same fact, computed two different ways, is how they
@@ -292,7 +334,8 @@ public final class ProjectAccessModel {
         configWritten = false
         widenedScopeAcknowledged = false
 
-        let inspected = await applier.plan(projectRoot: projectRoot, recipients: stagedRecipients)
+        let inspected = await applier.plan(
+            projectRoot: projectRoot, recipients: stagedRecipients, targetFile: targetFile)
 
         // A walk that never happened produces the same empty result as a walk
         // that found nothing, so these two are checked before anything
@@ -367,7 +410,8 @@ public final class ProjectAccessModel {
         guard loadState == .loaded else { return }
         planGeneration &+= 1
         let generation = planGeneration
-        let fresh = await applier.plan(projectRoot: projectRoot, recipients: stagedRecipients)
+        let fresh = await applier.plan(
+            projectRoot: projectRoot, recipients: stagedRecipients, targetFile: targetFile)
         guard generation == planGeneration else { return }
         plan = fresh
         // See `widenedScopeAcknowledged`'s own doc comment: cleared
@@ -450,6 +494,34 @@ public final class ProjectAccessModel {
         case .failed(let message):
             return .failed(message)
         }
+    }
+
+    /// Adds a named key — one of the config's existing `keys:` anchors — to
+    /// creation rule `ruleIndex` as an alias, then reloads.
+    ///
+    /// The one config edit available on a rule built from anchors or key
+    /// groups, which `applyConfig()` refuses outright because rewriting such
+    /// a rule's whole list means guessing at things the file does not say.
+    /// It does not touch the staged set: the staged set belongs to the rule
+    /// this model is *about*, and this may be any rule on the page. It
+    /// re-encrypts nothing either — the reload is what makes the newly
+    /// drifted files show up in the rewrap banner.
+    public func addAliasToRule(ruleIndex: Int, anchor: String) async
+        -> ProjectRecipientApplier.ConfigWriteOutcome
+    {
+        guard let plan else { return .nothingToWrite }
+        let outcome = applier.addAliasToRule(
+            configURL: plan.configURL, ruleIndex: ruleIndex, anchor: anchor,
+            expecting: plan.configFingerprint)
+        // `refreshPlan()`, not `load()`, and the flag is set after it: `load()`
+        // resets `configWritten` to false as part of starting a fresh load, so
+        // setting it first and reloading second retired the commit reminder
+        // for every alias write — the one path in this feature that writes
+        // `.sops.yaml` without going through `applyConfig()`. `applyConfig()`
+        // already reloads through `refreshPlan()` for the same reason.
+        await refreshPlan()
+        if case .written = outcome { configWritten = true }
+        return outcome
     }
 
     /// Re-wraps every file in `filesToApply` for exactly `stagedRecipients`.

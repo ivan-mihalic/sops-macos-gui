@@ -83,6 +83,108 @@ public struct ConfigBackends: Decodable, Equatable, Sendable {
     public let backends: [String]
 }
 
+/// The whole-config, read-only view the Access page renders: every named key
+/// (YAML anchor) the config declares, every creation rule with its age
+/// recipients resolved through aliases, and which rule governs each
+/// candidate path. The companion to `ConfigBackends`, which only ever counts
+/// *non*-age backends — this is the age side, in full, including the anchor
+/// names `CreationRuleLookup` and `ConfigBackends` have no use for. See
+/// `SopsBridge.inspectConfigRules(configPath:candidateFilePaths:)`.
+public struct ConfigRules: Decodable, Equatable, Sendable {
+    /// A key declared in the config's top-level `keys:` list, alongside the
+    /// anchor name sops's own YAML parser recorded for it. `name` is empty
+    /// for a key with no anchor — an inline `age: age1...` recipient never
+    /// gets one.
+    public struct NamedKey: Decodable, Equatable, Sendable, Identifiable {
+        public let name: String
+        public let recipient: String
+        /// The age public key is the natural identity here — two anchors
+        /// never resolve to the same recipient, but an unnamed key and a
+        /// named one collapsing on `name` (both empty) would not be safe.
+        public var id: String { recipient }
+
+        public init(name: String, recipient: String) {
+            self.name = name
+            self.recipient = recipient
+        }
+    }
+
+    /// One recipient a creation rule resolves to, with the anchor name it
+    /// was declared under — empty when the rule spells the recipient inline
+    /// rather than through an alias.
+    public struct RuleRecipient: Decodable, Equatable, Sendable {
+        public let name: String
+        public let recipient: String
+
+        public init(name: String, recipient: String) {
+            self.name = name
+            self.recipient = recipient
+        }
+    }
+
+    /// One `creation_rules` entry, exactly as sops's own config parser
+    /// resolved it — never re-parsed by hand (ADR 0002).
+    public struct Rule: Decodable, Equatable, Sendable, Identifiable {
+        /// Position in `creation_rules`, 0-based. What `governedBy` and
+        /// `CreationRuleLookup.ruleIndex` use to name a rule — a rule has no
+        /// other stable identity, since `path_regex` is not unique and
+        /// anchors may repeat.
+        public let index: Int
+        public let pathRegex: String
+        public let recipients: [RuleRecipient]
+        /// Whether the rule declares its recipients through `key_groups`
+        /// rather than a flat `age:` list — `updateConfigRecipients` refuses
+        /// to rewrite a rule shaped this way, and the Access page needs to
+        /// say why before the user tries.
+        public let usesKeyGroups: Bool
+        /// Whether any recipient in this rule was declared through a YAML
+        /// anchor/alias rather than spelled out inline.
+        public let usesAnchors: Bool
+        /// Non-age master-key backends this rule declares ("pgp", "kms", …)
+        /// — the per-rule counterpart to `ConfigBackends.backends`. Empty
+        /// for an age-only rule.
+        public let nonAgeBackends: [String]
+        public let comment: String
+
+        public var id: Int { index }
+
+        public init(
+            index: Int,
+            pathRegex: String,
+            recipients: [RuleRecipient],
+            usesKeyGroups: Bool,
+            usesAnchors: Bool,
+            nonAgeBackends: [String],
+            comment: String
+        ) {
+            self.index = index
+            self.pathRegex = pathRegex
+            self.recipients = recipients
+            self.usesKeyGroups = usesKeyGroups
+            self.usesAnchors = usesAnchors
+            self.nonAgeBackends = nonAgeBackends
+            self.comment = comment
+        }
+    }
+
+    /// Every key declared in the config's top-level `keys:` list, in
+    /// declaration order.
+    public let keys: [NamedKey]
+    /// Every creation rule, in `creation_rules` order.
+    public let rules: [Rule]
+    /// For each candidate path that some creation rule governs, which rule
+    /// (by `Rule.index`) — sops's own rule-matching, not a regex re-run on
+    /// the Swift side. A candidate no rule governs is absent, not present
+    /// with a sentinel: the caller must not assume every candidate is a key.
+    public let governedBy: [String: Int]
+
+    public init(keys: [NamedKey], rules: [Rule], governedBy: [String: Int]) {
+        self.keys = keys
+        self.rules = rules
+        self.governedBy = governedBy
+    }
+}
+
 /// What the `.sops.yaml` creation rule governing a file would look like with a
 /// different age recipient list — a *proposal*, never something that happened.
 /// See `SopsBridge.updateConfigRecipients(configPath:targetFilePath:to:candidateFilePaths:)`.
@@ -341,6 +443,76 @@ public enum SopsBridge {
             // `updateConfigRecipients`.
             throw SopsBridgeError(
                 description: "the bridge's answer about this project's .sops.yaml could not be read")
+        }
+    }
+
+    /// Reports the whole-config, read-only view the Access page renders:
+    /// every named key (YAML anchor), every creation rule with its age
+    /// recipients resolved through aliases, and which rule governs each of
+    /// `candidateFilePaths`.
+    ///
+    /// `inspectConfigBackends` only ever counts non-age backends by name —
+    /// this is the age side, in full, including anchors and per-rule
+    /// recipient lists neither `inspectConfigBackends` nor the per-file
+    /// `lookupCreationRule` exposes.
+    ///
+    /// `candidateFilePaths` must be absolute, for the same reason
+    /// `lookupCreationRule` requires it; it may be empty, in which case
+    /// `governedBy` comes back empty too.
+    ///
+    /// Throws when the config cannot be read or is not valid YAML. Parsing is
+    /// done by the same real YAML parser sops's own config loader uses, never
+    /// by hand — ADR 0002.
+    public static func inspectConfigRules(configPath: String, candidateFilePaths: [String]) throws -> ConfigRules {
+        let candidatesJSON = String(decoding: try JSONEncoder().encode(candidateFilePaths), as: UTF8.self)
+        let json = try call { out in
+            configPath.withGoString { confPtr in
+                candidatesJSON.withGoString { candPtr in sops_inspect_config_rules(confPtr, candPtr, out) }
+            }
+        }
+        guard let data = json.data(using: .utf8) else {
+            throw SopsBridgeError(description: "bridge returned non-UTF8 JSON for config rules")
+        }
+        do {
+            return try JSONDecoder().decode(ConfigRules.self, from: data)
+        } catch {
+            // Fixed text, `error` deliberately unused — see the same catch in
+            // `updateConfigRecipients`.
+            throw SopsBridgeError(
+                description: "the bridge's answer about this project's .sops.yaml rules could not be read")
+        }
+    }
+
+    /// Computes what the `.sops.yaml` at `configPath` would hold with an
+    /// alias of the named key `anchor` appended to creation rule `ruleIndex`,
+    /// and returns that text.
+    ///
+    /// **This writes nothing**, like every other config call here: the text
+    /// comes back and the caller writes it — atomically, and only after the
+    /// user has confirmed.
+    ///
+    /// The one edit an anchored rule supports. `updateConfigRecipients`
+    /// refuses a rule built from anchors or `key_groups` because it rewrites
+    /// the whole list and would have to decide which group each key belongs
+    /// in and whether an alias may be replaced by the literal behind it.
+    /// Appending one alias asks neither question: nothing is removed, nothing
+    /// is resolved, and the anchor the user picked is what lands in the file.
+    /// Comments, indent width and line endings survive.
+    ///
+    /// Throws — with the bridge's own fixed, value-free sentence — when
+    /// `anchor` is not declared under the config's `keys:`, `ruleIndex` names
+    /// no rule, the rule already names that key, or the rule is spread across
+    /// more than one key group (several possible destinations, so it refuses
+    /// rather than guessing who gains access).
+    public static func addAliasRecipient(
+        configPath: String, ruleIndex: Int, anchor: String
+    ) throws -> String {
+        try call { out in
+            configPath.withGoString { confPtr in
+                anchor.withGoString { anchorPtr in
+                    sops_add_alias_recipient(confPtr, Int32(ruleIndex), anchorPtr, out)
+                }
+            }
         }
     }
 

@@ -89,9 +89,8 @@ public enum WorkspaceSwitchDecision: Equatable, Sendable {
     ///     the hole this parameter exists to close.
     ///
     /// "Is there anything at stake at all" is `UnsavedWorkGate.isClear`, the
-    /// same question `SecretEditorView.canOpenAccessPanel` and
-    /// `ProjectAccessGate.canOpen` ask before they let a different action
-    /// touch this document — see that type's doc comment (ticket #23). What
+    /// same question `SecretEditorView.canOpenAccessPanel` asks before it
+    /// lets a different action touch this document — see that type's doc comment (ticket #23). What
     /// stays local to this function is *which* answer a `false` gets:
     /// `saveIsInFlight` outranks `documentIsDirty` for the reason above, and
     /// neither boolean gate needs that distinction because both of them

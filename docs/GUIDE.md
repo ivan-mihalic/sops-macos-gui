@@ -16,16 +16,20 @@ through a real `NSHostingView`. Same SwiftUI code, same layout engine, same
 fonts; what you lose is the surrounding window chrome and anything that only
 exists mid-interaction (a text cursor, a hover highlight, a scrolled-down list).
 
-One consequence worth stating: `NavigationSplitView`'s own sidebar column does
-not populate under that technique, so the sidebar below is rendered from
-`SectionSidebarList` standing on its own. It is the same type the app puts in
-that column, not a mock-up.
+Two consequences worth stating, both of them "this container does not populate
+offscreen" rather than anything about the views themselves. `NavigationSplitView`'s
+own sidebar column comes back blank, so the sidebar below is rendered from
+`ProjectTreeSidebar` standing on its own; SwiftUI's `.inspector` column does the
+same, so the editor pictures show the table with an empty strip to its right and
+the inspector gets a picture of its own (step 14). Both are the types the app
+puts in those columns, not mock-ups.
 
-**Part 5 has no pictures at all**, and that is the same limitation rather than
-an oversight. Both access panels start a live scan of the project when they
-appear; the renderer takes a single shot and would catch them mid-scan, showing
-a spinner and a count of zero. A picture of the wrong moment is worse than no
-picture, so that part is written to stand on its own.
+**Part 5 is mostly written to stand on its own**, for the same reason: an access
+panel starts a live scan when it appears, and a single shot would catch it
+mid-scan — a spinner and a count of zero, which is a picture of the wrong
+moment. The one exception is the project-wide **Access** page (step 21), whose
+model is loaded before the shot is taken, so that picture is of the page rather
+than of its first frame.
 
 The data in every picture is a throwaway: keys generated per render by
 `age-keygen` and discarded when the process exits, hostnames under `.invalid`
@@ -169,11 +173,16 @@ you can copy.
 
 ### Step 7 · The sidebar
 
-![Sidebar, Projects selected](images/guide-07-sidebar.png)
+![Sidebar, nothing selected](images/guide-07-sidebar.png)
 
-Three destinations. **Projects** is the work; **About** and **Settings** sit in
-their own group at the bottom, the way macOS sidebars separate secondary
-destinations.
+One tree, and everything you can navigate to is in it. Projects are the top
+level; each expands to its encrypted files and an **Access** row. **About** and
+**Settings** sit in their own group at the bottom, the way macOS sidebars
+separate secondary destinations.
+
+The window is two columns: this, and whatever the selection is. It was four —
+sections, projects, files, editor — which left the value you came to read under
+a third of the window (`docs/adr/0005`).
 
 Rows are selectable across their **full width** — click anywhere in the row, not
 only on the label. (They were not, once. About and Settings were hand-rolled
@@ -190,12 +199,14 @@ If you have unsaved changes in an open file, changing sections asks first:
 **Save and continue**, **Discard changes**, or **Cancel**. Nothing is discarded
 silently.
 
-### Step 8 · The project list
+### Step 8 · A project
 
-![Project list](images/guide-08-projects.png)
+![A project selected](images/guide-08-projects.png)
 
-Projects you have added. **Add Project…** at the bottom opens a folder chooser —
-point it at `~/Development/sops-demo-project`.
+Projects you have added, each one a row you can expand. Selecting the project
+row itself opens its home page — the file count, the scan's own footnotes, and
+anything the walk could not get into. **Add Project…** at the bottom opens a
+folder chooser — point it at `~/Development/sops-demo-project`.
 
 A project is just a directory the app remembers. It is not copied, not indexed,
 and not modified by being added.
@@ -203,14 +214,18 @@ and not modified by being added.
 Git worktrees of the same repository are grouped together, so a repo with four
 checked-out branches is one heading rather than four unrelated rows.
 
-### Step 9 · The file list
+### Step 9 · The files, and Access
 
-![File list](images/guide-09-files.png)
+![A file selected](images/guide-09-files.png)
 
-Every sops-encrypted file under the project root, by path — YAML, dotenv, JSON
-and INI all open the same way. Click one to open it — `services/worker.secrets.env`,
-the `.env` file the setup script above wrote, opens exactly like the two YAML
-files above it (SOPS-38).
+Under each project: every sops-encrypted file below its root, by path — YAML,
+dotenv, JSON and INI all open the same way. Click one to open it —
+`services/worker.secrets.env`, the `.env` file the setup script above wrote,
+opens exactly like the two YAML files above it (SOPS-38).
+
+The dot at the right of a file row is its access state, so drift between a file
+and the rule that governs it is visible without opening anything. **Access** —
+the last row under every project — is where that is explained; it is step 21.
 
 The footnote at the bottom is still doing real work, just for a narrower case
 than it used to: a sops file in a shape this app does not recognise at all is
@@ -230,22 +245,26 @@ Decryption happens in process, using the identity you gave the app for this
 session. The key never goes through the environment and never reaches a
 subprocess (`docs/adr/0001`).
 
-Each row is one leaf of the document:
+Each row is one leaf of the document, in a table:
 
 | Column | What it is |
 |---|---|
-| Left, monospaced | The key path — `database.url`, `feature_flags.0` |
-| Below it | The YAML type (`string`, `integer`, …) and a padlock meaning encrypted at rest |
-| Middle | The value, **masked by default** |
+| Key | The key path — `database.url`, `feature_flags.0` |
+| Value | The value, **masked by default** |
+| Type | The YAML type (`string`, `integer`, …) and a padlock meaning encrypted at rest |
 | 👁 | Reveal / hide this one row |
 | ⧉ | Copy this value to the clipboard without revealing it |
+
+Value is the widest column, which is the whole point of the table: it is what
+you came to read.
 
 Values are masked even though the file is already decrypted in memory. The
 threat this addresses is the one in the room: a screen share, a colleague behind
 you, a recording.
 
-Toolbar, top right: **−** removes the selected row, **+** adds one, **Save**
-writes the file back. All three are disabled until they would do something.
+Toolbar, top right: **−** removes the selected row, **+** adds one,
+**Inspector** shows or hides the pane on the right, and **Save** writes the file
+back. All of them are disabled until they would do something.
 
 ### Step 11 · Revealing a value
 
@@ -294,11 +313,23 @@ sits in a list rather than a map, the sheet appends instead of asking for a name
 The new row is marked **New** until saved. Removing a row is **−**, and it too
 is a pending change until Save.
 
+#### The inspector
+
+![The row inspector](images/guide-14b-inspector.png)
+
+The **Inspector** button opens a pane on the right for the selected row: its key
+path and type, the value in a field big enough to read a connection string in,
+and **Apply** / **Revert** / **Remove** for that row alone.
+
+The value here is behind exactly the same reveal as the value in the table — one
+👁, one state. A second place to read a secret with a visibility rule of its own
+would be a hole in the rule the table enforces, which is why there isn't one.
+
 Editing values is not the only thing you can do to an open file. Changing *who
 can read it* is Part 5.
 
-Not every file in the list is one your key can open. A file whose recipients
-don't include you shows a padlock badge in the file list; select it anyway and
+Not every file in the tree is one your key can open. A file whose recipients
+don't include you shows a padlock badge in the sidebar; select it anyway and
 it opens read-only — "You can't decrypt this file", the raw encrypted contents
 underneath, and who *can* decrypt it, so you know whom to ask. There is
 nothing to edit here: Save, +, and − all stay disabled.
@@ -453,7 +484,9 @@ do:
 - **Let you apply over unsaved edits.** The Access button is disabled while the
   document is dirty — *"Save your changes before managing access."* Applying
   reloads the file from disk, which would have silently discarded what you
-  typed.
+  typed. Leaving the file for the project's **Access** page asks the same
+  question, in the same words, because it is the same guard on every move the
+  sidebar can make.
 
 Removing someone is confirmed by name, and the confirmation says the part people
 forget: *"Rotate the secret values afterwards: anyone removed may still hold an
@@ -461,41 +494,56 @@ old copy."* Taking a key out of a file does not un-see what was already read.
 
 ### Step 21 · A whole project
 
-**Project Access…** does the same job at the level of a creation rule.
+![The Access page](images/guide-19-access.png)
 
-It works out which rule in `.sops.yaml` governs the project's files, shows the
-recipients that rule names, and previews **which files** a run would re-wrap —
-not merely how many. Where files fall under a *different* rule, it says so and
-how many; where it could not identify a governing rule at all, it says the scope
-widened to every encrypted file it found rather than quietly applying to more
-than you expected.
+**Access** — the last row under every project in the sidebar — is a page, not a
+sheet, and it answers the three questions the per-file panel cannot.
 
-The two buttons do genuinely different things, and the confirmations spell out
-the difference rather than assuming you know it:
+**What are the keys called?** A `.sops.yaml` that declares its keys under a
+top-level `keys:` list gives each one a YAML anchor — `&studio`, `&deploy` — and
+that anchor is the name your team already uses. The page shows those names, the
+shortened public key beside each, whatever you have named it locally, and the
+`path_regex` of every rule that uses it: *what does the deploy key actually
+unlock?*, answered without reading the config yourself. The anchor is not a
+secret by construction — it sits in a file everyone with the repo can read.
 
-- **Update .sops.yaml…** rewrites the rule. Dropping someone here *"takes
-  nothing away — every file already on disk still decrypts for them, because
-  their key is still in that file's own metadata."*
-- **Apply to Files…** is what actually changes access to existing files. Each
-  file is reported on its own as **Updated**, **Already correct** or **Failed**,
-  and one unreadable file does not stop the rest of the run. **Stop** ends it
-  between files, never mid-write.
+**Which rule governs what?** Every creation rule gets a card, in the order sops
+reads them, with the recipients it names and the files it governs. The card for
+the rule governing the file you had selected is highlighted. The panel this
+replaced described exactly one rule — the one governing whichever file sorted
+first alphabetically — so a config with a production rule and a catch-all rule
+looked like a config with one rule (`docs/adr/0005`).
 
-Only a flat, age-only creation rule is rewritten. Anything else — several key
-groups, a rule mixing age with PGP or KMS, shamir thresholds, YAML anchors — is
-read-only, and the panel names the shape it found instead of guessing. The app
-does not edit a config it does not fully understand.
+**Has anything drifted?** A creation rule says who *new* files are encrypted for.
+It says nothing about the files already on disk, and the two answers diverge the
+moment anyone edits the config. Each file carries **encrypted for 2 of 3** when
+they disagree, each rule a pill saying whether all its files are in sync, and the
+banner at the top offers **Rewrap N files…** — the same job `sops updatekeys`
+does, per rule, for that rule's own declared recipients. It needs your private
+key: re-wrapping means decrypting the data key first.
 
-Two honest warnings the confirmation gives before it rewrites anything: the file
-is written out again in full, so blank lines, a leading `---` and the exact
-alignment of trailing comments do not survive (every rule, key and comment
-does); and if your rules sit flush against `creation_rules:` rather than
-indented under it, every line inside it shifts. Expect a larger diff than the
-keys you changed.
+The banner also says the thing people most often assume the other way round:
+*changing `.sops.yaml` re-encrypts nothing by itself.* And a rewrap is not a
+revocation — a removed recipient keeps whatever it has already read.
+
+**A rule that goes through anchors is read-only**, and the card says so rather
+than guessing: rewriting it would reformat someone else's config. The one edit
+offered there is **Add named key…**, which adds an existing anchor to the rule as
+an alias — purely additive, and it re-encrypts nothing, which is why the file it
+governs turns up in the rewrap banner immediately afterwards. Anything else —
+several key groups, age mixed with PGP or KMS, shamir thresholds — is read-only
+too, named by the shape found. The app does not edit a config it does not fully
+understand.
+
+Files that fall under **no** rule at all are listed under their own heading with
+the keys they are wrapped for. Organised by rule, a file no rule governs would
+otherwise appear nowhere — and it is precisely the file whose recipients no rule
+will ever correct.
 
 ### Step 22 · Naming recipients
 
-An `age1…` key is not a person. Any recipient row, in either panel, can be given
+An `age1…` key is not a person. Any recipient — a row on the per-file panel, or
+the **Label** cell on the project's Access page — can be given
 a **name**, a **type** (Device, Server, Person) and an optional note.
 
 Names live in `.sops-gui/recipients.json` inside the project — a shared,
@@ -511,7 +559,7 @@ access.**
 >
 > Nothing about access changes. This recipient can still decrypt every file it
 > can decrypt now. To actually take that away, remove the recipient in the
-> Access panel and apply the change.
+> file's Access panel and apply the change.
 
 That is why forgetting a name is not styled as a destructive action — it destroys
 nothing. Removing access is a different control, in a different panel, with a
@@ -521,9 +569,9 @@ different confirmation.
 
 ## Troubleshooting
 
-**A file I can see in Finder is not in the list.** Either it is not sops-
-encrypted, or it is sops in a shape this app does not recognise. The footnote
-at the bottom of the file list counts the second case.
+**A file I can see in Finder is not under its project in the sidebar.** Either it
+is not sops-encrypted, or it is sops in a shape this app does not recognise. The
+footnote on the project's home page counts the second case.
 
 **"No decryption key configured" on a file I own.** The identity in this session
 cannot decrypt that file — the file is encrypted to a recipient you do not hold. Compare the
@@ -534,18 +582,26 @@ app. The app's own engine is the version in About and is unaffected.
 
 **The Access button is greyed out.** The document has unsaved changes. Applying
 access changes reloads the file from disk, so the app makes you save or discard
-first rather than throwing away what you typed.
+first rather than throwing away what you typed. The same prompt appears if you
+click away to the project's **Access** page with edits pending.
+
+**A key on the Access page has no name and I cannot type one in.** The **Name**
+column is the anchor from `.sops.yaml` and is read from that file — a key
+declared inline has none. The **Label** column next to it is yours: click the
+dash and name it.
 
 **"This .sops.yaml will not be rewritten."** The governing rule is a shape the
 app will not edit — several key groups, age mixed with PGP/KMS/Vault, a shamir
-threshold, or YAML anchors. The panel names which one it found. Editing that
-file by hand still works; **Apply to Files** still works, because it does not
-touch the config.
+threshold, or YAML anchors. The rule's card names which one it found. Editing
+that file by hand still works, and so does **Rewrap**, because a rewrap brings
+files to the rule rather than the other way round. An anchored rule also accepts
+**Add named key…**, which is additive and needs no rewrite.
 
 **I removed someone from `.sops.yaml` and they can still read the files.**
-Working as intended, and the confirmation says so: the rule decides who *new and
-re-wrapped* files are encrypted for. Existing files still carry that key in
-their own metadata. **Apply to Files** is what changes them.
+Working as intended, and the Access page's banner says so: the rule decides who
+*new and re-wrapped* files are encrypted for. Existing files still carry that key
+in their own metadata, and the page flags each one as drifted until **Rewrap**
+brings it to the rule.
 
 **I forgot a recipient's name and nothing else happened.** Also intended. Names
 are labels in `.sops-gui/recipients.json`; they grant nothing. Access lives in
@@ -574,3 +630,10 @@ Writes `docs/images/guide-*.png`. The catalog is
 one `Snapshot` there. Note this is *not* `./Scripts/snapshots.sh`, which writes
 the much larger review set to a gitignored directory — the two have opposite
 lifecycles and are kept apart on purpose.
+
+⚠️ Both scripts pass `--build-system swiftbuild`, and that is load-bearing:
+`swift run`'s default engine copies `Localizable.xcstrings` into the module
+bundle uncompiled, so every string resolves to its own raw key and the images
+come out reading `access.keys.title` where they should read *Keys*. It renders
+perfectly happily — this is a silent failure, not a red one. If a regenerated
+image shows dotted key names, that is what happened.

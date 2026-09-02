@@ -22,9 +22,10 @@ enum Catalog {
         snapshots += keyImportView()
         snapshots += updateSettingsPanel()
         snapshots += scanSettingsPanel()
-        snapshots += try projectSidebar()
+        snapshots += try await projectTreeSidebar()
         snapshots += try await secretEditor()
-        snapshots += try await fileList()
+        snapshots += try await projectHome()
+        snapshots += try await projectAccessPage()
         snapshots += try projectStartHere()
         snapshots += dotEnvPreview()
         snapshots += try await newSecretFileSheet()
@@ -305,31 +306,39 @@ enum Catalog {
         ]
     }
 
-    // MARK: - Project sidebar, with a worktree group
+    // MARK: - The one sidebar (SOPS-39 task 6)
 
-    /// Three snapshots, because the sidebar's overflow fade only means
-    /// something as a pair: `project-sidebar-many-projects` must show it and
-    /// `project-sidebar-few-projects` must not. A fade over a list with
-    /// nothing below it is a cue about content that does not exist, which is
-    /// exactly the kind of small untruth `scrollOverflowFade()`'s own doc
-    /// comment says it is built to avoid.
-    ///
-    /// All three at the same 300×520 column so the two overflow cases differ
-    /// only in how many projects they hold.
-    private static func projectSidebar() throws -> [Snapshot] {
-        let worktree = try Fixtures.worktreeProjectSidebarModel()
-        let many = try Fixtures.manyProjectsSidebarModel()
-        let few = try Fixtures.fewProjectsSidebarModel()
-        let size = CGSize(width: 300, height: 520)
+    /// Rendered standing alone rather than through `AppShell`, and that is
+    /// not a shortcut: a `NavigationSplitView`'s own `sidebar:` column comes
+    /// back **blank** under this tool (CLAUDE.md, "What it still cannot
+    /// see"), so an `AppShell` snapshot would show an empty stripe where the
+    /// navigation is.
+    private static func projectTreeSidebar() async throws -> [Snapshot] {
+        let (projects, trees) = try await Fixtures.projectTreeFixture()
         return [
-            Snapshot("project-sidebar-worktree-group", size: size) {
-                ProjectSidebar(model: worktree)
+            Snapshot("project-tree-sidebar", size: CGSize(width: 300, height: 520)) {
+                ProjectTreeSidebar(
+                    projects: projects, trees: trees, selection: .constant(nil),
+                    onNewFile: { _ in }, onAddProjectAtPath: { _ in })
             },
-            Snapshot("project-sidebar-many-projects", size: size) {
-                ProjectSidebar(model: many)
-            },
-            Snapshot("project-sidebar-few-projects", size: size) {
-                ProjectSidebar(model: few)
+        ]
+    }
+
+    // MARK: - The Access page
+
+    /// SOPS-39 task 8. Rendered against a project with one drifted file, so
+    /// the rewrap banner and the orange per-rule pill are both in frame — an
+    /// all-in-sync project would show a page missing the half worth
+    /// reviewing. 1000×900 is roughly the pane the shell gives it on a
+    /// default-sized window.
+    private static func projectAccessPage() async throws -> [Snapshot] {
+        let model = try await Fixtures.projectAccessPageModel()
+        return [
+            Snapshot("project-access-page", size: CGSize(width: 1000, height: 900)) {
+                ProjectAccessPage(
+                    model: model,
+                    selectedFile: model.inventory?.files.first?.url,
+                    onFilesApplied: {})
             },
         ]
     }
@@ -350,7 +359,7 @@ enum Catalog {
             readFile: { _ in "irrelevant" })
         // Deliberately not awaited — this is what the view looks like the
         // instant a file is selected, before `load()` (called by
-        // `ProjectWorkspaceView.activateFile` right after construction, per
+        // `AppShell`'s detail pane right after construction, per
         // `AppShell.swift`) has resolved.
 
         let loaded = try await Fixtures.editorLoadedViewModel()
@@ -364,6 +373,7 @@ enum Catalog {
         let json = try await Fixtures.editorJSONViewModel()
         let ini = try await Fixtures.editorINIViewModel()
 
+        let (table, tableSelection) = try await Fixtures.editorTableViewModel()
         let editorSize = CGSize(width: 760, height: 560)
         func editor(_ name: String, _ model: SecretDocumentViewModel, fileName: String) -> Snapshot {
             Snapshot(name, size: editorSize) {
@@ -372,6 +382,34 @@ enum Catalog {
         }
 
         return [
+            // SOPS-39 task 7: the value table with its row inspector open.
+            // 1100x640 is a wide window's share of the detail pane — the
+            // width at which the old row list still gave the value under a
+            // third of the pane. The check this snapshot exists for is
+            // whether the Value column now takes more than half the table.
+            Snapshot("secretTable", size: CGSize(width: 1100, height: 640)) {
+                SecretEditorView(
+                    viewModel: table, fileName: "production/.env",
+                    unsavedChanges: UnsavedChangesTracker(),
+                    initiallySelectedRowID: tableSelection)
+            },
+            // The inspector on its own, because `.inspector`'s column does
+            // not populate under this headless technique — the same gap
+            // CLAUDE.md records for `NavigationSplitView`'s `sidebar:` slot,
+            // so `secretTable` above shows it as an empty column. This is
+            // the only way to actually look at it.
+            Snapshot("secretRowInspector", size: CGSize(width: 320, height: 640)) {
+                SecretRowInspector(
+                    viewModel: table, selectedRowID: tableSelection,
+                    fileName: "production/.env", access: nil, nameFor: { _ in nil },
+                    ruleLabel: nil,
+                    // Revealed, because the masked state is the one a
+                    // screenshot cannot tell apart from an empty pane — and
+                    // the value editor is the thing worth reviewing here.
+                    revealed: RevealedRows(revealing: [tableSelection], in: table.rowIdentityGeneration),
+                    generation: table.rowIdentityGeneration,
+                    onToggleReveal: { _ in }, onActivity: {})
+            },
             editor("editor-loading", unloaded, fileName: "loading.yaml"),
             editor("editor-loaded", loaded, fileName: "production.secrets.yaml"),
             // The same document at the two ends of the range the window
@@ -461,9 +499,14 @@ enum Catalog {
         ]
     }
 
-    // MARK: - FileListView, every content state
+    // MARK: - ProjectHomeView, every content state
 
-    private static func fileList() async throws -> [Snapshot] {
+    /// The states the file list used to carry alongside its rows — the
+    /// incomplete-scan banner, the missing/unreadable roots, the narrowed
+    /// empty placeholder and the footnotes — which live in the project's
+    /// detail pane now that the rows themselves are in the sidebar. See
+    /// `ProjectHomeView`'s own doc comment for why they needed a home.
+    private static func projectHome() async throws -> [Snapshot] {
         let withFiles = try await Fixtures.fileListModelWithFiles()
         let empty = try await Fixtures.fileListModelEmpty()
         let missingRoot = await Fixtures.fileListModelMissingRoot()
@@ -471,20 +514,20 @@ enum Catalog {
         let emptyPartial = try await Fixtures.fileListModelEmptyPartialScan()
         let unfollowedSymlink = try await Fixtures.fileListModelWithUnfollowedSymlink()
 
-        let size = CGSize(width: 320, height: 480)
-        func list(_ name: String, _ model: FileListModel) -> Snapshot {
+        let size = CGSize(width: 420, height: 480)
+        func home(_ name: String, _ model: FileListModel) -> Snapshot {
             Snapshot(name, size: size) {
-                FileListView(model: model, selection: .constant(nil), onNewFile: {})
+                ProjectHomeView(model: model, onNewFile: {})
             }
         }
 
         return [
-            list("file-list-with-files", withFiles),
-            list("file-list-empty", empty),
-            list("file-list-missing-root", missingRoot),
-            list("file-list-incomplete-scan", incomplete),
-            list("file-list-empty-partial-scan", emptyPartial),
-            list("file-list-unfollowed-symlink", unfollowedSymlink),
+            home("project-home-with-files", withFiles),
+            home("project-home-empty", empty),
+            home("project-home-missing-root", missingRoot),
+            home("project-home-incomplete-scan", incomplete),
+            home("project-home-empty-partial-scan", emptyPartial),
+            home("project-home-unfollowed-symlink", unfollowedSymlink),
         ]
     }
 

@@ -192,192 +192,20 @@ public final class ProjectSidebarModel {
     }
 }
 
-/// The project list: groups with worktree members indented under their main
-/// repository, an "Add Project" control (`NSOpenPanel`, directories only,
-/// plus drag-and-drop of folder URLs), and removal with a confirmation that
-/// says plainly that nothing on disk is touched.
-public struct ProjectSidebar: View {
-    @Bindable private var model: ProjectSidebarModel
-    @State private var pendingRemoval: StoredProject?
-    @State private var isDropTargeted = false
-
-    public init(model: ProjectSidebarModel) {
-        self.model = model
-    }
-
-    public var body: some View {
-        VStack(spacing: 0) {
-            if model.groups.isEmpty {
-                emptyState
-            } else {
-                List(selection: $model.selection) {
-                    ForEach(model.groups) { group in
-                        groupContent(group)
-                    }
-                }
-                .listStyle(.sidebar)
-                // Task 9 added this everywhere a `List` in this app can run
-                // past its frame and missed the one list that is *always*
-                // short of room — the sidebar is the narrowest, shortest
-                // column in the window, and a developer with a dozen projects
-                // overflows it before anything else. Without it, the last
-                // visible project row ends at a hard edge that reads exactly
-                // like the end of the list. Only ever drawn when there really
-                // is more (`scrollOverflowFade()`'s doc comment), so the
-                // ordinary two- or three-project sidebar is unchanged.
-                .scrollOverflowFade()
-            }
-
-            Divider()
-            // The whole footer row is the button, not just the words.
-            //
-            // Measured on the running app with `Scripts/ui-probe.swift`:
-            // `AXButton "Add Project…" 101x16` sitting in a 220 pt sidebar —
-            // click anywhere but the text and nothing happened. Same defect
-            // as the About/Settings rows had, same cause: `.buttonStyle(.plain)`
-            // makes the hit region the *rendered* content, and padding renders
-            // nothing.
-            //
-            // The `Spacer()` that used to sit beside it is gone: it pushed the
-            // label left inside a row the button did not own, which is exactly
-            // how the dead area got there.
-            Button {
-                presentOpenPanel()
-            } label: {
-                Label(.actionAddProject, systemImage: "plus")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-        }
-        .background(isDropTargeted ? Color.accentColor.opacity(0.08) : Color.clear)
-        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted, perform: handleDrop)
-        .confirmationDialog(
-            LocalizedKey.projectsRemoveConfirmTitle.text,
-            isPresented: Binding(
-                get: { pendingRemoval != nil },
-                set: { isPresented in if !isPresented { pendingRemoval = nil } }),
-            presenting: pendingRemoval
-        ) { project in
-            Button(LocalizedKey.actionRemoveProject.text, role: .destructive) {
-                model.remove(project.id)
-                pendingRemoval = nil
-            }
-            Button(LocalizedKey.actionCancel.text, role: .cancel) {
-                pendingRemoval = nil
-            }
-        } message: { _ in
-            // Removal means "stop tracking", never "delete" — CLAUDE.md and
-            // PROPOSAL.md both require the confirmation to say so plainly.
-            Text(.projectsRemoveConfirmMessage)
-        }
-        .alert(
-            LocalizedKey.projectsAddErrorTitle.text,
-            isPresented: Binding(
-                get: { model.lastError != nil },
-                set: { isPresented in if !isPresented { model.lastError = nil } })
-        ) {
-            Button(LocalizedKey.actionDone.text) { model.lastError = nil }
-        } message: {
-            Text(model.lastError ?? "")
-        }
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "folder.badge.plus")
-                .font(.largeTitle)
-                .foregroundStyle(.secondary)
-            Text(.projectsEmptyTitle)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    /// A group with more than one member, or whose sole member is a
-    /// worktree (main repository not itself added), gets a header naming the
-    /// main repository — see `groupHeaderText(_:)`. A lone, ordinary project
-    /// renders without one; a header over a list of exactly one unrelated
-    /// project would just be visual noise repeating the row beneath it.
-    @ViewBuilder
-    private func groupContent(_ group: ProjectGroup) -> some View {
-        let isMainRepositoryItselfAMember = group.members.contains { $0.rootPath == group.mainRepositoryPath }
-        if group.members.count > 1 || !isMainRepositoryItselfAMember {
-            Section {
-                ForEach(group.members) { member in
-                    row(for: member, in: group).tag(member.id)
-                }
-            } header: {
-                Text(groupHeaderText(group))
-            }
-        } else {
-            ForEach(group.members) { member in
-                row(for: member, in: group).tag(member.id)
-            }
-        }
-    }
-
-    /// The main repository's own project, if it was itself added — its
-    /// display name reflects what the user actually typed (`StoredProject`'s
-    /// `displayPath`/`displayName`, not the resolved `rootPath`). Otherwise
-    /// the last path component of `mainRepositoryPath`, so a worktree whose
-    /// main repository was never added still groups under a name that
-    /// identifies it, rather than being pinned under a path string the
-    /// sidebar shows nowhere else.
-    private func groupHeaderText(_ group: ProjectGroup) -> String {
-        if let mainProject = group.members.first(where: { $0.rootPath == group.mainRepositoryPath }) {
-            return mainProject.displayName
-        }
-        return (group.mainRepositoryPath as NSString).lastPathComponent
-    }
-
-    @ViewBuilder
-    private func row(for member: StoredProject, in group: ProjectGroup) -> some View {
-        let isWorktreeMember = member.rootPath != group.mainRepositoryPath
-        HStack(spacing: 6) {
-            Image(systemName: isWorktreeMember ? "arrow.triangle.branch" : "folder")
-                .foregroundStyle(isWorktreeMember ? .secondary : .primary)
-                .padding(.leading, isWorktreeMember ? 14 : 0)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(member.displayName)
-                if isWorktreeMember {
-                    Text(.projectsWorktreeLabel)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Spacer()
-
-            if model.isMissing(member) {
-                Text(.projectsMissingBadge)
-                    .font(.caption2)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(.orange.opacity(0.18), in: Capsule())
-                    .foregroundStyle(.orange)
-            }
-        }
-        .contentShape(Rectangle())
-        .contextMenu {
-            Button(role: .destructive) {
-                pendingRemoval = member
-            } label: {
-                Label(.actionRemoveProject, systemImage: "trash")
-            }
-        }
-    }
-
-    /// The Add Project panel, configured but not run.
-    ///
-    /// Separate from `presentOpenPanel()` so a test can look at it:
-    /// `runModal()` blocks on a real window, so a panel built inline in the
-    /// method that immediately runs it cannot be inspected at all — which is
-    /// how it went a whole release cycle without a New Folder button and
-    /// nothing noticed. See `ProjectOpenPanelTests`.
-    static func makeAddProjectPanel() -> NSOpenPanel {
+/// The Add Project panel, configured but not run.
+///
+/// Separate from the button that runs it so a test can look at it:
+/// `runModal()` blocks on a real window, so a panel built inline in the
+/// method that immediately runs it cannot be inspected at all — which is how
+/// it went a whole release cycle without a New Folder button and nothing
+/// noticed. See `ProjectOpenPanelTests`.
+///
+/// A free type rather than a static on the sidebar view: the view that owns
+/// the footer is now `ProjectTreeSidebar` (SOPS-39 task 6), and pinning this
+/// to whichever view currently draws the button is what made it move once
+/// already.
+public enum ProjectOpenPanel {
+    public static func make() -> NSOpenPanel {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -393,54 +221,8 @@ public struct ProjectSidebar: View {
         panel.prompt = LocalizedKey.actionAddProject.text
         return panel
     }
-
-    private func presentOpenPanel() {
-        let panel = Self.makeAddProjectPanel()
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        model.addProject(path: url.path)
-    }
-
-    /// Drag-and-drop of one or more folders onto the sidebar. Each dropped
-    /// URL goes through `model.addProject(path:)` exactly like the open
-    /// panel — a non-directory drop, or a duplicate, surfaces the same
-    /// `lastError` alert rather than failing silently.
-    /// Every provider is resolved first, and the model is told once.
-    ///
-    /// The version this replaces called into the model from each provider's own
-    /// completion handler, independently. Those finish in any order, and
-    /// `addProject` starts by clearing `lastError` — so a mixed drop of one
-    /// unreadable item and one good folder ended with no alert at all whenever
-    /// the good one finished last, which is exactly the silence the unreadable
-    /// branch was added to end.
-    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
-        let fileURLProviders = providers.filter {
-            $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
-        }
-        guard !fileURLProviders.isEmpty else { return false }
-
-        Task { @MainActor in
-            var paths: [String] = []
-            var unreadable = 0
-            for provider in fileURLProviders {
-                if let path = await Self.path(from: provider) {
-                    paths.append(path)
-                } else {
-                    unreadable += 1
-                }
-            }
-            model.addDroppedProjects(paths: paths, unreadableCount: unreadable)
-        }
-        return true
-    }
-
-    private static func path(from provider: NSItemProvider) async -> String? {
-        await withCheckedContinuation { continuation in
-            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
-                continuation.resume(returning: droppedProjectPath(from: item))
-            }
-        }
-    }
 }
+
 
 /// The filesystem path inside whatever `NSItemProvider.loadItem` hands back for
 /// `public.file-url`, or `nil` if there isn't one.

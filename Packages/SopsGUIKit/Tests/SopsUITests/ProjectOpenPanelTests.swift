@@ -13,7 +13,7 @@ import Testing
 ///
 /// Asserted on the configuration rather than through the panel, because
 /// `runModal()` blocks on a real window this package cannot open. That is why
-/// `makeAddProjectPanel()` exists as a separate function: the thing worth
+/// `ProjectOpenPanel.make()` exists as a separate function: the thing worth
 /// checking is what the panel is set to, and a panel built inline inside the
 /// method that immediately runs it is unreachable from a test.
 @Suite("Add Project open panel")
@@ -22,7 +22,7 @@ struct ProjectOpenPanelTests {
 
     @Test("the panel offers New Folder, so a project can be created while choosing it")
     func offersNewFolder() {
-        #expect(ProjectSidebar.makeAddProjectPanel().canCreateDirectories)
+        #expect(ProjectOpenPanel.make().canCreateDirectories)
     }
 
     /// The rest of the configuration, pinned in the same place — these decide
@@ -30,7 +30,7 @@ struct ProjectOpenPanelTests {
     /// wrong is a different, quieter kind of broken than a missing button.
     @Test("it picks exactly one directory, never a file")
     func picksOneDirectory() {
-        let panel = ProjectSidebar.makeAddProjectPanel()
+        let panel = ProjectOpenPanel.make()
         #expect(panel.canChooseDirectories)
         #expect(!panel.canChooseFiles)
         #expect(!panel.allowsMultipleSelection)
@@ -41,6 +41,6 @@ struct ProjectOpenPanelTests {
     /// the system default "Open".
     @Test("the accept button is named for adding a project")
     func promptNamesTheAction() {
-        #expect(ProjectSidebar.makeAddProjectPanel().prompt == LocalizedKey.actionAddProject.text)
+        #expect(ProjectOpenPanel.make().prompt == LocalizedKey.actionAddProject.text)
     }
 }

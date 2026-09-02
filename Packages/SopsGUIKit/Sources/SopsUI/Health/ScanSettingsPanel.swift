@@ -45,8 +45,8 @@ public struct ScanSettingsPanel: View {
                 // Disabled rather than hidden when there is nothing to reset,
                 // matching the rest of this app's convention for a control
                 // that would otherwise do nothing when pressed — see
-                // `ProjectAccessGate`/`SecretEditorView.canOpenAccessPanel`
-                // for the same shape applied to a different guard.
+                // `SecretEditorView.canOpenAccessPanel` for the same shape
+                // applied to a different guard.
                 .disabled(budget == ProjectScanner.maxScannedFiles
                     && defaults.integer(forKey: ScanBudgetSetting.defaultsKey) == 0)
             } footer: {

@@ -75,6 +75,16 @@ func applierScratchDirectory(_ label: String = "project-applier") throws -> URL 
     return dir
 }
 
+/// The plan reports URLs read off disk during a scan, which resolve any
+/// symlinks in their directory prefix — `FileManager.default.temporaryDirectory`
+/// itself is one on this machine (`/var` → `/private/var`), so a scratch URL
+/// built directly from it and a plan's URL for the same file are the same
+/// file but not `==` as `URL` values. Tests that compare a plan's URL against
+/// one they built by hand go through this instead of exact equality.
+func normalizedForComparison(_ url: URL) -> URL {
+    url.standardizedFileURL.resolvingSymlinksInPath()
+}
+
 // sops's own YAML emitter normalizes indentation to four spaces, so a fixture
 // meant to survive a decrypt round-trip byte-for-byte must already be in that
 // shape — same reason `CompatibilityTests` and `RecipientAccessTests` use it.
@@ -894,6 +904,72 @@ struct ProjectRecipientApplierOrderingTests {
         #expect(plan.unmatchedFiles.first?.path.contains("/zulu/") == true)
     }
 
+    @Test("an explicit target file picks that file's rule, not the first file's")
+    func explicitTargetFileSelectsItsRule() async throws {
+        let alpha = try AgeKeyPair.generate()
+        let zulu = try AgeKeyPair.generate()
+        let root = try applierScratchDirectory()
+        try """
+            creation_rules:
+              - path_regex: zulu/.*\\.yaml$
+                age: \(zulu.public)
+              - path_regex: alpha/.*\\.yaml$
+                age: \(alpha.public)
+
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        for (directory, key) in [("zulu", zulu), ("alpha", alpha)] {
+            let dir = root.appendingPathComponent(directory, isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let encrypted = try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [key.public])
+            try encrypted.write(to: dir.appendingPathComponent("secret.yaml"), atomically: true, encoding: .utf8)
+        }
+        let zuluFile = root.appendingPathComponent("zulu/secret.yaml")
+
+        let plan = await ProjectRecipientApplier().plan(projectRoot: root, recipients: [], targetFile: zuluFile)
+
+        #expect(plan.targetFile.map(normalizedForComparison) == normalizedForComparison(zuluFile))
+        #expect(plan.targetFileWasSubstituted == false)
+        #expect(plan.configRecipients == [zulu.public])
+        #expect(plan.matchedFiles.map(normalizedForComparison) == [normalizedForComparison(zuluFile)])
+        #expect(plan.filesGovernedByOtherRules.count == 1)
+    }
+
+    @Test("a target file's own format survives even when its URL differs textually from the scan's")
+    func explicitTargetFileKeepsItsFormat() async throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try applierScratchDirectory()
+        try "creation_rules:\n  - path_regex: .*\n    age: \(owner.public)\n"
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let encrypted = try SopsBridge.encrypt(
+            "DATABASE_PASSWORD=correct-horse-battery-staple\n", format: .dotenv, recipients: [owner.public])
+        try encrypted.write(to: root.appendingPathComponent("secret.env"), atomically: true, encoding: .utf8)
+        // `applierScratchDirectory()` already returns the unresolved
+        // `/var/...` form of `FileManager.default.temporaryDirectory`, which
+        // is exactly the textual mismatch against the scan's resolved
+        // `/private/var/...` URLs this test is pinning against.
+        let targetFile = root.appendingPathComponent("secret.env")
+
+        let plan = await ProjectRecipientApplier().plan(projectRoot: root, recipients: [], targetFile: targetFile)
+
+        #expect(plan.filesInScope.first?.format == .dotenv)
+    }
+
+    @Test("a target file the scan did not find falls back to the first file, and says so")
+    func unknownTargetFileFallsBackToFirst() async throws {
+        let alpha = try AgeKeyPair.generate()
+        let root = try applierScratchDirectory()
+        try "creation_rules:\n  - path_regex: .*\n    age: \(alpha.public)\n"
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let encrypted = try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [alpha.public])
+        try encrypted.write(to: root.appendingPathComponent("a.yaml"), atomically: true, encoding: .utf8)
+
+        let plan = await ProjectRecipientApplier().plan(
+            projectRoot: root, recipients: [], targetFile: root.appendingPathComponent("missing.yaml"))
+
+        #expect(plan.targetFile?.lastPathComponent == "a.yaml")
+        #expect(plan.targetFileWasSubstituted == true)
+    }
+
     @Test("every file list a plan reports is in project-relative path order")
     func everyReportedListIsSorted() async throws {
         let owner = try AgeKeyPair.generate()
@@ -1110,5 +1186,53 @@ struct ProjectRecipientApplierAliasTests {
         // copy of what it pointed at.
         let kind = try FileManager.default.attributesOfItem(atPath: alias.path)[.type] as? FileAttributeType
         #expect(kind == .typeSymbolicLink)
+    }
+
+    // SOPS-39 task 4, review round 1: `plan.inventory` is built from a real
+    // scan (`applierScratchDirectory()`, always under `$TMPDIR`, which is
+    // itself a symlink — `/var` → `/private/var` on this machine), so this
+    // exercises the resolved-path fix directly: an anchored `path_regex`
+    // like `^secrets/prod\.yaml$` only matches at all if `AccessInventory
+    // .build` sends the bridge the same resolved form `ProjectScanner`'s
+    // enumerator already returned, matching what `plan()`'s own
+    // `proposeConfig` call has always done. Before that fix this failed with
+    // every file `.ungoverned` — an anchored regex against an unresolved,
+    // symlinked-prefix path matches nothing.
+    @Test("Plan.inventory reports rules and per-file drift from a real, symlink-prefixed scan")
+    func inventoryReflectsRealScanThroughASymlinkedRoot() async throws {
+        let a = try AgeKeyPair.generate()
+        let b = try AgeKeyPair.generate()
+        let root = try applierScratchDirectory("inventory-plan")
+
+        try """
+            creation_rules:
+              - path_regex: ^secrets/prod\\.yaml$
+                age: \(a.public)
+              - path_regex: ^secrets/
+                age: \(b.public)
+
+            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+
+        let secrets = root.appendingPathComponent("secrets", isDirectory: true)
+        try FileManager.default.createDirectory(at: secrets, withIntermediateDirectories: true)
+        // Governed by rule 0 (`^secrets/prod\.yaml$`) and encrypted for
+        // exactly what that rule declares — in sync.
+        try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [a.public])
+            .write(to: secrets.appendingPathComponent("prod.yaml"), atomically: true, encoding: .utf8)
+        // Governed by rule 1 (`^secrets/`, the only other rule that matches
+        // a path under `secrets/` that isn't `prod.yaml`) but still
+        // encrypted for `a`, not the `b` that rule declares — drift.
+        try SopsBridge.encrypt(applierPlainYAML, format: .yaml, recipients: [a.public])
+            .write(to: secrets.appendingPathComponent("local.yaml"), atomically: true, encoding: .utf8)
+
+        let plan = await ProjectRecipientApplier().plan(projectRoot: root, recipients: [a.public])
+
+        #expect(plan.inventory.rules.count == 2)
+        #expect(plan.inventory.files(governedBy: 0).map(\.relativePath) == ["secrets/prod.yaml"])
+        #expect(plan.inventory.files(governedBy: 1).map(\.relativePath) == ["secrets/local.yaml"])
+        let prod = try #require(plan.inventory.files.first { $0.relativePath == "secrets/prod.yaml" })
+        #expect(prod.status == .inSync)
+        let local = try #require(plan.inventory.files.first { $0.relativePath == "secrets/local.yaml" })
+        #expect(local.status == .ruleDiffers(fileHas: [a.public], ruleWants: [b.public]))
     }
 }

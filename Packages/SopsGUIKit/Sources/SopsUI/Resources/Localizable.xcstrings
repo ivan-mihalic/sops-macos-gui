@@ -145,6 +145,17 @@
         }
       }
     },
+    "access.empty.no-files": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No encrypted files here yet, and no creation rule to show. Create a file and this page will say who can read it."
+          }
+        }
+      }
+    },
     "access.error.empty-recipients": {
       "extractionState": "manual",
       "localizations": {
@@ -152,6 +163,83 @@
           "stringUnit": {
             "state": "translated",
             "value": "Removing every recipient would leave this file unreadable. Keep at least one."
+          }
+        }
+      }
+    },
+    "access.keys.column.key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Public key"
+          }
+        }
+      }
+    },
+    "access.keys.column.label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Label"
+          }
+        }
+      }
+    },
+    "access.keys.column.name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Name"
+          }
+        }
+      }
+    },
+    "access.keys.column.used-in": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Used in"
+          }
+        }
+      }
+    },
+    "access.keys.none": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This .sops.yaml has no keys: list. Recipients are written inline in each rule."
+          }
+        }
+      }
+    },
+    "access.keys.note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Public age keys from .sops.yaml → keys. The name is the YAML anchor, so anyone reading the file in an editor sees it too. These are not secrets."
+          }
+        }
+      }
+    },
+    "access.keys.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Named keys"
           }
         }
       }
@@ -174,6 +262,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Add your age private key in Settings › Key to apply access changes. Reading who has access doesn't need one."
+          }
+        }
+      }
+    },
+    "access.page.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Access"
           }
         }
       }
@@ -244,6 +343,250 @@
         }
       }
     },
+    "access.rewrap.banner": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Changing .sops.yaml re-encrypts nothing by itself."
+          }
+        }
+      }
+    },
+    "access.rewrap.button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Rewrap %lld file…"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "Rewrap %lld files…"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "access.rewrap.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ is encrypted for %2$@, its rule wants %3$@."
+          }
+        }
+      }
+    },
+    "access.rewrap.note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The same thing sops updatekeys does. Needs your private key. A removed recipient keeps what it already read."
+          }
+        }
+      }
+    },
+    "access.rewrap.rule-not-staged": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "One rule was left alone: its recipients could not be staged exactly as it declares them, and a partial set is worse than none."
+          }
+        }
+      }
+    },
+    "access.rules.add-named": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add named key…"
+          }
+        }
+      }
+    },
+    "access.rules.add-named-none": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Every named key is already in this rule."
+          }
+        }
+      }
+    },
+    "access.rules.add-named-note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adds an alias to the rule. The file is not re-encrypted until you rewrap."
+          }
+        }
+      }
+    },
+    "access.rules.all-in-sync": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All files in sync"
+          }
+        }
+      }
+    },
+    "access.rules.anchored-read-only": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This rule uses anchors or key_groups. Edit .sops.yaml by hand to change it."
+          }
+        }
+      }
+    },
+    "access.rules.comment": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Comment"
+          }
+        }
+      }
+    },
+    "access.rules.encrypted-for-of": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "encrypted for %lld of %lld"
+          }
+        }
+      }
+    },
+    "access.rules.governs": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Governs"
+          }
+        }
+      }
+    },
+    "access.rules.governs-none": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No file in this project"
+          }
+        }
+      }
+    },
+    "access.rules.needs-rewrap": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld file needs rewrap"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld files need rewrap"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "access.rules.note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Order matters: sops takes the first path_regex that matches. The selected file falls under the highlighted rule."
+          }
+        }
+      }
+    },
+    "access.rules.recipients": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recipients"
+          }
+        }
+      }
+    },
+    "access.rules.reveal-config": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show .sops.yaml in Finder"
+          }
+        }
+      }
+    },
+    "access.rules.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Creation rules"
+          }
+        }
+      }
+    },
+    "access.target-substituted": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The file you had open is no longer in this project; showing the first file's rule."
+          }
+        }
+      }
+    },
     "access.title": {
       "extractionState": "manual",
       "localizations": {
@@ -273,6 +616,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Keep this recipient"
+          }
+        }
+      }
+    },
+    "access.ungoverned": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No rule governs this file"
           }
         }
       }
@@ -1663,6 +2017,29 @@
         }
       }
     },
+    "files.count-summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%d encrypted file in this project."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%d encrypted files in this project."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "files.empty-partial.title": {
       "extractionState": "manual",
       "localizations": {
@@ -1670,17 +2047,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "No encrypted files in the part of this project that could be scanned."
-          }
-        }
-      }
-    },
-    "files.no-project-selected": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Select a project to see its encrypted files."
           }
         }
       }
@@ -2402,118 +2768,6 @@
         }
       }
     },
-    "project-access.all-files-in-scope": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "Apply to Files will re-wrap the %d encrypted file found in this project."
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "Apply to Files will re-wrap all %d encrypted files found in this project."
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "project-access.apply-files-button": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Apply to Files…"
-          }
-        }
-      }
-    },
-    "project-access.apply-files-confirm.button": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Re-wrap Files"
-          }
-        }
-      }
-    },
-    "project-access.apply-files-confirm.message": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%d file will be re-wrapped for the staged recipients. .sops.yaml is not touched by this."
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%d files will be re-wrapped for the staged recipients. .sops.yaml is not touched by this."
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "project-access.apply-files-confirm.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Re-wrap this project's encrypted files?"
-          }
-        }
-      }
-    },
-    "project-access.apply-files-removal.message": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@ will no longer be able to decrypt %2$#@count@. Rotate the secret values afterwards: anyone removed may still hold an old copy."
-          },
-          "substitutions": {
-            "count": {
-              "argNum": 2,
-              "formatSpecifier": "d",
-              "variations": {
-                "plural": {
-                  "one": {
-                    "stringUnit": {
-                      "state": "translated",
-                      "value": "1 of this project's files"
-                    }
-                  },
-                  "other": {
-                    "stringUnit": {
-                      "state": "translated",
-                      "value": "%arg of this project's files"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "project-access.applying-label": {
       "extractionState": "manual",
       "localizations": {
@@ -2521,74 +2775,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Applying recipients across this project"
-          }
-        }
-      }
-    },
-    "project-access.button": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Project Access…"
-          }
-        }
-      }
-    },
-    "project-access.cancel-run": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Stop"
-          }
-        }
-      }
-    },
-    "project-access.cancelled-note": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "Stopped early: %d file was not reached."
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "Stopped early: %d files were not reached."
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "project-access.collapsed-duplicate-files": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%d file in this project is reachable by more than one name — a symlink and its target, most often — and appears once above rather than once per name."
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%d files in this project are reachable by more than one name — a symlink and its target, most often — and appear once above rather than once per name."
-                }
-              }
-            }
           }
         }
       }
@@ -2604,39 +2790,6 @@
         }
       }
     },
-    "project-access.config-read-only.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This .sops.yaml will not be rewritten"
-          }
-        }
-      }
-    },
-    "project-access.config-section.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Creation rule in .sops.yaml"
-          }
-        }
-      }
-    },
-    "project-access.config-up-to-date": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The creation rule already lists exactly these recipients."
-          }
-        }
-      }
-    },
     "project-access.config-written": {
       "extractionState": "manual",
       "localizations": {
@@ -2644,17 +2797,6 @@
           "stringUnit": {
             "state": "translated",
             "value": ".sops.yaml now lists these recipients. Commit it so the rest of your team gets it."
-          }
-        }
-      }
-    },
-    "project-access.disabled-unsaved-changes": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Save your changes before managing project access."
           }
         }
       }
@@ -2748,149 +2890,6 @@
         }
       }
     },
-    "project-access.files-preview.more": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "…and %d more file, not listed here."
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "…and %d more files, not listed here."
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "project-access.files-preview.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Files this apply would re-wrap"
-          }
-        }
-      }
-    },
-    "project-access.files-summary": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The creation rule this panel updates governs %1$#@matched@ of the %2$#@found@ found in this project."
-          },
-          "substitutions": {
-            "matched": {
-              "argNum": 1,
-              "formatSpecifier": "d",
-              "variations": {
-                "plural": {
-                  "one": {
-                    "stringUnit": {
-                      "state": "translated",
-                      "value": "1 file"
-                    }
-                  },
-                  "other": {
-                    "stringUnit": {
-                      "state": "translated",
-                      "value": "%arg files"
-                    }
-                  }
-                }
-              }
-            },
-            "found": {
-              "argNum": 2,
-              "formatSpecifier": "d",
-              "variations": {
-                "plural": {
-                  "one": {
-                    "stringUnit": {
-                      "state": "translated",
-                      "value": "1 encrypted file"
-                    }
-                  },
-                  "other": {
-                    "stringUnit": {
-                      "state": "translated",
-                      "value": "%arg encrypted files"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "project-access.no-config": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This project has no .sops.yaml, so there is no creation rule to update. Files can still be re-wrapped."
-          }
-        }
-      }
-    },
-    "project-access.no-files": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No sops-encrypted files were found in this project."
-          }
-        }
-      }
-    },
-    "project-access.other-rules-in-scope": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%d of them is governed by a different creation rule in this project's .sops.yaml, and will be re-wrapped for the staged recipients anyway."
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%d of them are governed by different creation rules in this project's .sops.yaml, and will be re-wrapped for the staged recipients anyway."
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "project-access.widened-scope.acknowledgement": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "I understand this also re-wraps files a different creation rule governs, for a key set that rule never named."
-          }
-        }
-      }
-    },
     "project-access.result.failed": {
       "extractionState": "manual",
       "localizations": {
@@ -2935,17 +2934,6 @@
         }
       }
     },
-    "project-access.results.summary": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%1$@ updated, %2$@ already correct, %3$@ failed."
-          }
-        }
-      }
-    },
     "project-access.results.title": {
       "extractionState": "manual",
       "localizations": {
@@ -2979,40 +2967,6 @@
         }
       }
     },
-    "project-access.scan-incomplete.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This project was not fully searched"
-          }
-        }
-      }
-    },
-    "project-access.previous-run-incomplete": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "A previous run against this project did not finish: %d file was never re-wrapped for the current recipients. Apply again to finish."
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "A previous run against this project did not finish: %d files were never re-wrapped for the current recipients. Apply again to finish."
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "project-access.scanning": {
       "extractionState": "manual",
       "localizations": {
@@ -3020,40 +2974,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Looking through this project…"
-          }
-        }
-      }
-    },
-    "project-access.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Project Access"
-          }
-        }
-      }
-    },
-    "project-access.unmatched-note": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%d encrypted file is governed by a different creation rule and is not part of this apply."
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%d encrypted files are governed by a different creation rule and are not part of this apply."
-                }
-              }
-            }
           }
         }
       }
@@ -3080,24 +3000,13 @@
         }
       }
     },
-    "project-access.update-config-confirm.gains": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@ will be added to the creation rule: files encrypted or re-wrapped from now on will be readable by them."
-          }
-        }
-      }
-    },
     "project-access.update-config-confirm.loses": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ will be dropped from the creation rule: new files will no longer be encrypted for them. This takes nothing away — every file already on disk still decrypts for them, because their key is still in that file's own metadata. Use Apply to Files to change that."
+            "value": "%@ will be dropped from the creation rule: new files will no longer be encrypted for them. This takes nothing away — every file already on disk still decrypts for them, because their key is still in that file's own metadata. Rewrap those files to change that."
           }
         }
       }
@@ -3707,13 +3616,46 @@
         }
       }
     },
-    "sidebar.projects": {
+    "sidebar.access": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Projects"
+            "value": "Access"
+          }
+        }
+      }
+    },
+    "sidebar.access-help": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Who can read this project's files — .sops.yaml"
+          }
+        }
+      }
+    },
+    "sidebar.file-needs-rewrap": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Encrypted for a different key set than its rule declares"
+          }
+        }
+      }
+    },
+    "sidebar.file-ungoverned": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No creation rule governs this file"
           }
         }
       }
@@ -3978,6 +3920,204 @@
           "stringUnit": {
             "state": "translated",
             "value": "Opens sops files in YAML, dotenv, JSON and INI."
+          }
+        }
+      }
+    },
+    "editor.column.key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Key"
+          }
+        }
+      }
+    },
+    "editor.column.value": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Value"
+          }
+        }
+      }
+    },
+    "editor.column.type": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Type"
+          }
+        }
+      }
+    },
+    "inspector.title.file": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "File"
+          }
+        }
+      }
+    },
+    "inspector.value": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Value"
+          }
+        }
+      }
+    },
+    "inspector.apply": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apply"
+          }
+        }
+      }
+    },
+    "inspector.revert": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Revert"
+          }
+        }
+      }
+    },
+    "inspector.remove": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove"
+          }
+        }
+      }
+    },
+    "inspector.readable-by": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Who can read this file"
+          }
+        }
+      }
+    },
+    "inspector.readable-by.note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Access is per file, not per key. Change it under Access."
+          }
+        }
+      }
+    },
+    "inspector.no-selection": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select a row to edit its value."
+          }
+        }
+      }
+    },
+    "inspector.toggle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inspector"
+          }
+        }
+      }
+    },
+    "inspector.rule": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rule"
+          }
+        }
+      }
+    },
+    "inspector.format": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Format"
+          }
+        }
+      }
+    },
+    "inspector.format.yaml": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "YAML"
+          }
+        }
+      }
+    },
+    "inspector.format.dotenv": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "dotenv"
+          }
+        }
+      }
+    },
+    "inspector.format.json": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "JSON"
+          }
+        }
+      }
+    },
+    "inspector.format.ini": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "INI"
           }
         }
       }

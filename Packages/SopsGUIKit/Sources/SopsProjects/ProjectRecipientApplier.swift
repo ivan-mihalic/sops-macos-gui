@@ -140,8 +140,11 @@ public struct ProjectRecipientApplier: Sendable {
         /// Zero for a project with no such alias. Not itself a warning: a
         /// symlink inside a project is unremarkable, but the count the user
         /// sees in `encryptedFiles.count` is smaller than the number of paths
-        /// the scan actually found, and that gap deserves a word. See
-        /// `ProjectAccessView`'s disclosure.
+        /// the scan actually found, and that gap deserves a word.
+        ///
+        /// ⚠️ Computed and tested, but drawn by nothing since SOPS-39 task 10
+        /// retired `ProjectAccessView`, which was the only surface that said
+        /// it. See `docs/adr/0005`, "Consequences".
         public let duplicateFileNameCount: Int
         /// Every entry in `encryptedFiles` (and therefore `matchedFiles`,
         /// `unmatchedFiles`, `filesGovernedByOtherRules` too — all subsets of
@@ -169,10 +172,17 @@ public struct ProjectRecipientApplier: Sendable {
         /// what lets the panel say so before an apply rather than after. See
         /// `filesInScope`.
         public let filesGovernedByOtherRules: [URL]
-        /// The file whose governing rule this plan is about — the first
-        /// encrypted file in project-relative path order, which is the first
-        /// one the user sees in the file list. `nil` when the scan found none.
+        /// The file whose governing rule this plan is about — the caller's
+        /// requested file when the scan found it, otherwise the first
+        /// encrypted file in project-relative path order (the first one the
+        /// user sees in the file list). `nil` when the scan found none.
         public let targetFile: URL?
+        /// True when the caller asked for a target file the scan did not find
+        /// (deleted, outside the root, dedup'd away) and this plan fell back
+        /// to the first file instead. The UI must say so — a panel "about
+        /// prod" that is really about local is the exact confusion this flag
+        /// exists to prevent.
+        public let targetFileWasSubstituted: Bool
         /// Why nothing derived from this scan may claim to cover the whole
         /// project. `nil` when the walk did cover it.
         public let incompleteScanReason: String?
@@ -206,6 +216,11 @@ public struct ProjectRecipientApplier: Sendable {
         /// the second when the first is true is a confident claim about a
         /// directory this app never looked inside.
         public let rootUnreadable: Bool
+        /// Rules, named keys, and each file's sync status against the rule
+        /// that governs it — built from the same scan this plan already
+        /// walked (SOPS-39 task 4). Never a second walk: see
+        /// `AccessInventory.build(projectRoot:tree:inspect:)`.
+        public let inventory: AccessInventory
 
         /// Whether writing the config would change anything. False for a
         /// config that is unwritable *and* for one that already agrees.
@@ -271,6 +286,7 @@ public struct ProjectRecipientApplier: Sendable {
     private let rewrapRecipients: @Sendable (String, SopsFileFormat, [String], String) throws -> String
     private let scanProject: @Sendable (URL) async -> ScannedTree
     private let proposeConfig: @Sendable (String, String, [String], [String]) throws -> ConfigRecipientUpdate
+    private let proposeAlias: @Sendable (String, Int, String) throws -> String
 
     public init(
         readFile: @escaping @Sendable (URL) throws -> String = {
@@ -295,7 +311,12 @@ public struct ProjectRecipientApplier: Sendable {
                 try SopsBridge.updateConfigRecipients(
                     configPath: configPath, targetFilePath: targetPath,
                     to: recipients, candidateFilePaths: candidates)
-            }
+            },
+        proposeAlias: @escaping @Sendable (String, Int, String) throws -> String = {
+            configPath, ruleIndex, anchor in
+            try SopsBridge.addAliasRecipient(
+                configPath: configPath, ruleIndex: ruleIndex, anchor: anchor)
+        }
     ) {
         self.readFile = readFile
         self.fingerprintFile = fingerprintFile
@@ -304,6 +325,7 @@ public struct ProjectRecipientApplier: Sendable {
         self.rewrapRecipients = rewrapRecipients
         self.scanProject = scanProject
         self.proposeConfig = proposeConfig
+        self.proposeAlias = proposeAlias
     }
 
     // MARK: - Planning
@@ -320,7 +342,7 @@ public struct ProjectRecipientApplier: Sendable {
     /// than only at write time because the answer a user has to see — "this
     /// rule can be updated / here is why it cannot" — is the same call that
     /// produces the text.
-    public func plan(projectRoot: URL, recipients: [String]) async -> Plan {
+    public func plan(projectRoot: URL, recipients: [String], targetFile requested: URL? = nil) async -> Plan {
         let tree = await scanProject(projectRoot)
         // `tree.encrypted` carries all four sops formats — YAML and dotenv
         // since Task 5, JSON and INI since SOPS-38 phase F2 task 3 — because
@@ -357,10 +379,12 @@ public struct ProjectRecipientApplier: Sendable {
                 fileFormats: fileFormats,
                 matchedFiles: [], unmatchedFiles: encryptedFiles,
                 filesGovernedByOtherRules: [],
-                targetFile: encryptedFiles.first, incompleteScanReason: tree.incompleteScanReason,
+                targetFile: encryptedFiles.first, targetFileWasSubstituted: false,
+                incompleteScanReason: tree.incompleteScanReason,
                 configRecipients: [], configRefusal: nil, configUpdateText: nil,
                 configFingerprint: nil, configError: nil,
-                rootMissing: tree.rootMissing, rootUnreadable: tree.rootUnreadable)
+                rootMissing: tree.rootMissing, rootUnreadable: tree.rootUnreadable,
+                inventory: .empty)
         }
 
         // Taken before the read, for the same reason `SecretDocumentViewModel
@@ -369,9 +393,33 @@ public struct ProjectRecipientApplier: Sendable {
         // refuses rather than clobbers.
         let configFingerprint = fingerprintFile(configURL)
 
-        guard let targetFile = encryptedFiles.first else {
+        // The caller's requested file wins over the first-in-order file when
+        // the scan actually found it. Both sides go through
+        // `standardizedFileURL.resolvingSymlinksInPath()` for the comparison
+        // because the scan's URLs come back with symlinks in the directory
+        // prefix resolved and a caller-supplied URL (e.g. from the open-file
+        // picker) may not. `requestedFound` yields the *scan's own* URL, not
+        // `requested` itself — `fileFormats` (built above from `tree.encrypted`)
+        // is keyed by those scan URLs, and every list below
+        // (`matchedFiles`/`unmatchedFiles`/`filesGovernedByOtherRules`/
+        // `targetFile`) is drawn from `encryptedFiles` for the same reason:
+        // `filesInScope` looks a file's format up by exact URL, and a plan
+        // that swapped in the caller's differently-spelled-but-same-file URL
+        // would silently miss that lookup and fall back to treating a
+        // dotenv/JSON/INI target as YAML.
+        let resolvedRequest = requested.map { $0.standardizedFileURL.resolvingSymlinksInPath() }
+        let resolvedEncryptedFiles = encryptedFiles.map { $0.standardizedFileURL.resolvingSymlinksInPath() }
+        let requestedIndex = resolvedRequest.flatMap { resolved in
+            resolvedEncryptedFiles.firstIndex(of: resolved)
+        }
+        let requestedFound = requestedIndex.map { encryptedFiles[$0] }
+        let targetFileWasSubstituted = requested != nil && requestedFound == nil
+
+        guard let targetFile = requestedFound ?? encryptedFiles.first else {
             // No file to resolve a rule for. The config is not an error and
-            // not a refusal — there is simply nothing to ask about it.
+            // not a refusal — there is simply nothing to ask about it. And
+            // nothing to have substituted, either: there is no fallback file
+            // for a requested target to have been substituted with.
             return Plan(
                 projectRoot: projectRoot, configURL: configURL, configExists: true,
                 requestedRecipients: recipients,
@@ -379,10 +427,12 @@ public struct ProjectRecipientApplier: Sendable {
                 fileFormats: fileFormats,
                 matchedFiles: [], unmatchedFiles: [],
                 filesGovernedByOtherRules: [],
-                targetFile: nil, incompleteScanReason: tree.incompleteScanReason,
+                targetFile: nil, targetFileWasSubstituted: false,
+                incompleteScanReason: tree.incompleteScanReason,
                 configRecipients: [], configRefusal: nil, configUpdateText: nil,
                 configFingerprint: configFingerprint, configError: nil,
-                rootMissing: tree.rootMissing, rootUnreadable: tree.rootUnreadable)
+                rootMissing: tree.rootMissing, rootUnreadable: tree.rootUnreadable,
+                inventory: .empty)
         }
 
         let update: ConfigRecipientUpdate
@@ -398,10 +448,12 @@ public struct ProjectRecipientApplier: Sendable {
                 fileFormats: fileFormats,
                 matchedFiles: [], unmatchedFiles: encryptedFiles,
                 filesGovernedByOtherRules: [],
-                targetFile: targetFile, incompleteScanReason: tree.incompleteScanReason,
+                targetFile: targetFile, targetFileWasSubstituted: targetFileWasSubstituted,
+                incompleteScanReason: tree.incompleteScanReason,
                 configRecipients: [], configRefusal: nil, configUpdateText: nil,
                 configFingerprint: configFingerprint, configError: error.description,
-                rootMissing: tree.rootMissing, rootUnreadable: tree.rootUnreadable)
+                rootMissing: tree.rootMissing, rootUnreadable: tree.rootUnreadable,
+                inventory: .empty)
         } catch {
             return Plan(
                 projectRoot: projectRoot, configURL: configURL, configExists: true,
@@ -410,11 +462,13 @@ public struct ProjectRecipientApplier: Sendable {
                 fileFormats: fileFormats,
                 matchedFiles: [], unmatchedFiles: encryptedFiles,
                 filesGovernedByOtherRules: [],
-                targetFile: targetFile, incompleteScanReason: tree.incompleteScanReason,
+                targetFile: targetFile, targetFileWasSubstituted: targetFileWasSubstituted,
+                incompleteScanReason: tree.incompleteScanReason,
                 configRecipients: [], configRefusal: nil, configUpdateText: nil,
                 configFingerprint: configFingerprint,
                 configError: "this project's .sops.yaml could not be read",
-                rootMissing: tree.rootMissing, rootUnreadable: tree.rootUnreadable)
+                rootMissing: tree.rootMissing, rootUnreadable: tree.rootUnreadable,
+                inventory: .empty)
         }
 
         let matchedPaths = Set(update.matchedFiles)
@@ -432,12 +486,14 @@ public struct ProjectRecipientApplier: Sendable {
             fileFormats: fileFormats,
             matchedFiles: matched, unmatchedFiles: unmatched,
             filesGovernedByOtherRules: governedElsewhere,
-            targetFile: targetFile, incompleteScanReason: tree.incompleteScanReason,
+            targetFile: targetFile, targetFileWasSubstituted: targetFileWasSubstituted,
+            incompleteScanReason: tree.incompleteScanReason,
             configRecipients: update.currentRecipients,
             configRefusal: update.writable ? nil : update.reason,
             configUpdateText: update.writable && update.changed ? update.config : nil,
             configFingerprint: configFingerprint, configError: nil,
-            rootMissing: tree.rootMissing, rootUnreadable: tree.rootUnreadable)
+            rootMissing: tree.rootMissing, rootUnreadable: tree.rootUnreadable,
+            inventory: AccessInventory.build(projectRoot: projectRoot, tree: tree))
     }
 
     /// `urls` in the order the user already sees them, which is the order
@@ -460,22 +516,27 @@ public struct ProjectRecipientApplier: Sendable {
     /// round — the same reason `runOffCooperativePool` is duplicated here.
     /// `ProjectRecipientApplierOrderingTests` pins the resulting order.
     static func sortedByProjectRelativePath(_ urls: [URL], under root: URL) -> [URL] {
-        func relativePath(_ url: URL) -> String {
-            // Both sides through `ruleMatchingPath`, for the reason its own doc
-            // comment gives: the scan's URLs come back with the directory
-            // prefix's symlinks resolved and the project root's do not, so
-            // stripping one from the other as a literal prefix is otherwise a
-            // no-op and this sorts absolute paths. It happens to produce the
-            // same order while every path shares a prefix, which is what kept
-            // it invisible.
-            let base = ruleMatchingPath(root)
-            var path = ruleMatchingPath(url)
-            guard path.hasPrefix(base) else { return path }
-            path.removeFirst(base.count)
-            if path.hasPrefix("/") { path.removeFirst() }
-            return path
-        }
-        return urls.sorted { relativePath($0) < relativePath($1) }
+        urls.sorted { projectRelativePath($0, under: root) < projectRelativePath($1, under: root) }
+    }
+
+    /// A file's path relative to `root`, in the same form the file list and
+    /// `sortedByProjectRelativePath` already show the user.
+    ///
+    /// Both sides through `ruleMatchingPath`, for the reason its own doc
+    /// comment gives: the scan's URLs come back with the directory prefix's
+    /// symlinks resolved and the project root's do not, so stripping one from
+    /// the other as a literal prefix is otherwise a no-op and this returns
+    /// absolute paths. It happens to produce the same order while every path
+    /// shares a prefix, which is what kept it invisible. Extracted out of
+    /// `sortedByProjectRelativePath` (SOPS-39 task 4) so `AccessInventory` can
+    /// compute the same relative path without duplicating the logic.
+    static func projectRelativePath(_ url: URL, under root: URL) -> String {
+        let base = ruleMatchingPath(root)
+        var path = ruleMatchingPath(url)
+        guard path.hasPrefix(base) else { return path }
+        path.removeFirst(base.count)
+        if path.hasPrefix("/") { path.removeFirst() }
+        return path
     }
 
     /// The form of a path the bridge's rule selection is given.
@@ -572,6 +633,47 @@ public struct ProjectRecipientApplier: Sendable {
         guard let text = plan.configUpdateText else { return .nothingToWrite }
         do {
             try writeFile(text, plan.configURL, plan.configFingerprint)
+            return .written
+        } catch let error as AtomicFileWriter.Error {
+            return .failed(error.description)
+        } catch {
+            return .failed("this project's .sops.yaml could not be written")
+        }
+    }
+
+    /// Adds a named key — an existing `keys:` anchor — to creation rule
+    /// `ruleIndex` as an alias, and writes the result over `.sops.yaml`
+    /// atomically, refusing if the file changed since `expecting` was taken.
+    ///
+    /// The one config edit an anchored rule supports, and its own call for
+    /// the same reason `writeConfig(_:)` is: this changes who new files will
+    /// be encrypted for, so it must be reachable only from a user saying so.
+    /// It re-encrypts nothing — the files already on disk keep the keys they
+    /// have until they are re-wrapped, which is what the page's rewrap banner
+    /// is for.
+    ///
+    /// A refusal from the bridge (unknown anchor, duplicate, rule index out
+    /// of range, several key groups) comes back as `.failed` carrying that
+    /// sentence: it names a key and a rule, never a value.
+    public func addAliasToRule(
+        configURL: URL, ruleIndex: Int, anchor: String, expecting: FileFingerprint?
+    ) -> ConfigWriteOutcome {
+        let text: String
+        do {
+            text = try proposeAlias(configURL.path, ruleIndex, anchor)
+        } catch let error as SopsBridgeError {
+            // The bridge's own sentence, verbatim: it names the anchor and
+            // the rule it refused, which no fixed translation could.
+            return .failed(error.description)
+        } catch {
+            // Anything else is not a refusal this app can quote. Typed the
+            // same way `writeConfig` is (SOPS-39 task 10): `String(describing:)`
+            // over an arbitrary error prints its *type* at the user, and a
+            // type name is neither an explanation nor something to act on.
+            return .failed("this project's .sops.yaml could not be read")
+        }
+        do {
+            try writeFile(text, configURL, expecting)
             return .written
         } catch let error as AtomicFileWriter.Error {
             return .failed(error.description)

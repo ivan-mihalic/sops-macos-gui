@@ -199,6 +199,12 @@ struct LocalizationTests {
             "%d is a line number, not a count",
         "dotenv-preview.suspicion.duplicate-key":
             "%1$d is the winning entry's own line number, not a count",
+        // SOPS-39 task 8. "encrypted for 2 of 3" — two bare tallies inside a
+        // pill, with no noun or verb agreeing with either. "encrypted for 1
+        // of 3" reads correctly as it stands, and a plural split would need
+        // two substitutions to produce the identical string in every form.
+        "access.rules.encrypted-for-of":
+            "two bare tallies in a pill, with no noun or verb agreeing with them",
     ]
 
     @Test("every string that formats a count pluralizes on it")
@@ -238,14 +244,14 @@ struct LocalizationTests {
     /// Same shape, and same purpose, as `countedStringsWithNoSingularCase`: the
     /// value of the check below is that it forces the question to be answered
     /// once, in writing, rather than answered by accident.
-    private static let preStringifiedCountsWithNoSingularCase: [String: String] = [
-        // "%1$@ updated, %2$@ unchanged, %3$@ failed" — three bare tallies, no
-        // noun and no verb agreeing with any of them, so none has a singular
-        // form to get wrong. Pluralizing three counts in one sentence would
-        // need three substitutions to produce the identical string.
-        "project-access.results.summary":
-            "three bare tallies with no noun or verb agreeing with them; every form reads the same at 1",
-    ]
+    ///
+    /// Empty since SOPS-39 task 10: its one entry was
+    /// `project-access.results.summary`, and that key went with
+    /// `ProjectAccessView`. An empty allowlist is the strict state, not a
+    /// broken one — the check below still walks every call site, and a new
+    /// pre-stringified count has to be justified here in writing before it
+    /// can pass.
+    private static let preStringifiedCountsWithNoSingularCase: [String: String] = [:]
 
     /// M2. `project-access.files-summary` read "1 of the 1 encrypted files found
     /// here **fall** under…" at the most common case a small project has, and
@@ -374,56 +380,21 @@ struct LocalizationTests {
         #expect(key.text != key.rawValue, "missing catalog entry for \(key.rawValue)")
     }
 
-    /// I3. Rewriting `.sops.yaml` re-encodes the whole document, so blank
-    /// lines, a leading `---` marker and a trailing comment's alignment do not
-    /// survive — inherent to the yaml.v3 node-tree edit `UpdateConfigRecipients`
-    /// performs, and established empirically against that library rather than
-    /// assumed. `.sops.yaml` is almost always in version control, so a user who
-    /// is not told meets it as a surprise diff. The engine itself refuses an
-    /// entire config over merge keys for exactly this reason ("changing a part
-    /// of it nobody asked to change"), so applying the same class of change
-    /// silently was the inconsistency this closes.
-    ///
-    /// Asserted against the catalog JSON rather than through
-    /// `LocalizedKey.text`, for the reason this file's header states: under
-    /// plain `swift test` the catalog is copied uncompiled and every key
-    /// resolves to its own raw value, so an English-content assertion there
-    /// fails for a reason that has nothing to do with the string. The
-    /// `.confirmationDialog` that renders this message is not reachable from a
-    /// unit test at all — the documented limitation `WorkspaceSwitchDecisionTests`
-    /// and `QuitRequestTests` both state — so what is pinned is that the
-    /// sentence exists and cannot be dropped without this failing.
-    @Test("the config-update confirmation warns that the whole .sops.yaml is rewritten")
-    func configUpdateConfirmationDisclosesReformatting() throws {
-        let message = try #require(
-            Self.englishForms(for: .projectAccessUpdateConfigConfirmMessage).first,
-            "missing catalog entry for the config-update confirmation")
-
-        #expect(message.lowercased().contains("blank lines"),
-                "the confirmation must say blank lines are lost: \(message)")
-        #expect(message.contains("---"),
-                "the confirmation must name the document marker: \(message)")
-        #expect(message.lowercased().contains("diff"),
-                "the confirmation must set the expectation of a larger diff: \(message)")
-        // ...without overclaiming: the rules, keys and comments themselves do
-        // survive, and the sentence has to say so or it reads as data loss.
-        #expect(message.lowercased().contains("every rule"),
-                "the confirmation must also say what does survive: \(message)")
-
-        // M1. "Expect a *slightly* larger diff" was an understatement for the
-        // one shape it most needed to describe: a `.sops.yaml` whose rules sit
-        // flush with `creation_rules:` (`- path_regex:` at column 1) cannot be
-        // re-emitted in that form, `inferIndent` falls back to two, and every
-        // line inside `creation_rules` shifts. Nothing is harmed — the post-edit
-        // guard proves semantic identity — but a user who reads "slightly"
-        // cannot predict the diff they are about to see in git.
-        #expect(!message.lowercased().contains("slightly"),
-                "the confirmation must not understate a whole-file re-indent: \(message)")
-        #expect(message.lowercased().contains("flush"),
-                "the confirmation must name the flush-style config whose every line shifts: \(message)")
-        #expect(message.lowercased().contains("every line"),
-                "the confirmation must say every line inside creation_rules can shift: \(message)")
-    }
+    // SOPS-39 task 10 removed two wording guards from this file, with the
+    // strings they guarded:
+    //
+    //   * `configUpdateConfirmationDisclosesReformatting` over
+    //     `project-access.update-config-confirm.message` — the confirmation
+    //     dialog behind "Update .sops.yaml". The Access page writes the
+    //     config directly and has no such dialog, so the sentence no longer
+    //     exists to be checked.
+    //   * `configUpdateRemovalSentenceDisclaimsRevocation` over
+    //     `project-access.update-config-confirm.loses` — the same dialog's
+    //     "and loses …" half.
+    //
+    // Both went with `ProjectAccessView`. A wording guard over a string
+    // nothing renders is what keeps a dead key alive, and it reads as
+    // coverage while asserting about nobody's screen.
 
     /// That the plural variations actually *resolve* — the half the catalog-JSON
     /// checks above cannot see.
@@ -455,10 +426,13 @@ struct LocalizationTests {
         // which is exactly how a plural entry that is "shaped right and
         // resolves wrong" reaches a user: the JSON guard above sees two forms
         // and is satisfied, and nothing expands them.
+        // Task 4's counted strings. Five of them lived on the project-wide
+        // Access panel and went with it in SOPS-39 task 10
+        // (`unmatched-note`, `cancelled-note`, `apply-files-confirm.message`,
+        // `all-files-in-scope`, `collapsed-duplicate-files`), so what is left
+        // here is the counted string the Access page still draws.
         for key: LocalizedKey in [
-            .projectAccessUnmatchedNote, .projectAccessCancelledNote,
-            .projectAccessApplyFilesConfirmMessage, .projectAccessAllFilesInScope,
-            .projectAccessCollapsedDuplicateFiles,
+            .projectAccessDuplicateRecipients
         ] {
             let singular = String(format: key.text, 1)
             let plural = String(format: key.text, 5)
@@ -475,47 +449,63 @@ struct LocalizationTests {
                 "\(key.rawValue) reads the same at one and at many: \(singular)")
         }
 
-        // M2. `project-access.files-summary` formats *two* counts, so it needs
-        // two substitutions rather than one — a shape nothing else in this
-        // catalog uses, and one that resolves to a literal `%1$#@matched@` at
-        // the user if it is written wrong. The case it read wrongest is the
-        // most common one in a small project: matched == found == 1, which used
-        // to say "1 of the 1 encrypted files found here fall under…".
-        let bothAtOne = String(format: LocalizedKey.projectAccessFilesSummary.text, 1, 1)
-        let bothAtMany = String(format: LocalizedKey.projectAccessFilesSummary.text, 2, 3)
-        #expect(bothAtOne.contains("1 file of the 1 encrypted file"),
-                "the matched-of-found summary at one reads: \(bothAtOne)")
-        #expect(bothAtMany.contains("2 files of the 3 encrypted files"),
-                "the matched-of-found summary at many reads: \(bothAtMany)")
-        #expect(!bothAtOne.contains("%"), "unexpanded format specifier in: \(bothAtOne)")
-        #expect(!bothAtMany.contains("%"), "unexpanded format specifier in: \(bothAtMany)")
-
-        // And the removal confirmation's file count, which was the other
-        // pre-stringified one.
-        let removalAtOne = String(
-            format: LocalizedKey.projectAccessApplyFilesRemovalMessage.text, "Alice", 1)
-        let removalAtMany = String(
-            format: LocalizedKey.projectAccessApplyFilesRemovalMessage.text, "Alice", 4)
-        #expect(!removalAtOne.contains("%"), "unexpanded format specifier in: \(removalAtOne)")
-        // The `one` form must describe scope ("1 of this project's files"), not
-        // assert the project's total file count ("this project's one encrypted
-        // file") — the rule's scope can be a strict subset of the project, so
-        // the latter phrasing misstates the project in a destructive
-        // confirmation shown immediately before files are re-wrapped.
-        #expect(removalAtOne.contains("1 of this project's files"),
-                "the removal confirmation at one reads: \(removalAtOne)")
-        #expect(!removalAtOne.contains("one encrypted file"),
-                "the removal confirmation at one must not claim the project's total file count: \(removalAtOne)")
-        #expect(removalAtMany.contains("4 of this project's files"),
-                "the removal confirmation at many reads: \(removalAtMany)")
+        // The two-substitution `project-access.files-summary` and the
+        // destructive `project-access.apply-files-removal.message` were
+        // checked here too. Both were the retired panel's
+        // (SOPS-39 task 10) and are gone with it.
     }
 
-    /// D3. Rewriting a creation rule does not change access to anything that
-    /// already exists, and the sentence that says who it drops has to carry that
-    /// or it reads as a revocation the app never performed.
+    /// Restored after the final SOPS-39 review. Both of these were deleted
+    /// with `ProjectAccessView` in task 10, and with them the disclosure
+    /// itself: `ProjectAccessPage` wrote `.sops.yaml` on one unconfirmed
+    /// click for three commits. The page now raises a `confirmationDialog`
+    /// carrying exactly these two sentences —
+    /// `ProjectAccessPage.configUpdateConfirmationMessage` assembles them,
+    /// and `ProjectAccessPageTests` pins that the dialog is what the button
+    /// opens.
     ///
-    /// Against the catalog JSON, for this file's usual reason.
-    @Test("the config-update confirmation's removal sentence cannot be read as a revocation")
+    /// What the confirmation has to disclose: the file is re-emitted whole,
+    /// so blank lines, a leading `---` and the alignment inside
+    /// `creation_rules` can shift — without overclaiming, because the rules,
+    /// keys and comments themselves do survive.
+    @Test("the config-update confirmation discloses what rewriting .sops.yaml reformats")
+    func configUpdateConfirmationDisclosesReformatting() throws {
+        let message = try #require(
+            Self.englishForms(for: .projectAccessUpdateConfigConfirmMessage).first,
+            "missing catalog entry for the config-update confirmation")
+
+        #expect(message.lowercased().contains("blank lines"),
+                "the confirmation must say blank lines are lost: \(message)")
+        #expect(message.contains("---"),
+                "the confirmation must name the document marker: \(message)")
+        #expect(message.lowercased().contains("diff"),
+                "the confirmation must set the expectation of a larger diff: \(message)")
+        #expect(message.lowercased().contains("every rule"),
+                "the confirmation must also say what does survive: \(message)")
+
+        // M1 from the original round. "Expect a *slightly* larger diff" was an
+        // understatement for the one shape it most needed to describe: a
+        // `.sops.yaml` whose rules sit flush with `creation_rules:` cannot be
+        // re-emitted in that form, `inferIndent` falls back to two, and every
+        // line inside `creation_rules` shifts.
+        #expect(!message.lowercased().contains("slightly"),
+                "the confirmation must not understate a whole-file re-indent: \(message)")
+        #expect(message.lowercased().contains("flush"),
+                "the confirmation must name the flush-style config whose every line shifts: \(message)")
+        #expect(message.lowercased().contains("every line"),
+                "the confirmation must say every line inside creation_rules can shift: \(message)")
+    }
+
+    /// The other half, and the one a user can act on wrongly for weeks:
+    /// dropping a recipient from a *creation rule* revokes nothing. Every
+    /// file already on disk still carries that key in its own metadata.
+    ///
+    /// ⚠️ One word differs from the deleted original, deliberately. That
+    /// sentence sent the reader to "Apply to Files", a button of the panel
+    /// this page replaced; the control that actually re-encrypts here is
+    /// Rewrap. A disclosure pointing at a button that no longer exists is
+    /// worse than none — so the assertion moved with the control.
+    @Test("the config-update removal sentence disclaims revocation and names the control that does revoke")
     func configUpdateRemovalSentenceDisclaimsRevocation() throws {
         let sentence = try #require(
             Self.englishForms(for: .projectAccessConfigLoses).first,
@@ -524,7 +514,7 @@ struct LocalizationTests {
                 "the sentence must scope itself to new files: \(sentence)")
         #expect(sentence.lowercased().contains("already"),
                 "the sentence must say files already on disk keep their access: \(sentence)")
-        #expect(sentence.lowercased().contains("apply to files"),
+        #expect(sentence.lowercased().contains("rewrap"),
                 "the sentence must point at the control that does change access: \(sentence)")
     }
 
@@ -532,7 +522,8 @@ struct LocalizationTests {
     /// file never modifies the source, only creates a new one — a recipient
     /// named in `newFileEncryptedImportLoses` still reads the source exactly
     /// as before, and only loses the ability to read the *new* copy. The
-    /// borrowed "gains"/"loses" vocabulary from `ProjectAccessView` came
+    /// borrowed "gains"/"loses" vocabulary from the project panel (retired
+    /// with `ProjectAccessView` in SOPS-39 task 10) came
     /// without this clarification the first time; this pins that it is
     /// there, the same shape `configUpdateRemovalSentenceDisclaimsRevocation`
     /// already pins for the sibling sentence one screen over.

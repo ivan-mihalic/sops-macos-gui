@@ -1,7 +1,8 @@
 import Testing
 @testable import SopsUI
+import SopsProjects
 
-/// The menu bar's ⌘, and About items ask for a sidebar section instead of
+/// The menu bar's ⌘, and About items ask for a sidebar screen instead of
 /// opening windows of their own, and this is the property that has to hold
 /// while they do: **the request goes through the same guard a sidebar click
 /// goes through.**
@@ -17,8 +18,8 @@ struct SectionRouterTests {
 
     @Test("a router request reaches the guarded setter, not the raw selection")
     func requestGoesThroughTheGuard() {
-        var current = AppShell.Section.projects
-        var guardedRequests: [AppShell.Section] = []
+        var current: WorkspaceSelection? = nil
+        var guardedRequests: [WorkspaceSelection?] = []
 
         // The same binding the sidebar list is given.
         let guarded = AppShell.makeGuardedSelection(
@@ -38,7 +39,7 @@ struct SectionRouterTests {
         #expect(guardedRequests == [.settings])
         // Nothing wrote the selection directly — the guard decides that, and
         // in the app it may legitimately refuse.
-        #expect(current == .projects)
+        #expect(current == nil)
         #expect(router.requested == nil)
         current = .settings   // silence the unused-write warning honestly
         #expect(current == .settings)

@@ -3,14 +3,20 @@ import SopsProjects
 import Testing
 @testable import SopsUI
 
-@Test("the shell exposes the navigation sections the sidebar renders")
-func shellSections() {
-    #expect(AppShell.Section.allCases.map(\.rawValue) == ["projects", "about", "settings"])
-}
-
-@Test("about and settings are pinned to the bottom of the sidebar")
-func pinnedSections() {
-    #expect(AppShell.Section.pinnedToBottom == [.about, .settings])
+/// The destinations the sidebar can select.
+///
+/// `AppShell.Section` (projects/about/settings) is gone with the four-column
+/// window — `WorkspaceSelection` replaced it, and About/Settings being
+/// *rows of the one sidebar list* is asserted where it now lives,
+/// `OuterSidebarWiringTests.aboutAndSettingsAreRows` (which also pins them
+/// below the projects, PROPOSAL §4). What is left to say here is that the
+/// two screens are reachable as selections at all.
+@Test("About and Settings are selections, not separate windows")
+func aboutAndSettingsAreSelections() {
+    #expect(WorkspaceSelection.about.projectID == nil)
+    #expect(WorkspaceSelection.settings.projectID == nil)
+    #expect(!WorkspaceSelection.about.isDocument)
+    #expect(!WorkspaceSelection.settings.isDocument)
 }
 
 // Bundle-based, like `LocalizationTests.everyKeyResolves`: `.text` only resolves
@@ -23,26 +29,27 @@ func pinnedSections() {
       .enabled(if: LocalizationTests.bundleHasMacOSLayout,
                "swift test's native build system never compiles .xcstrings; run under xcodebuild or swift test --build-system swiftbuild to exercise this"))
 func sidebarLabelsAreLocalized() {
-    #expect(LocalizedKey.sidebarProjects.text == "Projects")
     #expect(LocalizedKey.sidebarAbout.text == "About")
     #expect(LocalizedKey.sidebarSettings.text == "Settings")
+    #expect(LocalizedKey.sidebarAccess.text == "Access")
 }
 
 // MARK: - M5: one project root, not two
 
-/// `AppShell` is a `View` struct whose state is all `private @State`, so there
-/// is no seam a runtime test can reach to ask it which project root it handed
-/// each Access panel. What can be checked is the source itself — the same
-/// technique `ProjectScopeDisclosureStructureTests` and the engine's
-/// `exports_test.go` use where the property is structural rather than
-/// behavioural.
+/// The defect: the per-file Access panel took its registry root from an ID
+/// lookup in `projects.groups`, while the project-wide panel took
+/// `fileListModel.projectRoot`. Those disagree whenever the lookup comes back
+/// empty — the project dropped out of the sidebar, or the store has not
+/// settled — and the visible result was the same project showing recipients
+/// *with* labels in one panel and *without* them in the other, at the same
+/// moment.
 ///
-/// The defect: the per-file panel took its registry root from an ID lookup in
-/// `projects.groups`, while the project-wide panel took `fileListModel
-/// .projectRoot`. Those disagree whenever the lookup comes back empty — the
-/// project dropped out of the sidebar, or the store has not settled — and the
-/// visible result was the same project showing recipients *with* labels in one
-/// panel and *without* them in the other, at the same moment.
+/// Since SOPS-39 task 6 both panels start from the same place: the selection
+/// carries a `StoredProject.ID`, `AppShell.project(for:)` resolves it once,
+/// and the per-file panel is handed `FileListModel.projectRoot` built from
+/// that same project. This pins that there is still exactly one derivation,
+/// because a second one reappearing is the whole defect whatever it gets
+/// named next time.
 @Suite("AppShell — both Access panels read one project root")
 struct AppShellProjectRootSourceTests {
 
@@ -55,71 +62,37 @@ struct AppShellProjectRootSourceTests {
         return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
     }()
 
-    /// The argument text after `marker`, up to the closing paren or newline.
-    private static func argument(after marker: String) -> String? {
-        guard let range = source.range(of: marker) else { return nil }
-        let rest = source[range.upperBound...]
-        let raw = rest.prefix { $0 != ")" && $0 != "," && !$0.isNewline }
-        return raw.trimmingCharacters(in: .whitespaces)
-    }
-
-    /// Resolves one alias hop: a single-line `private var name: URL? { expr }`,
-    /// or the one helper that takes a root as a parameter. Anything deeper is
-    /// left alone deliberately — a root that needs more than one hop to explain
-    /// is the thing this test exists to notice.
-    private static func resolved(_ token: String) -> String {
-        if let range = source.range(of: "private var \(token): URL? { ") {
-            let body = source[range.upperBound...].prefix { $0 != "}" }
-            return body.trimmingCharacters(in: .whitespaces)
-        }
-        if token == "projectRoot", let range = source.range(of: "projectAccessBar(projectRoot: ") {
-            return String(source[range.upperBound...].prefix { $0 != ")" })
-        }
-        return token
-    }
-
-    @Test("the per-file panel's registry root and the project panel's root are the same source")
-    func bothPanelsShareOneRoot() throws {
+    @Test("every project root in the shell is resolved through the one project lookup")
+    func oneProjectLookup() throws {
         try #require(!Self.source.isEmpty, "could not read AppShell.swift")
 
-        let perFile = try #require(
-            Self.argument(after: "projectURL:"),
-            "AppShell no longer passes a projectURL to RecipientAccessContext")
-        let projectWide = try #require(
-            Self.argument(after: "ProjectAccessModel(projectRoot: "),
-            "AppShell no longer constructs a ProjectAccessModel")
-
-        let perFileRoot = Self.resolved(perFile)
-        let projectWideRoot = Self.resolved(projectWide)
-
-        #expect(perFileRoot.contains("fileListModel"),
-                "the per-file panel derives its registry root from \(perFileRoot), not from the file list model the project panel uses")
-        #expect(projectWideRoot.contains("fileListModel"),
-                "the project panel derives its root from \(projectWideRoot)")
-    }
-
-    /// And the discarded source stays discarded: a second derivation reappearing
-    /// is the whole defect, whatever it gets named next time.
-    ///
-    /// Written as "exactly one, and it is *that* one" rather than "no more than
-    /// one". The earlier version accepted zero *or* one, which meant a single
-    /// re-introduction — the defect itself, before anyone compounds it — passed
-    /// here and was caught only by `bothPanelsShareOneRoot` next door. Counting
-    /// alone would not be enough either: two derivations is not the failure, a
-    /// derivation feeding something other than `fileListModel` is, and a diff
-    /// that adds one to a panel while deleting the legitimate one keeps the
-    /// count at one. So the line is checked, not just the tally.
-    @Test("the one project-root derivation in AppShell is the one that feeds the file list model")
-    func noSecondDerivation() throws {
-        try #require(!Self.source.isEmpty)
         let marker = "URL(fileURLWithPath: project.rootPath)"
         let derivations = Self.source.split(separator: "\n", omittingEmptySubsequences: false)
             .filter { $0.contains(marker) }
 
-        #expect(derivations.count == 1,
-                "AppShell builds a project root URL from projects.groups \(derivations.count) times; there is one legitimate derivation and every panel reads it through fileListModel")
-        #expect(derivations.first?.contains("fileListModel = FileListModel(projectRoot:") == true,
-                "the one project-root derivation no longer feeds fileListModel directly, so whatever reads it now may be a second source of truth: \(String(derivations.first ?? "")) — if this line was extracted deliberately and fileListModel still receives it, update this pin rather than working around it")
+        // Exactly one, and it is the new-file wizard's. Every other consumer
+        // — the editor, the project home pane, the Access panel — reads a
+        // root `ProjectTreeStore` derived from the same project this shell
+        // resolved by ID, through `FileListModel.projectRoot` or
+        // `accessModel(for:targetFile:)`.
+        #expect(derivations.count == 1, Comment(rawValue: """
+            AppShell builds a project root URL \(derivations.count) times; there is one \
+            legitimate derivation (the new-file model) and every other reader goes through \
+            ProjectTreeStore
+            """))
+
+        let lookups = Self.source.components(separatedBy: "private func project(for id: StoredProject.ID)").count - 1
+        #expect(lookups == 1,
+                "there is more than one way to turn a project id into a project — that is how the two panels came to disagree")
+    }
+
+    @Test("the per-file panel's registry root comes from the file list model, not a second lookup")
+    func perFileRootComesFromTheModel() throws {
+        try #require(!Self.source.isEmpty)
+        #expect(Self.source.contains("projectURL: projectRoot"),
+                "the editor's RecipientAccessContext no longer takes the root the shell resolved")
+        #expect(Self.source.contains("projectRoot: model.projectRoot"),
+                "FileDetailView is no longer handed FileListModel.projectRoot — a second derivation is back")
     }
 }
 
@@ -131,12 +104,12 @@ struct AppShellProjectRootSourceTests {
 /// to create a file in at all.
 ///
 /// This is the behavioural half of Step 1's "⌘N bez vybraného projektu nic
-/// neotevře" — the structural half (that `FileListView`, and therefore its
-/// toolbar row, is never constructed without a project) is already true by
-/// construction in `ProjectWorkspaceView.fileListPane` and is not something a
-/// unit test can observe further; this pins the decision the wiring is built
-/// on so a future call site cannot construct a `NewSecretFileModel` for a
-/// `nil` root by mistake.
+/// neotevře" — the structural half (that the new-file control only exists on
+/// a project's own sidebar row, and ⌘N only on the selected one) is true by
+/// construction in `ProjectTreeSidebar.newFileButton(for:)` and is not
+/// something a unit test can observe further; this pins the decision the
+/// wiring is built on so a future call site cannot construct a
+/// `NewSecretFileModel` for a `nil` root by mistake.
 @MainActor
 @Suite("The new-file request needs a project, exactly like the model it builds")
 struct NewFileModelGateTests {
@@ -157,13 +130,12 @@ struct NewFileModelGateTests {
 
 /// The wiring itself, read as source — the same technique
 /// `OuterSidebarWiringTests`/`AppShellProjectRootSourceTests` use for the
-/// same reason: `ProjectWorkspaceView` is a `private struct` with only
-/// `private @State`, so nothing here can render it or drive its bindings
-/// directly.
+/// same reason: `AppShell`'s state is all `private @State`, so nothing here
+/// can render it or drive its bindings directly.
 ///
 /// ## What this suite exists to catch
 /// `NewSecretFileSheet`'s `onCreated` callback is the one new door this task
-/// opens onto `selectedFileURL` — the property `requestFileSwitch(to:)` is
+/// opens onto `selection` — the property `requestSwitch(to:)` is
 /// documented to be the *only* writer of, precisely so a switch away from a
 /// dirty document is never silent. A completion handler that calls
 /// `activateFile(url)` directly (because "the file is new, there's nothing
@@ -185,14 +157,14 @@ struct NewFileSwitchWiringTests {
         }
     }
 
-    private static var fileListViewSource: String {
+    private static var sidebarSource: String {
         get throws {
             try String(
                 contentsOfFile: URL(fileURLWithPath: #filePath)
                     .deletingLastPathComponent()
                     .deletingLastPathComponent()
                     .deletingLastPathComponent()
-                    .appendingPathComponent("Sources/SopsUI/Projects/FileListView.swift").path,
+                    .appendingPathComponent("Sources/SopsUI/Shell/ProjectTreeSidebar.swift").path,
                 encoding: .utf8)
         }
     }
@@ -227,14 +199,11 @@ struct NewFileSwitchWiringTests {
             "AppShell no longer wires NewSecretFileSheet's onCreated as `{ created in ... }` — update this probe if the parameter was renamed")
 
         #expect(
-            body.contains("requestFileSwitch(to: created)"),
-            "the created file's completion no longer calls requestFileSwitch(to: created) — a dirty open document would lose its guard")
+            body.contains("requestSwitch(to: .file(project: request.projectID, url: created))"),
+            "the created file's completion no longer goes through requestSwitch — a dirty open document would lose its guard")
         #expect(
-            !body.contains("activateFile("),
-            "the created file's completion calls activateFile directly, bypassing WorkspaceSwitchDecision entirely — an open dirty document would be torn down with no prompt")
-        #expect(
-            !body.contains("selectedFileURL ="),
-            "the created file's completion writes selectedFileURL directly, bypassing requestFileSwitch — the one property it is documented to be the sole writer of")
+            !body.contains("selection ="),
+            "the created file's completion writes selection directly, bypassing requestSwitch — the one property it is documented to be the sole writer of")
     }
 
     @Test("the file list is refreshed on completion, so the new file is there to select")
@@ -242,27 +211,27 @@ struct NewFileSwitchWiringTests {
         let source = try Self.appShellSource
         let body = try #require(Self.onCreatedClosureBody(in: source))
         #expect(
-            body.contains("fileListModel?.refresh()") || body.contains("fileListModel.refresh()"),
-            "the file list model is never refreshed when a file is created — the new file would not appear to be selected")
+            body.contains("trees.refresh(project)"),
+            "the project tree is never refreshed when a file is created — the new file would have no row to be selected")
     }
 
     @Test("the new-file request is built through the project gate, not constructed directly")
     func newFileRequestGoesThroughTheGate() throws {
         let source = try Self.appShellSource
         #expect(
-            source.contains("AppShell.makeNewFileModel("),
+            source.contains("Self.makeNewFileModel("),
             "the new-file request handler no longer calls the pure project gate — a call site could build a NewSecretFileModel with no project selected")
     }
 
-    @Test("FileListView presents its + / ⌘N through a caller-supplied action, not a decision of its own")
-    func fileListViewForwardsTheAction() throws {
-        let source = try Self.fileListViewSource
+    @Test("the sidebar presents its + / ⌘N through a caller-supplied action, not a decision of its own")
+    func sidebarForwardsTheAction() throws {
+        let source = try Self.sidebarSource
         #expect(
-            source.contains("onNewFile"),
-            "FileListView no longer takes an onNewFile action — Task 7's toolbar button has nowhere to route its click")
+            source.contains("onNewFile(project.id)"),
+            "ProjectTreeSidebar no longer routes its new-file control to the caller's action — the button has nowhere to send its click")
         #expect(
             source.contains("keyboardShortcut(\"n\", modifiers: .command)"),
-            "FileListView no longer wires ⌘N onto the new-file action")
+            "the sidebar no longer wires ⌘N onto the new-file action")
     }
 
     /// Ticket #25 claim 2. `FileListView` only ever *asks* for an unfollowed
@@ -284,9 +253,15 @@ struct NewFileSwitchWiringTests {
             appShellSource.contains("onAddProjectAtPath: { path in projects.addProject(path: path) }"),
             "\(routingMessage)")
 
-        let fileListViewSource = try Self.fileListViewSource
-        let parameterMessage = "FileListView no longer takes an onAddProjectAtPath action — the "
+        let homeSource = try String(
+            contentsOfFile: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Sources/SopsUI/Shell/ProjectHomeView.swift").path,
+            encoding: .utf8)
+        let parameterMessage = "ProjectHomeView no longer takes an onAddProjectAtPath action — the "
             + "unfollowed-symlink footnote's button has nowhere to route its click"
-        #expect(fileListViewSource.contains("onAddProjectAtPath"), "\(parameterMessage)")
+        #expect(homeSource.contains("onAddProjectAtPath"), "\(parameterMessage)")
     }
 }

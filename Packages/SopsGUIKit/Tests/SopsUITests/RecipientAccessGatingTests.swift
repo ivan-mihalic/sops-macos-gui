@@ -204,10 +204,11 @@ enum GatingAXProbe {
 /// `EditorHost.settleAfterAModelChange()` gives a model change: 120ms, then
 /// a relayout.
 ///
-/// Internal rather than `private` since Task 4: `ProjectAccessView` needs the
-/// identical treatment (it carries its own `.task { await model.load() }` over
-/// a real project scan), and a *third* hand-copied probe in this one test
-/// target would be worse than the two that already exist. Nothing outside
+/// Internal rather than `private` since Task 4: the project-wide Access
+/// surface needs the identical treatment (it carries its own
+/// `.task { await model.load() }` over a real project scan), and a *third*
+/// hand-copied probe in this one test target would be worse than the two that
+/// already exist. Nothing outside
 /// `SopsUITests` can see it either way.
 @MainActor
 final class GatingHost {
@@ -253,7 +254,7 @@ final class GatingHost {
     ///
     /// Preferred over `settleAfterLoad()` whenever the thing being waited for
     /// is observable — a fixed 120 ms is a guess, and it is a guess that was
-    /// measured wrong: `ProjectAccessView`'s own `.task` runs a real
+    /// measured wrong: the project Access surface's own `.task` runs a real
     /// `ProjectScanner` walk plus a bridge call, and under the swiftly
     /// toolchain's more contended parallel test run it was still `.loading`
     /// when the walk resumed, so three disclosure checks failed against a

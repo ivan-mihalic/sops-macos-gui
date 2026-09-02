@@ -25,8 +25,8 @@ import Testing
 /// exact fingerprint of a function asking "is this document's pending state
 /// settled" — every real gate this codebase has today
 /// (`WorkspaceSwitchDecision.forSwitch`, `.forQuit`,
-/// `SecretEditorView.canOpenAccessPanel`, `ProjectAccessGate.canOpen`, and
-/// `UnsavedWorkGate.isClear` itself) matches it, and nothing else in the
+/// `SecretEditorView.canOpenAccessPanel`, and `UnsavedWorkGate.isClear`
+/// itself) matches it, and nothing else in the
 /// shipped app does — verified by this test's own count, not assumed.
 ///
 /// A function matching the shape must either *be* `UnsavedWorkGate.isClear`,
@@ -36,7 +36,7 @@ import Testing
 /// `allowedDelegators` is for a function whose whole body is handing the
 /// same two booleans to another function this test has already checked —
 /// `forQuit` does this (hands `documentIsDirty`/`saveIsInFlight` straight to
-/// `forSwitch`), and so do `AppShell.sectionSwitchDecision` (straight to
+/// `forSwitch`), and so do `WorkspaceSwitchGate.decision` (straight to
 /// `forSwitch`) and `QuitRequest.answerTerminationRequest` (straight to
 /// `forQuit`, which is itself a delegator, so the chain still ends at
 /// `UnsavedWorkGate.isClear`).
@@ -71,17 +71,24 @@ struct UnsavedWorkGateCoverageTests {
 
     /// Asserted rather than derived — the same reason
     /// `CBoundaryGuardCoverageTests.knownCrossingPointCount` is a constant: a
-    /// ninth match must update this number deliberately, so it cannot arrive
-    /// by accident. Today's eight: `UnsavedWorkGate.isClear` itself (the
-    /// canonical definition), three direct callers
+    /// eighth match must update this number deliberately, so it cannot arrive
+    /// by accident. Today's seven: `UnsavedWorkGate.isClear` itself (the
+    /// canonical definition), two direct callers
     /// (`WorkspaceSwitchDecision.forSwitch`,
-    /// `SecretEditorView.canOpenAccessPanel`, `ProjectAccessGate.canOpen`),
-    /// three delegators (`WorkspaceSwitchDecision.forQuit`,
-    /// `AppShell.sectionSwitchDecision`,
+    /// `SecretEditorView.canOpenAccessPanel`), three delegators
+    /// (`WorkspaceSwitchDecision.forQuit`, `AppShell.sectionSwitchDecision`,
     /// `QuitRequest.answerTerminationRequest`), and one non-gate
     /// (`UnsavedChangesTracker.update`) — see the type-level doc comment for
     /// what each list means.
-    private static let knownGateFunctionCount = 8
+    ///
+    /// Was eight until SOPS-39 task 10. The one that went is
+    /// `ProjectAccessGate.canOpen`, and it went because the button it gated
+    /// does not exist: Access is a sidebar destination now, so the
+    /// unsaved-work question for reaching it is asked by
+    /// `WorkspaceSwitchGate.decision` — already on this list, as a delegator
+    /// — rather than by a gate of its own. One fewer place to get it wrong,
+    /// not one fewer guard.
+    private static let knownGateFunctionCount = 7
 
     /// See the type-level doc comment's "What counts as a gate of this
     /// shape" section for what belongs here and why: each entry's whole body
@@ -90,7 +97,7 @@ struct UnsavedWorkGateCoverageTests {
     /// not direct.
     private static let allowedDelegators: Set<String> = [
         "WorkspaceSwitchDecision.swift:forQuit",
-        "AppShell.swift:sectionSwitchDecision",
+        "WorkspaceSelection.swift:decision",
         "QuitRequest.swift:answerTerminationRequest",
     ]
 

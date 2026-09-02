@@ -103,7 +103,14 @@ means nothing without naming which of them produced it.
   most likely because this tool's own `Background`-session process never gets the real
   window-occlusion signal `NavigationSplitView`'s sidebar item apparently waits for. A bare `List`
   outside of that specific slot is unaffected — see `Snapshot.swift`'s header for what was tried.
-  Use the standalone `ProjectSidebar`/`HealthPanel` snapshots to actually check sidebar content.
+  Use the standalone `ProjectTreeSidebar`/`HealthPanel` snapshots to actually check sidebar content.
+- **Two columns of the shell are therefore snapshotted standalone, and that is deliberate**
+  (SOPS-39): `ProjectTreeSidebar` because it lives in the `sidebar:` slot above, and
+  `SecretRowInspector` because SwiftUI's `.inspector(isPresented:)` column does not populate
+  under this technique either — an editor snapshot shows the table and nothing to the right
+  of it. Neither is a defect in those views, and neither is fixed by a larger frame: entries
+  in `Catalog.swift` render each one directly, outside the container that swallows it. A
+  snapshot of `AppShell` is a check on the *frame*, not on what fills its two side columns.
 
 ## Test fixtures fill the disk — clean up before you finish
 

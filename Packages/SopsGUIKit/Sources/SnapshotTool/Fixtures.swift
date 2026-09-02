@@ -704,7 +704,7 @@ enum Fixtures {
     /// in-process bridge's dotenv path (`SopsBridge.encrypt(_:format:
     /// .dotenv:...)`, Task 4), loaded through `SecretDocumentViewModel
     /// (format: .dotenv)` exactly the way `AppShell.swift`'s
-    /// `ProjectWorkspaceView.activateFile` does once `FileListModel.files`
+    /// `AppShell`'s detail pane does once `FileListModel.files`
     /// carries a dotenv `ListedFile`. What this snapshot exists to show:
     /// the editor renders a flat document the same as any other, and the
     /// toolbar's `+` (see `Catalog.swift`'s `editor-add-sheet-dotenv`)
@@ -726,6 +726,44 @@ enum Fixtures {
             readFile: { _ in encrypted })
         await model.load()
         return model
+    }
+
+    /// SOPS-39 task 7: a thirteen-row dotenv document, sized so the value
+    /// table has something to be wide *for*. It carries the two shapes the
+    /// old row list handled worst — a `DATABASE_URL` far longer than the
+    /// pane, and an empty plain `SENTRY_DSN` (sops encrypts neither empty
+    /// strings nor nulls, so that row is honestly unencrypted and shows an
+    /// empty mask rather than eight bullets over nothing).
+    static func editorTableViewModel() async throws -> (model: SecretDocumentViewModel, selection: String) {
+        let key = try SnapshotAgeKeyPair.generate()
+        let encrypted = try SopsBridge.encrypt(
+            """
+            DATABASE_URL=postgres://app_user:correct-horse-battery-staple-EXAMPLE@db.internal.example:5432/production?sslmode=verify-full&application_name=sops-gui
+            SENTRY_DSN=
+            DB_HOST=db.internal.example
+            DB_PORT=5432
+            DB_NAME=production
+            DB_USER=app_user
+            DB_PASSWORD=correct-horse-battery-staple-EXAMPLE
+            API_KEY=sk_live_EXAMPLEEXAMPLEEXAMPLEEXAMPLE0001
+            STRIPE_SECRET_KEY=sk_test_EXAMPLEEXAMPLEEXAMPLEEXAMPLE0002
+            SMTP_HOST=smtp.internal.example
+            SMTP_PASSWORD=EXAMPLE-smtp-password
+            REDIS_URL=redis://cache.internal.example:6379/0
+            JWT_SIGNING_KEY=EXAMPLE-jwt-signing-key-0123456789abcdef
+            """, format: .dotenv, recipients: [key.public])
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let model = SecretDocumentViewModel(
+            fileURL: URL(fileURLWithPath: "/dev/null/snapshot-table.env"),
+            format: .dotenv,
+            keyStore: store,
+            readFile: { _ in encrypted })
+        await model.load()
+        // The long one, so the inspector is showing the value the table
+        // cannot fit on one line — the case this whole task exists for.
+        let selection = model.rows.first { $0.path == ["DATABASE_URL"] }?.id ?? model.rows.first?.id ?? ""
+        return (model, selection)
     }
 
     /// A JSON document (SOPS-38 phase F2 task 4): real ciphertext via the
@@ -796,7 +834,7 @@ enum Fixtures {
             onAdd: { _, _, _ in })
     }
 
-    // MARK: - The file list (`FileListView`)
+    // MARK: - The file list model (rows in `ProjectTreeSidebar`, states in `ProjectHomeView`)
 
     /// Hand-written text carrying the structure `ProjectScanner` requires of a
     /// sops-written YAML file (`sops:` as the last top-level key, with `mac`
@@ -809,18 +847,157 @@ enum Fixtures {
     /// structure rather than a bare marker, so a block without `version:`
     /// renders an empty file list instead of the populated one this fixture
     /// exists to show.
-    private static func writeSopsLikeYAML(_ root: URL, at relativePath: String) throws {
+    /// A project tree store and sidebar model over one project holding two
+    /// encrypted files, one of which its `.sops.yaml` rule does **not**
+    /// declare the recipient for — so the sidebar draws one in-sync dot and
+    /// one drift dot, which is the pair the status column exists for.
+    /// Snapshotting only in-sync rows would show a column that cannot be
+    /// told apart from no column at all.
+    static func projectTreeFixture() async throws -> (ProjectSidebarModel, ProjectTreeStore) {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("snapshot-tree-" + UUID().uuidString)
+        let root = base.appendingPathComponent("acme-web")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        try """
+            creation_rules:
+              - path_regex: .*
+                age: \(ruleRecipient)
+
+            """.write(to: root.appendingPathComponent(".sops.yaml"),
+                      atomically: true, encoding: .utf8)
+        try writeSopsLikeYAML(root, at: "config/production.secrets.yaml", recipient: ruleRecipient)
+        try writeSopsLikeYAML(root, at: "config/staging.secrets.yaml", recipient: strangerRecipient)
+
+        let store = ProjectStore(fileURL: base.appendingPathComponent("projects.json"))
+        let project = try store.add(path: root.path)
+        let projects = ProjectSidebarModel(store: store)
+        projects.selection = project.id
+
+        let trees = ProjectTreeStore(keyStore: SessionKeyStore())
+        // Pre-refreshed for the same reason every other fixture here is: a
+        // `.task` never fires in this tool's offscreen render, so a store
+        // left to refresh itself would draw a project with no children.
+        await trees.refresh(project)
+        return (projects, trees)
+    }
+
+    /// A loaded `ProjectAccessModel` over a momentak-shaped project: three
+    /// age keys named by YAML anchor under a top-level `keys:` list, two
+    /// creation rules referencing them by alias, and two encrypted files —
+    /// one of which has **drifted** from the rule that governs it.
+    ///
+    /// The drift is the point. A snapshot in which every rule is in sync
+    /// shows a page whose per-rule pill and rewrap banner never appear,
+    /// which is exactly the half of the layout worth looking at, so
+    /// `prod.secrets.yaml` is wrapped for two of the three keys its rule
+    /// declares.
+    ///
+    /// Sops-*like* files rather than genuinely encrypted ones — the same
+    /// compromise every other fixture here makes. The page reads recipients
+    /// out of a file's sops metadata and compares them against what sops's
+    /// own config parser resolves the rule to; neither step decrypts
+    /// anything, so real ciphertext would buy the image nothing and cost the
+    /// run a keygen per snapshot.
+    ///
+    /// Pre-`load()`ed for the reason every model here is: this tool's
+    /// offscreen render never drives a `.task`.
+    static func projectAccessPageModel() async throws -> ProjectAccessModel {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("snapshot-access-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        try """
+            keys:
+              - &studio \(studioRecipient)
+              - &laptop \(laptopRecipient)
+              - &vps \(vpsRecipient)
+
+            creation_rules:
+              # Production secrets: everyone, including the deploy host.
+              - path_regex: secrets/prod\\.secrets\\.yaml$
+                key_groups:
+                  - age:
+                      - *studio
+                      - *laptop
+                      - *vps
+              - path_regex: \\.secrets\\.yaml$
+                age:
+                  - *studio
+                  - *laptop
+
+            """.write(to: root.appendingPathComponent(".sops.yaml"),
+                      atomically: true, encoding: .utf8)
+
+        try writeSopsLikeYAML(
+            root, at: "secrets/prod.secrets.yaml",
+            recipients: [studioRecipient, laptopRecipient])
+        try writeSopsLikeYAML(
+            root, at: "secrets/local.secrets.yaml",
+            recipients: [studioRecipient, laptopRecipient])
+
+        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
+        await model.load()
+        return model
+    }
+
+    /// The three named keys `projectAccessPageModel` declares.
+    ///
+    /// Real age **public** keys, unlike the shape-only strings the other
+    /// fixtures here use — and that is load-bearing, not decoration: sops's
+    /// own config parser resolves a creation rule's recipients, and a string
+    /// that is not valid bech32 makes the whole inspection fail, so the page
+    /// renders with no keys and no rules at all. Found the hard way, in the
+    /// first render of this snapshot. Their private halves were discarded at
+    /// generation and exist nowhere; a public key is not a secret.
+    private static let studioRecipient =
+        "age1g7r4eqmn6mt4p7c96q36j4rsxym4xkcv995cuacn0xe6k8tl4vtsw9wewc"
+    private static let laptopRecipient =
+        "age16qzxyuspp86muua8dlk8k98rcckgmw5paae6nfyf3kwxhpejp5ssxgvqfk"
+    private static let vpsRecipient =
+        "age1a550syju40rqlsnylryng0wgrpm2qtjh57p3xwrt3f3hr8fq6shqn25j3j"
+
+    /// The recipient `.sops.yaml` declares in `projectTreeFixture`, and the
+    /// one a drifted file is wrapped for instead. Both are shape-valid and
+    /// inert — no key material, only the public half of nothing.
+    private static let ruleRecipient =
+        "age1exampleexampleexampleexampleexampleexampleexampleexamplex"
+    private static let strangerRecipient =
+        "age1strangerstrangerstrangerstrangerstrangerstrangerstrangerx"
+
+    /// The multi-recipient form. Same file shape, an `age:` list with more
+    /// than one entry — what a project whose rule names three keys actually
+    /// has on disk, and what the Access page's "encrypted for 2 of 3" pill is
+    /// computed from.
+    private static func writeSopsLikeYAML(
+        _ root: URL, at relativePath: String, recipients: [String]
+    ) throws {
         let url = root.appendingPathComponent(relativePath)
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try """
+        let ageBlock = recipients
+            .map { "        - recipient: \($0)" }
+            .joined(separator: "\n")
+        let text = """
             key: ENC[AES256_GCM,data:Zm9v,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
             sops:
                 age:
-                    - recipient: age1exampleexampleexampleexampleexampleexampleexampleexamplex
+            AGE_BLOCK
                 mac: ENC[AES256_GCM,data:AAAA,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
                 version: 3.13.3
-            """.write(to: url, atomically: true, encoding: .utf8)
+            """.replacingOccurrences(of: "AGE_BLOCK", with: ageBlock)
+        try text.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// The one-recipient spelling most fixtures here want. Delegates rather
+    /// than repeating the file shape: two copies of a sops metadata block is
+    /// how one of them drifts into a shape the scanner stops recognising,
+    /// and the scanner requires structure, not a marker (Task 14).
+    private static func writeSopsLikeYAML(
+        _ root: URL, at relativePath: String,
+        recipient: String = "age1exampleexampleexampleexampleexampleexampleexampleexamplex"
+    ) throws {
+        try writeSopsLikeYAML(root, at: relativePath, recipients: [recipient])
     }
 
     /// A dotenv-shaped sops file — `ProjectScanner.looksSopsEncryptedInAnotherFormat`

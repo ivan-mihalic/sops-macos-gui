@@ -7,7 +7,7 @@ import SwiftUI
 ///
 /// Public rather than private so a test in `SopsUITests` can render it through
 /// `GatingHost` and read the result off the accessibility tree — the same
-/// reason `ProjectAccessView` is, and how `RecipientAccessGatingTests` checks
+/// reason `ProjectAccessPage` is, and how `RecipientAccessGatingTests` checks
 /// that a gate is really wired into a rendered view rather than only correct in
 /// isolation.
 ///
@@ -364,7 +364,7 @@ enum RecipientRowContent {
 ///
 /// `notice` is engine-authored diagnostic text carrying the registry's real
 /// path (see `RecipientRegistry.quarantine(in:)`), shown verbatim — the same
-/// treatment `ProjectAccessView.explanation(_:_:tint:)` gives a config
+/// treatment `ProjectAccessPage.configErrorBox(_:)` gives a config
 /// error, and for the same reason: a path is not translatable, and resolved
 /// through the catalog it would vanish under whichever build system copies
 /// `.xcstrings` uncompiled (see `LocalizationTests`' own header). Only the

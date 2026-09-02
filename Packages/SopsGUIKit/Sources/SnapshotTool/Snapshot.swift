@@ -34,7 +34,7 @@ import SwiftUI
 // large red-and-yellow "unsupported content" glyph covering the entire
 // view; the grouped `Form` came back entirely blank. That is not a partial
 // gap this app could route around by avoiding one view — `List` alone is
-// load-bearing in `AppShell`, `HealthPanel`, `ProjectSidebar`, and every
+// load-bearing in `AppShell`, `HealthPanel`, `ProjectTreeSidebar`, and every
 // category step of `OnboardingWizard`, including the one snapshot this tool
 // exists foremost to take (the long multi-line finding, M2's brief). An
 // `ImageRenderer`-based tool would have "succeeded" at rendering 16 PNGs
@@ -73,14 +73,12 @@ import SwiftUI
 //
 // One further, narrower gap, found and left undiagnosed rather than
 // papered over: `NavigationSplitView`'s own `sidebar:` column does not
-// populate through this technique — verified on `AppShell`'s two
-// snapshots, where the `List`s in both the outer sidebar and the nested
-// `ProjectSidebar` render blank while the `detail:` column (down through
-// `ProjectWorkspaceView`'s own nested `NavigationSplitView`) renders
-// correctly. A bare `List` outside of a `NavigationSplitView`'s `sidebar:`
-// slot is unaffected — `HealthPanel`, `ProjectSidebar` snapshotted on its
-// own, and every `List`-based step of `OnboardingWizard` all render their
-// real rows. Neither a longer settle pause nor `makeKeyAndOrderFront` with
+// populate through this technique — verified on `AppShell`'s snapshots,
+// where the sidebar's `List` renders blank while the `detail:` column
+// renders correctly. A bare `List` outside of a `NavigationSplitView`'s
+// `sidebar:` slot is unaffected — `HealthPanel`, `ProjectTreeSidebar`
+// snapshotted on its own, and every `List`-based step of `OnboardingWizard`
+// all render their real rows. Neither a longer settle pause nor `makeKeyAndOrderFront` with
 // the process's activation policy set to `.regular` changed the result.
 // The most likely cause: this tool's own process runs in a `Background`
 // launchd session (`launchctl managername`) even on a machine with an
@@ -92,7 +90,7 @@ import SwiftUI
 // `AppShell`'s two snapshots are kept in the catalog regardless — the
 // `detail` column, the toolbar-adjacent chrome, and both color schemes are
 // still real signal — but do not trust them for sidebar content; use the
-// standalone `ProjectSidebar`/`HealthPanel` snapshots for that.
+// standalone `ProjectTreeSidebar`/`HealthPanel` snapshots for that.
 
 /// One snapshot: what to render, how big, and in which appearance.
 struct Snapshot {
@@ -163,9 +161,31 @@ enum SnapshotRenderer {
         RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         hostingView.layoutSubtreeIfNeeded()
 
-        guard let bitmap = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds) else {
-            return nil
-        }
+        // 2× explicitly, not `bitmapImageRepForCachingDisplay(in:)`.
+        //
+        // That convenience takes its scale from the view's window backing
+        // scale, and a never-shown window in a `Background` launchd session
+        // has no screen to take one from — so it silently produces a **1×**
+        // bitmap. Nothing fails; the images are simply half the resolution,
+        // and the only symptom is that a regenerated set is visibly softer
+        // than the one it replaced (measured SOPS-39 task 10: committed
+        // guide images were 1200×960 for a 600×480 pt frame, a regeneration
+        // came back 600×480).
+        //
+        // Pinned rather than probed, so the output does not depend on which
+        // display the machine happens to have attached.
+        let scale = 2
+        guard let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(snapshot.size.width) * scale,
+            pixelsHigh: Int(snapshot.size.height) * scale,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+        else { return nil }
+        // The rep's *point* size, which is what makes it a 2× bitmap rather
+        // than a larger 1× one: `cacheDisplay` scales the draw to fill the
+        // pixel buffer.
+        bitmap.size = snapshot.size
         hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
         return bitmap.representation(using: .png, properties: [:])
     }

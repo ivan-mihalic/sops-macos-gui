@@ -695,15 +695,15 @@ struct ProjectStartHereViewButtonTests {
 // `incompleteScanReason`, mirroring the discipline
 // `FileListViewWiringTests` already holds `FileListView` to for the sibling
 // finding (a model that knows something and a view that drops it).
-@Suite("FileListView shows ProjectStartHereView only over a genuinely empty, complete scan")
+@Suite("ProjectHomeView shows ProjectStartHereView only over a genuinely empty, complete scan")
 @MainActor
-struct FileListViewStartHereWiringTests {
+struct ProjectHomeStartHereWiringTests {
 
     private static let size = CGSize(width: 360, height: 520)
 
     private func text(of model: FileListModel) -> String {
         AXProbe.tree(size: Self.size) {
-            FileListView(model: model, selection: .constant(nil), onNewFile: {})
+            ProjectHomeView(model: model, onNewFile: {})
         }
         .map { $0.label + " " + $0.value + " " + $0.help }
         .joined(separator: "\n")
