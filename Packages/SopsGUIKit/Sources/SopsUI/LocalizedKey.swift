@@ -318,6 +318,11 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case editorSaveErrorTitle = "editor.save-error.title"
     case editorRevealValue = "editor.reveal-value"
     case editorHideValue = "editor.hide-value"
+    /// The toolbar eye (SOPS-40): every value at once, and back.
+    case editorRevealAllValues = "editor.reveal-all-values"
+    case editorHideAllValues = "editor.hide-all-values"
+    /// `VerticalResizeHandle`'s accessibility label.
+    case resizeHandleLabel = "resize-handle.label"
     case editorMergeKeyBadge = "editor.merge-key-badge"
     case editorMergeKeyExplanation = "editor.merge-key-explanation"
     case editorValueEncrypted = "editor.value-encrypted"

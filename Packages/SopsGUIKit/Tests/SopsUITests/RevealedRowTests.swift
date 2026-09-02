@@ -126,6 +126,45 @@ struct RevealedRowsTests {
         #expect(revealed.contains("b", in: 9))
         #expect(!revealed.contains("a", in: 10), "a seam that skipped the rule could not review it")
     }
+
+    // MARK: - Reveal all
+
+    @Test("revealAll reveals every given id in that generation")
+    func revealAllRevealsEveryGivenIDInThatGeneration() {
+        var revealed = RevealedRows()
+        revealed.revealAll(["a", "b", "c"], in: 3)
+        #expect(revealed.contains("a", in: 3))
+        #expect(revealed.contains("b", in: 3))
+        #expect(revealed.contains("c", in: 3))
+        #expect(!revealed.contains("a", in: 4))
+    }
+
+    @Test("revealAll with no ids leaves a fresh value")
+    func revealAllWithNoIDsLeavesAFreshValue() {
+        var revealed = RevealedRows()
+        revealed.revealAll([], in: 3)
+        #expect(revealed == RevealedRows())
+        #expect(revealed.isEmpty)
+    }
+
+    @Test("hideAll after revealAll reveals nothing")
+    func hideAllAfterRevealAllRevealsNothing() {
+        var revealed = RevealedRows()
+        revealed.revealAll(["a", "b"], in: 3)
+        revealed.hideAll()
+        #expect(!revealed.contains("a", in: 3))
+        #expect(revealed == RevealedRows())
+    }
+
+    @Test("revealAll in a new generation drops the old generation's reveals")
+    func revealAllAdoptsTheNewGeneration() {
+        var revealed = RevealedRows()
+        revealed.reveal("old", in: 1)
+        revealed.revealAll(["a"], in: 2)
+        #expect(!revealed.contains("old", in: 1))
+        #expect(!revealed.contains("old", in: 2))
+        #expect(revealed.contains("a", in: 2))
+    }
 }
 
 /// The selection aliases exactly as the reveal does — same path-derived id,
@@ -575,6 +614,45 @@ struct RevealedRowTests {
                     "the host stopped rendering rows — this proves nothing")
             #expect(!host.text().contains(revealSecond),
                     "a revealed secret was still on screen well past its timeout")
+        }
+    }
+
+    /// Reveal-all is a third way of revealing rows, so it has to arrive with
+    /// the same deadline the eye button's reveal does. 80 ms here again.
+    @Test("reveal-all starts the auto-hide countdown")
+    func revealAllStartsTheAutoHideCountdown() async throws {
+        let (model, _) = try await document()
+
+        let host = try await MainActor.run {
+            let ids = Set(model.rows.filter { $0.kind.isEditable }.map(\.id))
+            try #require(ids.count >= 2)
+            return EditorHost(size: CGSize(width: 760, height: 420)) {
+                AnyView(
+                    SecretEditorView(
+                        viewModel: model, fileName: "reveal.yaml",
+                        unsavedChanges: UnsavedChangesTracker(),
+                        initiallyRevealedRowIDs: ids,
+                        revealTimeout: .milliseconds(80)))
+            }
+        }
+        defer { Task { @MainActor in host.finish() } }
+
+        await MainActor.run {
+            let flat = host.text()
+            #expect(flat.contains(revealSecond), "the tree did not populate — vacuous")
+            #expect(flat.contains(LocalizedKey.editorHideAllValues.text),
+                    "with every row revealed the toolbar must offer hide-all: \(flat)")
+        }
+
+        try? await Task.sleep(for: .milliseconds(500))
+        await host.settleAfterAModelChange()
+
+        await MainActor.run {
+            let flat = host.text()
+            #expect(!flat.contains(revealSecond),
+                    "a value revealed through reveal-all stayed on screen past the timeout")
+            #expect(flat.contains(LocalizedKey.editorRevealAllValues.text),
+                    "with nothing revealed the toolbar must offer reveal-all: \(flat)")
         }
     }
 

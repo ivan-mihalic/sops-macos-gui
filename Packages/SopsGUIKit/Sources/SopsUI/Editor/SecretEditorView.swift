@@ -120,6 +120,17 @@ public struct SecretEditorView: View {
 
     @State private var revealed = RevealedRows()
     @State private var selection = RowSelection()
+    /// One confirmation for every copy button in this editor — the table's
+    /// and the inspector's. See `CopyFeedback`.
+    @State private var copyFeedback = CopyFeedback()
+    /// The table's column layout, seeded from `EditorLayoutStore` for the
+    /// open file and written back on every change (SOPS-40).
+    @State private var columns: TableColumnCustomization<SecretRow>
+    /// Where `columns` is persisted; injectable for tests.
+    private let layoutDefaults: UserDefaults
+    /// The open file, for `EditorLayoutStore`. `nil` (tests, the snapshot
+    /// catalog) keeps the layout in memory only.
+    private let fileURL: URL?
     @State private var saveErrorMessage: String?
     @State private var addRequest: AddRowRequest?
     @State private var accessRequest: AccessRequest?
@@ -255,7 +266,9 @@ public struct SecretEditorView: View {
         fileAccess: AccessInventory.FileAccess? = nil,
         recipientNameFor: @escaping (String) -> String? = { _ in nil },
         fileRuleLabel: String? = nil,
-        inspectorInitiallyShown: Bool = true
+        inspectorInitiallyShown: Bool = true,
+        fileURL: URL? = nil,
+        layoutDefaults: UserDefaults = .standard
     ) {
         self.viewModel = viewModel
         self.fileName = fileName
@@ -266,6 +279,12 @@ public struct SecretEditorView: View {
         self.recipientNameFor = recipientNameFor
         self.fileRuleLabel = fileRuleLabel
         self._showInspector = State(initialValue: inspectorInitiallyShown)
+        let resolvedFileURL = fileURL ?? recipientAccess?.fileURL
+        self.fileURL = resolvedFileURL
+        self.layoutDefaults = layoutDefaults
+        self._columns = State(initialValue: resolvedFileURL.map {
+            EditorLayoutStore.columns(for: $0, in: layoutDefaults)
+        } ?? TableColumnCustomization())
         // Both recorded against the generation the document is in *now*, so
         // they are subject to exactly the same invalidation as a selection the
         // user made or a row they revealed by clicking. A seam that started
@@ -300,7 +319,8 @@ public struct SecretEditorView: View {
                 // Typing and Apply are not changes to `revealed`, so the
                 // countdown's usual owner never hears about them. This is the
                 // one path that has to say so explicitly.
-                onActivity: { restartAutoHide() })
+                onActivity: { restartAutoHide() },
+                copyFeedback: copyFeedback)
                 .inspectorColumnWidth(min: 260, ideal: 300, max: 420)
         }
         // Opening the inspector is touching the document the same way
@@ -309,6 +329,10 @@ public struct SecretEditorView: View {
         // next to it.
         .onChange(of: showInspector) { _, isShown in
             if isShown { restartAutoHide() }
+        }
+        .onChange(of: columns) { _, layout in
+            guard let fileURL else { return }
+            EditorLayoutStore.setColumns(layout, for: fileURL, in: layoutDefaults)
         }
         .alert(
             LocalizedKey.editorSaveErrorTitle.text,
@@ -350,7 +374,8 @@ public struct SecretEditorView: View {
                         revealed.reveal(id, in: generation)
                     }
                     addRequest = nil
-                })
+                },
+                defaults: layoutDefaults)
         }
         .sheet(item: $accessRequest) { request in
             RecipientAccessView(
@@ -509,6 +534,24 @@ public struct SecretEditorView: View {
             .accessibilityLabel(LocalizedKey.editorRemoveRow.text)
 
             Button {
+                if allRevealed {
+                    hideEverythingRevealed()
+                } else {
+                    // No `restartAutoHide()` here either — `.onChange(of:
+                    // revealed)` in `body` owns the countdown for every
+                    // change to what is revealed, this one included.
+                    revealed.revealAll(revealableRowIDs, in: rowGeneration)
+                }
+            } label: {
+                Image(systemName: allRevealed ? "eye.slash" : "eye")
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
+            }
+            .disabled(viewModel.loadState != .loaded || revealableRowIDs.isEmpty || isSaving)
+            .help(allRevealed ? LocalizedKey.editorHideAllValues.text : LocalizedKey.editorRevealAllValues.text)
+            .accessibilityLabel(allRevealed ? LocalizedKey.editorHideAllValues.text : LocalizedKey.editorRevealAllValues.text)
+
+            Button {
                 addRequest = AddRowRequest(
                     destination: viewModel.addDestination(forSelectedRowID: selectedRowID))
             } label: {
@@ -546,6 +589,22 @@ public struct SecretEditorView: View {
     /// `selection`/`revealed` is scoped to it. See
     /// `SecretDocumentViewModel.rowIdentityGeneration`.
     private var rowGeneration: Int { viewModel.rowIdentityGeneration }
+
+    /// The rows reveal-all may sweep up: those with a value of their own —
+    /// not merge keys, not empty containers. Static so a test can pin the
+    /// rule without a window.
+    static func revealableRowIDs(in rows: [SecretRow]) -> Set<String> {
+        Set(rows.filter { $0.kind.isEditable && !SecretRowViewLogic.isMergeKeyRow($0) }.map(\.id))
+    }
+
+    private var revealableRowIDs: Set<String> { Self.revealableRowIDs(in: viewModel.rows) }
+
+    /// Whether the toolbar's eye should offer hide-all rather than
+    /// reveal-all: every revealable row is revealed in this generation.
+    private var allRevealed: Bool {
+        let ids = revealableRowIDs
+        return !ids.isEmpty && ids.allSatisfy { revealed.contains($0, in: rowGeneration) }
+    }
 
     /// `nil` whenever the selection was made against a document whose rows may
     /// since have been renumbered — so the `-` button goes back to disabled
@@ -661,6 +720,8 @@ public struct SecretEditorView: View {
             selection: selectionBinding,
             revealed: revealed,
             generation: rowGeneration,
+            copyFeedback: copyFeedback,
+            columns: $columns,
             // No `restartAutoHide()` here, deliberately. `.onChange(of:
             // revealed, initial: true)` in `body` is the **single owner** of
             // the countdown for anything that changes what is revealed, and
@@ -795,6 +856,15 @@ public struct RevealedRows: Equatable {
         ids = []
     }
 
+    /// Reveals every id at once, in `generation` — the toolbar's reveal-all.
+    /// An empty set is a no-op that leaves the value fresh, so an editor
+    /// with nothing to reveal stays `== RevealedRows()`.
+    mutating func revealAll(_ ids: Set<String>, in generation: Int) {
+        guard !ids.isEmpty else { return }
+        adopt(generation)
+        self.ids.formUnion(ids)
+    }
+
     /// The first reveal in a new generation starts from nothing: whatever was
     /// revealed under the old one was about rows that may not be these rows.
     private mutating func adopt(_ generation: Int) {
@@ -873,6 +943,10 @@ public struct EditorAddRowSheet: View {
     @State private var key = ""
     @State private var kind: SecretRow.Kind
     @State private var value = ""
+    /// The value field's height — five lines by default, the user's once
+    /// dragged, remembered through `AddSheetValueHeightSetting`.
+    @State private var valueHeight: CGFloat
+    private let defaults: UserDefaults
 
     /// Written out rather than synthesized. A `private struct`'s memberwise
     /// initializer is itself private, and this machine's three Swift
@@ -884,13 +958,16 @@ public struct EditorAddRowSheet: View {
         refusal: @escaping (String) -> SecretDocumentViewModel.AddRowRefusal?,
         allowedKinds: [SecretRow.Kind],
         onCancel: @escaping () -> Void,
-        onAdd: @escaping (String, SecretRow.Kind, String) -> Void
+        onAdd: @escaping (String, SecretRow.Kind, String) -> Void,
+        defaults: UserDefaults = .standard
     ) {
         self.destination = destination
         self.refusal = refusal
         self.allowedKinds = allowedKinds
         self.onCancel = onCancel
         self.onAdd = onAdd
+        self.defaults = defaults
+        self._valueHeight = State(initialValue: AddSheetValueHeightSetting.height(in: defaults))
         // `.string` whenever it is offered — the common case, and the only
         // choice at all for a format restricted to it — otherwise the first
         // (and, today, only other) kind this document's format allows.
@@ -957,8 +1034,22 @@ public struct EditorAddRowSheet: View {
                 }
 
                 if kind != .null {
-                    TextField(LocalizedKey.editorAddValueField.text, text: $value)
-                        .font(.system(.body, design: .monospaced))
+                    // A multi-line editor, not a one-line field: a value
+                    // pasted here is as often a certificate or a JSON blob
+                    // as a password. Height is the user's — see
+                    // `AddSheetValueHeightSetting`.
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(.editorAddValueField)
+                        TextEditor(text: $value)
+                            .font(.system(.body, design: .monospaced))
+                            .scrollContentBackground(.hidden)
+                            .frame(height: valueHeight)
+                            .border(.separator)
+                            .accessibilityLabel(LocalizedKey.editorAddValueField.text)
+                        VerticalResizeHandle(
+                            height: $valueHeight, range: AddSheetValueHeightSetting.allowedRange
+                        ) { AddSheetValueHeightSetting.setHeight($0, in: defaults) }
+                    }
                 }
             }
             .formStyle(.grouped)

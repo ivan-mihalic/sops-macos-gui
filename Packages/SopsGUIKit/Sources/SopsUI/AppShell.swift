@@ -459,7 +459,8 @@ private struct FileDetailView: View {
                         format: viewModel.format),
                     fileAccess: fileAccess,
                     recipientNameFor: recipientNameFor,
-                    fileRuleLabel: fileRuleLabel)
+                    fileRuleLabel: fileRuleLabel,
+                    fileURL: fileURL)
             } else {
                 Text(.editorNoFileSelected)
                     .foregroundStyle(.secondary)

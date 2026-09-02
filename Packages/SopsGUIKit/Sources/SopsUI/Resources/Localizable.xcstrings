@@ -1665,6 +1665,39 @@
         }
       }
     },
+    "editor.reveal-all-values": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reveal all values"
+          }
+        }
+      }
+    },
+    "editor.hide-all-values": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hide all values"
+          }
+        }
+      }
+    },
+    "resize-handle.label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resize editor"
+          }
+        }
+      }
+    },
     "editor.hide-value": {
       "extractionState": "manual",
       "localizations": {

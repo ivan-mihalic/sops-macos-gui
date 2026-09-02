@@ -469,7 +469,7 @@ enum Catalog {
                     unsavedChanges: UnsavedChangesTracker(),
                     initiallyRevealedRowIDs: revealedRowIDs)
             },
-            Snapshot("editor-add-sheet-map", size: CGSize(width: 460, height: 330)) {
+            Snapshot("editor-add-sheet-map", size: CGSize(width: 460, height: 420)) {
                 Fixtures.addRowSheet(isList: false)
             },
             Snapshot("editor-add-sheet-list", size: CGSize(width: 460, height: 310)) {
@@ -482,7 +482,7 @@ enum Catalog {
             // The `+` sheet's type picker restricted to `.string` — the part
             // of Task 6 a YAML snapshot cannot show, since every kind is
             // legitimate there.
-            Snapshot("editor-add-sheet-dotenv", size: CGSize(width: 460, height: 330)) {
+            Snapshot("editor-add-sheet-dotenv", size: CGSize(width: 460, height: 420)) {
                 Fixtures.addRowSheetDotenv()
             },
             // SOPS-38 phase F2 task 4: the real per-format capability matrix
@@ -493,7 +493,7 @@ enum Catalog {
             // section and this app's Add API can never create one.
             editor("editor-json", json, fileName: "production.secrets.json"),
             editor("editor-ini", ini, fileName: "production.secrets.ini"),
-            Snapshot("editor-add-sheet-ini-root-refused", size: CGSize(width: 460, height: 330)) {
+            Snapshot("editor-add-sheet-ini-root-refused", size: CGSize(width: 460, height: 420)) {
                 Fixtures.addRowSheetINIRootRefused()
             },
         ]
