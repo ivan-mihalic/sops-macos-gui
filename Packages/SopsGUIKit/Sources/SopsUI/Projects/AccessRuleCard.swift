@@ -36,6 +36,12 @@ struct AccessRuleCard: View {
     let onRemove: (String) -> Void
     @Binding var newRecipientText: String
     let onAdd: () -> Void
+    /// Adds one of the config's existing named keys to *this* rule as an
+    /// alias. Offered on a read-only rule, which is the only place it makes
+    /// sense: an editable rule already has the text field above.
+    let onAddNamedKey: (String) -> Void
+
+    @State private var choosingNamedKey = false
 
     private var governed: [AccessInventory.FileAccess] {
         inventory.files(governedBy: rule.index)
@@ -49,6 +55,14 @@ struct AccessRuleCard: View {
     }
 
     private var readOnly: Bool { rule.usesAnchors || rule.usesKeyGroups }
+
+    /// The config's named keys this rule does not already name. The list the
+    /// sheet offers — empty is a sentence, not an empty sheet.
+    private var addableKeys: [ConfigRules.NamedKey] {
+        inventory.keys.filter { key in
+            !key.name.isEmpty && !rule.recipients.contains { $0.recipient == key.recipient }
+        }
+    }
 
     var body: some View {
         GroupBox {
@@ -68,6 +82,15 @@ struct AccessRuleCard: View {
         .overlay(
             RoundedRectangle(cornerRadius: 8)
                 .stroke(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.clear), lineWidth: 2))
+        .sheet(isPresented: $choosingNamedKey) {
+            AddNamedKeySheet(
+                keys: addableKeys,
+                onPick: { anchor in
+                    choosingNamedKey = false
+                    onAddNamedKey(anchor)
+                },
+                onCancel: { choosingNamedKey = false })
+        }
     }
 
     private var header: some View {
@@ -94,14 +117,25 @@ struct AccessRuleCard: View {
                 Text(.accessRulesAnchoredReadOnly)
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Button(LocalizedKey.accessRulesRevealConfig.text) {
-                    // Reveals in Finder. It does not activate this app, so it
-                    // cannot take focus from whatever the machine owner is
-                    // doing — the distinction CLAUDE.md draws about launching
-                    // and raising windows.
-                    NSWorkspace.shared.activateFileViewerSelecting([configURL])
+                HStack(spacing: 8) {
+                    Button(LocalizedKey.accessRulesRevealConfig.text) {
+                        // Reveals in Finder. It does not activate this app, so
+                        // it cannot take focus from whatever the machine owner
+                        // is doing — the distinction CLAUDE.md draws about
+                        // launching and raising windows.
+                        NSWorkspace.shared.activateFileViewerSelecting([configURL])
+                    }
+                    .controlSize(.small)
+                    // Appending an alias of a key the config already declares
+                    // is the one edit an anchored rule supports: nothing is
+                    // removed and nothing is resolved, so none of the
+                    // questions that make a full rewrite a guess arise. See
+                    // `SopsBridge.addAliasRecipient`.
+                    if !addableKeys.isEmpty {
+                        Button(LocalizedKey.accessRulesAddNamed.text) { choosingNamedKey = true }
+                            .controlSize(.small)
+                    }
                 }
-                .controlSize(.small)
             } else if isEditable {
                 addRow
             }
@@ -220,5 +254,65 @@ struct AccessLabelledRow<Content: View>: View {
             content
             Spacer(minLength: 0)
         }
+    }
+}
+
+/// Picks one of the config's own named keys to append to an anchored rule.
+///
+/// Only keys the rule does not already name are offered — adding one twice is
+/// something the bridge refuses anyway (`SopsBridge.addAliasRecipient`), and
+/// an option whose only outcome is a refusal is not an option — so the empty
+/// case is not dead text either: a reload while this sheet is open (the page
+/// reloads after every add) recomputes the list under it. The note under the
+/// list says the part users get wrong: a config edit decides who *new*
+/// files are encrypted for and re-encrypts nothing that already exists.
+struct AddNamedKeySheet: View {
+    let keys: [ConfigRules.NamedKey]
+    let onPick: (String) -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(.accessRulesAddNamed).font(.headline)
+
+            if keys.isEmpty {
+                Text(.accessRulesAddNamedNone).font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(keys) { key in
+                        Button { onPick(key.name) } label: {
+                            HStack(spacing: 6) {
+                                Circle()
+                                    .fill(ProjectAccessPage.colour(for: key.recipient))
+                                    .frame(width: 8, height: 8)
+                                // The anchor is the name the team already
+                                // uses, and it is what lands in the file —
+                                // so it is what the choice is labelled by.
+                                Text(verbatim: key.name)
+                                    .font(.system(.body, design: .monospaced))
+                                Text(verbatim: ProjectAccessPage.short(key.recipient))
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                Spacer(minLength: 0)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .help(key.recipient)
+                    }
+                }
+            }
+
+            Text(.accessRulesAddNamedNote).font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Spacer()
+                Button(LocalizedKey.actionCancel.text, action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(16)
+        .frame(width: 420)
     }
 }

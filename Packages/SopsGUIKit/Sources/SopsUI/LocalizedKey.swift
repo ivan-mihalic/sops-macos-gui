@@ -551,6 +551,13 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // Said before the user tries, next to a button that opens the file.
     case accessRulesAnchoredReadOnly = "access.rules.anchored-read-only"
     case accessRulesRevealConfig = "access.rules.reveal-config"
+    // The one edit an anchored rule supports (SOPS-39 task 9): appending an
+    // alias of a key the config already declares. Offered next to the
+    // read-only sentence above, because "edit the file by hand" is not the
+    // whole truth once this exists.
+    case accessRulesAddNamed = "access.rules.add-named"
+    case accessRulesAddNamedNone = "access.rules.add-named-none"
+    case accessRulesAddNamedNote = "access.rules.add-named-note"
     case accessRewrapBanner = "access.rewrap.banner"
     case accessRewrapDetail = "access.rewrap.detail"
     case accessRewrapButton = "access.rewrap.button"

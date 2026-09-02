@@ -289,7 +289,10 @@ public struct ProjectAccessPage: View {
                         model.startRefreshingPlan()
                     },
                     newRecipientText: $newRecipientText,
-                    onAdd: addStagedRecipient)
+                    onAdd: addStagedRecipient,
+                    onAddNamedKey: { anchor in
+                        Task { await addNamedKey(anchor, to: rule.index) }
+                    })
             }
         }
     }
@@ -448,6 +451,19 @@ public struct ProjectAccessPage: View {
         switch refusal {
         case .duplicate: .accessAddDuplicate
         case .empty, .notLoaded: nil
+        }
+    }
+
+    /// Adds one of the config's named keys to a rule as an alias — the one
+    /// edit an anchored rule supports. Writes `.sops.yaml` and nothing else:
+    /// the files on disk keep the keys they have until they are re-wrapped,
+    /// which the banner the reload puts up is for.
+    private func addNamedKey(_ anchor: String, to ruleIndex: Int) async {
+        switch await model.addAliasToRule(ruleIndex: ruleIndex, anchor: anchor) {
+        case .written, .nothingToWrite:
+            break
+        case .failed(let message):
+            errorMessage = message
         }
     }
 

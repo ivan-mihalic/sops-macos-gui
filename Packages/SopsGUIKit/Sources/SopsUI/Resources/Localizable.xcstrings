@@ -399,6 +399,39 @@
         }
       }
     },
+    "access.rules.add-named": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add named key…"
+          }
+        }
+      }
+    },
+    "access.rules.add-named-none": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Every named key is already in this rule."
+          }
+        }
+      }
+    },
+    "access.rules.add-named-note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adds an alias to the rule. The file is not re-encrypted until you rewrap."
+          }
+        }
+      }
+    },
     "access.rules.all-in-sync": {
       "extractionState": "manual",
       "localizations": {

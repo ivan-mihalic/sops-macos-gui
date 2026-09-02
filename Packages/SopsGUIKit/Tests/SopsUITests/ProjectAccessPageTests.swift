@@ -130,4 +130,87 @@ struct ProjectAccessPageTests {
         #expect(ProjectAccessPage.explanation(for: .empty) == nil)
         #expect(ProjectAccessPage.explanation(for: .notLoaded) == nil)
     }
+
+    /// SOPS-39 task 9. The one edit an anchored rule supports, end to end:
+    /// the button is offered on a read-only rule, and picking a key writes
+    /// `.sops.yaml` — which is the moment a file that was in sync becomes
+    /// drifted, because a config edit re-encrypts nothing.
+    @Test("adding a named key to an anchored rule writes the alias and drifts the file it governs")
+    func addingANamedKeyToAnAnchoredRule() async throws {
+        let f = try await AccessPageFixture.momentakShaped()
+        let model = ProjectAccessModel(projectRoot: f.root, keyStore: f.keyStore, targetFile: f.prod)
+        await model.load()
+
+        // The premise: rule 1 goes through aliases, so it is read-only and
+        // `local.sops.env` currently agrees with it. One file drifts today.
+        let before = try #require(model.inventory)
+        #expect(before.rules[1].usesAnchors)
+        #expect(before.files.first { $0.relativePath == "secrets/local.sops.env" }?.status == .inSync)
+        #expect(before.filesNeedingRewrap.count == 1)
+
+        let nodes = AXProbe.tree(size: CGSize(width: 1000, height: 900)) {
+            ProjectAccessPage(model: model, selectedFile: f.prod, onFilesApplied: {})
+        }
+        let flat = nodes.map { $0.label + " " + $0.value + " " + $0.help }.joined(separator: "\n")
+        // Offered next to the read-only sentence — the sheet's own content is
+        // not reachable from a probe (`.sheet` is not rendered), so the pick
+        // itself is driven through the model below.
+        #expect(flat.contains(LocalizedKey.accessRulesAnchoredReadOnly.text))
+        #expect(flat.contains(LocalizedKey.accessRulesAddNamed.text))
+
+        let outcome = await model.addAliasToRule(ruleIndex: 1, anchor: "vps")
+        #expect(outcome == .written)
+
+        // The alias, by name, in the file — not the literal key behind it.
+        let config = try String(
+            contentsOf: f.root.appendingPathComponent(".sops.yaml"), encoding: .utf8)
+        #expect(config.contains("*vps"))
+        #expect(config.contains("# Production secrets: everyone, including the deploy host."))
+
+        let after = try #require(model.inventory)
+        #expect(after.rules[1].recipients.map(\.name) == ["studio", "laptop", "vps"])
+        // `local.sops.env` is now behind its own rule, and the banner says so
+        // for both files. Nothing was re-encrypted — that is the whole point
+        // of the note under the picker.
+        #expect(after.files.first { $0.relativePath == "secrets/local.sops.env" }.map {
+            if case .ruleDiffers = $0.status { return true } else { return false }
+        } == true)
+        #expect(after.filesNeedingRewrap.count == 2)
+    }
+
+    @Test("the bridge's refusal to add a key twice reaches the page as a failure")
+    func addingADuplicateNamedKeyIsRefused() async throws {
+        let f = try await AccessPageFixture.momentakShaped()
+        let model = ProjectAccessModel(projectRoot: f.root, keyStore: f.keyStore, targetFile: f.prod)
+        await model.load()
+        if case .failed = await model.addAliasToRule(ruleIndex: 1, anchor: "studio") {
+        } else {
+            Issue.record("a key the rule already names must be refused")
+        }
+    }
+
+    /// The fingerprint guard, exercised: `.sops.yaml` changed on disk after
+    /// the plan read it, so the write is refused rather than clobbering
+    /// whatever the other writer put there.
+    @Test("a config that changed since the page read it is not overwritten")
+    func staleConfigIsRefused() async throws {
+        let f = try await AccessPageFixture.momentakShaped()
+        let model = ProjectAccessModel(projectRoot: f.root, keyStore: f.keyStore, targetFile: f.prod)
+        await model.load()
+
+        let configURL = f.root.appendingPathComponent(".sops.yaml")
+        let mine = try String(contentsOf: configURL, encoding: .utf8)
+        try (mine + "\n# someone else was here\n").write(
+            to: configURL, atomically: true, encoding: .utf8)
+
+        if case .failed = await model.addAliasToRule(ruleIndex: 1, anchor: "vps") {
+        } else {
+            Issue.record("a stale config must not be overwritten")
+        }
+        let onDisk = try String(contentsOf: configURL, encoding: .utf8)
+        // Untouched: the other writer's line is still the last one, and the
+        // catch-all rule still names two keys rather than three.
+        #expect(onDisk.hasSuffix("# someone else was here\n"))
+        #expect(onDisk == mine + "\n# someone else was here\n")
+    }
 }
