@@ -46,8 +46,11 @@ Two consequences were not cosmetic:
   recipients through YAML aliases cannot be rewritten by this app without reformatting
   someone else's config; adding an existing anchor to it as an alias is the one edit that is
   purely additive, so it is the one edit offered.
-- **`targetFile` is explicit.** `ProjectRecipientApplier.plan(…targetFile:)` and
-  `ProjectAccessModel(…targetFile:)` take it as a parameter with no default. The
+- **`targetFile` is a named parameter.** `ProjectRecipientApplier.plan(…targetFile:)` and
+  `ProjectAccessModel(…targetFile:)` both take it, and both default it to `nil` — "no file in
+  particular", which is the ordinary case for a page reached from the sidebar before any file
+  was opened. What changed is that it is now passed and named at every call site rather than
+  inferred. The
   alphabetically-first fallback still exists — a plan has to plan against something — but it
   is now a stated substitution (`Plan.targetFileWasSubstituted`) rather than an unnamed one.
 
@@ -69,9 +72,28 @@ Two consequences were not cosmetic:
   re-wrap runs per rule through `RewrapCoordinator`, which never widens a scope across rules
   in the first place — so the acknowledgement guards a path no surface offers today. Recorded
   here rather than deleted, because the refusals are load-bearing for any future caller.
-- **Two disclosures were deliberately carried over** rather than allowed to lapse with the
-  panel: the registry-quarantine banner (SOPS-33) and the "commit `.sops.yaml`" sentence.
-  Both now render on `ProjectAccessPage`.
+- **Three disclosures were deliberately carried over** rather than allowed to lapse with the
+  panel: the registry-quarantine banner (SOPS-33), the "commit `.sops.yaml`" sentence, and
+  the confirmation before a config write. All three render on `ProjectAccessPage`.
+- **Writing `.sops.yaml` is confirmed on the page, not written on one click.** The panel
+  raised a `confirmationDialog` before rewriting the config, and it carried two things the
+  page cannot say anywhere else: the file is re-emitted whole, so blank lines, a leading
+  `---` and the alignment inside `creation_rules` can shift; and dropping a recipient from a
+  creation rule revokes nothing, because every file already on disk still decrypts for them
+  until it is re-wrapped. Task 10 deleted both with the panel and the page wrote on one
+  unconfirmed click for three commits — restored in the final review wave as a confirmation
+  on the page, which is what the deleted tests
+  (`configUpdateConfirmationDisclosesReformatting`,
+  `configUpdateRemovalSentenceDisclaimsRevocation`) protected. The removal sentence now
+  points at Rewrap rather than at the panel's "Apply to Files", which no longer exists.
+- **A project with nothing to organise gets an explanation, not a blank pane.** The page is
+  built out of creation rules and encrypted files; a project with neither — no `.sops.yaml`,
+  no encrypted file, or a `.sops.yaml` the bridge could not read — drew a title and two notes
+  and nothing else. Each of the three now says which one it is, reusing
+  `ProjectStartHereView`'s wording and its New File control, and the unreadable-config case
+  reads its reason off `Plan.configError` (the inventory's own is `nil` there, because
+  `plan()` hands back `AccessInventory.empty` on that path). No new write path: this page
+  still writes only `.sops.yaml`, and only through the confirmation above.
 - **`NavigationSplitView`'s sidebar slot and `.inspector` do not populate under the headless
   snapshot renderer**, so `ProjectTreeSidebar`, `SecretRowInspector` and the inspector column
   are snapshotted standalone. See CLAUDE.md, "Visual verification".
