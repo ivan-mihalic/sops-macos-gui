@@ -283,6 +283,7 @@ public struct ProjectRecipientApplier: Sendable {
     private let rewrapRecipients: @Sendable (String, SopsFileFormat, [String], String) throws -> String
     private let scanProject: @Sendable (URL) async -> ScannedTree
     private let proposeConfig: @Sendable (String, String, [String], [String]) throws -> ConfigRecipientUpdate
+    private let proposeAlias: @Sendable (String, Int, String) throws -> String
 
     public init(
         readFile: @escaping @Sendable (URL) throws -> String = {
@@ -307,7 +308,12 @@ public struct ProjectRecipientApplier: Sendable {
                 try SopsBridge.updateConfigRecipients(
                     configPath: configPath, targetFilePath: targetPath,
                     to: recipients, candidateFilePaths: candidates)
-            }
+            },
+        proposeAlias: @escaping @Sendable (String, Int, String) throws -> String = {
+            configPath, ruleIndex, anchor in
+            try SopsBridge.addAliasRecipient(
+                configPath: configPath, ruleIndex: ruleIndex, anchor: anchor)
+        }
     ) {
         self.readFile = readFile
         self.fingerprintFile = fingerprintFile
@@ -316,6 +322,7 @@ public struct ProjectRecipientApplier: Sendable {
         self.rewrapRecipients = rewrapRecipients
         self.scanProject = scanProject
         self.proposeConfig = proposeConfig
+        self.proposeAlias = proposeAlias
     }
 
     // MARK: - Planning
@@ -623,6 +630,39 @@ public struct ProjectRecipientApplier: Sendable {
         guard let text = plan.configUpdateText else { return .nothingToWrite }
         do {
             try writeFile(text, plan.configURL, plan.configFingerprint)
+            return .written
+        } catch let error as AtomicFileWriter.Error {
+            return .failed(error.description)
+        } catch {
+            return .failed("this project's .sops.yaml could not be written")
+        }
+    }
+
+    /// Adds a named key — an existing `keys:` anchor — to creation rule
+    /// `ruleIndex` as an alias, and writes the result over `.sops.yaml`
+    /// atomically, refusing if the file changed since `expecting` was taken.
+    ///
+    /// The one config edit an anchored rule supports, and its own call for
+    /// the same reason `writeConfig(_:)` is: this changes who new files will
+    /// be encrypted for, so it must be reachable only from a user saying so.
+    /// It re-encrypts nothing — the files already on disk keep the keys they
+    /// have until they are re-wrapped, which is what the page's rewrap banner
+    /// is for.
+    ///
+    /// A refusal from the bridge (unknown anchor, duplicate, rule index out
+    /// of range, several key groups) comes back as `.failed` carrying that
+    /// sentence: it names a key and a rule, never a value.
+    public func addAliasToRule(
+        configURL: URL, ruleIndex: Int, anchor: String, expecting: FileFingerprint?
+    ) -> ConfigWriteOutcome {
+        let text: String
+        do {
+            text = try proposeAlias(configURL.path, ruleIndex, anchor)
+        } catch {
+            return .failed(String(describing: error))
+        }
+        do {
+            try writeFile(text, configURL, expecting)
             return .written
         } catch let error as AtomicFileWriter.Error {
             return .failed(error.description)

@@ -477,6 +477,28 @@ public final class ProjectAccessModel {
         }
     }
 
+    /// Adds a named key — one of the config's existing `keys:` anchors — to
+    /// creation rule `ruleIndex` as an alias, then reloads.
+    ///
+    /// The one config edit available on a rule built from anchors or key
+    /// groups, which `applyConfig()` refuses outright because rewriting such
+    /// a rule's whole list means guessing at things the file does not say.
+    /// It does not touch the staged set: the staged set belongs to the rule
+    /// this model is *about*, and this may be any rule on the page. It
+    /// re-encrypts nothing either — the reload is what makes the newly
+    /// drifted files show up in the rewrap banner.
+    public func addAliasToRule(ruleIndex: Int, anchor: String) async
+        -> ProjectRecipientApplier.ConfigWriteOutcome
+    {
+        guard let plan else { return .nothingToWrite }
+        let outcome = applier.addAliasToRule(
+            configURL: plan.configURL, ruleIndex: ruleIndex, anchor: anchor,
+            expecting: plan.configFingerprint)
+        if case .written = outcome { configWritten = true }
+        await load()
+        return outcome
+    }
+
     /// Re-wraps every file in `filesToApply` for exactly `stagedRecipients`.
     /// Never touches `.sops.yaml`.
     ///
