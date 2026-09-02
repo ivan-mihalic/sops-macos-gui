@@ -455,6 +455,69 @@ struct LocalizationTests {
         // (SOPS-39 task 10) and are gone with it.
     }
 
+    /// Restored after the final SOPS-39 review. Both of these were deleted
+    /// with `ProjectAccessView` in task 10, and with them the disclosure
+    /// itself: `ProjectAccessPage` wrote `.sops.yaml` on one unconfirmed
+    /// click for three commits. The page now raises a `confirmationDialog`
+    /// carrying exactly these two sentences —
+    /// `ProjectAccessPage.configUpdateConfirmationMessage` assembles them,
+    /// and `ProjectAccessPageTests` pins that the dialog is what the button
+    /// opens.
+    ///
+    /// What the confirmation has to disclose: the file is re-emitted whole,
+    /// so blank lines, a leading `---` and the alignment inside
+    /// `creation_rules` can shift — without overclaiming, because the rules,
+    /// keys and comments themselves do survive.
+    @Test("the config-update confirmation discloses what rewriting .sops.yaml reformats")
+    func configUpdateConfirmationDisclosesReformatting() throws {
+        let message = try #require(
+            Self.englishForms(for: .projectAccessUpdateConfigConfirmMessage).first,
+            "missing catalog entry for the config-update confirmation")
+
+        #expect(message.lowercased().contains("blank lines"),
+                "the confirmation must say blank lines are lost: \(message)")
+        #expect(message.contains("---"),
+                "the confirmation must name the document marker: \(message)")
+        #expect(message.lowercased().contains("diff"),
+                "the confirmation must set the expectation of a larger diff: \(message)")
+        #expect(message.lowercased().contains("every rule"),
+                "the confirmation must also say what does survive: \(message)")
+
+        // M1 from the original round. "Expect a *slightly* larger diff" was an
+        // understatement for the one shape it most needed to describe: a
+        // `.sops.yaml` whose rules sit flush with `creation_rules:` cannot be
+        // re-emitted in that form, `inferIndent` falls back to two, and every
+        // line inside `creation_rules` shifts.
+        #expect(!message.lowercased().contains("slightly"),
+                "the confirmation must not understate a whole-file re-indent: \(message)")
+        #expect(message.lowercased().contains("flush"),
+                "the confirmation must name the flush-style config whose every line shifts: \(message)")
+        #expect(message.lowercased().contains("every line"),
+                "the confirmation must say every line inside creation_rules can shift: \(message)")
+    }
+
+    /// The other half, and the one a user can act on wrongly for weeks:
+    /// dropping a recipient from a *creation rule* revokes nothing. Every
+    /// file already on disk still carries that key in its own metadata.
+    ///
+    /// ⚠️ One word differs from the deleted original, deliberately. That
+    /// sentence sent the reader to "Apply to Files", a button of the panel
+    /// this page replaced; the control that actually re-encrypts here is
+    /// Rewrap. A disclosure pointing at a button that no longer exists is
+    /// worse than none — so the assertion moved with the control.
+    @Test("the config-update removal sentence disclaims revocation and names the control that does revoke")
+    func configUpdateRemovalSentenceDisclaimsRevocation() throws {
+        let sentence = try #require(
+            Self.englishForms(for: .projectAccessConfigLoses).first,
+            "missing catalog entry for the config-update removal sentence")
+        #expect(sentence.lowercased().contains("new files"),
+                "the sentence must scope itself to new files: \(sentence)")
+        #expect(sentence.lowercased().contains("already"),
+                "the sentence must say files already on disk keep their access: \(sentence)")
+        #expect(sentence.lowercased().contains("rewrap"),
+                "the sentence must point at the control that does change access: \(sentence)")
+    }
+
     /// Task 6, Important 2 from the review: importing an already-encrypted
     /// file never modifies the source, only creates a new one — a recipient
     /// named in `newFileEncryptedImportLoses` still reads the source exactly

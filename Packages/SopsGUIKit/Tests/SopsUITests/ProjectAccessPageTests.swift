@@ -215,4 +215,187 @@ struct ProjectAccessPageTests {
         #expect(onDisk.hasSuffix("# someone else was here\n"))
         #expect(onDisk == mine + "\n# someone else was here\n")
     }
+
+    // MARK: - Final SOPS-39 review fixes
+
+    /// I1. The page wrote `.sops.yaml` on one click for three commits: the
+    /// confirmation `ProjectAccessView` raised — and the two disclosures it
+    /// carried — went out with that view in task 10.
+    ///
+    /// Read as source text, not through `AXProbe`: a `confirmationDialog`'s
+    /// own body is not rendered by the probe (the same limitation the deleted
+    /// tests worked around by exposing the message string), so what can be
+    /// checked is that the button opens the dialog rather than writing, and
+    /// that the dialog is handed the two sentences. What those sentences
+    /// *say* is `LocalizationTests`'
+    /// `configUpdateConfirmationDisclosesReformatting` and
+    /// `configUpdateRemovalSentenceDisclaimsRevocation`.
+    ///
+    /// Comments stripped first, for the reason
+    /// `ScrollOverflowFadeCoverageTests` records at length: this suite has
+    /// lost source-text guards to a commented-out call three separate times.
+    @Test("the Update .sops.yaml button opens a confirmation rather than writing")
+    func configWriteIsConfirmedFirst() throws {
+        let source = OuterSidebarWiringTests.strippingComments(try Self.pageSource())
+
+        #expect(source.contains(".confirmationDialog("),
+                "the page must confirm before writing .sops.yaml")
+        #expect(source.contains("projectAccessUpdateConfigConfirmTitle"))
+        #expect(source.contains("projectAccessUpdateConfigConfirmMessage"))
+        #expect(source.contains("projectAccessConfigLoses"),
+                "the confirmation must carry the revocation disclaimer")
+        // The button stages the confirmation; nothing on that path writes.
+        #expect(
+            source.contains(
+                """
+                Button(LocalizedKey.projectAccessUpdateConfigButton.text) {
+                                    confirmingConfigUpdate = true
+                """),
+            "the Update button must open the dialog, not call applyConfig()")
+        // And exactly one caller of `applyConfig()` — the dialog's own
+        // confirm button. A second call site would be a way around it.
+        #expect(source.components(separatedBy: "await applyConfig()").count - 1 == 1,
+                "applyConfig() must be reachable only from the confirmation")
+    }
+
+    /// I3. Both `.sops.yaml` writes open drift for every file their rule
+    /// governs, and the tree draws that drift as a status dot it recomputes
+    /// only when told to — so a write that does not call `onFilesApplied()`
+    /// leaves the sidebar showing the state from before it.
+    @Test("both config writes ask the tree to rescan")
+    func configWritesRefreshTheTree() throws {
+        let source = OuterSidebarWiringTests.strippingComments(try Self.pageSource())
+        for name in ["applyConfig", "addNamedKey"] {
+            let function = try #require(
+                source.range(of: "private func \(name)(").map { String(source[$0.lowerBound...]) },
+                "\(name) is gone or renamed")
+            let scope = String(function.prefix(900))
+            #expect(scope.contains("case .written:"), "\(name) no longer separates .written")
+            let written = try #require(scope.range(of: "case .written:"))
+            let next = try #require(scope.range(of: "case .", range: written.upperBound..<scope.endIndex))
+            #expect(scope[written.upperBound..<next.lowerBound].contains("onFilesApplied()"),
+                    "\(name)'s .written branch must rescan the tree")
+        }
+    }
+
+    /// I3, behaviourally: after a config write the project's inventory really
+    /// does report drift, so a tree that rescans shows a dot and one that
+    /// does not shows none. The write is `addAliasToRule` because it is the
+    /// one this fixture's anchored rule supports.
+    @Test("a config write leaves the project's files drifted from their rule")
+    func aConfigWriteOpensDrift() async throws {
+        let f = try await AccessPageFixture.momentakShaped()
+        let model = ProjectAccessModel(projectRoot: f.root, keyStore: f.keyStore, targetFile: f.local)
+        await model.load()
+        let before = try #require(model.inventory).filesNeedingRewrap.count
+
+        guard case .written = await model.addAliasToRule(ruleIndex: 1, anchor: "vps") else {
+            Issue.record("adding an unnamed anchor to the catch-all rule must be written")
+            return
+        }
+        await model.load()
+        #expect(try #require(model.inventory).filesNeedingRewrap.count > before,
+                "the rule now wants a key its files do not have")
+    }
+
+    /// I2. `addAliasToRule` set `configWritten` and *then* called `load()`,
+    /// which resets it — so the commit reminder never appeared after an alias
+    /// write, the one path in this feature that writes `.sops.yaml` without
+    /// going through `applyConfig()`. Writing the team's config and never
+    /// asking for a commit is exactly what `CommitRemindersTests` exists to
+    /// prevent.
+    @Test("an alias write leaves the commit reminder showing")
+    func aliasWriteAsksForACommit() async throws {
+        let f = try await AccessPageFixture.momentakShaped()
+        let model = ProjectAccessModel(projectRoot: f.root, keyStore: f.keyStore, targetFile: f.prod)
+        await model.load()
+        #expect(model.configWritten == false, "nothing has been written yet")
+
+        guard case .written = await model.addAliasToRule(ruleIndex: 1, anchor: "vps") else {
+            Issue.record("the alias write must succeed for this to say anything")
+            return
+        }
+        #expect(model.configWritten, "the commit reminder must survive the reload")
+
+        // And it reaches the page, which is where the user reads it.
+        let nodes = AXProbe.tree(size: CGSize(width: 1000, height: 900)) {
+            ProjectAccessPage(model: model, selectedFile: f.prod, onFilesApplied: {})
+        }
+        let flat = nodes.map { $0.label + " " + $0.value + " " + $0.help }.joined(separator: "\n")
+        #expect(flat.contains(LocalizedKey.projectAccessConfigWritten.text))
+    }
+
+    // MARK: - T8: a project with nothing to organise
+
+    /// The page is built out of creation rules and encrypted files, so a
+    /// project with neither drew a title, two notes and nothing else — which
+    /// reads as a screen that failed to load. Each of the three ways that
+    /// happens now says which one it is.
+    @Test("a project with no .sops.yaml explains itself instead of rendering nothing")
+    func emptyProjectWithoutConfigExplains() async throws {
+        let root = try ScratchDirectoryRegistry.shared.makeDirectory("access-empty-noconfig")
+        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore(), targetFile: nil)
+        await model.load()
+
+        let flat = Self.probe(model)
+        #expect(flat.contains(LocalizedKey.newFileInfoNoConfig.text))
+        #expect(!flat.contains(LocalizedKey.accessEmptyNoFiles.text),
+                "a project with no config must not be described as one that has one")
+    }
+
+    @Test("a project with a config but no encrypted files says so")
+    func emptyProjectWithConfigExplains() async throws {
+        let root = try ScratchDirectoryRegistry.shared.makeDirectory("access-empty-nofiles")
+        try "creation_rules: []\n".write(
+            to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore(), targetFile: nil)
+        await model.load()
+
+        let flat = Self.probe(model)
+        #expect(flat.contains(LocalizedKey.accessEmptyNoFiles.text))
+    }
+
+    /// A `.sops.yaml` that exists and cannot be read: the bridge's own reason
+    /// is fixed text naming the file and the parse failure, never a key or a
+    /// value, and the only next step this app can offer is the file itself —
+    /// it never edits `.sops.yaml` by hand.
+    @Test("an unreadable .sops.yaml shows the reason and a way to open the file")
+    func configErrorIsExplainedAndActionable() async throws {
+        let f = try await AccessPageFixture.momentakShaped()
+        try "keys: [\n  - &broken\ncreation_rules:\n".write(
+            to: f.root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let model = ProjectAccessModel(projectRoot: f.root, keyStore: f.keyStore, targetFile: f.prod)
+        await model.load()
+        // The reason lands on the *plan*: a config that exists and cannot be
+        // read leaves `plan.inventory` as `AccessInventory.empty`, whose own
+        // `configError` is nil. Reading only the inventory's is what made
+        // this state render as a blank page.
+        let error = try #require(model.plan?.configError, "the fixture must not parse")
+
+        let flat = Self.probe(model)
+        #expect(flat.contains(LocalizedKey.projectAccessConfigErrorTitle.text))
+        #expect(flat.contains(error))
+        #expect(flat.contains(LocalizedKey.accessRulesRevealConfig.text),
+                "a config this app cannot read must still offer the file itself")
+    }
+
+    private static func probe(_ model: ProjectAccessModel) -> String {
+        AXProbe.tree(size: CGSize(width: 1000, height: 900)) {
+            ProjectAccessPage(model: model, selectedFile: nil, onFilesApplied: {})
+        }
+        .map { $0.label + " " + $0.value + " " + $0.help }
+        .joined(separator: "\n")
+    }
+
+    /// `Tests/SopsUITests/…` → package root → the page's own source, the same
+    /// way `ScrollOverflowFadeCoverageTests` reaches the views it greps.
+    private static func pageSource() throws -> String {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/SopsUI/Projects/ProjectAccessPage.swift")
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
 }

@@ -513,8 +513,14 @@ public final class ProjectAccessModel {
         let outcome = applier.addAliasToRule(
             configURL: plan.configURL, ruleIndex: ruleIndex, anchor: anchor,
             expecting: plan.configFingerprint)
+        // `refreshPlan()`, not `load()`, and the flag is set after it: `load()`
+        // resets `configWritten` to false as part of starting a fresh load, so
+        // setting it first and reloading second retired the commit reminder
+        // for every alias write — the one path in this feature that writes
+        // `.sops.yaml` without going through `applyConfig()`. `applyConfig()`
+        // already reloads through `refreshPlan()` for the same reason.
+        await refreshPlan()
         if case .written = outcome { configWritten = true }
-        await load()
         return outcome
     }
 

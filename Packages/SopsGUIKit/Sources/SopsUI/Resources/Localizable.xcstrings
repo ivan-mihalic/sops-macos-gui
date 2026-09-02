@@ -145,6 +145,17 @@
         }
       }
     },
+    "access.empty.no-files": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No encrypted files here yet, and no creation rule to show. Create a file and this page will say who can read it."
+          }
+        }
+      }
+    },
     "access.error.empty-recipients": {
       "extractionState": "manual",
       "localizations": {
@@ -2974,6 +2985,50 @@
           "stringUnit": {
             "state": "translated",
             "value": "Update .sops.yaml…"
+          }
+        }
+      }
+    },
+    "project-access.update-config-confirm.button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update .sops.yaml"
+          }
+        }
+      }
+    },
+    "project-access.update-config-confirm.loses": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ will be dropped from the creation rule: new files will no longer be encrypted for them. This takes nothing away — every file already on disk still decrypts for them, because their key is still in that file's own metadata. Rewrap those files to change that."
+          }
+        }
+      }
+    },
+    "project-access.update-config-confirm.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This rewrites the creation rule that governs these files. It changes who new and re-wrapped files will be encrypted for. Files already on disk are not touched by this.\n\nThe whole file is written out again, so blank lines, a leading \"---\" marker and the exact alignment of trailing comments will not survive. Every rule, key and comment does. Expect a larger diff than the keys you changed — and if the rules in this file sit flush against \"creation_rules:\" rather than indented under it, every line inside it shifts."
+          }
+        }
+      }
+    },
+    "project-access.update-config-confirm.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update this project's .sops.yaml?"
           }
         }
       }

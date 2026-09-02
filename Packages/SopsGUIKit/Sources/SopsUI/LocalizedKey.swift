@@ -571,6 +571,10 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // `RewrapCoordinator.rewrap(_:)`.
     case accessRewrapRuleNotStaged = "access.rewrap.rule-not-staged"
     case accessUngoverned = "access.ungoverned"
+    // The Access page with nothing to organise: a project whose `.sops.yaml`
+    // declares no rule this app can see and which holds no encrypted file.
+    // The no-config half of that pair reuses `newFileInfoNoConfig`.
+    case accessEmptyNoFiles = "access.empty.no-files"
     case accessTargetSubstituted = "access.target-substituted"
 
     // MARK: Task 4 (recipient management) — project access panel
@@ -601,6 +605,21 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // `CommitRemindersTests` pins the sentence.
     case projectAccessConfigWritten = "project-access.config-written"
     case projectAccessUpdateConfigButton = "project-access.update-config-button"
+    // Restored after the final SOPS-39 review: these three went with
+    // `ProjectAccessView` in task 10, and with them the only screen that told
+    // a user what rewriting `.sops.yaml` costs. The page wrote on one
+    // unconfirmed click for three commits. See
+    // `ProjectAccessPage.configUpdateConfirmationMessage`, and
+    // `LocalizationTests` for what each sentence has to say.
+    case projectAccessUpdateConfigConfirmTitle = "project-access.update-config-confirm.title"
+    case projectAccessUpdateConfigConfirmMessage = "project-access.update-config-confirm.message"
+    case projectAccessUpdateConfigConfirmButton = "project-access.update-config-confirm.button"
+    // The removal half of that disclosure: dropping a key from a creation
+    // rule revokes nothing, because every file already on disk still carries
+    // that key in its own metadata. Points at Rewrap, which is the control on
+    // this page that does change access — the deleted sentence pointed at
+    // "Apply to Files", a button of the panel that no longer exists.
+    case projectAccessConfigLoses = "project-access.update-config-confirm.loses"
     case projectAccessResultsTitle = "project-access.results.title"
     case projectAccessResultUpdated = "project-access.result.updated"
     case projectAccessResultUnchanged = "project-access.result.unchanged"

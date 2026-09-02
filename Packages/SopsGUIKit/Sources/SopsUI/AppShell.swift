@@ -220,9 +220,17 @@ public struct AppShell: View {
                     onFilesApplied: {
                         // A rewrap re-encrypts files whose status dots the
                         // tree draws, so the tree is re-scanned rather than
-                        // left showing the drift that was just closed.
+                        // left showing the drift that was just closed. A
+                        // config write goes through here too: it opens drift
+                        // rather than closing it, and stale dots are stale
+                        // either way.
                         Task { await trees.refresh(project) }
-                    })
+                    },
+                    // The empty state's only way forward — a project with no
+                    // rules and no encrypted files has nothing on this page
+                    // to act on, and the wizard is what the file list offers
+                    // in the same situation.
+                    onNewFile: { requestNewFile(in: projectID) })
             } else {
                 centeredPlaceholder(.detailNoSelection)
             }
@@ -391,11 +399,6 @@ public struct AppShell: View {
         newFileRequest = NewFileRequest(projectID: projectID, model: model)
     }
 
-    /// The model a "New File" request would use, or `nil` when there is no
-    /// project to create one in. Every call site goes through this rather
-    /// than constructing `NewSecretFileModel` directly, so there is exactly
-    /// one place that decides whether a project is selected — and it is a
-    /// pure function a test can drive without rendering a window.
     /// The `path_regex` of the rule governing `url`, or `nil` when nothing
     /// governs it, the file is not in the inventory, or there is no
     /// inventory yet. A pure function, so the index-into-`rules` lookup — and
@@ -408,6 +411,11 @@ public struct AppShell: View {
         return inventory.rules[index].pathRegex
     }
 
+    /// The model a "New File" request would use, or `nil` when there is no
+    /// project to create one in. Every call site goes through this rather
+    /// than constructing `NewSecretFileModel` directly, so there is exactly
+    /// one place that decides whether a project is selected — and it is a
+    /// pure function a test can drive without rendering a window.
     static func makeNewFileModel(projectRoot: URL?, keyStore: SessionKeyStore) -> NewSecretFileModel? {
         guard let projectRoot else { return nil }
         return NewSecretFileModel(projectRoot: projectRoot, keyStore: keyStore)

@@ -48,21 +48,28 @@ public struct ProjectAccessPage: View {
     @Bindable private var model: ProjectAccessModel
     private let selectedFile: URL?
     private let onFilesApplied: () -> Void
+    /// Opens the new-file wizard. `nil` where there is nothing to open it
+    /// with — the snapshot catalog and the tests that only read this page —
+    /// and the empty state then explains without offering the button.
+    private let onNewFile: (() -> Void)?
 
     @State private var labelEdit: RecipientLabelEditRequest?
     @State private var newRecipientText = ""
     @State private var rewrap: RewrapCoordinator?
     @State private var showingRewrap = false
     @State private var errorMessage: String?
+    @State private var confirmingConfigUpdate = false
 
     public init(
         model: ProjectAccessModel,
         selectedFile: URL?,
-        onFilesApplied: @escaping () -> Void
+        onFilesApplied: @escaping () -> Void,
+        onNewFile: (() -> Void)? = nil
     ) {
         self.model = model
         self.selectedFile = selectedFile
         self.onFilesApplied = onFilesApplied
+        self.onNewFile = onNewFile
     }
 
     public var body: some View {
@@ -71,8 +78,17 @@ public struct ProjectAccessPage: View {
                 header
                 registryQuarantineBanner
                 if let inventory = model.inventory {
-                    if let error = inventory.configError {
+                    // From the plan first: when `.sops.yaml` exists and could
+                    // not be read, `ProjectRecipientApplier.plan()` reports
+                    // the reason on the *plan* and hands back
+                    // `AccessInventory.empty`, whose own `configError` is
+                    // `nil`. Reading only the inventory's therefore showed
+                    // nothing at all for exactly the case the box exists for —
+                    // the page rendered a title, two notes and no explanation.
+                    if let error = model.plan?.configError ?? inventory.configError {
                         configErrorBox(error)
+                    } else if inventory.rules.isEmpty, inventory.files.isEmpty {
+                        emptyState
                     }
                     rewrapBanner(inventory)
                     namedKeys(inventory)
@@ -108,6 +124,26 @@ public struct ProjectAccessPage: View {
                 onClose: { labelEdit = nil },
                 onChanged: { model.reloadRegistry() })
         }
+        // The one screen before `.sops.yaml` is rewritten. It carries the two
+        // disclosures `ProjectAccessView` made before this page replaced it
+        // (SOPS-39 task 10 deleted them with that view, and the final review
+        // caught it): the file is re-emitted whole, so blank lines, a leading
+        // `---` and the alignment inside `creation_rules` can shift; and
+        // dropping a recipient from a *rule* revokes nothing — every file
+        // already on disk still decrypts for them until it is re-wrapped.
+        // Neither is recoverable by undo, and the second is the one a user
+        // can act on wrongly for weeks without noticing.
+        .confirmationDialog(
+            LocalizedKey.projectAccessUpdateConfigConfirmTitle.text,
+            isPresented: $confirmingConfigUpdate
+        ) {
+            Button(LocalizedKey.projectAccessUpdateConfigConfirmButton.text) {
+                Task { await applyConfig() }
+            }
+            Button(LocalizedKey.actionCancel.text, role: .cancel) {}
+        } message: {
+            Text(verbatim: configUpdateConfirmationMessage)
+        }
         .alert(
             LocalizedKey.projectAccessErrorTitle.text,
             isPresented: Binding(
@@ -128,7 +164,7 @@ public struct ProjectAccessPage: View {
                 Text(.accessPageTitle).font(.title2.weight(.semibold))
                 Spacer()
                 Button(LocalizedKey.projectAccessUpdateConfigButton.text) {
-                    Task { await applyConfig() }
+                    confirmingConfigUpdate = true
                 }
                 // Nothing has been staged, so there is nothing this could
                 // write. Disabled rather than hidden: the control is the
@@ -173,10 +209,82 @@ public struct ProjectAccessPage: View {
             Text(error).font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
+            // Something to do about it: the text is the bridge's own reason
+            // and this app never edits `.sops.yaml` by hand, so the only next
+            // step it can offer is the file itself. Same control, same
+            // wording as the one an anchored rule card shows.
+            Button(LocalizedKey.accessRulesRevealConfig.text) {
+                NSWorkspace.shared.activateFileViewerSelecting([
+                    model.projectRoot.appendingPathComponent(".sops.yaml")
+                ])
+            }
+            .controlSize(.small)
         }
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.red.opacity(0.10))
+    }
+
+    /// What the page says about a project with no rules and no encrypted
+    /// files: the two ways that happens, told apart, rather than a pane that
+    /// renders a title and nothing else.
+    ///
+    /// It was a dead end before — the page is built out of rules and files,
+    /// so a project with neither drew a heading, two notes and no way
+    /// forward, which reads as a failure to load. The wording is
+    /// `ProjectStartHereView`'s (`newFileInfoNoConfig` is the identical
+    /// sentence `NewSecretFileSheet` shows for `CreationPlan.noConfig`) and
+    /// the button is the wizard that screen already offers. No new write
+    /// path: this page still writes nothing but `.sops.yaml`, and only
+    /// through the confirmation above.
+    @ViewBuilder
+    private var emptyState: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if hasConfigFile {
+                Text(.accessEmptyNoFiles)
+            } else {
+                Text(.newFileInfoNoConfig)
+            }
+            if let onNewFile {
+                Button(LocalizedKey.startHereCreateFirstFileButton.text, action: onNewFile)
+            }
+        }
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Read from disk rather than inferred from the inventory: an inventory
+    /// with no rules is what both a missing `.sops.yaml` and a config with an
+    /// empty `creation_rules:` produce, and the two sentences above differ in
+    /// exactly that. `configError` — a config that exists and could not be
+    /// read — is handled before this is reached.
+    private var hasConfigFile: Bool {
+        FileManager.default.fileExists(
+            atPath: model.projectRoot.appendingPathComponent(".sops.yaml").path)
+    }
+
+    /// The sentence the confirmation carries, exposed so a test can read it:
+    /// a `.confirmationDialog`'s own body is not reachable from `AXProbe`
+    /// (the same limitation `ProjectAccessView`'s deleted tests worked
+    /// around), so the string it is handed is the last thing that can be
+    /// pinned.
+    ///
+    /// The removal sentence comes first and names people, because that is the
+    /// half a reader can act on wrongly: dropping a key from a creation rule
+    /// takes nothing away from anybody until the files are re-wrapped.
+    var configUpdateConfirmationMessage: String {
+        var parts: [String] = []
+        let lost = model.pendingRemovals
+        if !lost.isEmpty {
+            parts.append(
+                String(
+                    format: LocalizedKey.projectAccessConfigLoses.text,
+                    lost.map { $0.label ?? $0.ageRecipient }.joined(separator: ", ")))
+        }
+        parts.append(LocalizedKey.projectAccessUpdateConfigConfirmMessage.text)
+        return parts.joined(separator: "\n\n")
     }
 
     // MARK: - Rewrap banner
@@ -525,7 +633,14 @@ public struct ProjectAccessPage: View {
     /// which the banner the reload puts up is for.
     private func addNamedKey(_ anchor: String, to ruleIndex: Int) async {
         switch await model.addAliasToRule(ruleIndex: ruleIndex, anchor: anchor) {
-        case .written, .nothingToWrite:
+        case .written:
+            // The rule now wants a key the files on disk do not have, so
+            // every file it governs has just drifted — and the sidebar draws
+            // that drift as a status dot it only recomputes when told to. Left
+            // out, the dots kept showing the state from before the write until
+            // the user happened to collapse and re-expand the project.
+            onFilesApplied()
+        case .nothingToWrite:
             break
         case .failed(let message):
             errorMessage = message
@@ -542,7 +657,12 @@ public struct ProjectAccessPage: View {
 
     private func applyConfig() async {
         switch await model.applyConfig() {
-        case .written, .nothingToWrite:
+        case .written:
+            // Same reason as `addNamedKey`: a rewritten creation rule is new
+            // drift for every file it governs, and the tree's dots are stale
+            // until something asks for a rescan.
+            onFilesApplied()
+        case .nothingToWrite:
             break
         case .refusedEmptyRecipients:
             errorMessage = LocalizedKey.projectAccessErrorEmptyRecipients.text
