@@ -187,6 +187,7 @@ public struct ProjectTreeSidebar: View {
     @ViewBuilder
     private func projectNode(_ project: StoredProject, in group: ProjectGroup) -> some View {
         let isWorktreeMember = project.rootPath != group.mainRepositoryPath
+        let isExpanded = projects.selection == project.id
         DisclosureGroup(
             isExpanded: Binding(
                 get: { projects.selection == project.id },
@@ -202,11 +203,19 @@ public struct ProjectTreeSidebar: View {
             projectRow(project, isWorktreeMember: isWorktreeMember)
                 .tag(WorkspaceSelection.projectHome(project.id))
         }
-        .task(id: project.id) {
-            // The scan that fills the rows above. `.task` rather than a call
-            // in `body`: a refresh is a directory walk, and a view body may
-            // be evaluated any number of times for reasons that have nothing
-            // to do with the project changing.
+        // The scan that fills the rows above, and it runs **only for the
+        // expanded project**.
+        //
+        // `.task` rather than a call in `body`, because a refresh is a
+        // directory walk and a body may be evaluated any number of times for
+        // reasons that have nothing to do with the project changing. And
+        // keyed on *expansion* rather than on `project.id` alone, because
+        // that version scanned every added project the moment the window
+        // opened — a dozen full directory walks for rows nobody had looked
+        // at, which is exactly what `ProjectTreeStore.model(for:)`'s own doc
+        // comment promises does not happen.
+        .task(id: isExpanded) {
+            guard isExpanded else { return }
             await trees.refresh(project)
         }
     }

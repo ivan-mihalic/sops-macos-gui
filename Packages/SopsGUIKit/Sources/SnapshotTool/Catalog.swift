@@ -339,7 +339,7 @@ enum Catalog {
             readFile: { _ in "irrelevant" })
         // Deliberately not awaited — this is what the view looks like the
         // instant a file is selected, before `load()` (called by
-        // `ProjectWorkspaceView.activateFile` right after construction, per
+        // `AppShell`'s detail pane right after construction, per
         // `AppShell.swift`) has resolved.
 
         let loaded = try await Fixtures.editorLoadedViewModel()

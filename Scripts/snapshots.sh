@@ -16,6 +16,15 @@ for dev in /Applications/Xcode-27.0.0-Beta.4.app /Applications/Xcode.app; do
   [ -d "$dev" ] && export DEVELOPER_DIR="$dev/Contents/Developer" && break
 done
 
+# And the SDK, explicitly. `DEVELOPER_DIR` alone is not enough: SwiftPM
+# compiles Package.swift with an `-sdk` it derives from the environment, and
+# on a machine whose `xcode-select` points at an Xcode beta that inherits the
+# *beta's* SDK — which the chosen toolchain then refuses ("this SDK is not
+# supported by the compiler … built with Apple Swift version 6.4, while this
+# compiler is 6.3.3"). The failure names the Swift standard library and looks
+# nothing like a problem with this project.
+export SDKROOT="$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+
 # `xcrun swift run`, never bare `swift run`: this machine has three Swift
 # compilers (see this repo's CLAUDE.md, "Toolchains" section). Bare `swift`
 # resolves through PATH to a swiftly-managed open-source toolchain that is

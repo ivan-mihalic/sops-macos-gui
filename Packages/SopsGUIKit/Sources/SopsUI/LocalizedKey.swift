@@ -226,12 +226,12 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
 
     // MARK: Task 7 (F2) — reaching the new-file wizard from the file list
 
-    // The toolbar "+" above the file list, and its ⌘N shortcut. Icon-only —
-    // this text is the accessibility label and the tooltip, never rendered
-    // as a title. Only reachable at all once a project is selected: the
-    // toolbar row lives inside `FileListView`, which `ProjectWorkspaceView`
-    // never constructs without one — see `AppShell.makeNewFileModel(
-    // projectRoot:keyStore:)`.
+    // The new-file control on a project's sidebar row, and its ⌘N shortcut.
+    // Icon-only — this text is the accessibility label and the tooltip,
+    // never rendered as a title. Only reachable once a project exists: the
+    // control is drawn per project row, and ⌘N is attached to the selected
+    // one alone — see `ProjectTreeSidebar.newFileButton(for:)` and
+    // `AppShell.makeNewFileModel(projectRoot:keyStore:)`.
     case filesNewFileButton = "files.new-file-button"
 
     // MARK: Phase 3 Task 2 — ProjectStartHereView

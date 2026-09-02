@@ -58,20 +58,6 @@ ScratchDirectoryRegistry.shared.register(root)
         """.write(to: url, atomically: true, encoding: .utf8)
     }
 
-    /// The JSON counterpart to `writeSopsLike` — hand-written text carrying
-    /// the structural shape `SopsMetadataShape.isJSONMetadata` requires
-    /// (a `sops` object with `mac` and `version`), for the same reason
-    /// `writeSopsLike` is hand-written rather than bridge-encrypted: this
-    /// suite is about `FileListView`'s own wiring, not sops's file format.
-    private func writeJSONSopsLike(_ root: URL, at relativePath: String) throws {
-        let url = root.appendingPathComponent(relativePath)
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try """
-        {"key":"ENC[AES256_GCM,data:Zm9v,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]","sops":{"age":[{"recipient":"age1exampleexampleexampleexampleexampleexampleexampleexamplex","enc":"-----BEGIN AGE ENCRYPTED FILE-----\\n-----END AGE ENCRYPTED FILE-----\\n"}],"mac":"ENC[AES256_GCM,data:AAAA,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]","version":"3.13.3"}}
-        """.write(to: url, atomically: true, encoding: .utf8)
-    }
-
     /// The canary. Without a populated tree every assertion here would pass by
     /// finding nothing — the same trap `AXProbe`'s own doc comment describes.
     @Test("the probe renders this view at all")
@@ -81,8 +67,12 @@ ScratchDirectoryRegistry.shared.register(root)
         let model = FileListModel(projectRoot: root)
         await model.refresh()
 
-        #expect(text(of: model).contains(LocalizedKey.filesNewFileButton.text),
-                "the detail pane rendered nothing — every other test in this suite would be vacuous")
+        // Anchored on the count summary, not on the New File button: the
+        // button is chrome this pane would still draw with an empty model,
+        // so it cannot tell "rendered the project" from "rendered nothing
+        // about the project".
+        #expect(text(of: model).contains(String(format: LocalizedKey.filesCountSummary.text, 1)),
+                "the detail pane said nothing about the project it is describing — every other test in this suite would be vacuous")
     }
 
     @Test("a scan that could not cover the tree says so on screen")

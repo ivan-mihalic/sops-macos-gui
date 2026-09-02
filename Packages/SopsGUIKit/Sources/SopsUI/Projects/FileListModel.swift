@@ -173,8 +173,8 @@ public final class FileListModel {
         // into `otherFormatCount` instead, because the editor
         // (`SecretDocumentViewModel`) had no way to open one. Task 6 taught
         // it a document's `format` (threaded through to the bridge from
-        // `ListedFile.format`, via `ProjectWorkspaceView.activateFile` in
-        // `AppShell.swift`), so that is no longer true and the filter is
+        // `ListedFile.format`, via `AppShell`'s own detail pane), so that
+        // is no longer true and the filter is
         // gone. SOPS-38 phase F2 task 3 did the same for JSON and INI on the
         // scanner side (`ProjectScanner.classify` now routes all four
         // formats into `tree.encrypted`), so `otherFormatCount` — still

@@ -190,12 +190,16 @@ public struct AppShell: View {
                 // the pane it sits in is the destination now, and a sheet
                 // over a destination the user explicitly navigated to is a
                 // modal with nothing behind it.
+                //
+                // The model comes from `ProjectTreeStore`, never from here: a
+                // model constructed in this body would be replaced by a fresh,
+                // unloaded one on any re-render, while the view's identity —
+                // and therefore its `.task`, which is what loads it — stayed
+                // put. See `ProjectTreeStore.accessModel(for:targetFile:)`.
                 ProjectAccessView(
-                    model: ProjectAccessModel(
-                        projectRoot: URL(fileURLWithPath: project.rootPath),
-                        keyStore: keyStore,
-                        targetFile: lastSelectedFile[projectID]),
-                    onClose: { selection = .projectHome(projectID) },
+                    model: trees.accessModel(
+                        for: project, targetFile: lastSelectedFile[projectID]),
+                    onClose: { requestSwitch(to: .projectHome(projectID)) },
                     onFilesApplied: {
                         // A project apply may have re-wrapped files whose
                         // recipients the tree shows status dots for.

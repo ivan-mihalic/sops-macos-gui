@@ -704,7 +704,7 @@ enum Fixtures {
     /// in-process bridge's dotenv path (`SopsBridge.encrypt(_:format:
     /// .dotenv:...)`, Task 4), loaded through `SecretDocumentViewModel
     /// (format: .dotenv)` exactly the way `AppShell.swift`'s
-    /// `ProjectWorkspaceView.activateFile` does once `FileListModel.files`
+    /// `AppShell`'s detail pane does once `FileListModel.files`
     /// carries a dotenv `ListedFile`. What this snapshot exists to show:
     /// the editor renders a flat document the same as any other, and the
     /// toolbar's `+` (see `Catalog.swift`'s `editor-add-sheet-dotenv`)
@@ -796,7 +796,7 @@ enum Fixtures {
             onAdd: { _, _, _ in })
     }
 
-    // MARK: - The file list (`FileListView`)
+    // MARK: - The file list model (rows in `ProjectTreeSidebar`, states in `ProjectHomeView`)
 
     /// Hand-written text carrying the structure `ProjectScanner` requires of a
     /// sops-written YAML file (`sops:` as the last top-level key, with `mac`

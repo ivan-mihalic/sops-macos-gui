@@ -70,15 +70,15 @@ struct AppShellProjectRootSourceTests {
         let derivations = Self.source.split(separator: "\n", omittingEmptySubsequences: false)
             .filter { $0.contains(marker) }
 
-        // Two, and both from a `project` this shell resolved by ID: the
-        // Access panel's model, and the new-file wizard's. Every other
-        // consumer — the editor, the project home pane — reads
-        // `FileListModel.projectRoot`, which `ProjectTreeStore` built from
-        // the same lookup.
-        #expect(derivations.count == 2, Comment(rawValue: """
-            AppShell builds a project root URL \(derivations.count) times; there are two \
-            legitimate derivations (the Access model and the new-file model) and every other \
-            reader goes through ProjectTreeStore's FileListModel
+        // Exactly one, and it is the new-file wizard's. Every other consumer
+        // — the editor, the project home pane, the Access panel — reads a
+        // root `ProjectTreeStore` derived from the same project this shell
+        // resolved by ID, through `FileListModel.projectRoot` or
+        // `accessModel(for:targetFile:)`.
+        #expect(derivations.count == 1, Comment(rawValue: """
+            AppShell builds a project root URL \(derivations.count) times; there is one \
+            legitimate derivation (the new-file model) and every other reader goes through \
+            ProjectTreeStore
             """))
 
         let lookups = Self.source.components(separatedBy: "private func project(for id: StoredProject.ID)").count - 1
@@ -104,12 +104,12 @@ struct AppShellProjectRootSourceTests {
 /// to create a file in at all.
 ///
 /// This is the behavioural half of Step 1's "⌘N bez vybraného projektu nic
-/// neotevře" — the structural half (that `FileListView`, and therefore its
-/// toolbar row, is never constructed without a project) is already true by
-/// construction in `ProjectWorkspaceView.fileListPane` and is not something a
-/// unit test can observe further; this pins the decision the wiring is built
-/// on so a future call site cannot construct a `NewSecretFileModel` for a
-/// `nil` root by mistake.
+/// neotevře" — the structural half (that the new-file control only exists on
+/// a project's own sidebar row, and ⌘N only on the selected one) is true by
+/// construction in `ProjectTreeSidebar.newFileButton(for:)` and is not
+/// something a unit test can observe further; this pins the decision the
+/// wiring is built on so a future call site cannot construct a
+/// `NewSecretFileModel` for a `nil` root by mistake.
 @MainActor
 @Suite("The new-file request needs a project, exactly like the model it builds")
 struct NewFileModelGateTests {
@@ -130,13 +130,12 @@ struct NewFileModelGateTests {
 
 /// The wiring itself, read as source — the same technique
 /// `OuterSidebarWiringTests`/`AppShellProjectRootSourceTests` use for the
-/// same reason: `ProjectWorkspaceView` is a `private struct` with only
-/// `private @State`, so nothing here can render it or drive its bindings
-/// directly.
+/// same reason: `AppShell`'s state is all `private @State`, so nothing here
+/// can render it or drive its bindings directly.
 ///
 /// ## What this suite exists to catch
 /// `NewSecretFileSheet`'s `onCreated` callback is the one new door this task
-/// opens onto `selectedFileURL` — the property `requestFileSwitch(to:)` is
+/// opens onto `selection` — the property `requestSwitch(to:)` is
 /// documented to be the *only* writer of, precisely so a switch away from a
 /// dirty document is never silent. A completion handler that calls
 /// `activateFile(url)` directly (because "the file is new, there's nothing

@@ -103,7 +103,7 @@ enum Guide {
     /// from the list.
     private static func demoProjectRoot() throws -> URL {
         // The UUID goes on the *parent*, never on the project directory
-        // itself: `ProjectSidebar` shows a project by its last path
+        // itself: the sidebar shows a project by its last path
         // component, so a uniquified root rendered as
         // `guide-project-B496602F-6D…` in an image whose caption tells the
         // reader it says `sops-demo-project`.

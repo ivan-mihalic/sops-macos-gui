@@ -34,6 +34,7 @@ public final class ProjectTreeStore {
     private let keyStore: SessionKeyStore
     private var models: [StoredProject.ID: FileListModel] = [:]
     private var inventories: [StoredProject.ID: AccessInventory] = [:]
+    private var accessModels: [StoredProject.ID: (targetFile: URL?, model: ProjectAccessModel)] = [:]
 
     public init(keyStore: SessionKeyStore) {
         self.keyStore = keyStore
@@ -52,13 +53,39 @@ public final class ProjectTreeStore {
         return model
     }
 
-    /// The model already built for `id`, or `nil` when nothing has asked for
-    /// this project yet. Deliberately does **not** create one: a caller
-    /// holding only an ID (the detail pane, resolving a selection) has no
-    /// `StoredProject` to build a root from, and inventing one from a stale
-    /// ID would be a second source of truth for a project's root.
-    public func existingModel(for id: StoredProject.ID) -> FileListModel? {
-        models[id]
+    /// The Access panel's model for `project` — created on first use and
+    /// **reused** for every later render of the same panel.
+    ///
+    /// ## Why this cannot be built in a view body
+    /// `ProjectAccessView` holds its model as `@Bindable` and loads it from a
+    /// bare `.task { await model.load() }` — no `id:`. A `.task` without an
+    /// `id:` runs once per view *identity*, and the identity of the Access
+    /// pane does not change when `AppShell`'s body is merely re-evaluated
+    /// (another project finishing its scan, `lastError` clearing, the window
+    /// resizing). So a model constructed inline in `AppShell.detail` would be
+    /// replaced by a fresh, **unloaded** one on any such re-render while the
+    /// view stayed put and never re-ran its `.task`: staged recipients gone,
+    /// panel blank, no error anywhere. That is the SOPS-37 shape — a panel
+    /// that accepts a recipient and silently drops it.
+    ///
+    /// ## When it *is* recreated
+    /// Only when `targetFile` changes. That argument decides which rule the
+    /// panel plans around (`ProjectAccessModel.init(projectRoot:keyStore:
+    /// targetFile:)`), so keeping a model built for a different file would
+    /// describe the wrong rule — the defect SOPS-38 fixed by threading the
+    /// selected file through in the first place. Recreating on that one input
+    /// is a deliberate, narrow exception to the reuse above, and it is safe
+    /// for the same reason the reuse is necessary: a *new* model is a new
+    /// view identity's worth of state, so the panel's `.task` runs again.
+    public func accessModel(for project: StoredProject, targetFile: URL?) -> ProjectAccessModel {
+        if let existing = accessModels[project.id], existing.targetFile == targetFile {
+            return existing.model
+        }
+        let model = ProjectAccessModel(
+            projectRoot: URL(fileURLWithPath: project.rootPath),
+            keyStore: keyStore, targetFile: targetFile)
+        accessModels[project.id] = (targetFile, model)
+        return model
     }
 
     /// What `.sops.yaml` governs, and how each file compares against it —
@@ -96,5 +123,6 @@ public final class ProjectTreeStore {
     public func forget(_ id: StoredProject.ID) {
         models[id] = nil
         inventories[id] = nil
+        accessModels[id] = nil
     }
 }

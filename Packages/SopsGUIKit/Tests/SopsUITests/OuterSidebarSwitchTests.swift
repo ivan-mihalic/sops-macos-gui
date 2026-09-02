@@ -242,6 +242,40 @@ struct OuterSidebarWiringTests {
             "AppShell passes $selection somewhere — that write skips WorkspaceSwitchGate and destroys an open dirty document with no prompt")
     }
 
+    /// And no *direct* write to `selection` outside the three places entitled
+    /// to make one.
+    ///
+    /// `noRawSelectionBinding` above only forbids handing the raw projection
+    /// to a control. It said nothing about a plain assignment, and one got in:
+    /// the Access panel's `onClose` wrote `selection = .projectHome(…)`
+    /// directly, which is a second unguarded exit from an open document —
+    /// exactly the class of hole the four-column window shipped for a whole
+    /// milestone, reintroduced by a one-line callback.
+    ///
+    /// Two spellings are allowed, and both are the guard rather than a way
+    /// round it: `selection = next.selection` is `requestSwitch` applying
+    /// `WorkspaceSwitchGate`'s own answer, and `selection = requested` is a
+    /// switch the *user* already confirmed (`commit`, `saveThenGo`). Anything
+    /// else fails, and the fix is to route it through `requestSwitch`.
+    @Test("nothing assigns selection directly except the gate and the confirmed-leave paths")
+    func noUnguardedSelectionAssignment() throws {
+        let allowed: Set<String> = ["selection = next.selection", "selection = requested"]
+
+        let offenders = try Self.appShellSource
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { line in
+                // `pendingSelection = …` and `lastSelectedFile[…] = …` are
+                // different properties; matched on the exact prefix so they
+                // are not swept in.
+                line.hasPrefix("selection = ") && !allowed.contains(line)
+            }
+
+        #expect(offenders.isEmpty, """
+            AppShell writes selection directly: \(offenders.joined(separator: " | ")).             That write skips WorkspaceSwitchGate, so an open dirty document is torn down             with no prompt — route it through requestSwitch(to:)
+            """)
+    }
+
     /// Every row in the sidebar goes through the unsaved-changes guard.
     ///
     /// One `List` with one selection binding is a stronger property than the
