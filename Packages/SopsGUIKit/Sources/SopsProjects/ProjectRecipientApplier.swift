@@ -382,21 +382,22 @@ public struct ProjectRecipientApplier: Sendable {
         // `standardizedFileURL.resolvingSymlinksInPath()` for the comparison
         // because the scan's URLs come back with symlinks in the directory
         // prefix resolved and a caller-supplied URL (e.g. from the open-file
-        // picker) may not — but `requestedFound` yields `requested` itself,
-        // not the scan's copy, so the plan echoes back exactly the URL the
-        // caller has rather than an incidental resolved variant of it.
+        // picker) may not. `requestedFound` yields the *scan's own* URL, not
+        // `requested` itself — `fileFormats` (built above from `tree.encrypted`)
+        // is keyed by those scan URLs, and every list below
+        // (`matchedFiles`/`unmatchedFiles`/`filesGovernedByOtherRules`/
+        // `targetFile`) is drawn from `encryptedFiles` for the same reason:
+        // `filesInScope` looks a file's format up by exact URL, and a plan
+        // that swapped in the caller's differently-spelled-but-same-file URL
+        // would silently miss that lookup and fall back to treating a
+        // dotenv/JSON/INI target as YAML.
         let resolvedRequest = requested.map { $0.standardizedFileURL.resolvingSymlinksInPath() }
-        let requestFoundInScan = encryptedFiles.contains {
-            $0.standardizedFileURL.resolvingSymlinksInPath() == resolvedRequest
+        let resolvedEncryptedFiles = encryptedFiles.map { $0.standardizedFileURL.resolvingSymlinksInPath() }
+        let requestedIndex = resolvedRequest.flatMap { resolved in
+            resolvedEncryptedFiles.firstIndex(of: resolved)
         }
-        let requestedFound = requestFoundInScan ? requested : nil
+        let requestedFound = requestedIndex.map { encryptedFiles[$0] }
         let targetFileWasSubstituted = requested != nil && requestedFound == nil
-        // Every list below that can name the target file echoes `requested`
-        // in its place too, for the same reason.
-        let displayFile: (URL) -> URL = { url in
-            resolvedRequest != nil && url.standardizedFileURL.resolvingSymlinksInPath() == resolvedRequest
-                ? requested! : url
-        }
 
         guard let targetFile = requestedFound ?? encryptedFiles.first else {
             // No file to resolve a rule for. The config is not an error and
@@ -453,13 +454,11 @@ public struct ProjectRecipientApplier: Sendable {
 
         let matchedPaths = Set(update.matchedFiles)
         let matched = encryptedFiles.filter { matchedPaths.contains(Self.ruleMatchingPath($0)) }
-            .map(displayFile)
         let unmatched = encryptedFiles.filter { !matchedPaths.contains(Self.ruleMatchingPath($0)) }
-            .map(displayFile)
         let otherRulePaths = Set(update.filesGovernedByOtherRules)
         let governedElsewhere = encryptedFiles.filter {
             otherRulePaths.contains(Self.ruleMatchingPath($0))
-        }.map(displayFile)
+        }
 
         return Plan(
             projectRoot: projectRoot, configURL: configURL, configExists: true,

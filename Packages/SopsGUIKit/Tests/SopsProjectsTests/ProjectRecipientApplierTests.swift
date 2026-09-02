@@ -75,6 +75,16 @@ func applierScratchDirectory(_ label: String = "project-applier") throws -> URL 
     return dir
 }
 
+/// The plan reports URLs read off disk during a scan, which resolve any
+/// symlinks in their directory prefix — `FileManager.default.temporaryDirectory`
+/// itself is one on this machine (`/var` → `/private/var`), so a scratch URL
+/// built directly from it and a plan's URL for the same file are the same
+/// file but not `==` as `URL` values. Tests that compare a plan's URL against
+/// one they built by hand go through this instead of exact equality.
+func normalizedForComparison(_ url: URL) -> URL {
+    url.standardizedFileURL.resolvingSymlinksInPath()
+}
+
 // sops's own YAML emitter normalizes indentation to four spaces, so a fixture
 // meant to survive a decrypt round-trip byte-for-byte must already be in that
 // shape — same reason `CompatibilityTests` and `RecipientAccessTests` use it.
@@ -917,11 +927,31 @@ struct ProjectRecipientApplierOrderingTests {
 
         let plan = await ProjectRecipientApplier().plan(projectRoot: root, recipients: [], targetFile: zuluFile)
 
-        #expect(plan.targetFile == zuluFile)
+        #expect(plan.targetFile.map(normalizedForComparison) == normalizedForComparison(zuluFile))
         #expect(plan.targetFileWasSubstituted == false)
         #expect(plan.configRecipients == [zulu.public])
-        #expect(plan.matchedFiles == [zuluFile])
+        #expect(plan.matchedFiles.map(normalizedForComparison) == [normalizedForComparison(zuluFile)])
         #expect(plan.filesGovernedByOtherRules.count == 1)
+    }
+
+    @Test("a target file's own format survives even when its URL differs textually from the scan's")
+    func explicitTargetFileKeepsItsFormat() async throws {
+        let owner = try AgeKeyPair.generate()
+        let root = try applierScratchDirectory()
+        try "creation_rules:\n  - path_regex: .*\n    age: \(owner.public)\n"
+            .write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+        let encrypted = try SopsBridge.encrypt(
+            "DATABASE_PASSWORD=correct-horse-battery-staple\n", format: .dotenv, recipients: [owner.public])
+        try encrypted.write(to: root.appendingPathComponent("secret.env"), atomically: true, encoding: .utf8)
+        // `applierScratchDirectory()` already returns the unresolved
+        // `/var/...` form of `FileManager.default.temporaryDirectory`, which
+        // is exactly the textual mismatch against the scan's resolved
+        // `/private/var/...` URLs this test is pinning against.
+        let targetFile = root.appendingPathComponent("secret.env")
+
+        let plan = await ProjectRecipientApplier().plan(projectRoot: root, recipients: [], targetFile: targetFile)
+
+        #expect(plan.filesInScope.first?.format == .dotenv)
     }
 
     @Test("a target file the scan did not find falls back to the first file, and says so")
