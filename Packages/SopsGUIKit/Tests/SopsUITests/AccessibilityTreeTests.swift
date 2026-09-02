@@ -275,7 +275,24 @@ struct AccessibilityTreeTests {
         #expect(labels.contains(LocalizedKey.editorRevealValue.text))
         #expect(labels.contains(LocalizedKey.actionCopy.text))
         // The value that *is* announced is the mask, never the plaintext.
-        #expect(nodes.contains { $0.role == "AXTextField" && $0.value.allSatisfy { $0 == "•" } })
+        // Not keyed to `AXTextField` any more: SOPS-39 task 7 made the value
+        // cell a read-only `Text` in a `Table`, so the mask reaches the tree
+        // as a static text node. What is being asserted is unchanged — some
+        // node carries the mask and none carries the secret.
+        #expect(!Self.maskNodes(nodes).isEmpty,
+                "no masked value reached the tree at all")
+    }
+
+    /// Every masked value the tree carries — a node whose announced text is
+    /// nothing but bullets. Read from `value` or, when that is empty, from
+    /// `label`, because which of the two a `Text` in a `Table` cell surfaces
+    /// is AppKit's choice and not something this property depends on.
+    static func maskNodes(_ nodes: [AXProbe.Node]) -> [String] {
+        nodes.compactMap { node -> String? in
+            let text = node.value.isEmpty ? node.label : node.value
+            guard !text.isEmpty, text.allSatisfy({ $0 == "•" }) else { return nil }
+            return text
+        }
     }
 
     /// The plaintext behind the length fixture. Two secrets whose lengths
@@ -322,11 +339,11 @@ struct AccessibilityTreeTests {
         // nothing.
         #expect(nodes.contains { $0.value == "pin" }, "the tree did not populate — this test would be vacuous")
 
-        let fieldValues = nodes.filter { $0.role == "AXTextField" }.map(\.value)
+        let fieldValues = Self.maskNodes(nodes)
         #expect(fieldValues.count == 2,
-                "expected one value field per row, got \(fieldValues.count)")
+                "expected one masked value per row, got \(fieldValues.count)")
         #expect(Set(fieldValues).count == 1,
-                "the two rows' fields are distinguishable: \(fieldValues.map(\.count))")
+                "the two rows' masks are distinguishable: \(fieldValues.map(\.count))")
         // And stated the other way round, so a future mask that happened to
         // be exactly 4 or exactly 64 characters wide could not pass the
         // assertion above by coincidence.

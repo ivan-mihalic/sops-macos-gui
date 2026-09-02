@@ -175,10 +175,17 @@ public struct AppShell: View {
         case .file(let projectID, let url):
             if let project = project(for: projectID) {
                 let model = trees.model(for: project)
+                let inventory = trees.inventory(for: projectID)
                 FileDetailView(
                     fileURL: url, format: format(of: url, in: model),
                     projectRoot: model.projectRoot, keyStore: keyStore,
-                    unsavedChanges: unsavedChanges)
+                    unsavedChanges: unsavedChanges,
+                    // `nil` until the first scan of this project completes —
+                    // the inspector then shows what it can and claims no
+                    // format or rule it was not told. See
+                    // `ProjectTreeStore.inventory(for:)`.
+                    fileAccess: inventory?.files.first { $0.url == url },
+                    recipientNameFor: { inventory?.name(for: $0) })
             } else {
                 centeredPlaceholder(.editorNoFileSelected)
             }
@@ -400,6 +407,10 @@ private struct FileDetailView: View {
     let projectRoot: URL
     let keyStore: SessionKeyStore
     let unsavedChanges: UnsavedChangesTracker
+    /// What the project scan knows about this file, for the editor's row
+    /// inspector. `nil` before the first scan completes.
+    let fileAccess: AccessInventory.FileAccess?
+    let recipientNameFor: (String) -> String?
 
     @State private var viewModel: SecretDocumentViewModel?
 
@@ -413,7 +424,9 @@ private struct FileDetailView: View {
                     recipientAccess: SecretEditorView.RecipientAccessContext(
                         fileURL: fileURL, keyStore: keyStore,
                         projectURL: projectRoot,
-                        format: viewModel.format))
+                        format: viewModel.format),
+                    fileAccess: fileAccess,
+                    recipientNameFor: recipientNameFor)
             } else {
                 Text(.editorNoFileSelected)
                     .foregroundStyle(.secondary)

@@ -353,6 +353,7 @@ enum Catalog {
         let json = try await Fixtures.editorJSONViewModel()
         let ini = try await Fixtures.editorINIViewModel()
 
+        let (table, tableSelection) = try await Fixtures.editorTableViewModel()
         let editorSize = CGSize(width: 760, height: 560)
         func editor(_ name: String, _ model: SecretDocumentViewModel, fileName: String) -> Snapshot {
             Snapshot(name, size: editorSize) {
@@ -361,6 +362,27 @@ enum Catalog {
         }
 
         return [
+            // SOPS-39 task 7: the value table with its row inspector open.
+            // 1100x640 is a wide window's share of the detail pane — the
+            // width at which the old row list still gave the value under a
+            // third of the pane. The check this snapshot exists for is
+            // whether the Value column now takes more than half the table.
+            Snapshot("secretTable", size: CGSize(width: 1100, height: 640)) {
+                SecretEditorView(
+                    viewModel: table, fileName: "production/.env",
+                    unsavedChanges: UnsavedChangesTracker(),
+                    initiallySelectedRowID: tableSelection)
+            },
+            // The inspector on its own, because `.inspector`'s column does
+            // not populate under this headless technique — the same gap
+            // CLAUDE.md records for `NavigationSplitView`'s `sidebar:` slot,
+            // so `secretTable` above shows it as an empty column. This is
+            // the only way to actually look at it.
+            Snapshot("secretRowInspector", size: CGSize(width: 320, height: 640)) {
+                SecretRowInspector(
+                    viewModel: table, selectedRowID: tableSelection,
+                    fileName: "production/.env", access: nil, nameFor: { _ in nil })
+            },
             editor("editor-loading", unloaded, fileName: "loading.yaml"),
             editor("editor-loaded", loaded, fileName: "production.secrets.yaml"),
             // The same document at the two ends of the range the window

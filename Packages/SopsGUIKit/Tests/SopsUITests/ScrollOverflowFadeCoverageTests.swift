@@ -41,7 +41,10 @@ struct ScrollOverflowFadeCoverageTests {
         "Shell/ProjectTreeSidebar.swift",
         "Health/HealthPanel.swift",
         "Health/OnboardingWizard.swift",
-        "Editor/SecretEditorView.swift",
+        // SOPS-39 task 7 moved the editor's rows out of a `List` and into a
+        // `Table` in its own file. A `Table` is a scroll view too, so the
+        // obligation moved with it rather than lapsing.
+        "Editor/SecretTableView.swift",
     ]
 
     /// Comments stripped first, and this is not hypothetical tidying: the
@@ -64,8 +67,9 @@ struct ScrollOverflowFadeCoverageTests {
         // Sanity first, so a renamed or moved file fails as a missing list
         // rather than passing as a file with no `List` to fade. Both call
         // shapes count: `List(items) { … }` and `List { … }`.
-        #expect(source.contains("List(") || source.contains("List {"),
-                "\(relativePath) no longer contains a List")
+        #expect(source.contains("List(") || source.contains("List {")
+                    || source.contains("Table(") || source.contains("Table {"),
+                "\(relativePath) no longer contains a List or Table")
         #expect(source.contains(".scrollOverflowFade()"),
                 "\(relativePath) has a scrollable list with no overflow fade")
     }

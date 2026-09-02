@@ -327,6 +327,32 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case editorKindEmptyMap = "editor.kind.empty-map"
     case editorKindEmptyList = "editor.kind.empty-list"
 
+    // MARK: SOPS-39 — the value table and its row inspector
+
+    // Column headers for `SecretTableView`. The row list these replaced had
+    // no headers at all: key, value and type were told apart by position and
+    // by font, which is not something a screen reader can read off.
+    case editorColumnKey = "editor.column.key"
+    case editorColumnValue = "editor.column.value"
+    case editorColumnType = "editor.column.type"
+
+    // `SecretRowInspector`. Editing moved here so the value column can have
+    // the width a row-embedded `TextField` never left it.
+    case inspectorTitleFile = "inspector.title.file"
+    case inspectorValue = "inspector.value"
+    case inspectorApply = "inspector.apply"
+    case inspectorRevert = "inspector.revert"
+    case inspectorRemove = "inspector.remove"
+    case inspectorReadableBy = "inspector.readable-by"
+    // Said out loud because the per-row padlocks invite the opposite
+    // conclusion: sops encrypts values per file, against the rule that
+    // governs the file, so there is no per-key recipient list to change here.
+    case inspectorReadableByNote = "inspector.readable-by.note"
+    case inspectorNoSelection = "inspector.no-selection"
+    case inspectorToggle = "inspector.toggle"
+    case inspectorRule = "inspector.rule"
+    case inspectorFormat = "inspector.format"
+
     // MARK: SOPS-38 phase F3 — the real read-only ciphertext view
 
     // `CiphertextReadOnlyView`'s framing chrome around `LoadState

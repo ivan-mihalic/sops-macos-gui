@@ -728,6 +728,44 @@ enum Fixtures {
         return model
     }
 
+    /// SOPS-39 task 7: a thirteen-row dotenv document, sized so the value
+    /// table has something to be wide *for*. It carries the two shapes the
+    /// old row list handled worst — a `DATABASE_URL` far longer than the
+    /// pane, and an empty plain `SENTRY_DSN` (sops encrypts neither empty
+    /// strings nor nulls, so that row is honestly unencrypted and shows an
+    /// empty mask rather than eight bullets over nothing).
+    static func editorTableViewModel() async throws -> (model: SecretDocumentViewModel, selection: String) {
+        let key = try SnapshotAgeKeyPair.generate()
+        let encrypted = try SopsBridge.encrypt(
+            """
+            DATABASE_URL=postgres://app_user:correct-horse-battery-staple-EXAMPLE@db.internal.example:5432/production?sslmode=verify-full&application_name=sops-gui
+            SENTRY_DSN=
+            DB_HOST=db.internal.example
+            DB_PORT=5432
+            DB_NAME=production
+            DB_USER=app_user
+            DB_PASSWORD=correct-horse-battery-staple-EXAMPLE
+            API_KEY=sk_live_EXAMPLEEXAMPLEEXAMPLEEXAMPLE0001
+            STRIPE_SECRET_KEY=sk_test_EXAMPLEEXAMPLEEXAMPLEEXAMPLE0002
+            SMTP_HOST=smtp.internal.example
+            SMTP_PASSWORD=EXAMPLE-smtp-password
+            REDIS_URL=redis://cache.internal.example:6379/0
+            JWT_SIGNING_KEY=EXAMPLE-jwt-signing-key-0123456789abcdef
+            """, format: .dotenv, recipients: [key.public])
+        let store = SessionKeyStore()
+        try store.importKey(key.private)
+        let model = SecretDocumentViewModel(
+            fileURL: URL(fileURLWithPath: "/dev/null/snapshot-table.env"),
+            format: .dotenv,
+            keyStore: store,
+            readFile: { _ in encrypted })
+        await model.load()
+        // The long one, so the inspector is showing the value the table
+        // cannot fit on one line — the case this whole task exists for.
+        let selection = model.rows.first { $0.path == ["DATABASE_URL"] }?.id ?? model.rows.first?.id ?? ""
+        return (model, selection)
+    }
+
     /// A JSON document (SOPS-38 phase F2 task 4): real ciphertext via the
     /// in-process bridge's json path, loaded through
     /// `SecretDocumentViewModel(format: .json)`. What this snapshot exists
