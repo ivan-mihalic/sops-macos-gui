@@ -26,15 +26,17 @@ public enum WorkspaceSelection: Hashable, Sendable {
     case about
     /// The Settings screen — not scoped to any project.
     case settings
+    /// The Setup guide (PROPOSAL.md §5) — not scoped to any project.
+    case setupGuide
 
-    /// The project this selection belongs to, or `nil` for the two
+    /// The project this selection belongs to, or `nil` for the
     /// project-independent screens.
     public var projectID: StoredProject.ID? {
         switch self {
         case .file(let project, _): project
         case .access(let project): project
         case .projectHome(let project): project
-        case .about, .settings: nil
+        case .about, .settings, .setupGuide: nil
         }
     }
 

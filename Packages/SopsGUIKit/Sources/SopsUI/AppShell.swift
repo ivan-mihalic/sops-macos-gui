@@ -259,6 +259,11 @@ public struct AppShell: View {
             SettingsPaneView(health: health, keyStore: keyStore,
                              onUpdateConsentChanged: onUpdateConsentChanged)
 
+        case .setupGuide:
+            // Same load-bearing ScrollView as `.about`: the guide is far
+            // taller than any window.
+            ScrollView { SetupGuideView() }
+
         case nil:
             centeredPlaceholder(.detailNoSelection)
         }

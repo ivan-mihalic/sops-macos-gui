@@ -567,6 +567,24 @@ different confirmation.
 
 ---
 
+## Part 6 — The Setup guide
+
+### Step 23 · Servers, colleagues, and an AI prompt
+
+The **Setup guide** row sits above About in the sidebar (also under the Help
+menu). It is PROPOSAL §5 built: how to inject decrypted values with and without
+docker compose, how a Linux server and each colleague generate their own age
+key, a `.sops.yaml` cookbook, and a prompt to paste into an AI assistant. Every
+snippet has a **Copy** button; the app runs none of them for you.
+
+![Setup guide](images/guide-23-setup-guide.png)
+
+The AI prompt is the part worth reading before pasting: it carries the rules of
+sops+age with it — the private key never leaves the machine that made it, only
+the `age1…` public key is shared, encrypted files and `.sops.yaml` are safe to
+commit, a removed recipient keeps what it already read — so an assistant cannot
+helpfully suggest otherwise.
+
 ## Troubleshooting
 
 **A file I can see in Finder is not under its project in the sidebar.** Either it

@@ -316,6 +316,13 @@ struct OuterSidebarWiringTests {
                 "About is rendered above the projects — PROPOSAL §4 pins it to the bottom")
     }
 
+    @Test("the Setup guide is a row of the same guarded list")
+    func setupGuideIsARowOfTheGuardedList() throws {
+        let sidebar = try Self.sidebarSource
+        #expect(sidebar.contains(".tag(WorkspaceSelection.setupGuide)"),
+                "the Setup guide row is not tagged into the guarded selection")
+    }
+
     @Test("the guard is disabled during a save, like every other exit")
     func disabledDuringSave() throws {
         let source = try Self.appShellSource

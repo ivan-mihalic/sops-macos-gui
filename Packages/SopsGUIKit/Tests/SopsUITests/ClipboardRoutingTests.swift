@@ -68,15 +68,25 @@ struct ClipboardRoutingTests {
     /// schedule and an auto-clear would take back something they asked for.
     /// No file may reach `NSPasteboard` directly any more; that is the whole
     /// point of the fix.
-    @Test("remediation commands route through ClipboardClearing too, just without the timer", arguments: [
-        "Health/HealthFindingRow.swift", "Editor/KeyImportView.swift",
+    /// Since SOPS-41 the routing lives in one place, `CommandSnippetView`,
+    /// and the two views build that instead of touching the pasteboard.
+    @Test("remediation commands route through ClipboardClearing too, just without the timer")
+    func remediationCommandsRouteThroughClipboardClearing() throws {
+        let snippet = try source("Support/CommandSnippetView.swift")
+        #expect(!snippet.contains("NSPasteboard"),
+                "CommandSnippetView writes to NSPasteboard directly — remediation commands carry paths (e.g. to the private key file) and must go through ClipboardClearing like everything else")
+        #expect(snippet.contains("ClipboardClearing.copyWithoutAutoClear(command)"),
+                "CommandSnippetView no longer routes its command through ClipboardClearing.copyWithoutAutoClear")
+    }
+
+    @Test("the views that show a remediation command go through CommandSnippetView", arguments: [
+        "Health/HealthFindingRow.swift", "Editor/KeyImportView.swift", "Guide/SetupGuideView.swift",
     ])
-    func remediationCommandsRouteThroughClipboardClearing(_ relativePath: String) throws {
+    func remediationViewsUseTheSnippetView(_ relativePath: String) throws {
         let text = try source(relativePath)
-        #expect(!text.contains("NSPasteboard"),
-                "\(relativePath) writes to NSPasteboard directly — remediation commands carry paths (e.g. to the private key file) and must go through ClipboardClearing like everything else")
-        #expect(text.contains("ClipboardClearing.copyWithoutAutoClear(command)"),
-                "\(relativePath) no longer routes its remediation command through ClipboardClearing.copyWithoutAutoClear")
+        #expect(!text.contains("NSPasteboard"), "\(relativePath) writes to NSPasteboard directly")
+        #expect(text.contains("CommandSnippetView("),
+                "\(relativePath) shows a command without CommandSnippetView, so its copy bypasses ClipboardClearing")
     }
 
     /// Ticket #6, claim 2's own doc comment says there is no public API to

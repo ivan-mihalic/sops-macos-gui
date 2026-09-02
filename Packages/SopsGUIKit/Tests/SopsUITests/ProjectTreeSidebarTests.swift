@@ -104,6 +104,8 @@ struct ProjectTreeSidebarTests {
         #expect(shown.contains(LocalizedKey.sidebarAbout.text)
                 && shown.contains(LocalizedKey.sidebarSettings.text),
                 "About and Settings are no longer pinned in the sidebar (PROPOSAL §4)")
+        #expect(shown.contains(LocalizedKey.sidebarSetupGuide.text),
+                "the Setup guide is no longer pinned in the sidebar (PROPOSAL §5, SOPS-41)")
     }
 }
 
