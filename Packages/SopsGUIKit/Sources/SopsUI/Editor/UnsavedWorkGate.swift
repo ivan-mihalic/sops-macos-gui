@@ -10,11 +10,13 @@
 /// each wrote their own copy of `!isDirty && !isSaving` — three
 /// independently maintained boolean expressions that happened to agree only
 /// because nobody had changed one without also checking the other two by
-/// hand. `AccessGateAsymmetryTests` and `ProjectAccessGate`'s own doc
-/// comment establish that the gates are still right to *differ* in what
-/// else they require — the per-file panel's subject is the open document,
-/// the project panel's is the project, and `WorkspaceSwitchDecision` has a
-/// third answer (`.waitForSaveInFlight`) neither boolean gate needs — so
+/// hand. (`ProjectAccessGate` is itself gone as of SOPS-39 task 10: the
+/// project-wide Access *button* it gated became a sidebar destination, so
+/// the question is `WorkspaceSwitchGate.decision`'s now. Two call sites,
+/// same shared term.) The gates are still right to *differ* in what else
+/// they require — the per-file panel's subject is the open document, and
+/// `WorkspaceSwitchDecision` has a third answer (`.waitForSaveInFlight`)
+/// neither boolean gate needs — so
 /// unifying the three call sites into one function was not the fix; sharing
 /// the one term they all agree on, and always agreed on for the same
 /// reason, is. See `UnsavedWorkGateCoverageTests` for what stops a fourth
@@ -23,7 +25,7 @@
 ///
 /// A free function on its own would do, but this codebase's convention for
 /// a pulled-out judgement — `WorkspaceSwitchDecision`, `QuitRequest`,
-/// `ProjectAccessGate` — is a type with nothing but the decision in it, so
+/// `WorkspaceSwitchGate` — is a type with nothing but the decision in it, so
 /// this follows the same shape rather than being the one exception.
 public enum UnsavedWorkGate {
     /// `true` when there is nothing pending that an action taken right now

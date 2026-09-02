@@ -94,14 +94,31 @@ struct ConfigRulesInspectionTests {
 
             """.write(to: conf, atomically: true, encoding: .utf8)
 
-        #expect(throws: (any Error).self) {
-            try SopsBridge.addAliasRecipient(configPath: conf.path, ruleIndex: 0, anchor: "nobody")
-        }
-        #expect(throws: (any Error).self) {
-            try SopsBridge.addAliasRecipient(configPath: conf.path, ruleIndex: 0, anchor: "studio")
-        }
-        #expect(throws: (any Error).self) {
-            try SopsBridge.addAliasRecipient(configPath: conf.path, ruleIndex: 9, anchor: "studio")
+        // SOPS-39 task 10. `throws: (any Error).self` was true of all three
+        // and told them apart from nothing — a bridge that refused every
+        // call with one message would have passed. What each refusal *says*
+        // is the contract: it names the anchor or the rule, never a value,
+        // and `ProjectRecipientApplier.addAliasToRule` shows that sentence
+        // to the user verbatim.
+        for (ruleIndex, anchor, expected) in [
+            (0, "nobody", "no key named \"nobody\""),
+            (0, "studio", "already names \"studio\""),
+            (9, "studio", "creation rule 9"),
+        ] {
+            var sentence = ""
+            do {
+                _ = try SopsBridge.addAliasRecipient(
+                    configPath: conf.path, ruleIndex: ruleIndex, anchor: anchor)
+                Issue.record("adding \(anchor) to rule \(ruleIndex) must be refused")
+                continue
+            } catch {
+                sentence = String(describing: error)
+            }
+            #expect(sentence.contains(expected),
+                    "refusal for (\(ruleIndex), \(anchor)) read: \(sentence)")
+            // And never the key material itself, which the config holds
+            // right next to the anchor being refused.
+            #expect(!sentence.contains(studio), "a refusal must not quote a key")
         }
     }
 }

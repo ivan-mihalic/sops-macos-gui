@@ -97,7 +97,7 @@ public final class RewrapCoordinator {
             }
 
             if let refusal = await model.applyToFiles() {
-                skipped.append(ProjectAccessView.explanation(for: refusal))
+                skipped.append(refusal.explanation)
                 continue
             }
             results += model.fileResults

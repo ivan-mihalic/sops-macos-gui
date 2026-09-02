@@ -156,7 +156,13 @@ struct AccessRuleCard: View {
     private var chips: some View {
         let shown = isEditable && !readOnly ? stagedRecipients : rule.recipients.map(\.recipient)
         return HStack(spacing: 6) {
-            ForEach(shown, id: \.self) { recipient in
+            // Identified positionally, not by value: a creation rule may name
+            // the same key twice (`ProjectAccessModel.duplicatedRecipients`),
+            // and `id: \.self` over that is the duplicate-identity defect the
+            // old recipient rows already had once. A rule that lists a key
+            // twice is one this page draws twice, honestly, rather than
+            // tidying the second one away.
+            ForEach(Array(shown.enumerated()), id: \.offset) { _, recipient in
                 HStack(spacing: 4) {
                     Circle()
                         .fill(ProjectAccessPage.colour(for: recipient))

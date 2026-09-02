@@ -658,8 +658,16 @@ public struct ProjectRecipientApplier: Sendable {
         let text: String
         do {
             text = try proposeAlias(configURL.path, ruleIndex, anchor)
+        } catch let error as SopsBridgeError {
+            // The bridge's own sentence, verbatim: it names the anchor and
+            // the rule it refused, which no fixed translation could.
+            return .failed(error.description)
         } catch {
-            return .failed(String(describing: error))
+            // Anything else is not a refusal this app can quote. Typed the
+            // same way `writeConfig` is (SOPS-39 task 10): `String(describing:)`
+            // over an arbitrary error prints its *type* at the user, and a
+            // type name is neither an explanation nor something to act on.
+            return .failed("this project's .sops.yaml could not be read")
         }
         do {
             try writeFile(text, configURL, expecting)

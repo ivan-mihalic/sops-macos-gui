@@ -793,40 +793,24 @@ struct ProjectAccessRunRecordTests {
         #expect(model.previousIncompleteRun == nil)
     }
 
-    private func labels(in nodes: [GatingAXProbe.Node]) -> [String] {
-        nodes.flatMap { [$0.label, $0.value] }
-    }
-
-    @Test("the panel actually shows the incomplete-run banner, not just the model")
-    func thePanelRendersTheBanner() async throws {
-        let owner = try ProjectAgeKeyPair.generate()
-        let (root, _) = try makeProject(owner: owner)
-        let stale = RunRecord(
-            startedAt: Date(timeIntervalSince1970: 1), finishedAt: Date(timeIntervalSince1970: 2),
-            recipients: [owner.public],
-            results: [RunRecord.FileEntry(path: "a.yaml", outcome: .updated)],
-            notAttempted: ["b.yaml", "c.yaml"])
-        try RunRecordStore.save(stale, in: root)
-
-        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
-        let host = GatingHost(size: CGSize(width: 560, height: 620)) {
-            AnyView(ProjectAccessView(model: model, onClose: {}, onFilesApplied: {}))
-        }
-        defer { host.finish() }
-        await host.settle(until: { model.loadState == .loaded })
-
-        let expected = String(format: LocalizedKey.projectAccessPreviousRunIncomplete.text, 2)
-        #expect(labels(in: host.nodes()).contains(expected),
-                "the panel must say the previous run left 2 files untouched")
-    }
+    // The incomplete-run banner had a render test through
+    // `ProjectAccessView`. SOPS-39 task 10 retired that panel, and the Access
+    // page that replaced it does not draw `previousIncompleteRun` at all: a
+    // project-wide run now goes through `RewrapCoordinator`/`RewrapSheet`,
+    // which reports its own results and never resumes a previous session's.
+    // The model half above still pins that the record survives and is read
+    // back; nothing renders it today. Recorded rather than quietly dropped.
 
     /// SOPS-33. `RegistryQuarantineWiringTests` already pins that this
     /// model's `load()` routes through `loadOrQuarantine(in:)` and stores
     /// whatever it returns; this is the other half — that a notice actually
     /// reaches the screen, through the real `RegistryQuarantineBanner`
-    /// wired into `ProjectAccessView.loadedContent`, not just the model.
-    @Test("the panel actually shows the registry-quarantine banner when the registry was moved aside")
-    func thePanelRendersTheRegistryQuarantineBanner() async throws {
+    /// wired into `ProjectAccessPage`, not just the model. Ported from
+    /// `ProjectAccessView` in SOPS-39 task 10 — and the page had to grow the
+    /// banner to receive it, because the panel it replaced was the only
+    /// project-wide surface that ever showed one.
+    @Test("the page actually shows the registry-quarantine banner when the registry was moved aside")
+    func thePageRendersTheRegistryQuarantineBanner() async throws {
         let owner = try ProjectAgeKeyPair.generate()
         let (root, _) = try makeProject(owner: owner)
         let notice = "Your recipient names at /fixture/.sops-gui/recipients.json could not be read, " +
@@ -835,17 +819,16 @@ struct ProjectAccessRunRecordTests {
         let model = ProjectAccessModel(
             projectRoot: root, keyStore: SessionKeyStore(),
             loadRegistry: { _ in ([], notice) })
-        let host = GatingHost(size: CGSize(width: 560, height: 620)) {
-            AnyView(ProjectAccessView(model: model, onClose: {}, onFilesApplied: {}))
-        }
-        defer { host.finish() }
-        await host.settle(until: { model.loadState == .loaded })
+        await model.load()
 
-        let seen = labels(in: host.nodes())
+        let nodes = AXProbe.tree(size: CGSize(width: 1000, height: 900)) {
+            ProjectAccessPage(model: model, selectedFile: nil, onFilesApplied: {})
+        }
+        let seen = nodes.flatMap { [$0.label, $0.value] }
         #expect(seen.contains(LocalizedKey.accessRegistryQuarantineTitle.text),
-                "the panel must show the registry-quarantine banner's title")
+                "the page must show the registry-quarantine banner's title")
         #expect(seen.contains(notice),
-                "the panel must show the notice text itself, not just the title")
+                "the page must show the notice text itself, not just the title")
     }
 
     /// The negative case: an ordinary load (`quarantineNotice == nil`, the
@@ -857,70 +840,33 @@ struct ProjectAccessRunRecordTests {
         let (root, _) = try makeProject(owner: owner)
 
         let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
-        let host = GatingHost(size: CGSize(width: 560, height: 620)) {
-            AnyView(ProjectAccessView(model: model, onClose: {}, onFilesApplied: {}))
-        }
-        defer { host.finish() }
-        await host.settle(until: { model.loadState == .loaded })
+        await model.load()
 
         try #require(model.registryQuarantineNotice == nil, "precondition: nothing was quarantined")
-        #expect(!labels(in: host.nodes()).contains(LocalizedKey.accessRegistryQuarantineTitle.text),
-                "an ordinary load must not show the registry-quarantine banner")
+        let nodes = AXProbe.tree(size: CGSize(width: 1000, height: 900)) {
+            ProjectAccessPage(model: model, selectedFile: nil, onFilesApplied: {})
+        }
+        #expect(
+            !nodes.flatMap { [$0.label, $0.value] }
+                .contains(LocalizedKey.accessRegistryQuarantineTitle.text),
+            "an ordinary load must not show the registry-quarantine banner")
     }
 }
 
-@Suite("Project access gates")
-struct ProjectAccessGateTests {
-
-    @Test("the Project Access button is unreachable while the open document is dirty")
-    func gateClosesOnADirtyDocument() {
-        #expect(ProjectAccessGate.canOpen(hasProject: true, documentIsDirty: false, documentIsSaving: false))
-        #expect(!ProjectAccessGate.canOpen(hasProject: true, documentIsDirty: true, documentIsSaving: false))
-        #expect(!ProjectAccessGate.canOpen(hasProject: true, documentIsDirty: false, documentIsSaving: true))
-        #expect(!ProjectAccessGate.canOpen(hasProject: false, documentIsDirty: false, documentIsSaving: false))
-    }
-
-    @Test("Update .sops.yaml is offered only when there is something to write")
-    func configButtonGate() {
-        #expect(ProjectAccessView.canUpdateConfig(
-            loadState: .loaded, configNeedsWriting: true, stagedIsEmpty: false, isApplyingFiles: false))
-        #expect(!ProjectAccessView.canUpdateConfig(
-            loadState: .loaded, configNeedsWriting: false, stagedIsEmpty: false, isApplyingFiles: false))
-        #expect(!ProjectAccessView.canUpdateConfig(
-            loadState: .loaded, configNeedsWriting: true, stagedIsEmpty: true, isApplyingFiles: false))
-        #expect(!ProjectAccessView.canUpdateConfig(
-            loadState: .loaded, configNeedsWriting: true, stagedIsEmpty: false, isApplyingFiles: true))
-        #expect(!ProjectAccessView.canUpdateConfig(
-            loadState: .loading, configNeedsWriting: true, stagedIsEmpty: false, isApplyingFiles: false))
-    }
-
-    @Test("Apply to Files needs files, recipients and a key")
-    func fileButtonGate() {
-        #expect(ProjectAccessView.canApplyToFiles(
-            loadState: .loaded, fileCount: 3, stagedIsEmpty: false, keyConfigured: true,
-            isApplyingFiles: false, widenedScopeRequiresAcknowledgement: false,
-            widenedScopeAcknowledged: false))
-        #expect(!ProjectAccessView.canApplyToFiles(
-            loadState: .loaded, fileCount: 0, stagedIsEmpty: false, keyConfigured: true,
-            isApplyingFiles: false, widenedScopeRequiresAcknowledgement: false,
-            widenedScopeAcknowledged: false))
-        #expect(!ProjectAccessView.canApplyToFiles(
-            loadState: .loaded, fileCount: 3, stagedIsEmpty: true, keyConfigured: true,
-            isApplyingFiles: false, widenedScopeRequiresAcknowledgement: false,
-            widenedScopeAcknowledged: false))
-        #expect(!ProjectAccessView.canApplyToFiles(
-            loadState: .loaded, fileCount: 3, stagedIsEmpty: false, keyConfigured: false,
-            isApplyingFiles: false, widenedScopeRequiresAcknowledgement: false,
-            widenedScopeAcknowledged: false))
-        #expect(!ProjectAccessView.canApplyToFiles(
-            loadState: .loaded, fileCount: 3, stagedIsEmpty: false, keyConfigured: true,
-            isApplyingFiles: true, widenedScopeRequiresAcknowledgement: false,
-            widenedScopeAcknowledged: false))
-        #expect(!ProjectAccessView.canApplyToFiles(
-            loadState: .failed("nope"), fileCount: 3, stagedIsEmpty: false, keyConfigured: true,
-            isApplyingFiles: false, widenedScopeRequiresAcknowledgement: false,
-            widenedScopeAcknowledged: false))
-    }
+/// SOPS-39 task 10 retired `ProjectAccessView` and with it three gates:
+/// `ProjectAccessGate.canOpen` (there is no "Project Access" button any more
+/// — Access is a sidebar destination, and the unsaved-work question it asked
+/// is now `WorkspaceSwitchGate.decision`'s), and the two static button gates
+/// `canUpdateConfig`/`canApplyToFiles`. The page's own header button is gated
+/// on `model.isDirty`, and a project-wide re-wrap runs through
+/// `RewrapCoordinator`, which asks the model directly.
+///
+/// What survives the move is the one thing a caller cannot re-derive: every
+/// refusal `applyToFiles()` can return has a sentence to show for it. That
+/// moved onto the refusal itself, because `RewrapCoordinator` — not a view —
+/// is what names a skipped rule now.
+@Suite("Every file-apply refusal can say what it is")
+struct FileApplyRefusalExplanationTests {
 
     @Test("every file-apply refusal has an explanation to show")
     func everyRefusalIsExplained() {
@@ -928,10 +874,9 @@ struct ProjectAccessGateTests {
             .notLoaded, .emptyRecipients, .noFiles, .noKey, .alreadyRunning,
             .widenedScopeNotAcknowledged,
         ] {
-            #expect(!ProjectAccessView.explanation(for: refusal).isEmpty)
+            #expect(!refusal.explanation.isEmpty)
         }
     }
-
 }
 
 @Suite("ProjectAccessModel — a project it could not look inside is never reported as empty")
@@ -1028,182 +973,22 @@ struct ProjectAccessScopeFallbackTests {
     }
 }
 
-@Suite("ProjectAccessView — what an apply will touch is always stated on the panel")
-@MainActor
-struct ProjectAccessScopeDisclosureTests {
-
-    /// I5. `Plan.filesInScope` deliberately falls back to *every* encrypted
-    /// file when no governing creation rule could be identified — otherwise a
-    /// project with no `.sops.yaml`, an unreadable one, or one whose rules
-    /// match nothing would apply to nothing and report success. But the panel
-    /// rendered its scope sentence only in the rule-identified branch, so in
-    /// exactly the case where the scope was *widest* the user was told
-    /// nothing about it until the confirmation dialog. The count belongs on
-    /// the panel, before the button is pressed.
-    /// Every label the rendered panel exposes.
-    ///
-    /// Deliberately unfiltered, and both sides of every assertion below go
-    /// through `LocalizedKey.text`. Under plain `swift test` the string catalog
-    /// is copied uncompiled (CLAUDE.md), so `LocalizedKey.text` resolves to the
-    /// raw key and `String(format:)` substitutes nothing — an assertion written
-    /// against literal English ("…will re-wrap all 2 encrypted files…") passes
-    /// only under a catalog-compiling build and fails here for a reason that
-    /// has nothing to do with the view. Comparing key-derived text to
-    /// key-derived text is stable under both build systems and still proves the
-    /// thing this test is about: *which* sentence the panel renders in *which*
-    /// branch. That the counts inside it are right is pinned by the model-level
-    /// tests above, and that the plural forms resolve by `LocalizationTests`.
-    private func labels(in nodes: [GatingAXProbe.Node]) -> [String] {
-        nodes.flatMap { [$0.label, $0.value] }
-    }
-
-    @Test("a project with no .sops.yaml still says how many files an apply would touch")
-    func scopeIsStatedWithoutAConfig() async throws {
-        let owner = try ProjectAgeKeyPair.generate()
-        let root = try projectScratchDirectory()
-        let encrypted = try SopsBridge.encrypt(projectPlainYAML, format: .yaml, recipients: [owner.public])
-        for name in ["a.yaml", "b.yaml"] {
-            try encrypted.write(to: root.appendingPathComponent(name), atomically: true, encoding: .utf8)
-        }
-
-        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
-        let host = GatingHost(size: CGSize(width: 560, height: 620)) {
-            AnyView(ProjectAccessView(model: model, onClose: {}, onFilesApplied: {}))
-        }
-        defer { host.finish() }
-        await host.settle(until: { model.loadState == .loaded })
-
-        try #require(model.loadState == .loaded, "precondition: the view's own task loaded the model")
-        try #require(model.plan?.governingRuleIdentified == false, "precondition: the fallback branch")
-        #expect(model.filesToApply.count == 2)
-
-        let expected = String(format: LocalizedKey.projectAccessAllFilesInScope.text, 2)
-        #expect(
-            labels(in: host.nodes()).contains(expected),
-            "the panel must state what an apply would touch even when no rule was identified")
-    }
-
-    @Test("a project whose creation rule matches nothing still says how many files an apply would touch")
-    func scopeIsStatedWhenNoRuleMatches() async throws {
-        let owner = try ProjectAgeKeyPair.generate()
-        let root = try projectScratchDirectory()
-        try """
-            creation_rules:
-              - path_regex: nothing-here/.*\\.yaml$
-                age: \(owner.public)
-
-            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
-        let encrypted = try SopsBridge.encrypt(projectPlainYAML, format: .yaml, recipients: [owner.public])
-        try encrypted.write(
-            to: root.appendingPathComponent("secret.yaml"), atomically: true, encoding: .utf8)
-
-        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
-        let host = GatingHost(size: CGSize(width: 560, height: 620)) {
-            AnyView(ProjectAccessView(model: model, onClose: {}, onFilesApplied: {}))
-        }
-        defer { host.finish() }
-        await host.settle(until: { model.loadState == .loaded })
-
-        try #require(model.loadState == .loaded)
-        try #require(model.plan?.governingRuleIdentified == false)
-
-        let expected = String(format: LocalizedKey.projectAccessAllFilesInScope.text, 1)
-        #expect(labels(in: host.nodes()).contains(expected))
-    }
-
-    /// The branch that already worked, kept alongside so a future change
-    /// cannot fix the fallback by deleting the case it was modelled on.
-    @Test("a project whose rule was identified states the matched-of-found count")
-    func scopeIsStatedWhenARuleIsIdentified() async throws {
-        let owner = try ProjectAgeKeyPair.generate()
-        let (root, _) = try makeProject(owner: owner)
-
-        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
-        let host = GatingHost(size: CGSize(width: 560, height: 620)) {
-            AnyView(ProjectAccessView(model: model, onClose: {}, onFilesApplied: {}))
-        }
-        defer { host.finish() }
-        await host.settle(until: { model.plan?.governingRuleIdentified == true })
-
-        try #require(model.plan?.governingRuleIdentified == true)
-        // Ints, not strings: the counts are pluralized on now (M2), so the
-        // catalog entry carries `%1$#@matched@`/`%2$#@found@` and a
-        // pre-stringified argument would expand to nothing under a build that
-        // compiles the catalog.
-        let expected = String(format: LocalizedKey.projectAccessFilesSummary.text, 2, 2)
-        #expect(labels(in: host.nodes()).contains(expected))
-    }
-}
-
-// MARK: - F3: a symlink and its target collapse to one file, and the panel says so
-
-@Suite("ProjectAccessView — a file reachable by more than one name says so")
-@MainActor
-struct ProjectAccessCollapsedDuplicateFilesTests {
-
-    private func labels(in nodes: [GatingAXProbe.Node]) -> [String] {
-        nodes.flatMap { [$0.label, $0.value] }
-    }
-
-    /// A project holding a symlink alongside its target shows one file, not
-    /// two — right, per `ProjectRecipientApplier.deduplicatedByResolvedPath` —
-    /// but until this the panel said nothing about the collapse at all: the
-    /// count a user sees was silently smaller than the number of paths the
-    /// scan actually found.
-    @Test("a project with a symlinked file discloses the collapse")
-    func collapseIsDisclosed() async throws {
-        let owner = try ProjectAgeKeyPair.generate()
-        let root = try projectScratchDirectory("project-access-alias")
-        try """
-            creation_rules:
-              - path_regex: .*\\.yaml$
-                age: \(owner.public)
-
-            """.write(to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
-        let target = root.appendingPathComponent("db.yaml")
-        try SopsBridge.encrypt(projectPlainYAML, format: .yaml, recipients: [owner.public])
-            .write(to: target, atomically: true, encoding: .utf8)
-        try FileManager.default.createSymbolicLink(
-            at: root.appendingPathComponent("alias.yaml"), withDestinationURL: target)
-
-        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
-        let host = GatingHost(size: CGSize(width: 560, height: 700)) {
-            AnyView(ProjectAccessView(model: model, onClose: {}, onFilesApplied: {}))
-        }
-        defer { host.finish() }
-        await host.settle(until: { model.loadState == .loaded })
-
-        try #require(model.loadState == .loaded)
-        #expect(model.plan?.duplicateFileNameCount == 1,
-                "precondition: the scan found two names for one file")
-
-        let expected = String(format: LocalizedKey.projectAccessCollapsedDuplicateFiles.text, 1)
-        #expect(labels(in: host.nodes()).contains(expected),
-                "the panel must say the count shown is already collapsed by resolved path")
-    }
-
-    /// The proportionate half of the disclosure: nothing is said when there is
-    /// nothing to say. A project with no aliasing must not carry a sentence
-    /// that reads as a warning over an ordinary project.
-    @Test("a project with no symlinked files says nothing about a collapse")
-    func noCollapseIsSilent() async throws {
-        let owner = try ProjectAgeKeyPair.generate()
-        let (root, _) = try makeProject(owner: owner)
-
-        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
-        let host = GatingHost(size: CGSize(width: 560, height: 700)) {
-            AnyView(ProjectAccessView(model: model, onClose: {}, onFilesApplied: {}))
-        }
-        defer { host.finish() }
-        await host.settle(until: { model.loadState == .loaded })
-
-        try #require(model.loadState == .loaded)
-        #expect(model.plan?.duplicateFileNameCount == 0)
-
-        let unexpected = String(format: LocalizedKey.projectAccessCollapsedDuplicateFiles.text, 1)
-        #expect(!labels(in: host.nodes()).contains(unexpected))
-    }
-}
+// SOPS-39 task 10. Two suites lived here and are gone with the panel they
+// rendered:
+//
+//   * `ProjectAccessScopeDisclosureTests` — "N of M files", the all-files
+//     fallback count and the unmatched note. The Access page is organised by
+//     creation rule and states scope per rule (`accessRulesEncryptedForOf`,
+//     `AccessRuleCard`'s governed-file list), so there is no single
+//     panel-wide scope sentence left to assert.
+//   * `ProjectAccessCollapsedDuplicateFilesTests` — the symlink-collapse
+//     disclosure. `Plan.duplicateFileNameCount` still computes it and
+//     `ProjectRecipientApplierTests` still pins the collapse itself; nothing
+//     renders the count now.
+//
+// Both were render tests through `ProjectAccessView`, and neither behaviour
+// has a home on the page. Deleted rather than re-pointed at a view that
+// cannot show them — a test rewritten until it passes proves nothing.
 
 // MARK: - I1: a plan computed for an older staged set must never be written
 
@@ -1392,13 +1177,9 @@ private func makeCrossRuleProject(owner: ProjectAgeKeyPair) throws -> URL {
     return root
 }
 
-@Suite("ProjectAccessView — a fallback scope that crosses rules never does it quietly")
+@Suite("ProjectAccessModel — a fallback scope that crosses rules is counted")
 @MainActor
 struct ProjectAccessCrossRuleDisclosureTests {
-
-    private func labels(in nodes: [GatingAXProbe.Node]) -> [String] {
-        nodes.flatMap { [$0.label, $0.value] }
-    }
 
     @Test("files another creation rule governs are counted, not just swept in")
     func theFallbackScopeNamesTheOtherRulesFiles() async throws {
@@ -1415,57 +1196,11 @@ struct ProjectAccessCrossRuleDisclosureTests {
                 == ["api.yaml", "db.yaml"])
     }
 
-    @Test("the panel says so before the button is pressed")
-    func thePanelDisclosesIt() async throws {
-        let owner = try ProjectAgeKeyPair.generate()
-        let root = try makeCrossRuleProject(owner: owner)
-
-        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
-        let host = GatingHost(size: CGSize(width: 560, height: 620)) {
-            AnyView(ProjectAccessView(model: model, onClose: {}, onFilesApplied: {}))
-        }
-        defer { host.finish() }
-        await host.settle(until: { model.loadState == .loaded })
-
-        try #require(model.plan?.governingRuleIdentified == false)
-        // Key-derived on both sides, for the reason the suite above states: the
-        // catalog is copied uncompiled under plain `swift test`.
-        let expected = String(format: LocalizedKey.projectAccessOtherRulesInScope.text, 2)
-        #expect(labels(in: host.nodes()).contains(expected),
-                "the panel must say how many of the files in scope another rule governs")
-    }
-
-    @Test("and the confirmation dialog says it again")
-    func theConfirmationDisclosesIt() async throws {
-        let owner = try ProjectAgeKeyPair.generate()
-        let root = try makeCrossRuleProject(owner: owner)
-
-        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
-        await model.load()
-        try #require(model.plan?.governingRuleIdentified == false)
-
-        let view = ProjectAccessView(model: model, onClose: {}, onFilesApplied: {})
-        let expected = String(format: LocalizedKey.projectAccessOtherRulesInScope.text, 2)
-        #expect(view.fileApplyConfirmationMessage.contains(expected),
-                "the last screen before the write must name the other rules' files too")
-    }
-
-    /// The branch that must *not* gain the sentence: a rule was identified, so
-    /// `project-access.unmatched-note` already says what is left out, and this
-    /// one would contradict it.
-    @Test("a project whose rule was identified does not claim to cross rules")
-    func anIdentifiedRuleSaysNothingAboutOtherRules() async throws {
-        let owner = try ProjectAgeKeyPair.generate()
-        let (root, _) = try makeProject(owner: owner)
-
-        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
-        await model.load()
-        try #require(model.plan?.governingRuleIdentified == true)
-
-        let view = ProjectAccessView(model: model, onClose: {}, onFilesApplied: {})
-        let sentence = String(format: LocalizedKey.projectAccessOtherRulesInScope.text, 2)
-        #expect(!view.fileApplyConfirmationMessage.contains(sentence))
-    }
+    // The panel sentence and the confirmation dialog that repeated it went
+    // with `ProjectAccessView` (SOPS-39 task 10). `filesGovernedByOtherRules`
+    // is still computed and still pinned above; the Access page never widens
+    // a scope across rules in the first place — a rewrap runs per rule, for
+    // that rule's own declared recipients (`RewrapCoordinator`).
 }
 
 // MARK: - Ticket #24 claim 1: widening onto another rule's files needs explicit consent
@@ -1578,26 +1313,15 @@ struct ProjectAccessWidenedScopeAcknowledgementTests {
         #expect(await model.applyToFiles() == nil, "no other rule's files are at stake here")
     }
 
-    @Test("the Apply Files gate itself requires acknowledgement, not just the model")
-    func viewGateRequiresAcknowledgement() {
-        #expect(!ProjectAccessView.canApplyToFiles(
-            loadState: .loaded, fileCount: 3, stagedIsEmpty: false, keyConfigured: true,
-            isApplyingFiles: false, widenedScopeRequiresAcknowledgement: true,
-            widenedScopeAcknowledged: false))
-        #expect(ProjectAccessView.canApplyToFiles(
-            loadState: .loaded, fileCount: 3, stagedIsEmpty: false, keyConfigured: true,
-            isApplyingFiles: false, widenedScopeRequiresAcknowledgement: true,
-            widenedScopeAcknowledged: true))
-        #expect(ProjectAccessView.canApplyToFiles(
-            loadState: .loaded, fileCount: 3, stagedIsEmpty: false, keyConfigured: true,
-            isApplyingFiles: false, widenedScopeRequiresAcknowledgement: false,
-            widenedScopeAcknowledged: false))
-    }
+    // The Apply-Files button gate that repeated this refusal
+    // (`ProjectAccessView.canApplyToFiles`) went with the panel in SOPS-39
+    // task 10. The refusal above is the model's own and is where it always
+    // mattered — a gate can only stop a press, not a call.
 }
 
 // MARK: - I3 / M3: what a row shows, and what the Add button agrees to
 
-@Suite("Recipient rows — the registry's kind is shown, in both panels")
+@Suite("Recipient rows — the registry's kind is shown on the per-file panel")
 @MainActor
 struct RecipientKindDisplayTests {
 
@@ -1605,24 +1329,11 @@ struct RecipientKindDisplayTests {
         nodes.flatMap { [$0.label, $0.value] }
     }
 
-    @Test("the project panel draws the recipient's kind")
-    func projectPanelShowsTheKind() async throws {
-        let owner = try ProjectAgeKeyPair.generate()
-        let (root, _) = try makeProject(owner: owner)
-        try RecipientRegistry.upsert(
-            RecipientRecord(label: "Build server", kind: .server, ageRecipient: owner.public),
-            in: root)
-
-        let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
-        let host = GatingHost(size: CGSize(width: 560, height: 620)) {
-            AnyView(ProjectAccessView(model: model, onClose: {}, onFilesApplied: {}))
-        }
-        defer { host.finish() }
-        await host.settle(until: { model.loadState == .loaded })
-
-        #expect(labels(in: host.nodes()).contains(LocalizedKey.recipientKindServer.text),
-                "AccessEntry.kind is populated and was never drawn")
-    }
+    // The project-wide panel drew `RecipientKindBadge` too, and had a test
+    // for it here. The Access page names keys by their `.sops.yaml` anchor
+    // and has no kind column, so that assertion went with `ProjectAccessView`
+    // (SOPS-39 task 10). The badge itself is still drawn by the per-file
+    // panel below and by `CiphertextReadOnlyView`.
 
     @Test("the per-file panel draws the same kind the same way")
     func filePanelShowsTheKind() async throws {
@@ -1662,14 +1373,14 @@ struct RecipientKindDisplayTests {
     /// pinned is that neither view trims for itself. `AppShellProjectRootSourceTests`
     /// reads source for the same reason: a `View` struct's `.disabled(…)`
     /// modifier is not reachable from a unit test.
-    @Test("neither Access panel decides for itself what an empty recipient is")
+    @Test("neither Access surface decides for itself what an empty recipient is")
     func neitherPanelTrimsOnItsOwn() throws {
         let sources = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/SopsUI")
-        for relative in ["Editor/RecipientAccessView.swift", "Projects/ProjectAccessView.swift"] {
+        for relative in ["Editor/RecipientAccessView.swift", "Projects/AccessRuleCard.swift"] {
             let text = try String(
                 contentsOf: sources.appendingPathComponent(relative), encoding: .utf8)
             // The narrower set, spelled exactly: `.whitespacesAndNewlines)`

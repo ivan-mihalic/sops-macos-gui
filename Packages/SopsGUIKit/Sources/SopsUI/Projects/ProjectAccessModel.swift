@@ -80,6 +80,25 @@ public final class ProjectAccessModel {
         /// comment already calls out as the one way this fallback is not
         /// silent — reading it was never enforced.
         case widenedScopeNotAcknowledged
+
+        /// What this refusal is called on screen.
+        ///
+        /// Lived on `ProjectAccessView` until SOPS-39 task 10 retired that
+        /// panel; it belongs on the refusal itself, so no caller can produce
+        /// one without a sentence to show for it. `RewrapCoordinator` is why
+        /// it has to exist outside a view at all: a rule it cannot re-wrap is
+        /// skipped *by name*, and the name is this.
+        public var explanation: String {
+            switch self {
+            case .emptyRecipients: LocalizedKey.projectAccessErrorEmptyRecipients.text
+            case .noFiles: LocalizedKey.projectAccessErrorNoFiles.text
+            case .noKey: LocalizedKey.accessNeedsKeyBody.text
+            case .notLoaded: LocalizedKey.projectAccessScanning.text
+            case .alreadyRunning: LocalizedKey.projectAccessErrorAlreadyRunning.text
+            case .widenedScopeNotAcknowledged:
+                LocalizedKey.projectAccessErrorWidenedScopeNotAcknowledged.text
+            }
+        }
     }
 
     public private(set) var loadState: LoadState = .idle

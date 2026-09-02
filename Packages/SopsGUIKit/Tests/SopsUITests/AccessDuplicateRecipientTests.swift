@@ -210,21 +210,25 @@ struct ProjectAccessDuplicateRecipientTests {
         #expect(!model.isDirty)
     }
 
-    @Test("the panel says the creation rule lists a key more than once")
-    func thePanelDisclosesTheDuplicate() async throws {
+    /// SOPS-39 task 10. Ported from `ProjectAccessView` to the Access page
+    /// that replaced it: the staged set is a set, so a rule naming one key
+    /// twice is still drawn as one chip — and the sentence saying so has to
+    /// survive the move, or the config on disk says something the page does
+    /// not.
+    @Test("the Access page says the creation rule lists a key more than once")
+    func thePageDisclosesTheDuplicate() async throws {
         let owner = try DuplicateAgeKeyPair.generate()
         let root = try makeProject(owner: owner, twice: true)
 
         let model = ProjectAccessModel(projectRoot: root, keyStore: SessionKeyStore())
-        let host = GatingHost(size: CGSize(width: 560, height: 700)) {
-            AnyView(ProjectAccessView(model: model, onClose: {}, onFilesApplied: {}))
-        }
-        defer { host.finish() }
-        await host.settle(until: { model.loadState == .loaded })
-
+        await model.load()
         try #require(model.duplicatedRecipients == [owner.public])
+
+        let nodes = AXProbe.tree(size: CGSize(width: 1000, height: 900)) {
+            ProjectAccessPage(model: model, selectedFile: nil, onFilesApplied: {})
+        }
         let expected = String(format: LocalizedKey.projectAccessDuplicateRecipients.text, 1)
-        let rendered = host.nodes().flatMap { [$0.label, $0.value] }
+        let rendered = nodes.flatMap { [$0.label, $0.value] }
         #expect(rendered.contains(expected))
     }
 

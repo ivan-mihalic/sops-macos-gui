@@ -69,6 +69,7 @@ public struct ProjectAccessPage: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 header
+                registryQuarantineBanner
                 if let inventory = model.inventory {
                     if let error = inventory.configError {
                         configErrorBox(error)
@@ -122,17 +123,45 @@ public struct ProjectAccessPage: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(.accessPageTitle).font(.title2.weight(.semibold))
-            Spacer()
-            Button(LocalizedKey.projectAccessUpdateConfigButton.text) {
-                Task { await applyConfig() }
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(.accessPageTitle).font(.title2.weight(.semibold))
+                Spacer()
+                Button(LocalizedKey.projectAccessUpdateConfigButton.text) {
+                    Task { await applyConfig() }
+                }
+                // Nothing has been staged, so there is nothing this could
+                // write. Disabled rather than hidden: the control is the
+                // answer to "where do I save this?", and it has to be visible
+                // before there is something to save for that answer to arrive
+                // in time.
+                .disabled(!model.isDirty)
             }
-            // Nothing has been staged, so there is nothing this could write.
-            // Disabled rather than hidden: the control is the answer to
-            // "where do I save this?", and it has to be visible before there
-            // is something to save for that answer to arrive in time.
-            .disabled(!model.isDirty)
+            // The write landed — and the sentence that says so is also the
+            // only thing on this path that asks for a commit. Carried over
+            // from the panel this page replaced (SOPS-39 task 10): writing
+            // `.sops.yaml` silently would leave the team's copy disagreeing
+            // with the repository's, which is the one outcome
+            // `CommitRemindersTests` exists to prevent.
+            if model.configWritten {
+                Text(.projectAccessConfigWritten)
+                    .font(.caption)
+                    .foregroundStyle(.green)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// SOPS-33. The registry was found present but undecodable and moved
+    /// aside, so the names on this page are missing for a reason the user is
+    /// entitled to know. Rendered through the shared
+    /// `RegistryQuarantineBanner`, exactly as the panel this page replaced
+    /// did — dropping it with that panel would have silently retired a
+    /// disclosure the app already shipped (SOPS-39 task 10).
+    @ViewBuilder
+    private var registryQuarantineBanner: some View {
+        if let notice = model.registryQuarantineNotice {
+            RegistryQuarantineBanner(notice: notice)
         }
     }
 
@@ -241,6 +270,13 @@ public struct ProjectAccessPage: View {
                                 .foregroundStyle(.secondary)
                                 .textSelection(.enabled)
                                 .help(key.recipient)
+                            // The cell *is* the control, so what it does has
+                            // to be said somewhere a reader — and the
+                            // accessibility tree — can find it: an unnamed
+                            // key's cell reads "—", which announces nothing.
+                            // The per-file panel says the same two sentences
+                            // through `RecipientNamingButton`; this column
+                            // carries them as the cell's help.
                             Button {
                                 editLabel(for: key.recipient)
                             } label: {
@@ -249,6 +285,12 @@ public struct ProjectAccessPage: View {
                                         label(for: key.recipient) == nil ? .secondary : .primary)
                             }
                             .buttonStyle(.plain)
+                            // `.help`, not `.accessibilityLabel`: a label
+                            // would *replace* the cell's own text in the
+                            // accessibility tree, so the name a user just
+                            // gave this key would stop being announced — the
+                            // one thing the column exists to show.
+                            .help(namingLabel(for: key.recipient).text)
                             Text(verbatim: usedIn(key.recipient, in: inventory))
                                 .font(.system(.caption, design: .monospaced))
                                 .foregroundStyle(.secondary)
@@ -274,6 +316,22 @@ public struct ProjectAccessPage: View {
             if model.plan?.targetFileWasSubstituted == true {
                 Text(.accessTargetSubstituted).font(.caption).foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+            // A key the editable rule names twice is drawn once — the staged
+            // set is a set, and multiplicity is not access — but never
+            // without saying so. Carried over from the panel this page
+            // replaced (SOPS-39 task 10): the collapse is otherwise
+            // invisible, and the config on disk says something the page
+            // would not. See `ProjectAccessModel.duplicatedRecipients`.
+            if !model.duplicatedRecipients.isEmpty {
+                Text(
+                    String(
+                        format: LocalizedKey.projectAccessDuplicateRecipients.text,
+                        model.duplicatedRecipients.count)
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             }
 
             ForEach(inventory.rules) { rule in
@@ -323,6 +381,13 @@ public struct ProjectAccessPage: View {
     private func isEditable(_ rule: ConfigRules.Rule, in inventory: AccessInventory) -> Bool {
         guard model.plan?.configRefusal == nil else { return false }
         return selectedRuleIndex(in: inventory) == rule.index
+    }
+
+    /// "Name this key" or "Edit name", the same pair `RecipientNamingButton`
+    /// offers on the per-file panel's rows — so the same action does not read
+    /// as two different ones in the two places it appears.
+    private func namingLabel(for recipient: String) -> LocalizedKey {
+        label(for: recipient) == nil ? .recipientNameThis : .recipientEditLabel
     }
 
     private func label(for recipient: String) -> String? {
