@@ -299,6 +299,49 @@ func sops_add_alias_recipient(
 	return result(out, payload, err)
 }
 
+// sops_remove_alias_recipient computes what the `.sops.yaml` at confPath
+// would contain with the alias of the `keys:` anchor named anchor removed from
+// creation rule ruleIndex — the inverse of sops_add_alias_recipient, never
+// writing, refusing an unknown anchor, an absent alias, a literal spelling, a
+// rule spread across several key groups, or a removal that would leave the
+// rule with no age recipient. See gobridge.RemoveAliasRecipient.
+//
+//export sops_remove_alias_recipient
+func sops_remove_alias_recipient(
+	confPath *C.char, ruleIndex C.int, anchor *C.char, out **C.char,
+) C.int {
+	payload, err := gobridge.Guard(gobridge.OpUpdatingConfig, func() ([]byte, error) {
+		text, err := gobridge.RemoveAliasRecipient(
+			C.GoString(confPath), int(ruleIndex), C.GoString(anchor))
+		if err != nil {
+			return nil, err
+		}
+		return []byte(text), nil
+	})
+	return result(out, payload, err)
+}
+
+// sops_add_named_key computes what the `.sops.yaml` at confPath would contain
+// with a new `keys:` entry `- &name recipient` and, unless ruleIndex is -1,
+// an alias of it appended to creation rule ruleIndex. Never writes; refuses
+// a bad or taken anchor name, a recipient that is not a native age public
+// key, and a key `keys:` already declares. See gobridge.AddNamedKey.
+//
+//export sops_add_named_key
+func sops_add_named_key(
+	confPath *C.char, name *C.char, recipient *C.char, ruleIndex C.int, out **C.char,
+) C.int {
+	payload, err := gobridge.Guard(gobridge.OpUpdatingConfig, func() ([]byte, error) {
+		text, err := gobridge.AddNamedKey(
+			C.GoString(confPath), C.GoString(name), C.GoString(recipient), int(ruleIndex))
+		if err != nil {
+			return nil, err
+		}
+		return []byte(text), nil
+	})
+	return result(out, payload, err)
+}
+
 // sops_decrypt_to_rows decrypts a SOPS document into the ordered list of
 // editable rows the editor renders. format selects encrypted's on-disk shape
 // ("yaml" or "dotenv"). On success *out carries the JSON encoding of a

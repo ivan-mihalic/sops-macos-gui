@@ -935,6 +935,14 @@ func setMappingValue(mapping *yaml.Node, key string, value *yaml.Node) {
 		value)
 }
 
+// insertMappingValueFirst puts `key: value` at the front of the mapping —
+// used for `keys:`, whose anchors must be defined before the aliases in
+// `creation_rules` that reference them.
+func insertMappingValueFirst(mapping *yaml.Node, key string, value *yaml.Node) {
+	pair := []*yaml.Node{{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, value}
+	mapping.Content = append(pair, mapping.Content...)
+}
+
 func nodeScalar(node *yaml.Node) string {
 	if node == nil || node.Kind != yaml.ScalarNode {
 		return ""

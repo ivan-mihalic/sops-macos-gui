@@ -402,6 +402,7 @@ public struct ProjectAccessPage: View {
                             Text(verbatim: usedIn(key.recipient, in: inventory))
                                 .font(.system(.caption, design: .monospaced))
                                 .foregroundStyle(.secondary)
+                                .help(usedInHelp(key.recipient, in: inventory))
                         }
                     }
                 }
@@ -458,6 +459,12 @@ public struct ProjectAccessPage: View {
                     onAdd: addStagedRecipient,
                     onAddNamedKey: { anchor in
                         Task { await addNamedKey(anchor, to: rule.index) }
+                    },
+                    onRemoveNamedKey: { anchor in
+                        Task { await removeNamedKey(anchor, from: rule.index) }
+                    },
+                    onAddNewKey: { name, recipient, label in
+                        Task { await addNewKey(name: name, recipient: recipient, label: label, to: rule.index) }
                     })
             }
         }
@@ -514,14 +521,25 @@ public struct ProjectAccessPage: View {
         recipients.map { displayName($0, in: inventory) }.joined(separator: ", ")
     }
 
-    /// The `path_regex` of every rule that names this key — how a reader
-    /// answers "what does the vps key actually unlock?" without reading the
-    /// config themselves.
+    /// The files every rule that names this key governs — how a reader
+    /// answers "what does the vps key actually unlock?" in the names they
+    /// know the files by, not in the patterns sops matches on. The patterns
+    /// are in `usedInHelp`, one hover away.
     private func usedIn(_ recipient: String, in inventory: AccessInventory) -> String {
-        let regexes = inventory.rules
+        let rules = inventory.rules.filter { $0.recipients.contains { $0.recipient == recipient } }
+        guard !rules.isEmpty else { return "—" }
+        var seen = Set<String>()
+        let files = rules.flatMap { inventory.files(governedBy: $0.index) }
+            .map(\.relativePath)
+            .filter { seen.insert($0).inserted }
+        return files.isEmpty ? LocalizedKey.accessKeysUsedInNoFiles.text : files.joined(separator: ", ")
+    }
+
+    private func usedInHelp(_ recipient: String, in inventory: AccessInventory) -> String {
+        inventory.rules
             .filter { $0.recipients.contains { $0.recipient == recipient } }
             .map(\.pathRegex)
-        return regexes.isEmpty ? "—" : regexes.joined(separator: ", ")
+            .joined(separator: "\n")
     }
 
     /// First 10 and last 6 characters of an age public key. Public keys are
@@ -565,6 +583,13 @@ public struct ProjectAccessPage: View {
         if !orphans.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 Text(.accessUngoverned).font(.headline)
+                Text(.accessUngovernedHint).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(LocalizedKey.accessRulesRevealConfig.text) {
+                    NSWorkspace.shared.activateFileViewerSelecting(
+                        [model.projectRoot.appendingPathComponent(".sops.yaml")])
+                }
+                .controlSize(.small)
                 ForEach(orphans) { file in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         // Verbatim: a path is not translatable, and resolved
@@ -624,6 +649,26 @@ public struct ProjectAccessPage: View {
         switch refusal {
         case .duplicate: .accessAddDuplicate
         case .empty, .notLoaded: nil
+        }
+    }
+
+    /// Removes a named key from a rule — the inverse of `addNamedKey`, with
+    /// the same reload and the same sidebar refresh, since every file the
+    /// rule governs has just drifted the other way.
+    private func removeNamedKey(_ anchor: String, from ruleIndex: Int) async {
+        switch await model.removeAliasFromRule(ruleIndex: ruleIndex, anchor: anchor) {
+        case .written: onFilesApplied()
+        case .nothingToWrite: break
+        case .failed(let message): errorMessage = message
+        }
+    }
+
+    /// Declares a new named key and adds it to the rule in one write.
+    private func addNewKey(name: String, recipient: String, label: String?, to ruleIndex: Int) async {
+        switch await model.addNamedKey(name: name, recipient: recipient, label: label, ruleIndex: ruleIndex) {
+        case .written: onFilesApplied()
+        case .nothingToWrite: break
+        case .failed(let message): errorMessage = message
         }
     }
 

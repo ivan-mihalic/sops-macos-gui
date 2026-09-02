@@ -516,6 +516,44 @@ public enum SopsBridge {
         }
     }
 
+    /// The inverse of `addAliasRecipient`: what `configPath` would contain
+    /// with the alias of `anchor` removed from creation rule `ruleIndex`.
+    /// Never writes. Throws — value-free — when the anchor is unknown, the
+    /// rule does not alias it (a literal spelling is refused as such), the
+    /// rule spans several key groups, or the removal would leave the rule
+    /// with no age recipient.
+    public static func removeAliasRecipient(
+        configPath: String, ruleIndex: Int, anchor: String
+    ) throws -> String {
+        try call { out in
+            configPath.withGoString { confPtr in
+                anchor.withGoString { anchorPtr in
+                    sops_remove_alias_recipient(confPtr, Int32(ruleIndex), anchorPtr, out)
+                }
+            }
+        }
+    }
+
+    /// What `configPath` would contain with a new `keys:` entry
+    /// `- &name recipient` and — unless `ruleIndex` is -1 — an alias of it
+    /// appended to creation rule `ruleIndex`. Never writes. Throws, naming
+    /// the anchor and never the key, for a bad or taken name, a recipient
+    /// that is not a native age public key (a private identity included),
+    /// or a key `keys:` already declares.
+    public static func addNamedKey(
+        configPath: String, name: String, recipient: String, ruleIndex: Int
+    ) throws -> String {
+        try call { out in
+            configPath.withGoString { confPtr in
+                name.withGoString { namePtr in
+                    recipient.withGoString { recipientPtr in
+                        sops_add_named_key(confPtr, namePtr, recipientPtr, Int32(ruleIndex), out)
+                    }
+                }
+            }
+        }
+    }
+
     /// Computes what the `.sops.yaml` at `configPath` would look like if the
     /// creation rule governing `targetFilePath` declared exactly `recipients`
     /// as its age recipient list, and reports which of

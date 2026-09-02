@@ -111,17 +111,6 @@
         }
       }
     },
-    "access.disabled-unsaved-changes": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Save your changes before managing access."
-          }
-        }
-      }
-    },
     "access.duplicate-recipients": {
       "extractionState": "manual",
       "localizations": {
@@ -454,28 +443,6 @@
         }
       }
     },
-    "access.rules.anchored-read-only": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This rule uses anchors or key_groups. Edit .sops.yaml by hand to change it."
-          }
-        }
-      }
-    },
-    "access.rules.comment": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Comment"
-          }
-        }
-      }
-    },
     "access.rules.encrypted-for-of": {
       "extractionState": "manual",
       "localizations": {
@@ -483,28 +450,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "encrypted for %lld of %lld"
-          }
-        }
-      }
-    },
-    "access.rules.governs": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Governs"
-          }
-        }
-      }
-    },
-    "access.rules.governs-none": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No file in this project"
           }
         }
       }
@@ -554,6 +499,238 @@
         }
       }
     },
+    "access.rules.anchored-note": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This rule names its keys by anchor. Add or remove a named key here; anything else is edited in .sops.yaml by hand."
+          }
+        }
+      }
+    },
+    "access.rules.comment-from-config": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Comment in .sops.yaml"
+          }
+        }
+      }
+    },
+    "access.rules.regex-help": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The path_regex sops matches file paths against. Order matters: the first rule that matches wins."
+          }
+        }
+      }
+    },
+    "access.rules.matches-none": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No file in this project matches this rule."
+          }
+        }
+      }
+    },
+    "access.keys.used-in.no-files": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "no file matches"
+          }
+        }
+      }
+    },
+    "access.remove-named.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove this key from the rule?"
+          }
+        }
+      }
+    },
+    "access.remove-named.confirm": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove from rule"
+          }
+        }
+      }
+    },
+    "access.add-named.mode.existing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Existing key"
+          }
+        }
+      }
+    },
+    "access.add-named.mode.new": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New key"
+          }
+        }
+      }
+    },
+    "access.add-named.field.name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Name (YAML anchor, e.g. deploy_host)"
+          }
+        }
+      }
+    },
+    "access.add-named.field.key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Public key (age1…)"
+          }
+        }
+      }
+    },
+    "access.add-named.field.label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Label (optional)"
+          }
+        }
+      }
+    },
+    "access.add-named.create": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add key"
+          }
+        }
+      }
+    },
+    "access.add-named.refusal.invalid-anchor": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A name uses letters, digits, _ and - only."
+          }
+        }
+      }
+    },
+    "access.add-named.refusal.name-taken": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This project already has a key with that name."
+          }
+        }
+      }
+    },
+    "access.add-named.refusal.invalid-key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That is not an age public key."
+          }
+        }
+      }
+    },
+    "access.add-named.refusal.private-key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That is a private key. Only the public half (age1…) belongs here — the private key stays on its own machine."
+          }
+        }
+      }
+    },
+    "access.add-named.refusal.key-declared": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This project already declares that public key under another name."
+          }
+        }
+      }
+    },
+    "access.ungoverned.hint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No creation rule matches these files, so no rule will ever correct their recipients. Add a rule for them in .sops.yaml by hand."
+          }
+        }
+      }
+    },
+    "access.remove-named.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%1$@ will no longer be a recipient of the %2$lld file this rule governs once it is rewrapped. It keeps whatever it already read."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%1$@ will no longer be a recipient of the %2$lld files this rule governs once they are rewrapped. It keeps whatever it already read."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "access.rules.reveal-config": {
       "extractionState": "manual",
       "localizations": {
@@ -594,17 +771,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "File Access"
-          }
-        }
-      }
-    },
-    "access.toolbar-button": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Access"
           }
         }
       }
@@ -4140,17 +4306,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Encrypted contents"
-          }
-        }
-      }
-    },
-    "access.disabled-read-only-ciphertext": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "You can't change access to a file you can't decrypt."
           }
         }
       }

@@ -157,7 +157,7 @@ struct ProjectAccessPageTests {
         // Offered next to the read-only sentence — the sheet's own content is
         // not reachable from a probe (`.sheet` is not rendered), so the pick
         // itself is driven through the model below.
-        #expect(flat.contains(LocalizedKey.accessRulesAnchoredReadOnly.text))
+        #expect(flat.contains(LocalizedKey.accessRulesAnchoredNote.text))
         #expect(flat.contains(LocalizedKey.accessRulesAddNamed.text))
 
         let outcome = await model.addAliasToRule(ruleIndex: 1, anchor: "vps")
@@ -398,4 +398,142 @@ struct ProjectAccessPageTests {
         return try String(contentsOf: url, encoding: .utf8)
     }
 
+
+    // MARK: - SOPS-42: removing a named key, declaring a new one
+
+    @Test("removing a named key from an anchored rule drops the alias and drifts the files it governs")
+    func removingANamedKeyDriftsTheRule() async throws {
+        let f = try await AccessPageFixture.momentakShaped()
+        let model = ProjectAccessModel(projectRoot: f.root, keyStore: f.keyStore, targetFile: f.prod)
+        await model.load()
+        let before = try #require(model.inventory)
+        #expect(before.rules[1].recipients.map(\.name) == ["studio", "laptop"])
+
+        let outcome = await model.removeAliasFromRule(ruleIndex: 1, anchor: "laptop")
+        #expect(outcome == .written)
+
+        let config = try String(contentsOf: f.root.appendingPathComponent(".sops.yaml"), encoding: .utf8)
+        // Rule 0 still aliases laptop, so the raw text still says `*laptop`
+        // once; the inventory is what tells the two rules apart.
+        #expect(config.components(separatedBy: "*laptop").count == 2)
+        #expect(config.contains("&laptop"), "keys: keeps the declaration")
+        #expect(config.contains("# Production secrets: everyone, including the deploy host."))
+
+        let after = try #require(model.inventory)
+        #expect(after.rules[0].recipients.map(\.name) == ["studio", "laptop", "vps"], "the other rule is untouched")
+        #expect(after.rules[1].recipients.map(\.name) == ["studio"])
+        // local.sops.env is wrapped for two keys and its rule now wants one:
+        // drift, and the banner says so. Nothing was re-encrypted.
+        #expect(after.files.first { $0.relativePath == "secrets/local.sops.env" }.map {
+            if case .ruleDiffers = $0.status { return true } else { return false }
+        } == true)
+        #expect(model.configWritten, "the commit reminder must show after a removal write")
+    }
+
+    @Test("removing the last named key of a rule is refused before the file is touched")
+    func removingTheLastNamedKeyIsRefused() async throws {
+        let f = try await AccessPageFixture.momentakShaped()
+        let model = ProjectAccessModel(projectRoot: f.root, keyStore: f.keyStore, targetFile: f.prod)
+        await model.load()
+        let configURL = f.root.appendingPathComponent(".sops.yaml")
+        let before = try String(contentsOf: configURL, encoding: .utf8)
+
+        #expect(await model.removeAliasFromRule(ruleIndex: 1, anchor: "studio") == .written)
+        guard case .failed(let reason) = await model.removeAliasFromRule(ruleIndex: 1, anchor: "laptop") else {
+            Issue.record("the last recipient must not be removable")
+            return
+        }
+        #expect(reason.contains("no age recipient"), "\(reason)")
+        let after = try #require(model.inventory)
+        #expect(after.rules[1].recipients.map(\.name) == ["laptop"])
+        #expect(try String(contentsOf: configURL, encoding: .utf8) != before)
+    }
+
+    @Test("adding a new named key declares it under keys:, aliases it into the rule and labels it")
+    func addingANewNamedKey() async throws {
+        let f = try await AccessPageFixture.momentakShaped()
+        let model = ProjectAccessModel(projectRoot: f.root, keyStore: f.keyStore, targetFile: f.prod)
+        await model.load()
+        let deploy = try AccessPageFixture.generateKey()
+
+        let outcome = await model.addNamedKey(name: "deploy", recipient: deploy.public, label: "Deploy host", ruleIndex: 1)
+        #expect(outcome == .written)
+
+        let config = try String(contentsOf: f.root.appendingPathComponent(".sops.yaml"), encoding: .utf8)
+        #expect(config.contains("&deploy \(deploy.public)"))
+        #expect(config.contains("*deploy"))
+
+        let after = try #require(model.inventory)
+        #expect(after.keys.map(\.name) == ["studio", "laptop", "vps", "deploy"])
+        #expect(after.rules[1].recipients.map(\.name) == ["studio", "laptop", "deploy"])
+        #expect(after.name(for: deploy.public) == "deploy")
+        #expect(model.registryRecords.first { $0.ageRecipient == deploy.public }?.label == "Deploy host")
+        #expect(after.filesNeedingRewrap.count == 2)
+    }
+
+    @Test("a new key whose anchor or public key is already declared is refused out loud")
+    func duplicateNewKeyIsRefused() async throws {
+        let f = try await AccessPageFixture.momentakShaped()
+        let model = ProjectAccessModel(projectRoot: f.root, keyStore: f.keyStore, targetFile: f.prod)
+        await model.load()
+        let fresh = try AccessPageFixture.generateKey()
+        let studioKey = try #require(model.inventory?.keys.first { $0.name == "studio" }?.recipient)
+
+        guard case .failed(let taken) = await model.addNamedKey(name: "studio", recipient: fresh.public, label: nil, ruleIndex: 1) else {
+            Issue.record("a taken anchor must be refused"); return
+        }
+        #expect(taken.contains("\"studio\""))
+        guard case .failed(let declared) = await model.addNamedKey(name: "again", recipient: studioKey, label: nil, ruleIndex: 1) else {
+            Issue.record("a key keys: already declares must be refused"); return
+        }
+        #expect(declared.contains("\"studio\"") && !declared.contains(studioKey))
+        guard case .failed(let priv) = await model.addNamedKey(name: "priv", recipient: fresh.private, label: nil, ruleIndex: 1) else {
+            Issue.record("a private identity must be refused"); return
+        }
+        #expect(!priv.contains(fresh.private))
+    }
+
+    @Test("an anchored rule's chips carry a remove control, the rule header lists real files, and the comment is marked as the file's")
+    func anchoredRuleOffersRemovalAndNamesFiles() async throws {
+        let f = try await AccessPageFixture.momentakShaped()
+        let model = ProjectAccessModel(projectRoot: f.root, keyStore: f.keyStore, targetFile: f.prod)
+        await model.load()
+
+        let nodes = AXProbe.tree(size: CGSize(width: 1000, height: 900)) {
+            ProjectAccessPage(model: model, selectedFile: f.prod, onFilesApplied: {})
+        }
+        let flat = nodes.map { $0.label + " " + $0.value + " " + $0.help }.joined(separator: "\n")
+        let removes = nodes.filter { $0.label == LocalizedKey.accessRemoveRecipient.text }
+        // Rule 0 names three keys, rule 1 names two: five chips, every one
+        // removable while the rule keeps at least one other.
+        #expect(removes.count == 5, "\(removes.count)")
+        #expect(flat.contains(LocalizedKey.accessRulesCommentFromConfig.text))
+        #expect(flat.contains(LocalizedKey.accessRulesAddNamed.text))
+        // Real file names in the Used-in column and the rule headers; the
+        // regex is still there, as help, for whoever wants it.
+        let usedIn = nodes.filter { $0.value.contains("secrets/local.sops.env") || $0.label.contains("secrets/local.sops.env") }
+        #expect(!usedIn.isEmpty)
+        #expect(flat.contains("\\.sops\\.(env|ya?ml|json)$"), "the pattern stays available: \(flat.prefix(200))")
+    }
+
+    @Test("a rule matching no file says so and still shows its pattern")
+    func ruleMatchingNoFileSaysSo() async throws {
+        let f = try await AccessPageFixture.momentakShaped()
+        // A third rule nothing in the project matches, appended by hand:
+        // `creation_rules:` is the last key, so this is still one list.
+        let configURL = f.root.appendingPathComponent(".sops.yaml")
+        try (try String(contentsOf: configURL, encoding: .utf8) + """
+              - path_regex: archive/nothing-here\\.sops\\.env$
+                age:
+                  - *studio
+
+            """).write(to: configURL, atomically: true, encoding: .utf8)
+        let model = ProjectAccessModel(projectRoot: f.root, keyStore: f.keyStore, targetFile: f.prod)
+        await model.load()
+        let flat = AXProbe.tree(size: CGSize(width: 1000, height: 1100)) {
+            ProjectAccessPage(model: model, selectedFile: f.prod, onFilesApplied: {})
+        }.map { $0.label + " " + $0.value + " " + $0.help }.joined(separator: "\n")
+        #expect(flat.contains(LocalizedKey.accessRulesMatchesNone.text), "\(flat.prefix(300))")
+        #expect(flat.contains("archive/nothing-here\\.sops\\.env$"))
+    }
 }

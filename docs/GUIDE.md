@@ -463,34 +463,19 @@ of it for this part — and the app will refuse it if you try, in every field.
 
 ### Step 20 · One file
 
-Open `config/production.secrets.yaml` and use **Access** in the toolbar.
+There is no per-file Access panel any more (SOPS-42). The inspector's
+no-selection state still *shows* who the open file is wrapped for — read from the
+file's own `sops` metadata — but changing it happens in one place, the
+project's **Access** page, because that is the only place that also knows which
+`.sops.yaml` rule the file falls under. Two things the app will still not do
+there:
 
-What it shows is read from the file's own `sops` metadata, not from
-`.sops.yaml` — that is the difference between who *can* read this file and who
-*ought* to be able to. A recipient the project has no name for is shown by its
-`age1…` key rather than hidden.
-
-Reading the list needs no key at all. *Changing* it does, because the app has to
-decrypt the data key with an identity you hold before it can re-wrap it for
-someone else.
-
-Additions and removals are staged: they show as **New** and **Losing access**,
-and nothing on disk moves until you press **Apply**. Two things the app will not
-do:
-
-- **Remove the last recipient.** *"Removing every recipient would leave this
-  file unreadable. Keep at least one."* That includes leaving only keys you do
-  not hold.
-- **Let you apply over unsaved edits.** The Access button is disabled while the
-  document is dirty — *"Save your changes before managing access."* Applying
-  reloads the file from disk, which would have silently discarded what you
-  typed. Leaving the file for the project's **Access** page asks the same
-  question, in the same words, because it is the same guard on every move the
-  sidebar can make.
-
-Removing someone is confirmed by name, and the confirmation says the part people
-forget: *"Rotate the secret values afterwards: anyone removed may still hold an
-old copy."* Taking a key out of a file does not un-see what was already read.
+- **Leave a rule with no recipient.** Removing the last named key from a rule is
+  refused before the file is touched.
+- **Pretend a config edit re-encrypts anything.** Changing `.sops.yaml` changes
+  who *new* files are wrapped for; the files already on disk drift, the banner
+  says so, and **Rewrap** is the action that closes it. Anyone removed may still
+  hold an old copy — rotate the values afterwards.
 
 ### Step 21 · A whole project
 
