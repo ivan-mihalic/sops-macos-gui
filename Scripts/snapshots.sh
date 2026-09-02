@@ -32,6 +32,13 @@ export SDKROOT="$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.s
 # source with errors like "initializer is inaccessible due to 'private'" that
 # neither Xcode-bundled compiler on this machine raises. `xcrun` picks the
 # right toolchain regardless of what a shell's PATH happens to resolve first.
-xcrun swift run --quiet snapshots .snapshots "$@"
+# `--build-system swiftbuild`, and this is not optional: `swift run`'s
+# default engine (llbuild) copies `Localizable.xcstrings` into the module
+# bundle **uncompiled**, so every `LocalizedKey` resolves to its own raw key
+# and the images come out reading `access.keys.title` instead of "Keys". The
+# same disagreement `Scripts/test.sh` documents at length, in the one place
+# where it is silent rather than red: a snapshot of raw keys still renders
+# (SOPS-39 task 10).
+xcrun swift run --build-system swiftbuild --quiet snapshots .snapshots "$@"
 echo
 echo "snapshots: $(pwd)/.snapshots"

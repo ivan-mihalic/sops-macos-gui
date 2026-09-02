@@ -29,12 +29,19 @@ enum Guide {
         snapshots += try await projectAndFiles()
         snapshots += try await editor()
         snapshots += await settingsAndAbout()
+        snapshots += try await access()
         return snapshots
     }
 
     private static let wizardSize = CGSize(width: 640, height: 520)
     private static let sidebarSize = CGSize(width: 260, height: 460)
-    private static let editorSize = CGSize(width: 780, height: 520)
+    // Widened from 780×520 in SOPS-39 task 10. The editor is a table with a
+    // trailing inspector column now, and at 780 the table had ~470 pt to draw
+    // four columns in — the filename truncated in the header and the Key
+    // column ran into the Value column. The inspector's own column is
+    // reserved but stays blank (this renderer does not populate `.inspector`,
+    // CLAUDE.md), which `guide-14b-inspector` is for.
+    private static let editorSize = CGSize(width: 1000, height: 560)
 
     // MARK: - Steps 1–5: the first-run wizard
 
@@ -271,6 +278,16 @@ enum Guide {
             readFile: { _ in "never read — the key check happens first" })
         await needsKey.load()
 
+        // The row the inspector is about: the same `database.url` the reveal
+        // image uses, so a reader meets one row twice rather than two rows
+        // once.
+        let inspected = try await editorModel()
+        guard let inspectedRow = inspected.rows.first(where: { $0.path == ["database", "url"] })?.id
+        else {
+            throw GuideFixtureFailure(
+                "no database.url row — guide-14b would picture an inspector with nothing selected")
+        }
+
         func editor(_ name: String, _ model: SecretDocumentViewModel,
                     revealing: Set<String> = []) -> Snapshot {
             Snapshot(name, size: editorSize) {
@@ -288,6 +305,101 @@ enum Guide {
             editor("guide-13-editor-needs-key", needsKey),
             Snapshot("guide-14-add-row", size: CGSize(width: 460, height: 330)) {
                 Fixtures.addRowSheet(isList: false)
+            },
+            // The inspector, standing alone. SwiftUI's `.inspector` column
+            // does not populate under this renderer — the same gap CLAUDE.md
+            // records for `NavigationSplitView`'s `sidebar:` slot — so the
+            // editor images above show the table with an empty strip to its
+            // right. This is the only way to picture what belongs there
+            // (SOPS-39 task 10). Revealed, because a masked value is a
+            // picture a reader cannot tell from an empty pane.
+            Snapshot("guide-14b-inspector", size: CGSize(width: 320, height: 520)) {
+                SecretRowInspector(
+                    viewModel: inspected, selectedRowID: inspectedRow,
+                    fileName: "config/production.secrets.yaml", access: nil,
+                    nameFor: { _ in nil }, ruleLabel: nil,
+                    revealed: RevealedRows(
+                        revealing: [inspectedRow], in: inspected.rowIdentityGeneration),
+                    generation: inspected.rowIdentityGeneration,
+                    onToggleReveal: { _ in }, onActivity: {})
+            },
+        ]
+    }
+
+    // MARK: - Step 21: the Access page
+
+    /// The Access page, loaded, against a `.sops.yaml` shaped the way a team
+    /// that names its keys writes one: three anchors under a top-level
+    /// `keys:` list, a production rule that names all three, and a catch-all
+    /// rule that names two.
+    ///
+    /// ⚠️ The model is loaded **before** the render, not left to the view's
+    /// own `.task` — that modifier never fires in this tool's offscreen
+    /// render, which is exactly why `docs/GUIDE.md` used to say Part 5 could
+    /// have no pictures at all: a single shot of a panel that scans on
+    /// appearance catches a spinner and a count of zero. Loading first is the
+    /// difference between a picture of the wrong moment and a picture of the
+    /// page (SOPS-39 task 10).
+    ///
+    /// The drift is deliberate: `config/production.secrets.yaml` is encrypted
+    /// for two of the three keys its rule declares, so the page shows the
+    /// rewrap banner — the one thing about this page a reader most needs to
+    /// recognise, because a config edit re-encrypts nothing.
+    private static func access() async throws -> [Snapshot] {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("guide-" + UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("sops-demo-project", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let studio = try GuideKeyPair.generate()
+        let laptop = try GuideKeyPair.generate()
+        let deploy = try GuideKeyPair.generate()
+        try """
+            keys:
+              - &studio \(studio.public)
+              - &laptop \(laptop.public)
+              - &deploy \(deploy.public)
+
+            creation_rules:
+              - path_regex: config/production\\.secrets\\.yaml$
+                age:
+                  - *studio
+                  - *laptop
+                  - *deploy
+              - path_regex: \\.secrets\\.(ya?ml|env)$
+                age:
+                  - *studio
+                  - *laptop
+
+            """.write(
+            to: root.appendingPathComponent(".sops.yaml"), atomically: true, encoding: .utf8)
+
+        let config = root.appendingPathComponent("config", isDirectory: true)
+        try FileManager.default.createDirectory(at: config, withIntermediateDirectories: true)
+        // Real ciphertext through the in-process bridge, same discipline as
+        // every other guide fixture: the page reads each file's own sops
+        // metadata to decide whether it has drifted, so a hand-written
+        // lookalike would make the image a claim about the fixture.
+        try SopsBridge.encrypt(
+            productionPlaintext, format: .yaml, recipients: [studio.public, laptop.public]
+        ).write(
+            to: config.appendingPathComponent("production.secrets.yaml"),
+            atomically: true, encoding: .utf8)
+        try SopsBridge.encrypt(
+            stagingPlaintext, format: .yaml, recipients: [studio.public, laptop.public]
+        ).write(
+            to: config.appendingPathComponent("staging.secrets.yaml"),
+            atomically: true, encoding: .utf8)
+
+        let keyStore = SessionKeyStore()
+        try keyStore.importKey(studio.private)
+        let target = config.appendingPathComponent("production.secrets.yaml")
+        let model = ProjectAccessModel(projectRoot: root, keyStore: keyStore, targetFile: target)
+        await model.load()
+
+        return [
+            Snapshot("guide-19-access", size: CGSize(width: 900, height: 700)) {
+                ProjectAccessPage(model: model, selectedFile: target, onFilesApplied: {})
             },
         ]
     }

@@ -161,9 +161,31 @@ enum SnapshotRenderer {
         RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         hostingView.layoutSubtreeIfNeeded()
 
-        guard let bitmap = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds) else {
-            return nil
-        }
+        // 2× explicitly, not `bitmapImageRepForCachingDisplay(in:)`.
+        //
+        // That convenience takes its scale from the view's window backing
+        // scale, and a never-shown window in a `Background` launchd session
+        // has no screen to take one from — so it silently produces a **1×**
+        // bitmap. Nothing fails; the images are simply half the resolution,
+        // and the only symptom is that a regenerated set is visibly softer
+        // than the one it replaced (measured SOPS-39 task 10: committed
+        // guide images were 1200×960 for a 600×480 pt frame, a regeneration
+        // came back 600×480).
+        //
+        // Pinned rather than probed, so the output does not depend on which
+        // display the machine happens to have attached.
+        let scale = 2
+        guard let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(snapshot.size.width) * scale,
+            pixelsHigh: Int(snapshot.size.height) * scale,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+        else { return nil }
+        // The rep's *point* size, which is what makes it a 2× bitmap rather
+        // than a larger 1× one: `cacheDisplay` scales the draw to fill the
+        // pixel buffer.
+        bitmap.size = snapshot.size
         hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
         return bitmap.representation(using: .png, properties: [:])
     }
