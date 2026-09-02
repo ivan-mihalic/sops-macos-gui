@@ -145,3 +145,30 @@ func TestAddAliasRecipientNeverWrites(t *testing.T) {
 		t.Fatalf("the config on disk changed:\n%s", after)
 	}
 }
+
+// The rule already names the key, spelled out literally rather than through
+// the anchor — what a config looks like when the key was pasted into the rule
+// by hand and declared under `keys:` afterwards. Only the alias spelling was
+// refused before, so this case appended a second entry for a recipient the
+// rule already grants: no extra access, and a rule that reads as if two
+// people can decrypt it.
+func TestAddAliasRecipientRefusesAKeyTheRuleAlreadyNamesLiterally(t *testing.T) {
+	conf := writeAliasConfig(t, "keys:\n  - &a age1aaa\n  - &b age1bbb\ncreation_rules:\n  - path_regex: x$\n    age:\n      - age1bbb\n")
+	out, err := AddAliasRecipient(conf, 0, "b")
+	if err == nil {
+		t.Fatalf("a key the rule already names literally must be refused, got:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), `"b"`) {
+		t.Fatalf("the refusal must name the anchor: %v", err)
+	}
+	// Never the key material: the refusal is about a public key sitting in
+	// the rule, and this bridge does not quote key values into messages.
+	if strings.Contains(err.Error(), "age1bbb") {
+		t.Fatalf("a refusal must not quote a key: %v", err)
+	}
+	// The anchor that is genuinely absent still goes in, so the new check
+	// refuses the duplicate rather than every addition.
+	if _, err := AddAliasRecipient(conf, 0, "a"); err != nil {
+		t.Fatalf("an anchor the rule does not name must still be addable: %v", err)
+	}
+}

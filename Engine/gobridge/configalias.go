@@ -108,9 +108,29 @@ func AddAliasRecipient(confPath string, ruleIndex int, anchor string) (string, e
 	if err != nil {
 		return "", fmt.Errorf("creation rule %d in %s: %w", ruleIndex, name, err)
 	}
+	// Two spellings of "already there", and only the first was checked
+	// before: `*studio` (an alias to the anchor) and the literal public key
+	// that anchor stands for, written out in the rule. The second is what a
+	// config looks like when someone pasted the key into the rule by hand and
+	// declared it under `keys:` afterwards — the rule already grants that
+	// recipient access, so appending an alias adds an entry that grants
+	// nothing and leaves the rule reading as if two people can decrypt.
+	// Compared through `scalarOf`, which resolves an alias to the scalar
+	// behind it, so both spellings are compared as the one thing they are.
+	targetValue := ""
+	if scalar := scalarOf(target); scalar != nil {
+		targetValue = scalar.Value
+	}
 	for _, item := range sequence.Content {
 		if item.Kind == yaml.AliasNode && item.Value == anchor {
 			return "", fmt.Errorf("creation rule %d in %s already names %q", ruleIndex, name, anchor)
+		}
+		// The value is never quoted into the message: it is the recipient's
+		// public key, and a refusal names the anchor instead.
+		if targetValue != "" && item.Kind == yaml.ScalarNode && item.Value == targetValue {
+			return "", fmt.Errorf(
+				"creation rule %d in %s already names the key %q stands for",
+				ruleIndex, name, anchor)
 		}
 	}
 	sequence.Content = append(sequence.Content,
