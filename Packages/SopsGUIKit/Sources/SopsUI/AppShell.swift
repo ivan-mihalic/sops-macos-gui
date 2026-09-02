@@ -18,6 +18,12 @@ import SwiftUI
 /// through one binding (`guardedSelection`), decided by one rule
 /// (`WorkspaceSwitchGate`). A fourth exit cannot be added without going
 /// through it, because there is nowhere else to write the selection.
+///
+/// The shape, and what it cost to get here, is on the record in
+/// `docs/adr/0005-two-column-shell-with-inspector.md` — including why Access
+/// is a page bound to the selected file rather than a sheet about whichever
+/// file sorted first, and which disclosures were deliberately carried over
+/// from the panel it replaced.
 public struct AppShell: View {
 
     /// What the sidebar has selected. `nil` on a first run, before anything

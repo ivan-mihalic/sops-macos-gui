@@ -1,5 +1,10 @@
 # Build artifacts
 Engine/build/
+# `go build ./...` in Engine/ drops a binary next to the cgo shim's own
+# package, named after its directory. Nothing needs it — the xcframework is
+# built by build-xcframework.sh — but it appears whenever anyone builds the Go
+# side to check it compiles (SOPS-39 task 10).
+Engine/cshim/cshim
 # xcodebuild's derived data. `mac-release`'s swift-xcodegen driver points
 # -derivedDataPath here, so a release run drops a ~100 MB static archive and a
 # signed .app into the working tree — one `git add -A` away from a push GitHub
