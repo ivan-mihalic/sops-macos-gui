@@ -1663,6 +1663,29 @@
         }
       }
     },
+    "files.count-summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%d encrypted file in this project."
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%d encrypted files in this project."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "files.empty-partial.title": {
       "extractionState": "manual",
       "localizations": {
@@ -3707,13 +3730,46 @@
         }
       }
     },
-    "sidebar.projects": {
+    "sidebar.access": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Projects"
+            "value": "Access"
+          }
+        }
+      }
+    },
+    "sidebar.access-help": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Who can read this project's files — .sops.yaml"
+          }
+        }
+      }
+    },
+    "sidebar.file-needs-rewrap": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Encrypted for a different key set than its rule declares"
+          }
+        }
+      }
+    },
+    "sidebar.file-ungoverned": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No creation rule governs this file"
           }
         }
       }

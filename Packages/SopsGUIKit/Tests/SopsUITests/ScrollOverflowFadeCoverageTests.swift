@@ -31,13 +31,14 @@ struct ScrollOverflowFadeCoverageTests {
         .deletingLastPathComponent()  // package root
         .appendingPathComponent("Sources/SopsUI")
 
-    /// Every view whose `List` can be handed more rows than fit it. Not
-    /// "every `List` in the module": `AppShell`'s sidebar holds exactly one
-    /// row and can never overflow, so a fade there would be a cue about
-    /// content that cannot exist.
+    /// Every view whose `List` can be handed more rows than fit it.
+    ///
+    /// `ProjectSidebar` and `FileListView` were two of these until SOPS-39
+    /// task 6 folded both into `Shell/ProjectTreeSidebar.swift` — one list
+    /// holding every project *and* every one of their files, so it overflows
+    /// sooner than either of the two it replaced, not later.
     static let viewsWithAnOverflowableList = [
-        "Projects/ProjectSidebar.swift",
-        "Projects/FileListView.swift",
+        "Shell/ProjectTreeSidebar.swift",
         "Health/HealthPanel.swift",
         "Health/OnboardingWizard.swift",
         "Editor/SecretEditorView.swift",

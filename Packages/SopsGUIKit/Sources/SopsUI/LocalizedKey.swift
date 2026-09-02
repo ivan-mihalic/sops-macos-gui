@@ -6,9 +6,17 @@ import SwiftUI
 /// Views never take a string literal. Adding a case without adding the matching
 /// entry to Localizable.xcstrings fails `everyKeyResolves`.
 public enum LocalizedKey: String, CaseIterable, Sendable {
-    case sidebarProjects = "sidebar.projects"
     case sidebarAbout = "sidebar.about"
     case sidebarSettings = "sidebar.settings"
+    // SOPS-39 task 6: the one sidebar. Each project row carries an Access
+    // child that opens its recipient panel, and each file row can carry a
+    // status dot whose tooltip is one of the two below. The dot alone is
+    // colour, and colour alone is never a message here — see
+    // `ColourIndependenceTests`.
+    case sidebarAccess = "sidebar.access"
+    case sidebarAccessHelp = "sidebar.access-help"
+    case sidebarFileNeedsRewrap = "sidebar.file-needs-rewrap"
+    case sidebarFileUngoverned = "sidebar.file-ungoverned"
     case detailNoSelection = "detail.no-selection"
     case settingsWindowPlaceholder = "settings.window-placeholder"
 
@@ -201,6 +209,10 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     // a future sops store, so this is expected to be 0 today. See
     // `FileListModel.otherFormatCount` / `ScannedTree.encryptedInOtherFormats`.
     case filesOtherFormatNote = "files.other-format.note"
+    // SOPS-39 task 6: with the file list living in the sidebar, a project
+    // whose files are all listed there needs the detail pane to say what it
+    // is looking at rather than repeating the list. Format key, one integer.
+    case filesCountSummary = "files.count-summary"
     // Ticket #25 claim 2. Formatted with the symlink's own relative path and
     // its resolved target — see `FileListView.unfollowedSymlinkFootnote`.
     case filesUnfollowedSymlinkNote = "files.unfollowed-symlink.note"

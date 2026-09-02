@@ -36,7 +36,7 @@ import Testing
 /// `allowedDelegators` is for a function whose whole body is handing the
 /// same two booleans to another function this test has already checked —
 /// `forQuit` does this (hands `documentIsDirty`/`saveIsInFlight` straight to
-/// `forSwitch`), and so do `AppShell.sectionSwitchDecision` (straight to
+/// `forSwitch`), and so do `WorkspaceSwitchGate.decision` (straight to
 /// `forSwitch`) and `QuitRequest.answerTerminationRequest` (straight to
 /// `forQuit`, which is itself a delegator, so the chain still ends at
 /// `UnsavedWorkGate.isClear`).
@@ -90,7 +90,7 @@ struct UnsavedWorkGateCoverageTests {
     /// not direct.
     private static let allowedDelegators: Set<String> = [
         "WorkspaceSwitchDecision.swift:forQuit",
-        "AppShell.swift:sectionSwitchDecision",
+        "WorkspaceSelection.swift:decision",
         "QuitRequest.swift:answerTerminationRequest",
     ]
 

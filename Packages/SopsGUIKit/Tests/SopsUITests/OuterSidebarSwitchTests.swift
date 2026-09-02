@@ -1,48 +1,81 @@
 import Foundation
+import SopsProjects
 import Testing
 @testable import SopsUI
 
-/// Leaving "Projects" in the outer sidebar is leaving the open document.
+/// Leaving an open document is leaving an open document, whichever row you
+/// click.
 ///
-/// This suite exists because it was not. `WorkspaceSwitchDecision.forSwitch`
-/// had exactly two call sites, both inside `ProjectWorkspaceView` — the file
-/// list and the project sidebar. The outer `NavigationSplitView`'s own
-/// selection wrote straight through, and selecting About or Settings took
-/// `.projects` out of the `detail:` switch, destroying the `@State` that held
-/// the open document. No prompt, no warning, edits gone.
+/// This suite exists because that was not true. `WorkspaceSwitchDecision
+/// .forSwitch` had exactly two call sites, both inside the old
+/// `ProjectWorkspaceView` — the file list and the project sidebar. The outer
+/// `NavigationSplitView`'s own selection wrote straight through, and
+/// selecting About or Settings took `.projects` out of the `detail:` switch,
+/// destroying the `@State` that held the open document. No prompt, no
+/// warning, edits gone.
 ///
 /// The compounding part, and the reason this ranked above the other findings
-/// in its review: `SecretEditorView`'s `onDisappear` (SecretEditorView.swift:261) calls
+/// in its review: `SecretEditorView`'s `onDisappear` calls
 /// `unsavedChanges.clear()`. So the same click also disarmed ⌘Q — the user
 /// lost the document *and* the warning that would have named it.
+///
+/// Since SOPS-39 task 6 there is one selection value and one gate
+/// (`WorkspaceSwitchGate`), so these read as questions about
+/// `WorkspaceSelection` rather than about an outer `Section` enum that no
+/// longer exists. The scenarios are unchanged.
 @MainActor
-@Suite("Leaving Projects asks the same question the other two exits ask")
+@Suite("Leaving a document asks the same question whichever row you click")
 struct OuterSidebarSwitchTests {
+
+    private static let project = StoredProject.ID()
+    private static let openFile = WorkspaceSelection.file(
+        project: project, url: URL(fileURLWithPath: "/p/secrets.yaml"))
 
     // MARK: - The exit that was missing
 
     @Test("a dirty document turns About into a prompt, not a silent teardown")
     func dirtyDocumentBlocksAbout() {
         #expect(
-            AppShell.sectionSwitchDecision(
-                from: .projects, to: .about,
+            WorkspaceSwitchGate.decision(
+                from: Self.openFile, to: .about,
                 documentIsDirty: true, saveIsInFlight: false) == .askAboutUnsavedChanges)
     }
 
     @Test("Settings is guarded exactly as About is — neither is the special case")
     func dirtyDocumentBlocksSettings() {
         #expect(
-            AppShell.sectionSwitchDecision(
-                from: .projects, to: .settings,
+            WorkspaceSwitchGate.decision(
+                from: Self.openFile, to: .settings,
                 documentIsDirty: true, saveIsInFlight: false) == .askAboutUnsavedChanges)
+    }
+
+    /// And neither is the *project's own* row, its Access panel, or another
+    /// project's file — three destinations the four-column window needed
+    /// three separate guards to cover, one of which it shipped without.
+    @Test("every destination leaving a dirty document asks, not just About and Settings")
+    func everyDestinationAsks() {
+        let destinations: [WorkspaceSelection] = [
+            .about, .settings,
+            .projectHome(Self.project),
+            .access(project: Self.project),
+            .file(project: Self.project, url: URL(fileURLWithPath: "/p/other.yaml")),
+            .file(project: StoredProject.ID(), url: URL(fileURLWithPath: "/q/other.yaml")),
+        ]
+        for destination in destinations {
+            #expect(
+                WorkspaceSwitchGate.decision(
+                    from: Self.openFile, to: destination,
+                    documentIsDirty: true, saveIsInFlight: false) == .askAboutUnsavedChanges,
+                "\(destination) leaves a dirty document without asking")
+        }
     }
 
     @Test("a clean document leaves without ceremony")
     func cleanDocumentProceeds() {
-        for target in [AppShell.Section.about, .settings] {
+        for target in [WorkspaceSelection.about, .settings] {
             #expect(
-                AppShell.sectionSwitchDecision(
-                    from: .projects, to: target,
+                WorkspaceSwitchGate.decision(
+                    from: Self.openFile, to: target,
                     documentIsDirty: false, saveIsInFlight: false) == .proceed)
         }
     }
@@ -58,8 +91,8 @@ struct OuterSidebarSwitchTests {
     @Test("a save in flight defers the decision rather than prompting inside it")
     func saveInFlightDefers() {
         #expect(
-            AppShell.sectionSwitchDecision(
-                from: .projects, to: .about,
+            WorkspaceSwitchGate.decision(
+                from: Self.openFile, to: .about,
                 documentIsDirty: true, saveIsInFlight: true) == .waitForSaveInFlight)
     }
 
@@ -69,91 +102,85 @@ struct OuterSidebarSwitchTests {
     @Test("saving outranks clean, not just dirty")
     func saveInFlightOutranksClean() {
         #expect(
-            AppShell.sectionSwitchDecision(
-                from: .projects, to: .about,
+            WorkspaceSwitchGate.decision(
+                from: Self.openFile, to: .about,
                 documentIsDirty: false, saveIsInFlight: true) == .waitForSaveInFlight)
     }
 
     // MARK: - Not every selection write is a departure
 
-    @Test("re-selecting the current section is not a switch, dirty or not")
-    func sameSectionIsNotASwitch() {
+    @Test("re-selecting the current row is not a switch, dirty or not")
+    func sameSelectionIsNotASwitch() {
         for dirty in [true, false] {
             #expect(
-                AppShell.sectionSwitchDecision(
-                    from: .projects, to: .projects,
+                WorkspaceSwitchGate.decision(
+                    from: Self.openFile, to: Self.openFile,
                     documentIsDirty: dirty, saveIsInFlight: false) == .alreadyThere)
         }
     }
 
-    /// About → Settings never passes through the editor, so a stale `isDirty`
-    /// must not strand the user in a prompt about a document that is not on
-    /// screen. It cannot happen today — `onDisappear` clears the tracker — but
-    /// that is the very interaction that made this bug worse, so it is pinned
-    /// rather than assumed.
-    @Test("moving between two non-Projects sections is never a document question")
-    func betweenNonProjectSectionsProceeds() {
+    /// About → Settings never passes through the editor, so a stale
+    /// `isDirty` must not strand the user in a prompt about a document that
+    /// is not on screen. `WorkspaceSwitchGate.decision` guarantees it
+    /// structurally — it only forwards `documentIsDirty` when the selection
+    /// being *left* is itself a document — rather than relying on the tracker
+    /// having been cleared, which is the very interaction that made this bug
+    /// worse.
+    @Test("moving between two non-document screens is never a document question")
+    func betweenNonDocumentScreensProceeds() {
         #expect(
-            AppShell.sectionSwitchDecision(
+            WorkspaceSwitchGate.decision(
                 from: .about, to: .settings,
-                documentIsDirty: false, saveIsInFlight: false) == .proceed)
+                documentIsDirty: true, saveIsInFlight: false) == .proceed)
     }
 
-    // MARK: - One rule, three exits
+    // MARK: - One rule, every exit
 
     /// The point of the fix is not that this exit has a guard; it is that it
     /// has the *same* guard. A second, separately-written notion of "is
     /// anything at stake" is how the ⌘Q path and the Dock-icon path came to
     /// disagree, and how this exit came to have none at all.
-    @Test("the section decision is the same rule the file and project switches use")
+    @Test("the workspace decision is the same rule every other exit uses")
     func sameRuleAsTheOtherExits() {
         let cases: [(Bool, Bool)] = [(false, false), (true, false), (false, true), (true, true)]
         for (dirty, saving) in cases {
-            let section = AppShell.sectionSwitchDecision(
-                from: .projects, to: .about,
+            let workspace = WorkspaceSwitchGate.decision(
+                from: Self.openFile, to: .about,
                 documentIsDirty: dirty, saveIsInFlight: saving)
-            let file = WorkspaceSwitchDecision.forSwitch(
+            let generic = WorkspaceSwitchDecision.forSwitch(
                 from: "a", to: "b",
                 documentIsDirty: dirty, saveIsInFlight: saving)
-            #expect(section == file, "dirty=\(dirty) saving=\(saving)")
+            #expect(workspace == generic, "dirty=\(dirty) saving=\(saving)")
         }
     }
 }
 
 /// The routing itself, which the suite above cannot reach.
 ///
-/// `sectionSwitchDecision` is a pure function and tests of it say nothing about
-/// whether the sidebar consults it. A review proved the gap: reverting
-/// `AppShell`'s two `guardedSelection` uses to `$selection` — the exact bug —
-/// left all 577 tests green, because the decision function was still correct
-/// and still tested.
+/// `WorkspaceSwitchGate.decision` is a pure function and tests of it say
+/// nothing about whether the sidebar consults it. A review proved the gap
+/// once: reverting `AppShell`'s `guardedSelection` uses to `$selection` — the
+/// exact bug — left all 577 tests green, because the decision function was
+/// still correct and still tested.
 ///
 /// This reads the source. That is weaker than driving the binding, and it is
 /// what is available: `selection` is `@State`, so writing it outside a view
-/// body does nothing observable, and `AppShell`'s body cannot be evaluated in a
-/// test. The repo already uses the technique for the same reason in
-/// `ScrollOverflowFadeCoverageTests`. It asserts the wiring is present, not
-/// that SwiftUI honours it.
-@Suite("The outer sidebar's selection is wired through the guard")
+/// body does nothing observable, and `AppShell`'s body cannot be evaluated in
+/// a test. It asserts the wiring is present, not that SwiftUI honours it.
+@Suite("The sidebar's selection is wired through the guard")
 struct OuterSidebarWiringTests {
 
-    /// `AppShell.swift` with `//` comments removed.
+    /// Source with `//` **and** `/* */` comments removed.
     ///
     /// Stripping matters: a review defeated every assertion in this suite by
     /// gutting `guardedSelection`'s setter and leaving the guarded form as a
-    /// comment on the line above. The bug was fully restored — a click on About
-    /// discarded a dirty document without asking — and all four string checks
-    /// still passed, because `#filePath` is read as plain text and a comment is
-    /// text too. The suite's own doc comment had warned that checking the name
-    /// and not the body is how a source-level test becomes decoration; checking
-    /// the body as *text* was one step better and still not enough.
-    /// Removes `/* */` blocks as well as `//` line comments.
-    ///
-    /// The `//`-only version was defeated one round later in the obvious way:
-    /// wrap the guarded form in `/* */` above the gutted code and every check
-    /// passed while a click on About discarded a dirty document. Still naive —
-    /// it does not know about string literals containing `//` — which is one
-    /// more reason the real guard is behavioural.
+    /// comment on the line above. The bug was fully restored — a click on
+    /// About discarded a dirty document without asking — and all four string
+    /// checks still passed, because `#filePath` is read as plain text and a
+    /// comment is text too. The `//`-only version was then defeated one round
+    /// later in the obvious way, with `/* */`. Still naive — it does not know
+    /// about string literals containing `//` — which is one more reason the
+    /// real guard is behavioural.
     static func strippingComments(_ source: String) -> String {
         var out = ""
         var index = source.startIndex
@@ -182,88 +209,94 @@ struct OuterSidebarWiringTests {
         return out
     }
 
-    private static var appShellSource: String {
-        get throws {
-            let raw = try String(
-                contentsOfFile: URL(fileURLWithPath: #filePath)
-                    .deletingLastPathComponent()
-                    .deletingLastPathComponent()
-                    .deletingLastPathComponent()
-                    .appendingPathComponent("Sources/SopsUI/AppShell.swift").path,
-                encoding: .utf8)
-            return Self.strippingComments(raw)
-        }
+    private static func source(_ relativePath: String) throws -> String {
+        let raw = try String(
+            contentsOfFile: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent(relativePath).path,
+            encoding: .utf8)
+        return Self.strippingComments(raw)
     }
 
-    @Test("no selection binding in the outer sidebar bypasses the guard")
+    private static var appShellSource: String {
+        get throws { try source("Sources/SopsUI/AppShell.swift") }
+    }
+
+    private static var sidebarSource: String {
+        get throws { try source("Sources/SopsUI/Shell/ProjectTreeSidebar.swift") }
+    }
+
+    @Test("no selection binding in the shell bypasses the guard")
     func noRawSelectionBinding() throws {
         let source = try Self.appShellSource
 
         // `$selection` passed to a subview or a List is the unguarded form.
         // The `Binding(get:set:)` inside `guardedSelection` reads `selection`
-        // directly and writes through `requestSectionSwitch`, so it does not
-        // use the `$` projection at all — which makes any occurrence of it a
-        // bypass.
+        // directly and writes through `requestSwitch`, so it does not use the
+        // `$` projection at all — which makes any occurrence of it a bypass.
         let raw = source.components(separatedBy: "$selection").count - 1
         #expect(
             raw == 0,
-            "AppShell passes $selection somewhere — that write skips WorkspaceSwitchDecision and destroys an open dirty document with no prompt")
+            "AppShell passes $selection somewhere — that write skips WorkspaceSwitchGate and destroys an open dirty document with no prompt")
     }
 
     /// Every row in the sidebar goes through the unsaved-changes guard.
     ///
-    /// This used to check two things, because there were two kinds of row: the
-    /// `List` and the hand-rolled `PinnedSidebarRow`s in a bottom inset, each
-    /// wired to `guardedSelection` separately. Rebuilding the sidebar as one
-    /// `List` with two sections removed the second wiring entirely — and with
-    /// it the possibility of adding a row that forgets the guard, which is why
-    /// this is now a stronger property than the one it replaces rather than a
-    /// weaker one.
-    ///
-    /// The About and Settings rows still have to be *in* that list, though:
-    /// moving them back out to any other control is exactly how the guard gets
-    /// bypassed again, so both halves are asserted.
-    @Test("every sidebar row goes through the guarded binding")
-    func bothControlsAreGuarded() throws {
-        let source = try Self.appShellSource
+    /// One `List` with one selection binding is a stronger property than the
+    /// version this replaces: the four-column window had three bindings and
+    /// shipped with one of them unguarded for a whole milestone. Here there
+    /// is one place to get it wrong, and these two checks are both halves of
+    /// it — the shell hands over the guarded binding, and the sidebar puts it
+    /// on the `List` rather than keeping a selection of its own.
+    @Test("the sidebar list is driven by the guarded binding the shell hands it")
+    func theListTakesTheGuardedBinding() throws {
+        let shell = try Self.appShellSource
         #expect(
-            source.contains("List(selection: guardedSelection)"),
-            "the sidebar List no longer takes guardedSelection")
+            shell.contains("selection: guardedSelection"),
+            "AppShell builds the sidebar with something other than the guarded binding")
+
+        let sidebar = try Self.sidebarSource
         #expect(
-            source.contains("ForEach(Section.pinnedToBottom"),
-            "About and Settings are no longer rows of the guarded List")
-        #expect(
-            source.contains("ForEach(Self.scrollingSections"),
-            "the main sections are no longer rows of the guarded List")
-        // The `List` moved out of `AppShell` and into `SectionSidebarList`
-        // (same file, so the three checks above still read the right source).
-        // That split adds a hop the three of them cannot see: they would all
-        // pass with `SectionSidebarList(guardedSelection: $selection)` at the
-        // call site, which is the unguarded write they exist to forbid.
-        #expect(
-            source.contains("SectionSidebarList(guardedSelection: guardedSelection)"),
-            "AppShell builds the sidebar list with something other than the guarded binding")
+            sidebar.contains("List(selection: selection)"),
+            "ProjectTreeSidebar no longer drives its List from the binding it was handed — a click would write a selection of its own, unguarded")
     }
 
-    @Test("the guard is disabled during a save, like the other two exits")
+    /// About and Settings still have to be *in* that list: moving them back
+    /// out to any other control is exactly how the guard gets bypassed again,
+    /// and PROPOSAL §4 pins them to the bottom of the sidebar besides.
+    @Test("About and Settings are rows of the guarded list, pinned at the bottom")
+    func aboutAndSettingsAreRows() throws {
+        let sidebar = try Self.sidebarSource
+        #expect(sidebar.contains(".tag(WorkspaceSelection.about)"),
+                "the About row is no longer a tagged row of the sidebar list")
+        #expect(sidebar.contains(".tag(WorkspaceSelection.settings)"),
+                "the Settings row is no longer a tagged row of the sidebar list")
+
+        // Last section of the list, i.e. after every project — which is what
+        // "pinned to the bottom" means once there is only one list.
+        let about = try #require(sidebar.range(of: ".tag(WorkspaceSelection.about)"))
+        let projects = try #require(sidebar.range(of: "ForEach(projects.groups)"))
+        #expect(projects.lowerBound < about.lowerBound,
+                "About is rendered above the projects — PROPOSAL §4 pins it to the bottom")
+    }
+
+    @Test("the guard is disabled during a save, like every other exit")
     func disabledDuringSave() throws {
         let source = try Self.appShellSource
         #expect(
             source.contains(".disabled(unsavedChanges.isSaving)"),
-            "the outer sidebar stays live during a save")
+            "the sidebar stays live during a save")
     }
 
-    /// That the controls are wired to the guarded binding at all.
+    /// That the binding is wired to the request handler at all.
     ///
-    /// This is the one claim still made about source text, and it is the
-    /// weakest kind: it says the binding is built from the request handler,
-    /// not what happens when someone writes to it. What happens is now checked
-    /// by running it — see `GuardedSelectionBindingTests` at the end of this
-    /// file, which exists because three rounds of increasingly clever string
+    /// The weakest kind of claim: it says the binding is built from the
+    /// request handler, not what happens when someone writes to it. What
+    /// happens is checked by running it — see `GuardedSelectionBindingTests`
+    /// below, which exists because three rounds of increasingly clever string
     /// matching were each defeated by a slightly cleverer comment.
-    ///
-    /// Kept anyway: the behavioural test cannot see whether anyone hands the
-    /// binding to the `List`. Between them they cover both halves.
     @Test("the guarded binding is built from the request handler")
     func bindingIsBuiltFromTheRequestHandler() throws {
         let source = try Self.appShellSource
@@ -271,22 +304,21 @@ struct OuterSidebarWiringTests {
             source.contains("Self.makeGuardedSelection("),
             "guardedSelection no longer goes through makeGuardedSelection")
         #expect(
-            source.contains("request: { requested in requestSectionSwitch(to: requested) }"),
-            "the binding's request handler no longer calls requestSectionSwitch — a click on About writes selection directly and the open document dies unasked")
+            source.contains("request: { requested in requestSwitch(to: requested) }"),
+            "the binding's request handler no longer calls requestSwitch — a click on About writes selection directly and the open document dies unasked")
         #expect(
-            source.contains("Self.sectionSwitchDecision("),
-            "requestSectionSwitch no longer consults sectionSwitchDecision")
-        // The decision's *effect* used to be applied inline here, where nothing
-        // could observe it — swapping `pendingSection` for `selection` in the
-        // ask branch passed all 685 tests and silently lost the user's edits.
-        // It goes through `Self.applying(...)` now, and every branch of that is
-        // asserted behaviourally in `SectionSwitchEffectTests`.
+            source.contains("WorkspaceSwitchGate.decision("),
+            "requestSwitch no longer consults WorkspaceSwitchGate")
+        // The decision's *effect* used to be applied inline, where nothing
+        // could observe it — swapping `pending` for `selection` in the ask
+        // branch passed all 685 tests and silently lost the user's edits. It
+        // goes through the gate's own `applying`, every branch of which is
+        // asserted behaviourally in `WorkspaceSwitchGateTests`.
         #expect(
-            source.contains("Self.applying("),
-            "requestSectionSwitch applies the decision inline again, where no test can see it")
+            source.contains("WorkspaceSwitchGate.applying("),
+            "requestSwitch applies the decision inline again, where no test can see it")
     }
 }
-
 
 /// The binding, driven rather than read.
 ///
@@ -303,8 +335,8 @@ struct GuardedSelectionBindingTests {
 
     @Test("every write goes to the request handler, never straight to selection")
     func writesAreRouted() {
-        var currentValue = AppShell.Section.projects
-        var requested: [AppShell.Section] = []
+        var currentValue: WorkspaceSelection?
+        var requested: [WorkspaceSelection?] = []
 
         let binding = AppShell.makeGuardedSelection(
             current: { currentValue },
@@ -317,16 +349,16 @@ struct GuardedSelectionBindingTests {
             requested == [.about, .settings],
             "a write bypassed the request handler — that write is a dirty document dying unasked")
         #expect(
-            currentValue == .projects,
+            currentValue == nil,
             "the binding mutated the selection directly instead of asking; the guard can no longer refuse")
     }
 
     @Test("the getter reflects the live value rather than a captured copy")
     func getterIsLive() {
-        var currentValue = AppShell.Section.projects
+        var currentValue: WorkspaceSelection?
         let binding = AppShell.makeGuardedSelection(current: { currentValue }, request: { _ in })
 
-        #expect(binding.wrappedValue == .projects)
+        #expect(binding.wrappedValue == nil)
         currentValue = .settings
         #expect(
             binding.wrappedValue == .settings,

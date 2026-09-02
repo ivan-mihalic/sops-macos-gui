@@ -809,7 +809,53 @@ enum Fixtures {
     /// structure rather than a bare marker, so a block without `version:`
     /// renders an empty file list instead of the populated one this fixture
     /// exists to show.
-    private static func writeSopsLikeYAML(_ root: URL, at relativePath: String) throws {
+    /// A project tree store and sidebar model over one project holding two
+    /// encrypted files, one of which its `.sops.yaml` rule does **not**
+    /// declare the recipient for — so the sidebar draws one in-sync dot and
+    /// one drift dot, which is the pair the status column exists for.
+    /// Snapshotting only in-sync rows would show a column that cannot be
+    /// told apart from no column at all.
+    static func projectTreeFixture() async throws -> (ProjectSidebarModel, ProjectTreeStore) {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("snapshot-tree-" + UUID().uuidString)
+        let root = base.appendingPathComponent("acme-web")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        try """
+            creation_rules:
+              - path_regex: .*
+                age: \(ruleRecipient)
+
+            """.write(to: root.appendingPathComponent(".sops.yaml"),
+                      atomically: true, encoding: .utf8)
+        try writeSopsLikeYAML(root, at: "config/production.secrets.yaml", recipient: ruleRecipient)
+        try writeSopsLikeYAML(root, at: "config/staging.secrets.yaml", recipient: strangerRecipient)
+
+        let store = ProjectStore(fileURL: base.appendingPathComponent("projects.json"))
+        let project = try store.add(path: root.path)
+        let projects = ProjectSidebarModel(store: store)
+        projects.selection = project.id
+
+        let trees = ProjectTreeStore(keyStore: SessionKeyStore())
+        // Pre-refreshed for the same reason every other fixture here is: a
+        // `.task` never fires in this tool's offscreen render, so a store
+        // left to refresh itself would draw a project with no children.
+        await trees.refresh(project)
+        return (projects, trees)
+    }
+
+    /// The recipient `.sops.yaml` declares in `projectTreeFixture`, and the
+    /// one a drifted file is wrapped for instead. Both are shape-valid and
+    /// inert — no key material, only the public half of nothing.
+    private static let ruleRecipient =
+        "age1exampleexampleexampleexampleexampleexampleexampleexamplex"
+    private static let strangerRecipient =
+        "age1strangerstrangerstrangerstrangerstrangerstrangerstrangerx"
+
+    private static func writeSopsLikeYAML(
+        _ root: URL, at relativePath: String,
+        recipient: String = "age1exampleexampleexampleexampleexampleexampleexampleexamplex"
+    ) throws {
         let url = root.appendingPathComponent(relativePath)
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -817,7 +863,7 @@ enum Fixtures {
             key: ENC[AES256_GCM,data:Zm9v,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
             sops:
                 age:
-                    - recipient: age1exampleexampleexampleexampleexampleexampleexampleexamplex
+                    - recipient: \(recipient)
                 mac: ENC[AES256_GCM,data:AAAA,iv:AAAAAAAAAAAAAAAAAAAAAA==,tag:AAAAAAAAAAAAAAAAAAAAAA==,type:str]
                 version: 3.13.3
             """.write(to: url, atomically: true, encoding: .utf8)

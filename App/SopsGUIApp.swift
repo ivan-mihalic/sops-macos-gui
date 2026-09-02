@@ -592,7 +592,7 @@ struct SopsGUIApp: App {
 
     }
 
-    /// Shows a sidebar section in the main window, from a menu item.
+    /// Shows a sidebar screen in the main window, from a menu item.
     ///
     /// Activation first, and it is not decoration: both callers are menu
     /// items, and a menu can be pulled down while the window is behind
@@ -603,14 +603,14 @@ struct SopsGUIApp: App {
     /// `AppShell.selection` — see that type for why the guarded path is the
     /// only one either of these is allowed to take.
     @MainActor
-    private func show(_ section: AppShell.Section) {
+    private func show(_ screen: WorkspaceSelection) {
         NSApp.activate()
         for window in NSApp.windows where window.isVisible || window.isMiniaturized {
             if window.isMiniaturized { window.deminiaturize(nil) }
             window.makeKeyAndOrderFront(nil)
             break
         }
-        sectionRouter.show(section)
+        sectionRouter.show(screen)
     }
 
     /// "Save and Quit": saves the open document through the tracker (which

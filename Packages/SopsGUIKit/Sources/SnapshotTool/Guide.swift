@@ -25,7 +25,7 @@ enum Guide {
     static func all() async throws -> [Snapshot] {
         var snapshots: [Snapshot] = []
         snapshots += await onboarding()
-        snapshots += navigation()
+        snapshots += try navigation()
         snapshots += try await projectAndFiles()
         snapshots += try await editor()
         snapshots += await settingsAndAbout()
@@ -59,21 +59,33 @@ enum Guide {
 
     // MARK: - Step 7: the sidebar
 
-    /// Rendered from `SectionSidebarList` rather than from `AppShell`, and
-    /// that is not a shortcut. A `NavigationSplitView`'s own `sidebar:` column
-    /// comes back **blank** under this tool (CLAUDE.md, "What it still cannot
-    /// see"), so an `AppShell` snapshot would show the reader an empty stripe
-    /// where the navigation is. Standing alone, the identical `List` renders.
-    /// `SectionSidebarList` exists so this is the same code the app runs, not
-    /// a mock-up of it.
-    private static func navigation() -> [Snapshot] {
-        [
-            Snapshot("guide-07-sidebar", size: sidebarSize) {
-                SectionSidebarList(guardedSelection: .constant(.projects))
-            },
-            Snapshot("guide-07-sidebar-about", size: sidebarSize) {
-                SectionSidebarList(guardedSelection: .constant(.about))
-            },
+    /// Rendered from `ProjectTreeSidebar` rather than from `AppShell`, and
+    /// that is not a shortcut. A `NavigationSplitView`'s own `sidebar:`
+    /// column comes back **blank** under this tool (CLAUDE.md, "What it still
+    /// cannot see"), so an `AppShell` snapshot would show the reader an empty
+    /// stripe where the navigation is. Standing alone, the identical `List`
+    /// renders — and it is the same code the app runs, not a mock-up of it.
+    ///
+    /// A store with nothing in it, on purpose: this is the window a reader
+    /// sees before they have added anything, so About and Settings pinned at
+    /// the bottom are the whole subject.
+    private static func navigation() throws -> [Snapshot] {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("guide-empty-store-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        let projects = ProjectSidebarModel(
+            store: ProjectStore(fileURL: base.appendingPathComponent("projects.json")))
+        let trees = ProjectTreeStore(keyStore: SessionKeyStore())
+
+        func sidebar(_ selection: WorkspaceSelection?) -> some View {
+            ProjectTreeSidebar(
+                projects: projects, trees: trees, selection: .constant(selection),
+                onNewFile: { _ in }, onAddProjectAtPath: { _ in })
+        }
+
+        return [
+            Snapshot("guide-07-sidebar", size: sidebarSize) { sidebar(nil) },
+            Snapshot("guide-07-sidebar-about", size: sidebarSize) { sidebar(.about) },
         ]
     }
 
@@ -137,21 +149,38 @@ enum Guide {
             .appendingPathComponent("guide-store-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         let store = ProjectStore(fileURL: base.appendingPathComponent("projects.json"))
-        _ = try store.add(path: root.path)
+        let project = try store.add(path: root.path)
         let projects = ProjectSidebarModel(store: store)
+        projects.selection = project.id
 
-        let files = FileListModel(projectRoot: root)
+        let trees = ProjectTreeStore(keyStore: SessionKeyStore())
         // Pre-refreshed for the same reason `Fixtures.healthViewModel` is: a
         // `.task` modifier never fires in this tool's offscreen render, so a
-        // model left to refresh itself would draw a permanent spinner.
+        // store left to refresh itself would draw a project with no children.
+        await trees.refresh(project)
+
+        let files = FileListModel(projectRoot: root)
         await files.refresh()
 
+        func sidebar(_ selection: WorkspaceSelection?) -> some View {
+            ProjectTreeSidebar(
+                projects: projects, trees: trees, selection: .constant(selection),
+                onNewFile: { _ in }, onAddProjectAtPath: { _ in })
+        }
+
         return [
+            // Steps 8 and 9 are one control now (SOPS-39 task 6): the
+            // project and its files are the same tree, so the two images
+            // differ by what is selected rather than by which column they
+            // are of. `docs/GUIDE.md`'s prose for these two steps still
+            // describes the old three-column window and has to be rewritten
+            // alongside them.
             Snapshot("guide-08-projects", size: sidebarSize) {
-                ProjectSidebar(model: projects)
+                sidebar(.projectHome(project.id))
             },
-            Snapshot("guide-09-files", size: CGSize(width: 320, height: 420)) {
-                FileListView(model: files, selection: .constant(nil), onNewFile: {})
+            Snapshot("guide-09-files", size: sidebarSize) {
+                sidebar(.file(project: project.id,
+                              url: root.appendingPathComponent("config/production.secrets.yaml")))
             },
         ]
     }

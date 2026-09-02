@@ -8,23 +8,28 @@ import Testing
 
 /// `FileListModelTests` asserts that the *model* carries `incompleteScanReason`
 /// and `skippedDirectoryNames`. That is half the story, and the half that
-/// cannot fail usefully on its own: deleting every line of `FileListView` that
-/// puts those two values in front of a user left the entire 628-test suite
-/// green. The model knew; the view threw it away; nothing noticed.
+/// cannot fail usefully on its own: deleting every line of the view that puts
+/// those two values in front of a user left the entire 628-test suite green.
+/// The model knew; the view threw it away; nothing noticed.
+///
+/// The view is `ProjectHomeView` since SOPS-39 task 6 — the file rows moved to
+/// the sidebar tree, and their assertions with them (to
+/// `ProjectTreeSidebarTests`), while everything describing the *scan* rather
+/// than a single file stayed together and moved here.
 ///
 /// Demonstrated by mutation, not supposed. So these assert on the rendered
 /// accessibility tree — what an assistive client would actually be told — which
 /// is the closest this project can get to "the user saw it" without launching
 /// the app.
-@Suite("What the file list actually shows")
+@Suite("What a project detail pane actually shows")
 @MainActor
-struct FileListViewWiringTests {
+struct ProjectHomeViewWiringTests {
 
     private static let size = CGSize(width: 360, height: 520)
 
     private func text(of model: FileListModel) -> String {
         AXProbe.tree(size: Self.size) {
-            FileListView(model: model, selection: .constant(nil), onNewFile: {})
+            ProjectHomeView(model: model, onNewFile: {})
         }
         .map { $0.label + " " + $0.value + " " + $0.help }
         .joined(separator: "\n")
@@ -32,7 +37,7 @@ struct FileListViewWiringTests {
 
     private func project(_ name: String) throws -> URL {
         let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("filelist-view-\(name)-\(UUID().uuidString)")
+            .appendingPathComponent("project-home-\(name)-\(UUID().uuidString)")
         ScratchDirectoryRegistry.shared.register(root)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 ScratchDirectoryRegistry.shared.register(root)
@@ -76,8 +81,8 @@ ScratchDirectoryRegistry.shared.register(root)
         let model = FileListModel(projectRoot: root)
         await model.refresh()
 
-        #expect(text(of: model).contains("config/secrets.yaml"),
-                "the file list rendered nothing — every other test in this suite would be vacuous")
+        #expect(text(of: model).contains(LocalizedKey.filesNewFileButton.text),
+                "the detail pane rendered nothing — every other test in this suite would be vacuous")
     }
 
     @Test("a scan that could not cover the tree says so on screen")
@@ -165,81 +170,5 @@ ScratchDirectoryRegistry.shared.register(root)
 
         #expect(!text(of: model).contains(LocalizedKey.filesScanIncompleteTitle.text),
                 "a readable project was warned about")
-    }
-
-    /// A project whose only sops file is JSON used to hit the empty
-    /// placeholder with the "other format" note rendered in a branch it
-    /// could never reach — this test used to pin exactly that.
-    ///
-    /// This fixture was a dotenv-shaped file until Task 6 (SOPS-38), then a
-    /// JSON-shaped one from Task 6 onward: the editor opened dotenv first,
-    /// so a dotenv file stopped being "another format" — it is listed and
-    /// openable exactly like YAML — and asserting a dotenv fixture's
-    /// original shape here would have asserted something false, so the
-    /// fixture moved to JSON, then the last real "other format" this build
-    /// had. SOPS-38 phase F2 task 3 closed that gap too:
-    /// `ProjectScanner.classify` now routes JSON into `tree.encrypted` and
-    /// `EncryptedFileMetadata` reads its recipients, so JSON is listed and
-    /// openable exactly like YAML and dotenv are — there is no longer a
-    /// real sops document shape this build classifies as "another format"
-    /// at all (see `ScannedTree.encryptedInOtherFormats`'s own doc comment).
-    /// The test now pins the opposite of what it used to: the same fixture
-    /// demonstrates the claim that replaced the old one, rather than being
-    /// deleted outright and losing the "json used to be the one" history.
-    @Test("a project holding only a json sops file lists it, not the empty-with-note placeholder")
-    func jsonFileIsListedNotHiddenBehindOtherFormatNote() async throws {
-        let root = try project("json-listed")
-        try writeJSONSopsLike(root, at: "config/secrets.json")
-
-        let model = FileListModel(projectRoot: root)
-        await model.refresh()
-
-        #expect(model.otherFormatCount == 0,
-                "json stopped being \"another format\" as of SOPS-38 phase F2 task 3")
-        #expect(!model.files.isEmpty, "a json sops file must be listed exactly like yaml and dotenv are")
-
-        #expect(text(of: model).contains("config/secrets.json"),
-                "a json sops file must appear in the rendered file list, not behind a note about a format nothing here produces any more")
-    }
-
-    // MARK: - SOPS-38 phase F3: the read-only badge
-
-    /// `FileListModelTests` proves `ListedFile.isReadOnly` itself — this is
-    /// the view half `FileListViewWiringTests`' own header exists to catch:
-    /// a flag the model computes and the view never shows is invisible to a
-    /// user, and the whole suite stays green either way.
-    @Test("a file this session's key cannot decrypt shows a read-only badge")
-    func readOnlyBadgeIsShown() async throws {
-        let root = try project("read-only-badge")
-        try writeSopsLike(root, at: "config/secrets.yaml")
-        let stranger = try AgeKeyPairForTests.generate()
-        let store = SessionKeyStore()
-        try store.importKey(stranger.private)
-
-        let model = FileListModel(projectRoot: root, keyStore: store)
-        await model.refresh()
-        try #require(model.files.first?.isReadOnly == true,
-                     "precondition: the model itself must flag this file read-only")
-
-        #expect(text(of: model).contains(LocalizedKey.filesReadOnlyBadge.text),
-                "the model flagged the file read-only and the view never said so")
-    }
-
-    /// The negative case a hardcoded badge would sail past: the same
-    /// sops-shaped file, over a model with no key store at all —
-    /// `ListedFile.isReadOnly`'s own conservative default. Without this, a
-    /// badge shown unconditionally would still pass the positive test above.
-    @Test("a model with no session key configured shows no read-only badge")
-    func noBadgeWithoutASessionKey() async throws {
-        let root = try project("no-key-no-badge")
-        try writeSopsLike(root, at: "config/secrets.yaml")
-
-        let model = FileListModel(projectRoot: root)
-        await model.refresh()
-        try #require(model.files.first?.isReadOnly == false,
-                     "precondition: no key store means the model itself must not claim read-only")
-
-        #expect(!text(of: model).contains(LocalizedKey.filesReadOnlyBadge.text),
-                "a model with no session key must not show the read-only badge")
     }
 }
