@@ -213,6 +213,11 @@ public struct ProjectRecipientApplier: Sendable {
         /// the second when the first is true is a confident claim about a
         /// directory this app never looked inside.
         public let rootUnreadable: Bool
+        /// Rules, named keys, and each file's sync status against the rule
+        /// that governs it — built from the same scan this plan already
+        /// walked (SOPS-39 task 4). Never a second walk: see
+        /// `AccessInventory.build(projectRoot:tree:inspect:)`.
+        public let inventory: AccessInventory
 
         /// Whether writing the config would change anything. False for a
         /// config that is unwritable *and* for one that already agrees.
@@ -368,7 +373,8 @@ public struct ProjectRecipientApplier: Sendable {
                 incompleteScanReason: tree.incompleteScanReason,
                 configRecipients: [], configRefusal: nil, configUpdateText: nil,
                 configFingerprint: nil, configError: nil,
-                rootMissing: tree.rootMissing, rootUnreadable: tree.rootUnreadable)
+                rootMissing: tree.rootMissing, rootUnreadable: tree.rootUnreadable,
+                inventory: .empty)
         }
 
         // Taken before the read, for the same reason `SecretDocumentViewModel
@@ -415,7 +421,8 @@ public struct ProjectRecipientApplier: Sendable {
                 incompleteScanReason: tree.incompleteScanReason,
                 configRecipients: [], configRefusal: nil, configUpdateText: nil,
                 configFingerprint: configFingerprint, configError: nil,
-                rootMissing: tree.rootMissing, rootUnreadable: tree.rootUnreadable)
+                rootMissing: tree.rootMissing, rootUnreadable: tree.rootUnreadable,
+                inventory: .empty)
         }
 
         let update: ConfigRecipientUpdate
@@ -435,7 +442,8 @@ public struct ProjectRecipientApplier: Sendable {
                 incompleteScanReason: tree.incompleteScanReason,
                 configRecipients: [], configRefusal: nil, configUpdateText: nil,
                 configFingerprint: configFingerprint, configError: error.description,
-                rootMissing: tree.rootMissing, rootUnreadable: tree.rootUnreadable)
+                rootMissing: tree.rootMissing, rootUnreadable: tree.rootUnreadable,
+                inventory: .empty)
         } catch {
             return Plan(
                 projectRoot: projectRoot, configURL: configURL, configExists: true,
@@ -449,7 +457,8 @@ public struct ProjectRecipientApplier: Sendable {
                 configRecipients: [], configRefusal: nil, configUpdateText: nil,
                 configFingerprint: configFingerprint,
                 configError: "this project's .sops.yaml could not be read",
-                rootMissing: tree.rootMissing, rootUnreadable: tree.rootUnreadable)
+                rootMissing: tree.rootMissing, rootUnreadable: tree.rootUnreadable,
+                inventory: .empty)
         }
 
         let matchedPaths = Set(update.matchedFiles)
@@ -473,7 +482,8 @@ public struct ProjectRecipientApplier: Sendable {
             configRefusal: update.writable ? nil : update.reason,
             configUpdateText: update.writable && update.changed ? update.config : nil,
             configFingerprint: configFingerprint, configError: nil,
-            rootMissing: tree.rootMissing, rootUnreadable: tree.rootUnreadable)
+            rootMissing: tree.rootMissing, rootUnreadable: tree.rootUnreadable,
+            inventory: AccessInventory.build(projectRoot: projectRoot, tree: tree))
     }
 
     /// `urls` in the order the user already sees them, which is the order
@@ -496,22 +506,27 @@ public struct ProjectRecipientApplier: Sendable {
     /// round — the same reason `runOffCooperativePool` is duplicated here.
     /// `ProjectRecipientApplierOrderingTests` pins the resulting order.
     static func sortedByProjectRelativePath(_ urls: [URL], under root: URL) -> [URL] {
-        func relativePath(_ url: URL) -> String {
-            // Both sides through `ruleMatchingPath`, for the reason its own doc
-            // comment gives: the scan's URLs come back with the directory
-            // prefix's symlinks resolved and the project root's do not, so
-            // stripping one from the other as a literal prefix is otherwise a
-            // no-op and this sorts absolute paths. It happens to produce the
-            // same order while every path shares a prefix, which is what kept
-            // it invisible.
-            let base = ruleMatchingPath(root)
-            var path = ruleMatchingPath(url)
-            guard path.hasPrefix(base) else { return path }
-            path.removeFirst(base.count)
-            if path.hasPrefix("/") { path.removeFirst() }
-            return path
-        }
-        return urls.sorted { relativePath($0) < relativePath($1) }
+        urls.sorted { projectRelativePath($0, under: root) < projectRelativePath($1, under: root) }
+    }
+
+    /// A file's path relative to `root`, in the same form the file list and
+    /// `sortedByProjectRelativePath` already show the user.
+    ///
+    /// Both sides through `ruleMatchingPath`, for the reason its own doc
+    /// comment gives: the scan's URLs come back with the directory prefix's
+    /// symlinks resolved and the project root's do not, so stripping one from
+    /// the other as a literal prefix is otherwise a no-op and this returns
+    /// absolute paths. It happens to produce the same order while every path
+    /// shares a prefix, which is what kept it invisible. Extracted out of
+    /// `sortedByProjectRelativePath` (SOPS-39 task 4) so `AccessInventory` can
+    /// compute the same relative path without duplicating the logic.
+    static func projectRelativePath(_ url: URL, under root: URL) -> String {
+        let base = ruleMatchingPath(root)
+        var path = ruleMatchingPath(url)
+        guard path.hasPrefix(base) else { return path }
+        path.removeFirst(base.count)
+        if path.hasPrefix("/") { path.removeFirst() }
+        return path
     }
 
     /// The form of a path the bridge's rule selection is given.
