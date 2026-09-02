@@ -36,6 +36,12 @@ struct SecretTableView: View {
     /// `RevealedRows`. Passed in rather than derived here, because the
     /// generation belongs to the document and this view holds no document.
     let generation: Int
+    /// The one "Copied" confirmation shared with the inspector — one
+    /// pasteboard, one button allowed to claim it. See `CopyFeedback`.
+    let copyFeedback: CopyFeedback
+    /// Column widths and order, owned by the editor and persisted per file
+    /// through `EditorLayoutStore`. `.constant` in tests that do not care.
+    @Binding var columns: TableColumnCustomization<SecretRow>
     let onToggleReveal: (SecretRow.ID) -> Void
 
     init(
@@ -43,17 +49,21 @@ struct SecretTableView: View {
         selection: Binding<SecretRow.ID?>,
         revealed: RevealedRows,
         generation: Int,
+        copyFeedback: CopyFeedback = CopyFeedback(),
+        columns: Binding<TableColumnCustomization<SecretRow>> = .constant(TableColumnCustomization()),
         onToggleReveal: @escaping (SecretRow.ID) -> Void
     ) {
         self.rows = rows
         self._selection = selection
         self.revealed = revealed
         self.generation = generation
+        self.copyFeedback = copyFeedback
+        self._columns = columns
         self.onToggleReveal = onToggleReveal
     }
 
     var body: some View {
-        Table(rows, selection: $selection) {
+        Table(rows, selection: $selection, columnCustomization: $columns) {
             TableColumn(LocalizedKey.editorColumnKey.text) { row in
                 HStack(spacing: 4) {
                     Text(SecretRowViewLogic.displayPath(row.path))
@@ -85,10 +95,14 @@ struct SecretTableView: View {
             // undo. A key that needs more than 220 pt truncates in the
             // middle; the inspector shows it in full.
             .width(min: 140, ideal: 200, max: 220)
+            .customizationID("key")
+            .disabledCustomizationBehavior(.visibility)
 
             TableColumn(LocalizedKey.editorColumnValue.text) { row in
                 valueCell(row)
             }
+            .customizationID("value")
+            .disabledCustomizationBehavior(.visibility)
 
             TableColumn(LocalizedKey.editorColumnType.text) { row in
                 HStack(spacing: 4) {
@@ -115,12 +129,19 @@ struct SecretTableView: View {
                     }
                 }
             }
-            .width(90)
+            // Ranges, not fixed widths: a column with a single `.width(n)`
+            // cannot be dragged, and the whole point of persisting the
+            // layout (SOPS-40) is that the user can.
+            .width(min: 70, ideal: 90, max: 160)
+            .customizationID("type")
+            .disabledCustomizationBehavior(.visibility)
 
             TableColumn("") { row in
                 actionCell(row)
             }
-            .width(60)
+            .width(min: 60, ideal: 60, max: 90)
+            .customizationID("actions")
+            .disabledCustomizationBehavior([.visibility, .reorder])
         }
         .tableStyle(.inset)
         .scrollOverflowFade()
@@ -165,18 +186,40 @@ struct SecretTableView: View {
                         ? LocalizedKey.editorHideValue.text
                         : LocalizedKey.editorRevealValue.text)
 
-                Button {
-                    // Copy works masked, deliberately — PROPOSAL.md §4 asks
-                    // for one-click copy that is not gated on revealing.
-                    ClipboardClearing.copy(row.value)
-                } label: {
-                    Image(systemName: "doc.on.doc")
-                        .frame(width: 18, height: 18)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel(LocalizedKey.actionCopy.text)
+                RowCopyButton(value: row.value, target: row.id, copyFeedback: copyFeedback)
             }
         }
+    }
+}
+
+/// The copy button a secret row and the inspector share: copies through
+/// `ClipboardClearing` (so the pasteboard clears itself), and says "Copied"
+/// for a moment through the shared `CopyFeedback` — a checkmark in place of
+/// the glyph, and the same word in the tooltip and the accessibility label.
+///
+/// Copy works masked, deliberately — PROPOSAL.md §4 asks for one-click copy
+/// that is not gated on revealing.
+struct RowCopyButton: View {
+    let value: String
+    let target: String
+    let copyFeedback: CopyFeedback
+    var onCopy: () -> Void = {}
+
+    var body: some View {
+        let label = copyFeedback.label(for: target)
+        let copied = label == .actionCopied
+        Button {
+            ClipboardClearing.copy(value)
+            copyFeedback.confirmCopy(of: target)
+            onCopy()
+        } label: {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .frame(width: 18, height: 18)
+                .contentShape(Rectangle())
+                .foregroundStyle(copied ? AnyShapeStyle(.green) : AnyShapeStyle(.primary))
+        }
+        .buttonStyle(.borderless)
+        .help(label.text)
+        .accessibilityLabel(label.text)
     }
 }

@@ -64,14 +64,55 @@ struct SecretRowInspectorTests {
     static func inspector(
         _ model: SecretDocumentViewModel, selectedRowID: String?, revealing: Set<String>,
         onToggleReveal: @escaping (String) -> Void = { _ in },
-        onActivity: @escaping () -> Void = {}
+        onActivity: @escaping () -> Void = {},
+        copyFeedback: CopyFeedback = CopyFeedback(),
+        defaults: UserDefaults = .standard
     ) -> some View {
         SecretRowInspector(
             viewModel: model, selectedRowID: selectedRowID, fileName: "a.env",
             access: nil, nameFor: { _ in nil }, ruleLabel: nil,
             revealed: RevealedRows(revealing: revealing, in: model.rowIdentityGeneration),
             generation: model.rowIdentityGeneration,
-            onToggleReveal: onToggleReveal, onActivity: onActivity)
+            onToggleReveal: onToggleReveal, onActivity: onActivity,
+            copyFeedback: copyFeedback, defaults: defaults)
+    }
+
+
+    /// Copy sits next to the eye and confirms the click the same way the
+    /// table's copy does — keyed by the row, through the shared feedback.
+    @Test("the inspector offers copy next to the eye and confirms it")
+    func inspectorOffersCopyNextToTheEyeAndConfirmsIt() async throws {
+        let model = try await SecretTableViewTests.loadedModel("K=hunter2-EXAMPLE\n")
+        let id = try #require(model.rows.first).id
+
+        var flat = text(AXProbe.tree(size: Self.size) {
+            Self.inspector(model, selectedRowID: id, revealing: [])
+        })
+        #expect(flat.contains(LocalizedKey.actionCopy.text),
+                "a masked row still offers copy — PROPOSAL §4: \(flat)")
+
+        let feedback = CopyFeedback(confirmationDuration: .seconds(30))
+        feedback.confirmCopy(of: id)
+        flat = text(AXProbe.tree(size: Self.size) {
+            Self.inspector(model, selectedRowID: id, revealing: [], copyFeedback: feedback)
+        })
+        #expect(flat.contains(LocalizedKey.actionCopied.text), "\(flat)")
+    }
+
+    /// The editor's height is the user's, remembered across launches.
+    @Test("the value editor uses the persisted height")
+    func editorUsesThePersistedHeight() async throws {
+        let model = try await SecretTableViewTests.loadedModel("K=hunter2-EXAMPLE\n")
+        let id = try #require(model.rows.first).id
+        let defaults = try #require(UserDefaults(suiteName: "inspector-height-\(UUID().uuidString)"))
+        InspectorEditorHeightSetting.setHeight(300, in: defaults)
+
+        let nodes = AXProbe.tree(size: CGSize(width: 320, height: 700)) {
+            Self.inspector(model, selectedRowID: id, revealing: [id], defaults: defaults)
+        }
+        let editor = try #require(nodes.first { $0.label == LocalizedKey.inspectorValue.text && $0.role.contains("TextArea") },
+                                  "no text area in the tree: \(nodes.map { $0.role + " " + $0.label })")
+        #expect(abs(editor.frame.height - 300) < 4, "\(editor.frame)")
     }
 
     // MARK: - The value editor is behind the same reveal as everything else

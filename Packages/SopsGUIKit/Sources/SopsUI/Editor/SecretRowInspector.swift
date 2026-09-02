@@ -84,6 +84,14 @@ public struct SecretRowInspector: View {
     /// `onChange` already had to close.
     private let onActivity: () -> Void
 
+    /// Shared with the table — see `SecretEditorView.copyFeedback`.
+    private let copyFeedback: CopyFeedback
+    /// Where the editor height is remembered; injectable for tests.
+    private let defaults: UserDefaults
+    /// The value editor's height — the user's, see
+    /// `InspectorEditorHeightSetting`.
+    @State private var editorHeight: CGFloat
+
     /// The value being edited, seeded from the selected row and reseeded
     /// whenever the selection moves. Held here rather than pushed into the
     /// model on every keystroke: the old row list marked the document dirty
@@ -103,8 +111,13 @@ public struct SecretRowInspector: View {
         revealed: RevealedRows,
         generation: Int,
         onToggleReveal: @escaping (SecretRow.ID) -> Void,
-        onActivity: @escaping () -> Void
+        onActivity: @escaping () -> Void,
+        copyFeedback: CopyFeedback = CopyFeedback(),
+        defaults: UserDefaults = .standard
     ) {
+        self.copyFeedback = copyFeedback
+        self.defaults = defaults
+        self._editorHeight = State(initialValue: InspectorEditorHeightSetting.height(in: defaults))
         self.viewModel = viewModel
         self.selectedRowID = selectedRowID
         self.fileName = fileName
@@ -204,12 +217,16 @@ public struct SecretRowInspector: View {
                     isRevealed
                         ? LocalizedKey.editorHideValue.text
                         : LocalizedKey.editorRevealValue.text)
+                // The same copy the row has, one click closer to the value
+                // being edited. Copying is touching the value.
+                RowCopyButton(value: row.value, target: row.id, copyFeedback: copyFeedback,
+                              onCopy: { onActivity() })
             }
 
             if isRevealed {
                 TextEditor(text: $draft)
                     .font(.system(.body, design: .monospaced))
-                    .frame(minHeight: 120)
+                    .frame(height: editorHeight)
                     .border(.separator)
                     .disabled(!row.kind.isEditable || viewModel.isSaving)
                     .accessibilityLabel(LocalizedKey.inspectorValue.text)
@@ -224,8 +241,14 @@ public struct SecretRowInspector: View {
                 Text(SecretRowViewLogic.maskedValue(for: row.value))
                     .font(.system(.body, design: .monospaced))
                     .foregroundStyle(.tertiary)
-                    .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
+                    .frame(maxWidth: .infinity, minHeight: editorHeight, alignment: .topLeading)
                     .border(.separator)
+            }
+
+            // Dragging the editor taller is touching the value too.
+            VerticalResizeHandle(height: $editorHeight, range: InspectorEditorHeightSetting.allowedRange) {
+                InspectorEditorHeightSetting.setHeight($0, in: defaults)
+                onActivity()
             }
         }
 
