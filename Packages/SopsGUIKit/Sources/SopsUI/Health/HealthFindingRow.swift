@@ -61,31 +61,9 @@ public struct HealthFindingRow: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 if let command = remediation.command {
-                    HStack {
-                        Text(command)
-                            .font(.system(.callout, design: .monospaced))
-                            .textSelection(.enabled)
-                            .padding(6)
-                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
-                        // The app shows the command; the user runs it. PROPOSAL.md §6.
-                        //
-                        // `copyWithoutAutoClear`, not `copy`: this is a shell
-                        // command the user is about to paste into a
-                        // terminal, not a secret, and wiping their clipboard
-                        // 30 seconds later would be taking away something
-                        // they asked for. It still gets the concealed/
-                        // transient markers and host-only scoping every
-                        // other pasteboard write in this app gets — a
-                        // `chmod 600` command names the absolute path to the
-                        // user's private key file, and that should not sit
-                        // unmarked in a clipboard manager's history or reach
-                        // every other device via Universal Clipboard. See
-                        // `ClipboardClearing.copyWithoutAutoClear`.
-                        Button(copyFeedback.label(for: finding.id).text) {
-                            ClipboardClearing.copyWithoutAutoClear(command)
-                            copyFeedback.confirmCopy(of: finding.id)
-                        }
-                    }
+                    // The app shows the command; the user runs it. PROPOSAL.md §6.
+                    // Copy semantics live in `CommandSnippetView`.
+                    CommandSnippetView(command: command, feedbackID: finding.id, copyFeedback: copyFeedback)
                 }
                 if let url = remediation.documentationURL {
                     Link(LocalizedKey.actionLearnMore.text, destination: url).font(.callout)

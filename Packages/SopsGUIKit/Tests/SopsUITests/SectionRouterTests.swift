@@ -57,6 +57,15 @@ struct SectionRouterTests {
         #expect(router.requested == .about)
     }
 
+    @Test("a Setup guide request is carried like any other section")
+    func aSetupGuideRequestIsCarried() {
+        let router = SectionRouter()
+        router.show(.setupGuide)
+        #expect(router.requested == .setupGuide)
+        #expect(WorkspaceSelection.setupGuide.projectID == nil)
+        #expect(!WorkspaceSelection.setupGuide.isDocument)
+    }
+
     @Test("clearing an already-clear router is harmless")
     func clearIsIdempotent() {
         let router = SectionRouter()

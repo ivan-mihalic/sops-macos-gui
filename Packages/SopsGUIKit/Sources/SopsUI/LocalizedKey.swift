@@ -8,6 +8,29 @@ import SwiftUI
 public enum LocalizedKey: String, CaseIterable, Sendable {
     case sidebarAbout = "sidebar.about"
     case sidebarSettings = "sidebar.settings"
+    case sidebarSetupGuide = "sidebar.setup-guide"
+
+    // MARK: Setup guide (PROPOSAL.md §5, SOPS-41). Prose only — the commands
+    // themselves are `SetupGuideContent`, verbatim.
+    case guideTitle = "guide.title"
+    case guideIntro = "guide.intro"
+    case guideComposeTitle = "guide.compose.title"
+    case guideComposeBody = "guide.compose.body"
+    case guideNoComposeTitle = "guide.no-compose.title"
+    case guideNoComposeBody = "guide.no-compose.body"
+    case guideServerKeyTitle = "guide.server-key.title"
+    case guideServerKeyBody = "guide.server-key.body"
+    case guideColleagueKeyTitle = "guide.colleague-key.title"
+    case guideColleagueKeyBody = "guide.colleague-key.body"
+    case guideColleagueKeyMacOS = "guide.colleague-key.macos"
+    case guideColleagueKeyLinux = "guide.colleague-key.linux"
+    case guideColleagueKeyWindows = "guide.colleague-key.windows"
+    case guideColleagueKeyWSL = "guide.colleague-key.wsl"
+    case guideColleagueKeyShare = "guide.colleague-key.share"
+    case guideSopsYamlTitle = "guide.sops-yaml.title"
+    case guideSopsYamlBody = "guide.sops-yaml.body"
+    case guideAIPromptTitle = "guide.ai-prompt.title"
+    case guideAIPromptBody = "guide.ai-prompt.body"
     // SOPS-39 task 6: the one sidebar. Each project row carries an Access
     // child that opens its recipient panel, and each file row can carry a
     // status dot whose tooltip is one of the two below. The dot alone is

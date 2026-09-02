@@ -255,24 +255,10 @@ public struct KeyImportView: View {
             // the paste-able command is withheld, which is what
             // `ShellQuoting` refuses for everywhere else.
             if let command = AgeKeyFileLocations.protectCommand(for: [path]) {
-                HStack {
-                    Text(verbatim: command)
-                        .font(.system(.callout, design: .monospaced))
-                        .textSelection(.enabled)
-                        .padding(6)
-                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
-                    // The app shows the command; the user runs it — this app
-                    // never mutates the system (CLAUDE.md). Same reasoning as
-                    // `HealthFindingRow`'s matching button: `copyWithoutAutoClear`
-                    // keeps the command around for the user to paste at their
-                    // own pace, while still marking it concealed/transient and
-                    // host-only — this command also names the absolute path
-                    // to a private key file.
-                    Button(copyFeedback.label(for: Self.chmodCopyTarget).text) {
-                        ClipboardClearing.copyWithoutAutoClear(command)
-                        copyFeedback.confirmCopy(of: Self.chmodCopyTarget)
-                    }
-                }
+                // Copy semantics — `copyWithoutAutoClear`, the concealed
+                // markers — live in `CommandSnippetView`; this command names
+                // the absolute path to a private key file.
+                CommandSnippetView(command: command, feedbackID: Self.chmodCopyTarget, copyFeedback: copyFeedback)
             } else {
                 // Ticket #7: before this branch existed, `command == nil`
                 // meant the whole block above simply vanished — the success

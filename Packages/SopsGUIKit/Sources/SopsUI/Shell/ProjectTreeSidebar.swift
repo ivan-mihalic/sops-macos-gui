@@ -76,6 +76,8 @@ public struct ProjectTreeSidebar: View {
                 }
 
                 SwiftUI.Section {
+                    Label(.sidebarSetupGuide, systemImage: "book")
+                        .tag(WorkspaceSelection.setupGuide)
                     Label(.sidebarAbout, systemImage: "info.circle")
                         .tag(WorkspaceSelection.about)
                     Label(.sidebarSettings, systemImage: "gearshape")

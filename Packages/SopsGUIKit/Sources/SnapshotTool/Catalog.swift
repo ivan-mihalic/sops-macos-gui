@@ -65,6 +65,12 @@ enum Catalog {
             Snapshot("about-dark", size: CGSize(width: 620, height: 520), colorScheme: .dark) {
                 AboutView(facts: facts, icon: repositoryIcon(), checkForUpdates: {})
             },
+            Snapshot("setup-guide", size: CGSize(width: 760, height: 2400)) {
+                SetupGuideView()
+            },
+            Snapshot("setup-guide-dark", size: CGSize(width: 760, height: 2400), colorScheme: .dark) {
+                SetupGuideView()
+            },
             Snapshot("about", size: CGSize(width: 620, height: 520)) {
             AboutView(facts: AboutFacts(version: "0.1.3", build: "127", commit: "abc1234",
                                         sops: "3.13.3", age: "1.3.1"),

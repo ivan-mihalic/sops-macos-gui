@@ -93,6 +93,7 @@ enum Guide {
         return [
             Snapshot("guide-07-sidebar", size: sidebarSize) { sidebar(nil) },
             Snapshot("guide-07-sidebar-about", size: sidebarSize) { sidebar(.about) },
+            Snapshot("guide-07-sidebar-setup-guide", size: sidebarSize) { sidebar(.setupGuide) },
         ]
     }
 
@@ -426,6 +427,9 @@ enum Guide {
             },
             Snapshot("guide-17-updates", size: CGSize(width: 520, height: 240)) {
                 UpdateConsentToggle(defaults: Fixtures.isolatedDefaults(prefix: "guide-updates"))
+            },
+            Snapshot("guide-23-setup-guide", size: CGSize(width: 760, height: 1400)) {
+                SetupGuideView()
             },
             Snapshot("guide-18-about", size: CGSize(width: 600, height: 480)) {
                 AboutView(

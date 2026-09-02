@@ -3660,6 +3660,226 @@
         }
       }
     },
+    "sidebar.setup-guide": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Setup guide"
+          }
+        }
+      }
+    },
+    "guide.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Setup guide"
+          }
+        }
+      }
+    },
+    "guide.intro": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "How to get sops and age onto a server and onto a colleague's machine, and how to wire decrypted values into an application. Every snippet has a Copy button; the app never runs any of them for you."
+          }
+        }
+      }
+    },
+    "guide.compose.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "With docker compose"
+          }
+        }
+      }
+    },
+    "guide.compose.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep non-secret configuration in compose.<env>.yaml under environment: or env_file:, and inject the secrets at start-up. sops exec-env decrypts into the process environment only, so nothing lands on disk. If a tool insists on a .env file, generate it from the encrypted source and git-ignore it."
+          }
+        }
+      }
+    },
+    "guide.no-compose.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Without docker compose"
+          }
+        }
+      }
+    },
+    "guide.no-compose.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The same exec-env works for any process. direnv can load the decrypted values into one shell; a systemd unit reads them from an EnvironmentFile that a deploy step generates and protects."
+          }
+        }
+      }
+    },
+    "guide.server-key.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A key on a Linux server"
+          }
+        }
+      }
+    },
+    "guide.server-key.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The server gets its own age key, generated on the server and never copied off it. Only its public key (the age1… line) travels back to you, to be added as a named key on the Access page."
+          }
+        }
+      }
+    },
+    "guide.colleague-key.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A key for a colleague"
+          }
+        }
+      }
+    },
+    "guide.colleague-key.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Each person generates their own key on their own machine. This app can import a key but does not generate one yet, so the command line does that part."
+          }
+        }
+      }
+    },
+    "guide.colleague-key.macos": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS"
+          }
+        }
+      }
+    },
+    "guide.colleague-key.linux": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Linux"
+          }
+        }
+      }
+    },
+    "guide.colleague-key.windows": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Windows"
+          }
+        }
+      }
+    },
+    "guide.colleague-key.wsl": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On Windows with WSL, follow the Linux steps inside WSL instead — the key then lives in the Linux home directory."
+          }
+        }
+      }
+    },
+    "guide.colleague-key.share": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "What your colleague sends you is one line: the public key. The private key stays on their machine, and this app refuses it in every field."
+          }
+        }
+      }
+    },
+    "guide.sops-yaml.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": ".sops.yaml cookbook"
+          }
+        }
+      }
+    },
+    "guide.sops-yaml.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Named keys under keys: are YAML anchors; rules reference them by alias. Order matters: sops takes the first path_regex that matches. The New File sheet writes a starting .sops.yaml for you; these are the shapes it grows into."
+          }
+        }
+      }
+    },
+    "guide.ai-prompt.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ask an AI assistant to help"
+          }
+        }
+      }
+    },
+    "guide.ai-prompt.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paste this into your AI assistant. It carries the security rules of sops and age with it, so the assistant cannot helpfully suggest sharing a private key."
+          }
+        }
+      }
+    },
     "sidebar.settings": {
       "extractionState": "manual",
       "localizations": {

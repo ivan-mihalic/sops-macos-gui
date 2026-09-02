@@ -581,6 +581,10 @@ struct SopsGUIApp: App {
                 Button(LocalizedKey.sidebarSettings.text) { show(.settings) }
                     .keyboardShortcut(",", modifiers: .command)
             }
+            // The Setup guide under Help, where a user looks for one.
+            CommandGroup(replacing: .help) {
+                Button(LocalizedKey.sidebarSetupGuide.text) { show(.setupGuide) }
+            }
             CommandGroup(replacing: .newItem) {}
             CommandGroup(replacing: .appTermination) {
                 Button(LocalizedKey.actionQuit.text) {
