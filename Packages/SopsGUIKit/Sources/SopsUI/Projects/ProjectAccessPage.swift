@@ -59,6 +59,11 @@ public struct ProjectAccessPage: View {
     @State private var showingRewrap = false
     @State private var errorMessage: String?
     @State private var confirmingConfigUpdate = false
+    /// The Named-keys section's own sheet — SOPS-44. Separate from the one
+    /// each rule card owns: this one declares a key under `keys:` and joins
+    /// no rule, so it offers no Existing tab and writes with `ruleIndex ==
+    /// -1`.
+    @State private var declaringProjectKey = false
 
     public init(
         model: ProjectAccessModel,
@@ -118,6 +123,7 @@ public struct ProjectAccessPage: View {
                     })
             }
         }
+        .sheet(isPresented: $declaringProjectKey) { declareKeySheet }
         .sheet(item: $labelEdit) { request in
             RecipientLabelEditorView(
                 model: request.model,
@@ -338,7 +344,23 @@ public struct ProjectAccessPage: View {
     @ViewBuilder
     private func namedKeys(_ inventory: AccessInventory) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(.accessKeysTitle).font(.headline)
+            HStack(alignment: .firstTextBaseline) {
+                Text(.accessKeysTitle).font(.headline)
+                Spacer()
+                // The section's own call to action. A named key belongs to
+                // the *project*, not to a rule — before SOPS-44 the only way
+                // to declare one was through a rule card, so a key could not
+                // be added until there was a rule willing to take it, and
+                // adding it always changed who new files are encrypted for.
+                Button(LocalizedKey.accessKeysAddButton.text) { declaringProjectKey = true }
+                    .controlSize(.small)
+                    // No `.sops.yaml` yet means there is no `keys:` list to
+                    // declare into — `gobridge.AddNamedKey` opens the config
+                    // it is given and this app never creates one behind the
+                    // user's back. The New File flow is what writes the first
+                    // one.
+                    .disabled(model.plan?.configExists != true)
+            }
             Text(.accessKeysNote).font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -407,6 +429,26 @@ public struct ProjectAccessPage: View {
                     }
                 }
             }
+        }
+    }
+
+    /// The Named-keys sheet: declare a key the project knows by name, with
+    /// no rule attached. `ruleIndex: -1` is the bridge's own "declare only"
+    /// (`gobridge.AddNamedKey`), so nothing about who can read what changes
+    /// until the key is added to a rule.
+    @ViewBuilder
+    private var declareKeySheet: some View {
+        if let inventory = model.inventory {
+            AddNamedKeySheet(
+                keys: [],
+                existingKeys: inventory.keys,
+                offersExisting: false,
+                onPick: { _ in declaringProjectKey = false },
+                onCreate: { name, recipient, label in
+                    declaringProjectKey = false
+                    Task { await addNewKey(name: name, recipient: recipient, label: label, to: -1) }
+                },
+                onCancel: { declaringProjectKey = false })
         }
     }
 

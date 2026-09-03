@@ -593,7 +593,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "New key"
+            "value": "Add key"
           }
         }
       }
@@ -627,6 +627,138 @@
           "stringUnit": {
             "state": "translated",
             "value": "Label (optional)"
+          }
+        }
+      }
+    },
+    "access.add-named.mode.generate": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Generate new key"
+          }
+        }
+      }
+    },
+    "access.keys.add-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add named key…"
+          }
+        }
+      }
+    },
+    "access.generate.intro": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Make a brand-new age key here. Nothing is installed and nothing is written until you save or copy it — this app never puts a key into your key store."
+          }
+        }
+      }
+    },
+    "access.generate.button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Generate key"
+          }
+        }
+      }
+    },
+    "access.generate.once-warning": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The private key is shown once. Copy it or save it now — close this sheet and it is gone, and no file encrypted for it can be read without it."
+          }
+        }
+      }
+    },
+    "access.generate.public-key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Public key — share this"
+          }
+        }
+      }
+    },
+    "access.generate.private-key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Private key — keep this"
+          }
+        }
+      }
+    },
+    "access.generate.continue": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continue to Add key"
+          }
+        }
+      }
+    },
+    "access.generate.save-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save…"
+          }
+        }
+      }
+    },
+    "access.generate.save-failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ could not be written."
+          }
+        }
+      }
+    },
+    "access.generate.failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The key could not be generated."
+          }
+        }
+      }
+    },
+    "editor.copy-value-help": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy this value"
           }
         }
       }

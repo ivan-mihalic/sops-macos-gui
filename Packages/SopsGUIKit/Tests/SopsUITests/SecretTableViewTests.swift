@@ -186,3 +186,69 @@ struct SecretTableViewTests {
         #expect(abs(editor.frame.height - 240) < 4, "\(editor.frame)")
     }
 }
+
+/// SOPS-44: the value cell is itself the copy control — the affordance a
+/// password manager has, and the one a masked table needs most, since the
+/// value cannot be read on screen anyway.
+@Suite("SecretTableView — copying by clicking the value")
+@MainActor
+struct SecretTableCopyOnClickTests {
+
+    private static let size = CGSize(width: 800, height: 400)
+
+    private func text(_ nodes: [AXProbe.Node]) -> String {
+        nodes.map { $0.label + " " + $0.value + " " + $0.help }.joined(separator: "\n")
+    }
+
+    @Test("a masked value cell announces that it copies, without announcing the value")
+    func maskedCellOffersCopy() async throws {
+        let model = try await SecretTableViewTests.loadedModel("DATABASE_URL=postgres://x\n")
+        let nodes = AXProbe.tree(size: Self.size) {
+            SecretTableView(rows: model.rows, selection: .constant(nil),
+                            revealed: RevealedRows(), generation: model.rowIdentityGeneration,
+                            onToggleReveal: { _ in })
+        }
+        let flat = text(nodes)
+        #expect(flat.contains("DATABASE_URL"), "the tree did not populate — vacuous: \(flat)")
+        #expect(flat.contains(LocalizedKey.editorCopyValueHelp.text),
+                "the value cell did not say it copies: \(flat)")
+        #expect(!flat.contains("postgres://x"), "a masked row must not publish its value: \(flat)")
+    }
+
+    /// The confirmation replaces the value, and it is the *shared*
+    /// `CopyFeedback` — so a copy started anywhere lights this cell up.
+    @Test("a confirmed copy shows Copied in place of the value")
+    func confirmationReplacesTheValue() async throws {
+        let model = try await SecretTableViewTests.loadedModel("DATABASE_URL=postgres://x\n")
+        let feedback = CopyFeedback()
+        feedback.confirmCopy(of: model.rows[0].id)
+
+        let nodes = AXProbe.tree(size: Self.size) {
+            SecretTableView(rows: model.rows, selection: .constant(nil),
+                            revealed: RevealedRows(), generation: model.rowIdentityGeneration,
+                            copyFeedback: feedback,
+                            onToggleReveal: { _ in })
+        }
+        let flat = text(nodes)
+        #expect(flat.contains("DATABASE_URL"), "the tree did not populate — vacuous: \(flat)")
+        #expect(flat.contains(LocalizedKey.actionCopied.text), "no confirmation reached the tree: \(flat)")
+    }
+
+    /// A merge key gets no reveal and no copy button, and must not acquire a
+    /// copyable cell by the back door.
+    @Test("a merge-key row's value cell does not offer copy")
+    func mergeKeyRowIsNotCopyable() async throws {
+        let model = try await SecretTableViewTests.loadedModel("PLAIN=value\n")
+        let merge = SecretRow(path: ["db", "<<", "host"], value: "anchor", kind: .string, isEncrypted: false)
+        try #require(SecretRowViewLogic.isMergeKeyRow(merge))
+        let nodes = AXProbe.tree(size: Self.size) {
+            SecretTableView(rows: [merge], selection: .constant(nil),
+                            revealed: RevealedRows(), generation: model.rowIdentityGeneration,
+                            onToggleReveal: { _ in })
+        }
+        let flat = text(nodes)
+        #expect(flat.contains("db.<<.host"), "the tree did not populate — vacuous: \(flat)")
+        #expect(!flat.contains(LocalizedKey.editorCopyValueHelp.text),
+                "a merge key must not offer copy: \(flat)")
+    }
+}
