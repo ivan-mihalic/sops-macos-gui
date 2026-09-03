@@ -17,6 +17,12 @@ DerivedData/
 # Headless UI snapshots (Scripts/snapshots.sh) — build output, never committed
 .snapshots/
 
+# Entitlements s rozvinutým team prefixem, generuje Scripts/release-prebuild.sh
+# z provisioning profilu. Odvozený artefakt, a navíc jediné místo v repu, kde by
+# jinak stálo team ID natvrdo. NE v build/ — to je derivedDataPath a xcodebuild
+# ho přepíše (naměřeno při vydávání 0.6.0).
+.signing/
+
 # Release credentials — never commit
 release.local.env
 *.p8

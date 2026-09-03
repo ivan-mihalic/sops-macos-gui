@@ -183,7 +183,11 @@ fi
 # release that installs, passes Gatekeeper, and does not open.
 profile="${SOPS_GUI_PROVISIONING_PROFILE:-$HOME/Development/_apple-developer-id/mac_studio/SopsGUI.provisionprofile}"
 source_entitlements="App/SopsGUI.entitlements"
-resolved_entitlements="build/SopsGUI.resolved.entitlements"
+# ⚠️ NE do build/. Ten adresář je driverův `-derivedDataPath`, takže ho
+# xcodebuild při buildu přepíše — soubor položený sem prebuildem zmizí dřív,
+# než se k němu dostane podpis, a release spadne až po celém buildu na
+# „ENTITLEMENTS: soubor neexistuje". Naměřeno při vydávání 0.6.0.
+resolved_entitlements=".signing/SopsGUI.resolved.entitlements"
 
 if [[ ! -f "$profile" ]]; then
     fail "provisioning profil nenalezen: $profile — bez něj by se vydal build, který se nespustí"
