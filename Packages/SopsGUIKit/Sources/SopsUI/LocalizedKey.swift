@@ -91,9 +91,25 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case keyTTLHeader = "key.ttl.header"
     case keyTTLFooter = "key.ttl.footer"
     case keyTTLMinutes = "key.ttl.minutes"
+    // SOPS-51: the menu offers an hour, and "60 minutes" is not how anybody
+    // says that.
+    case keyTTLHours = "key.ttl.hours"
     case keyPasteNoKeyYet = "key.paste.no-key-yet"
     case keyImportPasteButton = "key.import.paste-button"
     case keyForgetButton = "key.forget-button"
+    // SOPS-46. `.locked` is its own status line, not a variant of "empty":
+    // the two ask the user for opposite things (a Touch ID vs. an import),
+    // and one sentence covering both would have to say neither.
+    case keyStatusLocked = "key.status.locked"
+    case keyUnlockButton = "key.unlock-button"
+    case keyUnlockFooter = "key.unlock-footer"
+    case keyRememberToggle = "key.remember.toggle"
+    case keyRememberFooter = "key.remember.footer"
+    case keyRemoveButton = "key.remove-button"
+    // Shown after an import that worked and a save that did not. Its own
+    // string rather than reusing the error alert, because nothing failed
+    // from the user's point of view except next time.
+    case keyNotSavedTitle = "key.not-saved.title"
     // The three shapes of the key-file import control, one per case of
     // `LegacyKeyFileImportOptions`. None of them contains a path: the one
     // case that may name a path — exactly one file found — shows it as
@@ -328,6 +344,11 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case editorNoFileSelected = "editor.no-file-selected"
     case editorNeedsKeyTitle = "editor.needs-key.title"
     case editorNeedsKeyBody = "editor.needs-key.body"
+    // SOPS-46/48: a locked key is not a missing key, and the editor must not
+    // offer an import to somebody who is holding one.
+    case editorNeedsUnlockTitle = "editor.needs-unlock.title"
+    case editorNeedsUnlockBody = "editor.needs-unlock.body"
+    case editorUnlockButton = "editor.unlock-button"
     case editorLoadFailedTitle = "editor.load-failed.title"
     case editorLoadFailedWrongKey = "editor.load-failed.wrong-key"
     // Deliberately distinct from `.editorLoadFailedTitle`: a `.loaded`

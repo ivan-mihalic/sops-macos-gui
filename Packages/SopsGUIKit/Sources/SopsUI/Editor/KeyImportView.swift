@@ -32,6 +32,19 @@ public struct KeyImportView: View {
     /// "Copy" once pressed — the same defect `HealthFindingRow` carried, and
     /// unreachable from a test for the same reason. See `CopyFeedback`.
     @State private var copyFeedback = CopyFeedback()
+    /// SOPS-46. Whether the next import should also be written to the vault.
+    /// Off by default: storing a private key durably is a decision, and a
+    /// checkbox that arrives pre-ticked is not one the user made.
+    @State private var rememberInKeychain = false
+    /// Set when an import succeeded but saving it did not — see
+    /// `SessionKeyStore.importKey(_:remember:)` for why that is a warning
+    /// rather than a thrown error, and why it must not be shown in the error
+    /// alert next to "your key was rejected".
+    @State private var notSavedReason: String?
+    /// True only while a Touch ID prompt is up, so the unlock button can
+    /// disable itself. Not a general "busy" flag: nothing else in this view
+    /// blocks.
+    @State private var isUnlocking = false
     /// The TTL control's own state. `SessionTTLPreference` shipped with the
     /// mechanism and nothing that could set it — `PROPOSAL §4` lists this
     /// control, and it belongs beside the key it governs rather than on a
@@ -67,7 +80,23 @@ public struct KeyImportView: View {
         Form {
             Section {
                 statusRow
+
+                if let notSavedReason {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(.keyNotSavedTitle)
+                            Text(verbatim: notSavedReason)
+                                .foregroundStyle(.secondary)
+                        }
+                        .fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                }
             }
+
+            unlockSection
 
             Section {
                 TextEditor(text: $pastedText)
@@ -90,6 +119,8 @@ public struct KeyImportView: View {
                         }
                     }
                 }
+
+                Toggle(LocalizedKey.keyRememberToggle.text, isOn: $rememberInKeychain)
             } header: {
                 Text(.keyPasteHeader)
             } footer: {
@@ -107,17 +138,28 @@ public struct KeyImportView: View {
                 // "Add your age private key in Settings › Key", and that route
                 // never passes the health report — so closing only one leaves
                 // the other exactly as it was.
-                if store.state != .configured {
+                if store.state == .empty {
                     Text(.keyPasteNoKeyYet)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+
+                Text(.keyRememberFooter)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Section {
-                Stepper(value: $ttl.minutes, in: ttl.range, step: 5) {
-                    LabeledContent(LocalizedKey.keyTTLHeader.text,
-                                   value: String(format: LocalizedKey.keyTTLMinutes.text, ttl.minutes))
+                // SOPS-51. Was a `Stepper` over 1…480 in steps of five: 96
+                // reachable values for a decision with four meaningful
+                // answers, and eleven presses to get from 15 minutes to an
+                // hour. `ttl.offeredMinutes` is the four, plus any off-list
+                // value already stored — see that property for why dropping
+                // such a value would lose a setting by merely looking at it.
+                Picker(LocalizedKey.keyTTLHeader.text, selection: $ttl.minutes) {
+                    ForEach(ttl.offeredMinutes, id: \.self) { minutes in
+                        Text(Self.durationLabel(forMinutes: minutes)).tag(minutes)
+                    }
                 }
             } footer: {
                 Text(.keyTTLFooter)
@@ -150,11 +192,60 @@ public struct KeyImportView: View {
         }
     }
 
+    /// Three states, three sentences. This was a binary
+    /// configured/empty pair until SOPS-46; `.locked` cannot borrow either of
+    /// them, because "no key" is false and "a key is imported" is not yet
+    /// true.
     private var statusRow: some View {
         HStack(spacing: 8) {
-            Image(systemName: store.state == .configured ? "checkmark.circle.fill" : "circle.dashed")
+            Image(systemName: statusSymbol)
                 .foregroundStyle(store.state == .configured ? .green : .secondary)
-            Text(store.state == .configured ? LocalizedKey.keyStatusConfigured.text : LocalizedKey.keyStatusEmpty.text)
+            Text(statusText)
+        }
+    }
+
+    private var statusSymbol: String {
+        switch store.state {
+        case .configured: "checkmark.circle.fill"
+        case .locked: "lock.fill"
+        case .empty, .unavailable: "circle.dashed"
+        }
+    }
+
+    private var statusText: String {
+        switch store.state {
+        case .configured: LocalizedKey.keyStatusConfigured.text
+        case .locked: LocalizedKey.keyStatusLocked.text
+        // `.unavailable` is not reachable from `SessionKeyStore`, whose own
+        // `state` never returns it. Sharing `.empty`'s sentence rather than
+        // inventing a fourth is the honest fallback: both mean "this app has
+        // no key to work with right now".
+        case .empty, .unavailable: LocalizedKey.keyStatusEmpty.text
+        }
+    }
+
+    /// The unlock affordance, present only while there is something to
+    /// unlock. Above the paste field on purpose: someone whose key is in the
+    /// Keychain should not have to read past an import form to find the
+    /// one-click way back in.
+    @ViewBuilder private var unlockSection: some View {
+        if store.state == .locked {
+            Section {
+                Button {
+                    unlock()
+                } label: {
+                    Text(.keyUnlockButton)
+                }
+                .disabled(isUnlocking)
+
+                Button(LocalizedKey.keyRemoveButton.text, role: .destructive) {
+                    removeStoredKey()
+                }
+            } footer: {
+                Text(.keyUnlockFooter)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -281,12 +372,74 @@ public struct KeyImportView: View {
 
     private func importPastedText() {
         do {
-            try store.importKey(pastedText)
+            let warning = try store.importKey(pastedText, remember: rememberInKeychain)
             pastedText = ""
             importedPath = nil
             errorMessage = nil
+            notSavedReason = warning.map(Self.reason(for:))
         } catch {
             errorMessage = message(for: error)
+        }
+    }
+
+    /// SOPS-46. Reads the key out of the vault, which puts a Touch ID prompt
+    /// on screen.
+    ///
+    /// A cancelled prompt is not an error worth an alert — the user just
+    /// decided not to, and the button is still there — so it is swallowed.
+    /// Everything else goes through the same alert a bad paste would, because
+    /// everything else means the key did not come back and the user needs to
+    /// know why.
+    private func unlock() {
+        isUnlocking = true
+        Task {
+            defer { isUnlocking = false }
+            do {
+                try await store.unlock()
+                errorMessage = nil
+                notSavedReason = nil
+            } catch AgeKeyVaultError.authenticationCancelled {
+                errorMessage = nil
+            } catch {
+                errorMessage = message(for: error)
+            }
+        }
+    }
+
+    private func removeStoredKey() {
+        do {
+            try store.forgetPermanently()
+            importedPath = nil
+            notSavedReason = nil
+            errorMessage = nil
+        } catch {
+            errorMessage = message(for: error)
+        }
+    }
+
+    /// "5 minutes", "1 hour" — never "60 minutes", which is not how anybody
+    /// says an hour.
+    ///
+    /// Whole hours only: the menu offers one, and a stored 90 stays "90
+    /// minutes" rather than becoming "1.5 hours", because a fraction in a
+    /// duration label reads as a precision this setting does not have.
+    static func durationLabel(forMinutes minutes: Int) -> String {
+        if minutes >= 60 && minutes % 60 == 0 {
+            return String(format: LocalizedKey.keyTTLHours.text, minutes / 60)
+        }
+        return String(format: LocalizedKey.keyTTLMinutes.text, minutes)
+    }
+
+    /// The user-facing half of an `AgeKeyVaultError`. Never the raw status
+    /// code on its own — `.failed` is the case with nothing to say, and it
+    /// says exactly that rather than printing a number into a sentence.
+    static func reason(for error: AgeKeyVaultError) -> String {
+        switch error {
+        case .unavailable(let reason): reason
+        case .authenticationCancelled: "Touch ID was cancelled, so the key was not saved."
+        case .noStoredKey: "There was no key to read back."
+        case .unreadableStoredKey: "The stored key could not be read."
+        case .failed: "The Keychain refused to store this key."
         }
     }
 
@@ -295,10 +448,11 @@ public struct KeyImportView: View {
     /// button's. See the type's doc comment for why that matters.
     private func importFromLegacyFile(at path: String) {
         do {
-            try store.importFromLegacyKeyFile(at: path)
+            let warning = try store.importFromLegacyKeyFile(at: path, remember: rememberInKeychain)
             importedPath = path
             copyFeedback.reset()
             errorMessage = nil
+            notSavedReason = warning.map(Self.reason(for:))
         } catch {
             importedPath = nil
             errorMessage = message(for: error)
@@ -325,6 +479,11 @@ public struct KeyImportView: View {
             LocalizedKey.keyErrorMultipleLinesPasted.text
         case SessionKeyStore.Error.unreadableKeysFile:
             LocalizedKey.keyErrorUnreadableKeysFile.text
+        case let vaultError as AgeKeyVaultError:
+            // Vault errors reach this alert only from `unlock()` and
+            // `removeStoredKey()`; the import path routes its own through the
+            // inline warning instead, because there the key did arrive.
+            Self.reason(for: vaultError)
         default:
             // `importFromLegacyKeyFile(at:)` also throws whatever
             // `String(contentsOfFile:encoding:)` throws (file missing,

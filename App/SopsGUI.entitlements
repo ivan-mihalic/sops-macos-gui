@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	SOPS-46 / SOPS-49 / ADR 0006. Two entitlements, both required, neither
+	optional:
+
+	`com.apple.application-identifier` is what ties this binary to the App ID
+	the provisioning profile was issued for. `keychain-access-groups` is what
+	lets it address a keychain item at all — without it `SecItemAdd` returns
+	errSecMissingEntitlement (-34018), measured on this machine.
+
+	⚠️ NEITHER WORKS WITHOUT THE EMBEDDED PROFILE. `keychain-access-groups` is
+	a restricted entitlement: a Developer ID-signed, hardened-runtime binary
+	carrying it without `Contents/embedded.provisionprofile` is killed by AMFI
+	before `main` runs — SIGKILL, no message, exit 137. Measured, not assumed.
+	`Scripts/embed-provisioning-profile.sh` puts the profile there and fails
+	the build if it cannot; `project.yml` wires the two together and says why.
+
+	`$(AppIdentifierPrefix)` is expanded by Xcode from the profile at build
+	time, so no team identifier is written down here. `codesign` on its own
+	does NOT expand it — a signature made outside Xcode with this file
+	verbatim carries the literal string and the binary dies exactly as if the
+	entitlement were unauthorised.
+	-->
+	<key>com.apple.application-identifier</key>
+	<string>$(AppIdentifierPrefix)cz.mihalic.SopsGUI</string>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)cz.mihalic.SopsGUI</string>
+	</array>
+</dict>
+</plist>

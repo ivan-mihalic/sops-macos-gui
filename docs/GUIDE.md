@@ -303,6 +303,15 @@ configured — Add your age private key in Settings › Key to open this file."*
 It is not an error, and it deliberately does not read like one. You have not
 given the app a key yet; step 16 is where you do.
 
+There is a second version of this screen. If you have ticked **Remember this
+key in my Keychain** at some point, then after a relaunch — or after this Mac
+sleeps — the app has a key but has not unlocked it, and the file shows *"Your
+key is locked — Your age key is in the Keychain. Unlock it to open this file."*
+with an **Unlock with Touch ID** button underneath. One press opens the file;
+there is nothing to paste and nowhere else to go. The app distinguishes the two
+deliberately: telling somebody to import a key they are already holding is the
+app failing to know its own state.
+
 ### Step 14 · Adding a row
 
 ![Add row](images/guide-14-add-row.png)
@@ -374,9 +383,34 @@ Paste the contents of `demo-age-key.txt` — the `AGE-SECRET-KEY-1…` line — 
 a multi-line blob is treated as a `keys.txt`, so `cat demo-age-key.txt` and ⌘V
 is enough.
 
-It is held **in memory for this session only**. Nothing is written to disk, to
-the keychain, or to your defaults, and it is gone when you quit. That is the
-deliberate trade: paste once per launch, and nothing to leak afterwards.
+By default it is held **in memory for this session only**. Nothing is written to
+disk or to your defaults, and it is gone when you quit.
+
+Tick **Remember this key in my Keychain** before importing and the app also
+stores it in your Keychain, on this Mac only, guarded by Touch ID. Then the next
+launch does not ask you to paste anything: the status line reads *"Your age key
+is in the Keychain"* and an **Unlock with Touch ID** button appears above the
+paste field. One touch and the app can decrypt again.
+
+Unlocking happens **once per launch**, not once per file. After that the key
+behaves exactly as a pasted one does — it leaves memory when this Mac sleeps and
+after the inactivity period below — except that getting it back costs a
+fingerprint rather than another paste.
+
+**Forget the key after** is that period: a menu of 5, 15 or 30 minutes, or an
+hour. It starts at **5 minutes**, which is deliberately short — with the key in
+your Keychain, an expired session costs one Touch ID, so there is little reason
+to leave an unattended Mac able to decrypt for longer. Someone who does not use
+the Keychain, and pastes their key each time, will want one of the longer
+settings. **Remove from Keychain** deletes the
+stored copy for good; **Forget** only clears it from memory, and a stored key
+comes straight back with Touch ID.
+
+> ⚠️ **If the tick box says the key could not be saved**, that is a known
+> possibility rather than something you did wrong: storing into the Keychain
+> needs a system permission whose behaviour could not be verified without a
+> person at the machine. Your key still works for this session, and everything
+> else on this page works as described. Telling us it happened is useful.
 
 If you already keep a key at `~/Library/Application Support/sops/age/keys.txt`
 (or the `~/.config` path), **Import from this key file** offers to read it. The
@@ -579,6 +613,21 @@ footnote on the project's home page counts the second case.
 **"No decryption key configured" on a file I own.** The identity in this session
 cannot decrypt that file — the file is encrypted to a recipient you do not hold. Compare the
 recipients in the file's `sops` block against your public key.
+
+**"Your key is locked" every time I open the app.** That is the intended
+resting state when your key is in the Keychain: it is unlocked once per launch,
+not once per file, and it leaves memory again when this Mac sleeps or after the
+inactivity period in Settings › Key. Press **Unlock with Touch ID** and it stays
+unlocked for the rest of the session. If you would rather it did not persist at
+all, **Remove from Keychain** in Settings › Key deletes the stored copy — after
+that the app is back to asking you to paste a key each launch.
+
+**Ticking "Remember this key in my Keychain" says it could not be saved.** Not
+something you can fix from the app, and not a sign anything is broken: the key
+still works for this session, exactly as a pasted one always has. The Keychain
+write is the one part of this feature that could not be verified without a
+person at the machine — see [ADR 0006](adr/0006-age-key-in-the-keychain.md),
+"What is still unverified".
 
 **The wizard said my sops is out of date.** That is about your *CLI*, not this
 app. The app's own engine is the version in About and is unaffected.

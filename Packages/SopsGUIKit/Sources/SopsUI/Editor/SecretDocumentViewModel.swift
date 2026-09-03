@@ -20,6 +20,17 @@ public enum LoadState: Equatable, Sendable {
     /// reported before any bridge call is made — the file itself was never
     /// even attempted, so this is not a claim about the file being unreadable.
     case needsKey
+    /// An identity **is** stored, in the Keychain, but has not been unlocked
+    /// in this run of the app (SOPS-46 / ADR 0006).
+    ///
+    /// Its own case rather than `.needsKey` for exactly the reason
+    /// `KeyStoreState.locked` is its own case: the two want opposite things
+    /// from the user. `.needsKey` sends them to Settings › Key to paste a key;
+    /// this one needs a fingerprint, and telling somebody to import a key they
+    /// are already holding is the app failing to know its own state. Like
+    /// `.needsKey`, it is reported before any bridge call — the file was never
+    /// attempted and nothing here is a claim about the file.
+    case needsUnlock
     /// The file could not be decrypted with the identity that is configured:
     /// a MAC mismatch, a damaged value, or a document sops does not
     /// recognise as its own. **Never** a wrong key — that is
@@ -538,10 +549,16 @@ public final class SecretDocumentViewModel {
         }
 
         guard let decrypted else {
-            // No key configured — `withKey` never called the closure, so no
-            // bridge call and no risk of a stale rows/dirty state lingering.
+            // No usable key — `withKey` never called the closure, so no bridge
+            // call and no risk of a stale rows/dirty state lingering.
+            //
+            // `withKey` returns `nil` for two different situations that SOPS-46
+            // separated: nothing imported at all, and something stored but
+            // locked. Reading `keyStore.state` here is what keeps the editor
+            // from offering an import to somebody whose key is sitting in the
+            // Keychain.
             resetToEmpty()
-            loadState = .needsKey
+            loadState = keyStore.state == .locked ? .needsUnlock : .needsKey
             return
         }
 
@@ -1397,8 +1414,32 @@ public final class SecretDocumentViewModel {
             loadState = .failed(message)
         case nil:
             resetToEmpty()
-            loadState = .needsKey
+            loadState = keyStore.state == .locked ? .needsUnlock : .needsKey
         }
+    }
+
+    /// Unlocks the session key and loads the document again.
+    ///
+    /// Lives here rather than in the view because the view has no key store —
+    /// it only ever has this model — and because "unlock, then retry the thing
+    /// that was blocked" is one action from the user's point of view, not two.
+    ///
+    /// A cancelled Touch ID prompt leaves the state exactly as it was
+    /// (`.needsUnlock`, with the unlock button still on screen), which is the
+    /// correct outcome for "I changed my mind": nothing to report, nothing
+    /// lost. Any other failure surfaces as `.failed`, because at that point
+    /// something went wrong that the user cannot fix by pressing the button
+    /// again.
+    public func unlockAndReload() async {
+        do {
+            try await keyStore.unlock()
+        } catch AgeKeyVaultError.authenticationCancelled {
+            return
+        } catch {
+            loadState = .failed("The stored key could not be unlocked.")
+            return
+        }
+        await load()
     }
 
     /// Runs `SopsBridge.applyEdits` off the main actor via

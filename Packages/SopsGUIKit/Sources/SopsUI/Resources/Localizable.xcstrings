@@ -659,7 +659,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Make a brand-new age key here. Nothing is installed and nothing is written until you save or copy it — this app never puts a key into your key store."
+            "value": "Make a brand-new age key here. Nothing is installed, and nothing is written or remembered until you save or copy it — generating a key does not import it into this app, add it to any file, or put it in your Keychain."
           }
         }
       }
@@ -2150,6 +2150,39 @@
         }
       }
     },
+    "editor.needs-unlock.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your age key is in the Keychain. Unlock it to open this file."
+          }
+        }
+      }
+    },
+    "editor.needs-unlock.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your key is locked"
+          }
+        }
+      }
+    },
+    "editor.unlock-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unlock with Touch ID"
+          }
+        }
+      }
+    },
     "editor.needs-key.title": {
       "extractionState": "manual",
       "localizations": {
@@ -2774,7 +2807,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Imported for this session. That file is still sitting on disk unprotected — this app can't import it out of harm's way, but you can narrow who can read it:"
+            "value": "Imported. That file is still sitting on disk unprotected — this app can't import it out of harm's way, but you can narrow who can read it:"
           }
         }
       }
@@ -2796,7 +2829,40 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Don't have one? Run age-keygen in a terminal. It prints a public age1… line to share, and a secret AGE-SECRET-KEY-1… line to paste above. Keep your own copy of the secret line somewhere safe — this app never writes it down."
+            "value": "Don't have one? This app can make you one: open any project's Access page, press Add named key, and choose Generate new key. It shows a public age1… line to share and a secret AGE-SECRET-KEY-1… line to paste above — copy the secret line before closing that sheet, because it is shown once. Or run age-keygen in a terminal, which prints the same two lines. Either way, keep your own copy of the secret line somewhere safe, such as a password manager."
+          }
+        }
+      }
+    },
+    "key.status.locked": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your age key is in the Keychain. Unlock it to open files."
+          }
+        }
+      }
+    },
+    "key.unlock-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unlock with Touch ID"
+          }
+        }
+      }
+    },
+    "key.unlock-footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your key is unlocked once per launch. It is cleared from memory when this Mac sleeps, and after the inactivity period below — both times, unlocking it again costs one Touch ID rather than another import."
           }
         }
       }
@@ -2807,7 +2873,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "An imported key is forgotten after this long without use, and immediately whenever this Mac goes to sleep. Shorter means pasting it again more often; longer means an unattended Mac can decrypt for longer."
+            "value": "An imported key is forgotten after this long without use, and immediately whenever this Mac goes to sleep. Shorter means unlocking it again more often — with Touch ID if it is in your Keychain, otherwise by pasting it; longer means an unattended Mac can decrypt for longer."
           }
         }
       }
@@ -2819,6 +2885,29 @@
           "stringUnit": {
             "state": "translated",
             "value": "Forget the key after"
+          }
+        }
+      }
+    },
+    "key.ttl.hours": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld hour"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld hours"
+                }
+              }
+            }
           }
         }
       }
@@ -2846,13 +2935,57 @@
         }
       }
     },
+    "key.not-saved.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your key is ready for this session, but could not be saved for next time."
+          }
+        }
+      }
+    },
+    "key.remember.footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stored in your Keychain on this Mac only, never synced to iCloud, and readable again only after Touch ID or your password. Leave this off to keep the key for this session alone."
+          }
+        }
+      }
+    },
+    "key.remember.toggle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remember this key in my Keychain"
+          }
+        }
+      }
+    },
+    "key.remove-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove from Keychain"
+          }
+        }
+      }
+    },
     "key.paste.footer": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Held in memory for this session only. Never written to disk, and forgotten when you quit the app or press Forget."
+            "value": "Held in memory for this session, and forgotten when you quit the app or press Forget. It is written to disk only if you tick Remember above — and then only into your Keychain, behind Touch ID."
           }
         }
       }
@@ -4107,7 +4240,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Each person generates their own key on their own machine. This app can import a key but does not generate one yet, so the command line does that part."
+            "value": "Each person generates their own key on their own machine — that is the rule, and these commands are how someone without this app follows it. On a Mac that does have it, Access › Add named key › Generate new key does the same thing without a terminal. Either way the private key stays where it was made."
           }
         }
       }
