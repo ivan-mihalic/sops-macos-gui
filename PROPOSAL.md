@@ -4,8 +4,11 @@ Native macOS application for pleasant management of SOPS + age encrypted secrets
 form-based editing, per-project organization, age key management, Touch ID protected —
 producing files 100% compatible with the standard `sops` CLI (CI, servers, colleagues).
 
-**Repo:** `ivan-mihalic/sops-macos-gui` — private during development, **goes public once a functional version exists**.
-**License:** MIT (open source, fully auditable by the public).
+**Repo:** `ivan-mihalic/sops-macos-gui` — **public**. It was private during early development and
+went public once there was a functional version; that condition is met and this line is a
+record of it, not a plan.
+**License:** MIT. Open source is the point, not a side effect: this app handles private keys,
+and a tool nobody can read is a tool nobody can check. See README, "Auditing this yourself".
 **Monetization:** free + "Buy me a coffee" link. No App Store, no licensing code.
 
 ---

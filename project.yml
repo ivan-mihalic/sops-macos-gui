@@ -70,9 +70,13 @@ targets:
         # `1.0` in Info.plist, which no release process could see.
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
-        # The feed lives in the PUBLIC sops-macos-gui-releases repository
-        # because this source repository is private and Sparkle cannot read a
-        # feed it has to authenticate for.
+        # The feed lives in the separate sops-macos-gui-releases repository.
+        # That split originally existed because THIS repository was private and
+        # Sparkle cannot read a feed it has to authenticate for. Both are public
+        # now, so that reason is gone — the split stays because a release asset
+        # repository keeps binaries and appcast history out of the source
+        # repository's clone size, and because changing a shipped SUFeedURL
+        # orphans every installed copy that still points at the old one.
         SUFeedURL: "https://raw.githubusercontent.com/ivan-mihalic/sops-macos-gui-releases/main/appcast.xml"
         # Public half of the EdDSA pair whose private half lives in this
         # machine's keychain under the account `sops-macos-gui`. Public by
