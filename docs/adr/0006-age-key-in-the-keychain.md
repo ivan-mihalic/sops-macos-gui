@@ -80,20 +80,54 @@ have already done.
 
 ## Consequences
 
-### This does not work yet, and that is not a bug in this code
+### The signing work this needed, and what it actually took (SOPS-49)
 
 The data-protection keychain gates access by keychain access group, derived from the
-`application-identifier` and `keychain-access-groups` entitlements. This app ships as a
-Developer ID build with **no entitlements file at all** (`project.yml` sets hardened runtime
-and nothing else — see feature f89, "hardened runtime with no exceptions and no sandbox"), so
-there is no group to write into and `SecItemAdd` returns `errSecMissingEntitlement` (-34018).
+`application-identifier` and `keychain-access-groups` entitlements. This app shipped as a
+Developer ID build with **no entitlements file at all**, so `SecItemAdd` returned
+`errSecMissingEntitlement` (-34018).
 
-Making it work needs an App ID, a Developer ID provisioning profile, and that profile embedded
-in the `.app` — release-pipeline work that cannot be done from this repository alone and
-cannot be verified headlessly. Until it lands, `KeychainAgeKeyVault.store` fails with
-`.unavailable(reason:)`, decision 3 above turns that into a warning, and the app behaves
-exactly as it did before this ADR: the key is kept for the session and forgotten on quit.
-Nothing regresses; the feature simply does not engage.
+Done on 2026-09-03, with an App Store Connect API key holding the Admin role:
+
+| Thing | Identifier |
+|---|---|
+| App ID `cz.mihalic.SopsGUI` | `8GFGWUQMWS` |
+| Profile `SOPS GUI Developer ID` (`MAC_APP_DIRECT`) | `VHHP89JJ8S`, valid to 2044 |
+
+Three findings worth writing down, because each contradicts something that gets assumed:
+
+1. **The "Keychain Sharing" capability cannot be enabled through the API** — it is not in
+   `capabilityType`'s vocabulary, which offers only `ICLOUD` and `IN_APP_PURCHASE`. It also
+   turned out not to be needed: the issued profile carries
+   `keychain-access-groups = ['NA99TRHL4B.*']` on its own.
+2. **A Developer ID profile does not expire in a year.** It inherits the signing
+   certificate's life — this one runs to 2044. The annual expiry everyone quotes belongs to
+   development and App Store profiles.
+3. **`codesign` does not expand `$(AppIdentifierPrefix)`.** Only Xcode does, from the profile.
+   A signature applied outside Xcode with the entitlements file verbatim carries the literal
+   string, and the binary is killed exactly as if the entitlement were unauthorised. That is
+   why `project.yml` signs with `CODE_SIGN_STYLE: Manual` and a named profile rather than
+   leaving it all to the release driver.
+
+### What is still unverified, and by whom it has to be verified
+
+The app **builds, signs, embeds the profile and launches** — measured: the Release build
+carries `keychain-access-groups = NA99TRHL4B.cz.mihalic.SopsGUI` in its signature and starts
+normally.
+
+What is **not** established is that `SecItemAdd` then succeeds. Every probe run from this
+machine's agent shell returned `errSecInteractionNotAllowed` (-25308) for anything touching
+the data-protection keychain or a `SecAccessControl`, and `errSecSuccess` only for a plain
+legacy-keychain write — the same result from a CLI binary, from a bundled binary launched
+through LaunchServices, from an `NSApplication` running as an accessory, with and without the
+App Sandbox, and with an explicit `kSecAttrAccessGroup`. Whether that is a property of how
+those probes were launched or a real obstacle for the shipped app is **not something this
+repository can answer**: it needs a human at the machine, pressing the button and putting a
+finger on the sensor.
+
+Decision 3 above is what makes that acceptable to ship: if `SecItemAdd` does fail, the import
+still succeeds, the warning says the key was not saved, and the app behaves exactly as it did
+before this ADR. Nothing regresses either way.
 
 ### Copy that was true stopped being true
 

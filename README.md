@@ -40,13 +40,18 @@ with.
 - **Updates.** Sparkle 2 with an EdDSA-signed appcast, off by default, and off
   means no request is made at all.
 
-> ⚠️ **Keychain storage does not engage in a released build yet.** Storing a key
-> needs the restricted `keychain-access-groups` entitlement, which needs an
-> embedded provisioning profile this app does not ship with. Until that lands
-> (ticket SOPS-49), ticking *Remember this key in my Keychain* reports that the
-> key is ready for the session but could not be saved. Everything else works;
-> the key is simply kept for the session, as it always was. The decision, the
-> measurements behind it, and what it does **not** buy are in
+> ⚠️ **Building the `.app` now needs a provisioning profile.** Keychain storage
+> uses the restricted `keychain-access-groups` entitlement, and a binary carrying
+> it without an embedded profile is killed at launch. `Scripts/bootstrap.sh`
+> installs the profile from `~/Development/_apple-developer-id/`, and
+> `xcodebuild` fails loudly without it. **The Swift test suite and the snapshot
+> tools are unaffected** — only building the app bundle needs this.
+>
+> Whether the Keychain write itself succeeds has **not** been verified end to
+> end: every headless probe hit `errSecInteractionNotAllowed`, which may be a
+> property of how a probe is launched rather than a real obstacle. If it does
+> fail, the import still works and the app says the key was not saved for next
+> time. The decision, the measurements, and what this does **not** buy are in
 > [ADR 0006](docs/adr/0006-age-key-in-the-keychain.md).
 
 ## Constraints
@@ -96,7 +101,7 @@ xcodebuild -project SopsGUI.xcodeproj -scheme SopsGUI -configuration Release bui
 | `Engine/` | The Go SOPS bridge (cgo `c-archive` → xcframework). See `Engine/README.md`. |
 | `Packages/SopsGUIKit/` | All app logic: `SopsEngine` (Swift wrapper over the C API), `SopsHealth` (health checks and `.sops.yaml` inspection), `SopsProjects` (project store, key store, file writing), `SopsUI` (SwiftUI views), plus `SnapshotTool`, a dev-only headless renderer. |
 | `App/` | Thin Xcode app target — `SopsGUIApp.swift` wires the shell, onboarding sheet, and Settings scene; exists for archiving and notarization. |
-| `Scripts/` | `test.sh` (the suite), `snapshots.sh` / `guide-snapshots.sh` (headless renders), `bootstrap.sh`, `clean-test-temp.sh`. |
+| `Scripts/` | `test.sh` (the suite), `snapshots.sh` / `guide-snapshots.sh` (headless renders), `bootstrap.sh`, `clean-test-temp.sh`, `embed-provisioning-profile.sh`. |
 
 Implementation plans, specs and per-ticket documents live **outside this
 repository**, in `_ai-memory/projects/sops-macos-gui/tickets/`. What stays here

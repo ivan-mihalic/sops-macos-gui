@@ -76,19 +76,59 @@ struct EntitlementsWiringTests {
         #expect(project?.contains("ENABLE_HARDENED_RUNTIME") == true)
     }
 
-    /// The canary for the comment-stripping above: today's `project.yml`
-    /// mentions both terms **only** in prose, so the stripped text must
-    /// contain neither. If someone wires the entitlements in for real this
-    /// flips, and that is the moment the real guard below starts having
-    /// something to say — so this test failing is a signal to read that one,
-    /// not to loosen this one.
-    @Test("comment stripping actually removes the prose that mentions the entitlement")
+    /// The canary for the comment-stripping above.
+    ///
+    /// It used to assert that `CODE_SIGN_ENTITLEMENTS` appeared **only** in
+    /// prose — true while the entitlements were deliberately unwired, and its
+    /// own doc comment said that the day someone wired them in for real, this
+    /// would flip and be a signal to read the real guard rather than to loosen
+    /// this one. That day was SOPS-49, and this is that reading: the setting is
+    /// now genuine configuration, so the canary moved to a word that lives only
+    /// in the comments and always will.
+    ///
+    /// Without a canary the stripper could quietly start returning the whole
+    /// file — or nothing at all — and the guard below would pass either way.
+    @Test("comment stripping actually removes prose")
     func commentStrippingWorks() throws {
         let project = try #require(try Self.read("project.yml"))
 
-        #expect(project.contains("CODE_SIGN_ENTITLEMENTS"),
-                "the comment explaining why entitlements are unwired is gone; this canary no longer proves anything")
-        #expect(Self.configurationOnly(project).contains("CODE_SIGN_ENTITLEMENTS") == false)
+        // "AMFI" appears in the explanation of why the profile is mandatory,
+        // and could not sensibly become a YAML key.
+        #expect(project.contains("AMFI"),
+                "the comment explaining why the profile is mandatory is gone; this canary no longer proves anything")
+        #expect(Self.configurationOnly(project).contains("AMFI") == false)
+        // And the stripper must not eat actual configuration.
+        #expect(Self.configurationOnly(project).contains("ENABLE_HARDENED_RUNTIME"))
+    }
+
+    /// SOPS-49 wired the entitlements in, so the guard below is no longer
+    /// dormant — it is load-bearing, and this pins that it is actually
+    /// evaluating rather than returning early.
+    @Test("the entitlements really are wired in now")
+    func entitlementsAreWired() throws {
+        let project = Self.configurationOnly(try #require(try Self.read("project.yml")))
+
+        #expect(project.contains("CODE_SIGN_ENTITLEMENTS"))
+    }
+
+    /// The profile does not embed itself. A `PROVISIONING_PROFILE_SPECIFIER`
+    /// with no script to copy the file in produces a build that signs, passes
+    /// everything here, and then does not launch.
+    @Test("the script that embeds the profile exists and is executable")
+    func embedScriptExists() throws {
+        let root = try #require(Self.repositoryRoot())
+        let script = root.appendingPathComponent("Scripts/embed-provisioning-profile.sh")
+
+        #expect(FileManager.default.fileExists(atPath: script.path))
+        #expect(FileManager.default.isExecutableFile(atPath: script.path))
+
+        let source = try String(contentsOf: script, encoding: .utf8)
+        // It must fail the build when the profile is missing, not warn. A
+        // warning here is a release nobody can open.
+        #expect(source.contains("exit 1"))
+        // And it must check that the profile actually authorises the group,
+        // rather than trusting that any profile will do.
+        #expect(source.contains("keychain-access-groups"))
     }
 
     @Test("entitlements are not wired in without a provisioning profile step")

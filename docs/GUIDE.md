@@ -399,11 +399,11 @@ fingerprint rather than another paste. **Remove from Keychain** deletes the
 stored copy for good; **Forget** only clears it from memory, and a stored key
 comes straight back with Touch ID.
 
-> ⚠️ **Not working yet in a released build.** Storing into the Keychain needs an
-> entitlement this app does not ship with today, so the tick box currently
-> reports *"Your key is ready for this session, but could not be saved for next
-> time."* Everything else on this page works as described; the key is simply
-> kept for the session, as it always was.
+> ⚠️ **If the tick box says the key could not be saved**, that is a known
+> possibility rather than something you did wrong: storing into the Keychain
+> needs a system permission whose behaviour could not be verified without a
+> person at the machine. Your key still works for this session, and everything
+> else on this page works as described. Telling us it happened is useful.
 
 If you already keep a key at `~/Library/Application Support/sops/age/keys.txt`
 (or the `~/.config` path), **Import from this key file** offers to read it. The
@@ -615,10 +615,12 @@ unlocked for the rest of the session. If you would rather it did not persist at
 all, **Remove from Keychain** in Settings › Key deletes the stored copy — after
 that the app is back to asking you to paste a key each launch.
 
-**Ticking "Remember this key in my Keychain" says it could not be saved.** Known,
-and not something you can fix: storing a key needs an entitlement this build does
-not ship with yet (ticket SOPS-49). Your key still works for the session. See
-[ADR 0006](adr/0006-age-key-in-the-keychain.md).
+**Ticking "Remember this key in my Keychain" says it could not be saved.** Not
+something you can fix from the app, and not a sign anything is broken: the key
+still works for this session, exactly as a pasted one always has. The Keychain
+write is the one part of this feature that could not be verified without a
+person at the machine — see [ADR 0006](adr/0006-age-key-in-the-keychain.md),
+"What is still unverified".
 
 **The wizard said my sops is out of date.** That is about your *CLI*, not this
 app. The app's own engine is the version in About and is unaffected.

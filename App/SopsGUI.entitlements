@@ -3,18 +3,29 @@
 <plist version="1.0">
 <dict>
 	<!--
-	SOPS-46 / ADR 0006. The data-protection keychain gates access by keychain
-	access group, and without one `SecItemAdd` returns errSecMissingEntitlement
-	(-34018) — measured on this machine with a signed probe binary.
+	SOPS-46 / SOPS-49 / ADR 0006. Two entitlements, both required, neither
+	optional:
 
-	⚠️ THIS FILE IS NOT WIRED INTO THE BUILD YET, ON PURPOSE. See project.yml.
-	`keychain-access-groups` is a restricted entitlement: a binary carrying it
-	without a provisioning profile that authorises it is killed by AMFI at
-	launch (SIGKILL, no message). Measured, not assumed — a Developer ID-signed,
-	hardened-runtime probe with exactly this entitlement and a real team prefix
-	died with exit 137 before executing a line. Shipping this without the
-	embedded profile would mean shipping an app that cannot start.
+	`com.apple.application-identifier` is what ties this binary to the App ID
+	the provisioning profile was issued for. `keychain-access-groups` is what
+	lets it address a keychain item at all — without it `SecItemAdd` returns
+	errSecMissingEntitlement (-34018), measured on this machine.
+
+	⚠️ NEITHER WORKS WITHOUT THE EMBEDDED PROFILE. `keychain-access-groups` is
+	a restricted entitlement: a Developer ID-signed, hardened-runtime binary
+	carrying it without `Contents/embedded.provisionprofile` is killed by AMFI
+	before `main` runs — SIGKILL, no message, exit 137. Measured, not assumed.
+	`Scripts/embed-provisioning-profile.sh` puts the profile there and fails
+	the build if it cannot; `project.yml` wires the two together and says why.
+
+	`$(AppIdentifierPrefix)` is expanded by Xcode from the profile at build
+	time, so no team identifier is written down here. `codesign` on its own
+	does NOT expand it — a signature made outside Xcode with this file
+	verbatim carries the literal string and the binary dies exactly as if the
+	entitlement were unauthorised.
 	-->
+	<key>com.apple.application-identifier</key>
+	<string>$(AppIdentifierPrefix)cz.mihalic.SopsGUI</string>
 	<key>keychain-access-groups</key>
 	<array>
 		<string>$(AppIdentifierPrefix)cz.mihalic.SopsGUI</string>
