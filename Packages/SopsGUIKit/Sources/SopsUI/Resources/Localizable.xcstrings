@@ -2962,7 +2962,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Held in memory for this session, and forgotten when you quit the app or press Forget. It is written to disk only if you tick Remember below — and then only into your Keychain, behind Touch ID."
+            "value": "Held in memory for this session, and forgotten when you quit the app or press Forget. It is written to disk only if you tick Remember above — and then only into your Keychain, behind Touch ID."
           }
         }
       }
@@ -4217,7 +4217,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Each person generates their own key on their own machine. This app can import a key but does not generate one yet, so the command line does that part."
+            "value": "Each person generates their own key on their own machine — that is the rule, and these commands are how someone without this app follows it. On a Mac that does have it, Access › Add named key › Generate new key does the same thing without a terminal. Either way the private key stays where it was made."
           }
         }
       }

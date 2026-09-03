@@ -607,6 +607,19 @@ footnote on the project's home page counts the second case.
 cannot decrypt that file — the file is encrypted to a recipient you do not hold. Compare the
 recipients in the file's `sops` block against your public key.
 
+**"Your key is locked" every time I open the app.** That is the intended
+resting state when your key is in the Keychain: it is unlocked once per launch,
+not once per file, and it leaves memory again when this Mac sleeps or after the
+inactivity period in Settings › Key. Press **Unlock with Touch ID** and it stays
+unlocked for the rest of the session. If you would rather it did not persist at
+all, **Remove from Keychain** in Settings › Key deletes the stored copy — after
+that the app is back to asking you to paste a key each launch.
+
+**Ticking "Remember this key in my Keychain" says it could not be saved.** Known,
+and not something you can fix: storing a key needs an entitlement this build does
+not ship with yet (ticket SOPS-49). Your key still works for the session. See
+[ADR 0006](adr/0006-age-key-in-the-keychain.md).
+
 **The wizard said my sops is out of date.** That is about your *CLI*, not this
 app. The app's own engine is the version in About and is unaffected.
 

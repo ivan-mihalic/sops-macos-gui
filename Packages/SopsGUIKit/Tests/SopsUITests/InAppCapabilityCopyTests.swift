@@ -25,7 +25,27 @@ struct InAppCapabilityCopyTests {
     /// and the health report is read by people who never open Settings › Key.
     private static let keyAcquisitionCopy: [(String, String)] = [
         ("key.paste.no-key-yet", LocalizedKey.keyPasteNoKeyYet.text),
+        ("guide.colleague-key.body", LocalizedKey.guideColleagueKeyBody.text),
     ]
+
+    /// The claim this suite exists to keep out of the app: a text stating in so
+    /// many words that the app cannot do a thing it can do. This one shipped in
+    /// the Setup guide from SOPS-41 and was already false when SOPS-44 landed
+    /// the generator, three tickets before anybody noticed.
+    @Test("no copy claims the app cannot generate a key")
+    func nothingClaimsTheAppCannotGenerate() {
+        let forbidden = ["does not generate", "cannot generate", "can't generate", "doesn't generate"]
+
+        for (id, text) in Self.keyAcquisitionCopy {
+            let lowered = text.lowercased()
+            for claim in forbidden {
+                #expect(lowered.contains(claim) == false, Comment(rawValue: """
+                    \(id) says the app cannot generate a key. It has been able to since SOPS-44 \
+                    (Access › Add named key › Generate new key). Text was: \(text)
+                    """))
+            }
+        }
+    }
 
     @Test("copy that names age-keygen also names the in-app generator")
     func keygenMentionsAreAccompanied() {
