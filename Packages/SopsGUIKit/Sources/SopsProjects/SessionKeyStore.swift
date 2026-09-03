@@ -423,7 +423,8 @@ public final class SessionKeyStore {
     /// it recognizes LF, CR, and the CRLF cluster as a single newline each,
     /// so `split(whereSeparator:)` breaks the content into lines correctly
     /// under any of the three.
-    func importFromKeysFileContents(_ contents: String) throws {
+    @discardableResult
+    func importFromKeysFileContents(_ contents: String, remember: Bool = false) throws -> AgeKeyVaultError? {
         let keyLines = contents
             .split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -440,7 +441,7 @@ public final class SessionKeyStore {
         let keyCount = keyLines.filter { $0.hasPrefix(Self.agePrivateKeyPrefix) }.count
         if keyCount > 1 { throw Error.multipleKeysInFile(count: keyCount) }
         guard keyLines.count == 1 else { throw Error.unreadableKeysFile }
-        try importKey(keyLines[0])
+        return try importKey(keyLines[0], remember: remember)
     }
 
     /// Reads `path` and imports it via `importFromKeysFileContents(_:)`.
@@ -459,9 +460,10 @@ public final class SessionKeyStore {
     /// `security.legacy-key-file` finding exists precisely to warn that this
     /// file sits unprotected, and silently reading it on the app's own
     /// initiative would contradict that warning.
-    public func importFromLegacyKeyFile(at path: String) throws {
+    @discardableResult
+    public func importFromLegacyKeyFile(at path: String, remember: Bool = false) throws -> AgeKeyVaultError? {
         let contents = try String(contentsOfFile: path, encoding: .utf8)
-        try importFromKeysFileContents(contents)
+        return try importFromKeysFileContents(contents, remember: remember)
     }
 
     /// Drops the key from memory.

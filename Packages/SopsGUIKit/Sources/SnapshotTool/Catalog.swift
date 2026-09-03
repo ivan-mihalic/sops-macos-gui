@@ -241,6 +241,13 @@ enum Catalog {
         // exercise layout.
         try! configured.importKey("AGE-SECRET-KEY-1QTKPVHZDCRWEY069SMX3U8JAGN7F5L24QTKPVHZDCRWEY069SMX3U8JAGN")
 
+        // SOPS-46's third state. The vault is `InMemoryAgeKeyVault`, never
+        // `KeychainAgeKeyVault`: this tool renders in a headless `Background`
+        // session, where a real Touch ID prompt has no user and no window
+        // server. The key inside it is the same fake shape as above.
+        let locked = SessionKeyStore(vault: InMemoryAgeKeyVault(
+            storedKey: "AGE-SECRET-KEY-1QTKPVHZDCRWEY069SMX3U8JAGN7F5L24QTKPVHZDCRWEY069SMX3U8JAGN"))
+
         // The import control's three shapes, each pinned to a fixture rather
         // than to whatever happens to be under this machine's real `$HOME` —
         // otherwise these two snapshots would render differently on a Mac
@@ -264,6 +271,7 @@ enum Catalog {
         return [
             keyImport("key-import-empty", empty, .one(libraryKeyFile)),
             keyImport("key-import-configured", configured, .one(libraryKeyFile)),
+            keyImport("key-import-locked", locked, .one(libraryKeyFile)),
             keyImport("key-import-no-key-file", SessionKeyStore(),
                       .noneFound(searched: searched)),
             keyImport("key-import-several-key-files", SessionKeyStore(),

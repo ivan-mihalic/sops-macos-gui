@@ -46,7 +46,10 @@ Server:       private_S (only on the server)   →  public_S  ┘  sensitive →
 - Removing a colleague = remove public key + `updatekeys` + **the app reminds you to rotate the actual secret values** (the removed person may hold an old copy)
 
 ### Own key storage
-- Private age key stored in **macOS Keychain** with `SecAccessControl(.userPresence)` → Touch ID / password gate
+- Private age key stored in **macOS Keychain** with `SecAccessControl(.userPresence)` → Touch ID / password gate.
+  Built in SOPS-46; unlocked **once per launch**, not per decrypt (ADR 0006). Storing needs a
+  `keychain-access-groups` entitlement the app does not ship with yet, so it does not engage in a
+  released build
 - Marketing-honest Secure Enclave usage: SE cannot hold X25519 keys (P-256 only), so an SE-backed key **wraps** the age key
 - Unlock session: decrypted key held only in memory with a configurable TTL (Settings), zeroed after expiry
 - Reveal own key: Touch ID → show `AGE-SECRET-KEY-1…` + copy button; clipboard auto-cleared after ~30 s; auto-hide after timeout
@@ -78,7 +81,7 @@ partial encryption / `encrypted_regex`). We **never reimplement** the SOPS forma
 | UI | SwiftUI, macOS 26+ |
 | SOPS/age engine | Go: upstream `getsops/sops` + `filippo.io/age` compiled as **xcframework** (`c-archive`), called in-process from Swift |
 | Engine fallback | Bundled `sops`/`age` binaries invoked as subprocess (no sandbox → allowed). Used if the c-archive bridge spike fails. |
-| Key storage | Keychain + LocalAuthentication (Touch ID), SE-wrapped |
+| Key storage | Keychain + LocalAuthentication (Touch ID). **Not SE-wrapped** — the Secure Enclave does P-256 and an age identity is X25519, so it can only wrap, never hold, one; that route was considered and rejected in ADR 0006 |
 | Updates | Sparkle 2 (EdDSA-signed appcast) |
 | i18n | String Catalogs (`.xcstrings`), English default and only language for now |
 

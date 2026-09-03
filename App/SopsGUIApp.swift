@@ -362,7 +362,12 @@ struct SopsGUIApp: App {
     // check, for the same reason `projectStore` is shared: an import made in
     // the Key panel must be visible to the next health run without a
     // relaunch, and two separate instances would silently desync.
-    private let keyStore = SessionKeyStore()
+    //
+    // SOPS-46: the shipped app is the one place that passes a real vault. Every
+    // test target, the snapshot catalog and every preview construct
+    // `SessionKeyStore()` without one — a Touch ID prompt in a headless process
+    // has no user to answer it.
+    private let keyStore = SessionKeyStore(vault: KeychainAgeKeyVault())
     /// Sparkle. Created before `health`, because the report below is built
     /// from its status provider — see `AppUpdater`.
     private let appUpdater = AppUpdater()

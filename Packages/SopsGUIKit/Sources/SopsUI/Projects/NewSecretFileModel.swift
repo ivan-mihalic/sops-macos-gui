@@ -1332,15 +1332,19 @@ public final class NewSecretFileModel {
         }
 
         guard let outcome else {
-            // `withKey` found no key to lend — `keyStore.state` is therefore
-            // not `.configured` at this exact moment (see `SessionKeyStore
-            // .state`), so `.empty` is the honest, structural fact here
-            // rather than a guess. `message(forEmptyKeyStore:)` is
-            // documented to return non-nil for every case but `.configured`;
-            // the `if let` still handles the `nil` branch rather than
-            // force-unwrapping, so a future change to that contract cannot
-            // crash this call.
-            if let message = CreationFailurePresenter.message(forEmptyKeyStore: .empty) {
+            // `withKey` found no key to lend, so `keyStore.state` is not
+            // `.configured` at this exact moment (see `SessionKeyStore
+            // .state`). This used to pass a hardcoded `.empty` and argue that
+            // it was "the honest, structural fact"; SOPS-46 made that false —
+            // `withKey` also returns `nil` for `.locked`, and the message for
+            // `.empty` tells someone whose key is sitting in the Keychain to
+            // go and import one. Reading `state` is what the sibling branch
+            // above already does, for exactly the reason this one now must.
+            // `message(forEmptyKeyStore:)` is documented to return non-nil
+            // for every case but `.configured`; the `if let` still handles
+            // the `nil` branch rather than force-unwrapping, so a future
+            // change to that contract cannot crash this call.
+            if let message = CreationFailurePresenter.message(forEmptyKeyStore: keyStore.state) {
                 lastCreateFailure = Learned(message, about: subject)
             }
             return nil

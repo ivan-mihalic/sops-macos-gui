@@ -94,6 +94,19 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case keyPasteNoKeyYet = "key.paste.no-key-yet"
     case keyImportPasteButton = "key.import.paste-button"
     case keyForgetButton = "key.forget-button"
+    // SOPS-46. `.locked` is its own status line, not a variant of "empty":
+    // the two ask the user for opposite things (a Touch ID vs. an import),
+    // and one sentence covering both would have to say neither.
+    case keyStatusLocked = "key.status.locked"
+    case keyUnlockButton = "key.unlock-button"
+    case keyUnlockFooter = "key.unlock-footer"
+    case keyRememberToggle = "key.remember.toggle"
+    case keyRememberFooter = "key.remember.footer"
+    case keyRemoveButton = "key.remove-button"
+    // Shown after an import that worked and a save that did not. Its own
+    // string rather than reusing the error alert, because nothing failed
+    // from the user's point of view except next time.
+    case keyNotSavedTitle = "key.not-saved.title"
     // The three shapes of the key-file import control, one per case of
     // `LegacyKeyFileImportOptions`. None of them contains a path: the one
     // case that may name a path — exactly one file found — shows it as

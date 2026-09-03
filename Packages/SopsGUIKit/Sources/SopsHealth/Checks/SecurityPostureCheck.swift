@@ -270,7 +270,7 @@ public struct SecurityPostureCheck: HealthCheck {
                               explanation: "Import an existing age key in Settings › Key — paste it directly, or import it from a key file this app finds on disk. "
                                          + "No key yet? Run age-keygen below. It prints two lines: a public age1… line to share with anyone whose files you want to read, "
                                          + "and a secret AGE-SECRET-KEY-1… line to paste into Settings › Key. "
-                                         + "Keep your own copy of the secret line somewhere safe, such as a password manager — this app holds it for the session only, never on disk.",
+                                         + "Keep your own copy of the secret line somewhere safe, such as a password manager — this app holds it for the session, and writes it down only if you ask it to remember it in your Keychain.",
                               command: "age-keygen"))
         case .unavailable(let reason):
             // The row renders the skip reason and the detail back to back, so

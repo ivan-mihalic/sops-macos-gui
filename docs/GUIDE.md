@@ -374,9 +374,27 @@ Paste the contents of `demo-age-key.txt` — the `AGE-SECRET-KEY-1…` line — 
 a multi-line blob is treated as a `keys.txt`, so `cat demo-age-key.txt` and ⌘V
 is enough.
 
-It is held **in memory for this session only**. Nothing is written to disk, to
-the keychain, or to your defaults, and it is gone when you quit. That is the
-deliberate trade: paste once per launch, and nothing to leak afterwards.
+By default it is held **in memory for this session only**. Nothing is written to
+disk or to your defaults, and it is gone when you quit.
+
+Tick **Remember this key in my Keychain** before importing and the app also
+stores it in your Keychain, on this Mac only, guarded by Touch ID. Then the next
+launch does not ask you to paste anything: the status line reads *"Your age key
+is in the Keychain"* and an **Unlock with Touch ID** button appears above the
+paste field. One touch and the app can decrypt again.
+
+Unlocking happens **once per launch**, not once per file. After that the key
+behaves exactly as a pasted one does — it leaves memory when this Mac sleeps and
+after the inactivity period in step 16b — except that getting it back costs a
+fingerprint rather than another paste. **Remove from Keychain** deletes the
+stored copy for good; **Forget** only clears it from memory, and a stored key
+comes straight back with Touch ID.
+
+> ⚠️ **Not working yet in a released build.** Storing into the Keychain needs an
+> entitlement this app does not ship with today, so the tick box currently
+> reports *"Your key is ready for this session, but could not be saved for next
+> time."* Everything else on this page works as described; the key is simply
+> kept for the session, as it always was.
 
 If you already keep a key at `~/Library/Application Support/sops/age/keys.txt`
 (or the `~/.config` path), **Import from this key file** offers to read it. The
