@@ -91,6 +91,9 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case keyTTLHeader = "key.ttl.header"
     case keyTTLFooter = "key.ttl.footer"
     case keyTTLMinutes = "key.ttl.minutes"
+    // SOPS-51: the menu offers an hour, and "60 minutes" is not how anybody
+    // says that.
+    case keyTTLHours = "key.ttl.hours"
     case keyPasteNoKeyYet = "key.paste.no-key-yet"
     case keyImportPasteButton = "key.import.paste-button"
     case keyForgetButton = "key.forget-button"

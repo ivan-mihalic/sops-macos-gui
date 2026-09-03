@@ -394,8 +394,15 @@ paste field. One touch and the app can decrypt again.
 
 Unlocking happens **once per launch**, not once per file. After that the key
 behaves exactly as a pasted one does — it leaves memory when this Mac sleeps and
-after the inactivity period in step 16b — except that getting it back costs a
-fingerprint rather than another paste. **Remove from Keychain** deletes the
+after the inactivity period below — except that getting it back costs a
+fingerprint rather than another paste.
+
+**Forget the key after** is that period: a menu of 5, 15 or 30 minutes, or an
+hour. It starts at **5 minutes**, which is deliberately short — with the key in
+your Keychain, an expired session costs one Touch ID, so there is little reason
+to leave an unattended Mac able to decrypt for longer. Someone who does not use
+the Keychain, and pastes their key each time, will want one of the longer
+settings. **Remove from Keychain** deletes the
 stored copy for good; **Forget** only clears it from memory, and a stored key
 comes straight back with Touch ID.
 

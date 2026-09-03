@@ -38,4 +38,24 @@ public final class SessionTTLSetting {
     }
 
     public var range: ClosedRange<Int> { SessionTTLPreference.allowedRange }
+
+    /// The values the picker offers, plus — when the stored value is not one
+    /// of them — the stored value itself.
+    ///
+    /// SOPS-51 replaced a stepper with a four-item menu. A `Picker` whose
+    /// binding holds a value absent from its own options renders with nothing
+    /// selected and, on the first interaction, silently replaces that value
+    /// with whichever option the user lands on. Someone who had set 45 minutes
+    /// under the old stepper would open Settings, see a blank control, and
+    /// lose the setting by looking at it.
+    ///
+    /// So an off-list value is carried as a fifth entry rather than dropped.
+    /// It disappears on its own the moment the user picks something else,
+    /// which is the only point at which discarding it is something they did
+    /// rather than something that happened to them.
+    public var offeredMinutes: [Int] {
+        let offered = SessionTTLPreference.offeredMinutes
+        guard !offered.contains(minutes) else { return offered }
+        return (offered + [minutes]).sorted()
+    }
 }

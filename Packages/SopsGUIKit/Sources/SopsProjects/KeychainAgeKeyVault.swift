@@ -53,22 +53,57 @@ public struct KeychainAgeKeyVault: AgeKeyVault {
     // MARK: - Reading
 
     public func hasStoredKey() -> Bool {
-        // `kSecReturnData: false` is what keeps this silent: the access
-        // control is evaluated when the *data* is returned, so asking only
-        // whether a matching item exists never reaches the authentication
-        // path. `interactionNotAllowed` is belt and braces — if some future
-        // OS decides otherwise, this fails with `errSecInteractionNotAllowed`
-        // rather than putting an unexplained Touch ID sheet in front of
-        // someone who just opened the window.
+        // Attributes, never data. The access control guards the *value*; the
+        // metadata saying an item exists is not behind it, so this question
+        // can be asked without putting a Touch ID sheet in front of somebody
+        // who merely opened the window.
+        //
+        // `interactionNotAllowed` is belt and braces: if some future OS
+        // decides otherwise, this comes back as a status rather than as an
+        // unexplained prompt. What that status *means* is the subtle part —
+        // see `existsVerdict(for:)`.
         let context = LAContext()
         context.interactionNotAllowed = true
 
         var query = Self.baseQuery()
-        query[kSecReturnData as String] = false
+        query[kSecReturnAttributes as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
         query[kSecUseAuthenticationContext as String] = context
 
-        let status = SecItemCopyMatching(query as CFDictionary, nil)
-        return status == errSecSuccess
+        var item: CFTypeRef?
+        return Self.existsVerdict(for: SecItemCopyMatching(query as CFDictionary, &item))
+    }
+
+    /// Whether `status`, from the existence query above, means "there is a key
+    /// stored".
+    ///
+    /// ## The bug this exists to name
+    /// This used to be `status == errSecSuccess`, and that shipped a
+    /// **user-visible lie**: import a key with "Remember" ticked, relaunch,
+    /// and Settings › Key said *"No key is imported."* while the key sat in
+    /// the Keychain the whole time. The import itself had succeeded and
+    /// reported nothing wrong, so there was no error anywhere to follow — the
+    /// app simply could not see its own stored key.
+    ///
+    /// `errSecInteractionNotAllowed` is not "no". It is the keychain saying
+    /// *"the item is here and I will not hand it over without asking the
+    /// user"* — a sentence that presupposes the item. An absent item produces
+    /// `errSecItemNotFound`, which is the "no" this function actually needs to
+    /// recognise. Reading the first as the second turns a key that is present
+    /// and merely locked into a key that does not exist, which is precisely
+    /// backwards from what the caller (`SessionKeyStore.state`) then reports.
+    ///
+    /// Erring towards `true` is also the right way to be wrong. A false
+    /// `true` shows an Unlock button that fails once and explains itself; a
+    /// false `false` tells the user their key is gone and asks them to import
+    /// it again.
+    static func existsVerdict(for status: OSStatus) -> Bool {
+        switch status {
+        case errSecSuccess, errSecInteractionNotAllowed, errSecAuthFailed:
+            return true
+        default:
+            return false
+        }
     }
 
     public func loadKey() throws -> String {

@@ -92,3 +92,51 @@ struct KeychainAgeKeyVaultTests {
         #expect(KeychainAgeKeyVault.baseQuery()[kSecAttrAccessControl as String] == nil)
     }
 }
+
+/// SOPS-52. The existence check that reported a stored key as missing.
+///
+/// Found by hand on 2026-09-03: import with "Remember" ticked, relaunch, and
+/// Settings › Key said *"No key is imported."* — with the key in the Keychain
+/// and no error reported anywhere. The import had succeeded; the app just
+/// could not see what it had stored.
+@Suite("Keychain existence check")
+struct KeychainExistenceVerdictTests {
+
+    /// The regression itself. `errSecInteractionNotAllowed` presupposes the
+    /// item — the keychain is refusing to hand something over, which is not
+    /// something it can do for an item that is not there.
+    @Test("a locked-but-present item counts as present")
+    func interactionNotAllowedMeansPresent() {
+        #expect(KeychainAgeKeyVault.existsVerdict(for: errSecInteractionNotAllowed))
+    }
+
+    @Test("a failed authentication also means the item is there")
+    func authFailedMeansPresent() {
+        #expect(KeychainAgeKeyVault.existsVerdict(for: errSecAuthFailed))
+    }
+
+    @Test("a found item counts as present")
+    func successMeansPresent() {
+        #expect(KeychainAgeKeyVault.existsVerdict(for: errSecSuccess))
+    }
+
+    /// The only status that actually means "no key stored", and the one the
+    /// empty case must keep producing — otherwise a fresh install would offer
+    /// an Unlock button for a key nobody ever saved.
+    @Test("a missing item counts as missing")
+    func itemNotFoundMeansAbsent() {
+        #expect(KeychainAgeKeyVault.existsVerdict(for: errSecItemNotFound) == false)
+    }
+
+    /// A build without the entitlement cannot reach the keychain at all, and
+    /// must not claim a key is waiting there.
+    @Test("a missing entitlement counts as missing")
+    func missingEntitlementMeansAbsent() {
+        #expect(KeychainAgeKeyVault.existsVerdict(for: errSecMissingEntitlement) == false)
+    }
+
+    @Test("an unrecognised failure counts as missing")
+    func unknownFailureMeansAbsent() {
+        #expect(KeychainAgeKeyVault.existsVerdict(for: -12345) == false)
+    }
+}

@@ -150,9 +150,16 @@ public struct KeyImportView: View {
             }
 
             Section {
-                Stepper(value: $ttl.minutes, in: ttl.range, step: 5) {
-                    LabeledContent(LocalizedKey.keyTTLHeader.text,
-                                   value: String(format: LocalizedKey.keyTTLMinutes.text, ttl.minutes))
+                // SOPS-51. Was a `Stepper` over 1…480 in steps of five: 96
+                // reachable values for a decision with four meaningful
+                // answers, and eleven presses to get from 15 minutes to an
+                // hour. `ttl.offeredMinutes` is the four, plus any off-list
+                // value already stored — see that property for why dropping
+                // such a value would lose a setting by merely looking at it.
+                Picker(LocalizedKey.keyTTLHeader.text, selection: $ttl.minutes) {
+                    ForEach(ttl.offeredMinutes, id: \.self) { minutes in
+                        Text(Self.durationLabel(forMinutes: minutes)).tag(minutes)
+                    }
                 }
             } footer: {
                 Text(.keyTTLFooter)
@@ -408,6 +415,19 @@ public struct KeyImportView: View {
         } catch {
             errorMessage = message(for: error)
         }
+    }
+
+    /// "5 minutes", "1 hour" — never "60 minutes", which is not how anybody
+    /// says an hour.
+    ///
+    /// Whole hours only: the menu offers one, and a stored 90 stays "90
+    /// minutes" rather than becoming "1.5 hours", because a fraction in a
+    /// duration label reads as a precision this setting does not have.
+    static func durationLabel(forMinutes minutes: Int) -> String {
+        if minutes >= 60 && minutes % 60 == 0 {
+            return String(format: LocalizedKey.keyTTLHours.text, minutes / 60)
+        }
+        return String(format: LocalizedKey.keyTTLMinutes.text, minutes)
     }
 
     /// The user-facing half of an `AgeKeyVaultError`. Never the raw status

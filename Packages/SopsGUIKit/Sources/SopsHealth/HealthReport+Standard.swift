@@ -48,10 +48,24 @@ public enum UpdateCheckConsent {
 public enum SessionTTLPreference {
     public static let defaultsKey = "session.keyTTLMinutes"
 
-    /// 15 minutes. Long enough that filling out one form doesn't re-prompt for
-    /// a key, short enough that an unattended, unlocked Mac does not stay a
-    /// standing decrypt oracle for the rest of the day.
-    public static let defaultMinutes = 15
+    /// 5 minutes (Ivan, 2026-09-03; was 15).
+    ///
+    /// The number that made 15 the right answer changed underneath it. When
+    /// this shipped, an expired key meant **pasting a private key back in** —
+    /// so the default had to buy enough working time to be worth the risk it
+    /// carried. Since SOPS-46 a key in the Keychain comes back with one
+    /// Touch ID, and the whole trade collapses: the cost of a short session is
+    /// now a fingerprint, and the cost of a long one is unchanged — an
+    /// unattended, unlocked Mac that stays a decrypt oracle for as long as the
+    /// number says.
+    ///
+    /// When one side of a trade-off gets that much cheaper, the default should
+    /// move, and it moves towards the safe end.
+    ///
+    /// ⚠️ Only a **default**: it applies to someone who has never touched the
+    /// setting. A stored value keeps working exactly as it did, including one
+    /// that is not on the menu — see `offeredMinutes`.
+    public static let defaultMinutes = 5
 
     /// 1…480 (8 hours). The floor exists because a TTL of zero — or less —
     /// would expire the key before any use of it could complete, which is not
@@ -59,6 +73,21 @@ public enum SessionTTLPreference {
     /// ceiling exists because an unbounded value is "no TTL" wearing a
     /// costume, and "no TTL" is the defect this ticket closes.
     public static let allowedRange = 1...480
+
+    /// The values the Settings › Key control offers (SOPS-51).
+    ///
+    /// The control used to be a `Stepper` over `allowedRange` in steps of
+    /// five, which meant 96 reachable values for a decision with maybe four
+    /// meaningful answers, and eleven presses to get from 15 minutes to an
+    /// hour. A menu of four says what the choice is actually about.
+    ///
+    /// `allowedRange` stays as it is and stays wider: it is the range this
+    /// preference will *honour*, including a value written by an earlier
+    /// build, by `defaults write`, or by a future control. Narrowing the
+    /// clamp to these four would silently rewrite such a value on the next
+    /// read — see `SessionTTLSetting.selection` for how a stored value that
+    /// is not on this list is presented instead of being destroyed.
+    public static let offeredMinutes = [5, 15, 30, 60]
 
     public static func minutes(in defaults: UserDefaults = .standard) -> Int {
         let stored = defaults.object(forKey: defaultsKey) as? Int
