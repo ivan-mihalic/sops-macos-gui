@@ -2,38 +2,52 @@
 
 A native macOS application for managing [SOPS](https://github.com/getsops/sops) +
 [age](https://github.com/FiloSottile/age) encrypted secrets — form-based editing,
-per-project organization, Touch ID protected age keys, producing files 100%
-compatible with the standard `sops` CLI. Working title; see
-[`PROPOSAL.md`](PROPOSAL.md) for the full spec, non-goals, and open questions.
+per-project organization, and files that stay 100% compatible with the standard
+`sops` CLI. Working title; see [`PROPOSAL.md`](PROPOSAL.md) for the full spec,
+non-goals, and open questions.
 
 **New here?** [`docs/GUIDE.md`](docs/GUIDE.md) walks every screen and control in
 order, with a picture of each and a copy-pasteable demo project to follow along
 with.
 
-**Current state (M2 — core editing, feature-complete but not closed):** the app has a sidebar shell with About and
-Settings pinned at the bottom, and a re-runnable health check / onboarding wizard
-(PROPOSAL.md §6) that verifies the machine's tooling, the embedded engine's
-freshness, the app's own security posture, and per-project health. On top of that,
-M2 added the editor: add a project by path, drag & drop or `NSOpenPanel` (git
-worktrees are detected and grouped under their main repository), browse the
-encrypted files it finds, open one into a form of key / value / type rows with
-every value masked and a per-row reveal and copy, add and remove keys, and save
-atomically. Every file the editor writes is round-tripped against the real `sops`
-CLI in `EditorCompatibilityTests` — comments, key order, recipients and
-`encrypted_regex` all survive, and untouched values keep their exact ciphertext.
+## What it does today (0.5.0)
 
-A file declaring `type:bytes` no longer takes the process down with it, the
-project scan states the scope it actually covered instead of reporting "found
-none" over directories it skipped, a save refuses rather than overwriting a
-file something else changed underneath it, quitting from anywhere prompts for
-unsaved edits, copied secrets are marked concealed so clipboard managers do not
-archive them, and revealing a row can no longer expose a different secret after
-a save renumbers the document. **The milestone tick is held back pending a
-second whole-branch review** — the first one found the previous tick unearned,
-and PROPOSAL.md §9 records why.
+- **Projects.** Add one by path, drag & drop, or `NSOpenPanel`. Git worktrees are
+  detected and grouped under their main repository. The sidebar is a tree:
+  project → its encrypted files → that project's Access page.
+- **Editing.** A table of key / value / type rows with every value masked, a
+  per-row reveal, copy by clicking the value, add and remove rows, and an
+  inspector for the selected row. Saves are atomic and refuse to overwrite a file
+  something else changed underneath them.
+- **Formats.** YAML, `.env` (dotenv), JSON and INI. A file whose recipients do
+  not include your key opens read-only, showing its ciphertext rather than an
+  error.
+- **Access.** Who can read a file, and who can read everything a project's
+  `.sops.yaml` governs — named recipients, the rules that anchor them, drift
+  between a rule and the files it should govern, and rewrapping to apply a
+  change. `.sops.yaml` is edited through sops's own YAML AST, never string
+  surgery.
+- **Keys.** Import an age identity by paste or from an existing key file, or
+  generate a new one in the app. Optionally remember it in the Keychain behind
+  Touch ID — see the caveat below. The key is cleared from memory when this Mac
+  sleeps and after an inactivity period you set.
+- **Health check.** A re-runnable wizard (PROPOSAL.md §6) over the machine's
+  tooling, the embedded engine's freshness against upstream, the app's own
+  security posture, and per-project health. Every finding that needs a system
+  change is an explanation plus a command to copy.
+- **Setup guide.** Copy-pasteable recipes for putting SOPS into a project, onto a
+  server, and into a colleague's hands on any of the three platforms.
+- **Updates.** Sparkle 2 with an EdDSA-signed appcast, off by default, and off
+  means no request is made at all.
 
-The age key lives in memory for the session only; Keychain and Touch ID are M3.
-YAML is the only format this build opens (PROPOSAL.md §10).
+> ⚠️ **Keychain storage does not engage in a released build yet.** Storing a key
+> needs the restricted `keychain-access-groups` entitlement, which needs an
+> embedded provisioning profile this app does not ship with. Until that lands
+> (ticket SOPS-49), ticking *Remember this key in my Keychain* reports that the
+> key is ready for the session but could not be saved. Everything else works;
+> the key is simply kept for the session, as it always was. The decision, the
+> measurements behind it, and what it does **not** buy are in
+> [ADR 0006](docs/adr/0006-age-key-in-the-keychain.md).
 
 ## Constraints
 
@@ -48,9 +62,11 @@ YAML is the only format this build opens (PROPOSAL.md §10).
 - **Key material never touches the environment or the process `PATH`.** The Go
   engine injects age identities via its own `keyservice.KeyServiceServer` rather
   than upstream's `SOPS_AGE_KEY`/`decrypt.File` path — see
-  [ADR 0001](docs/adr/0001-in-process-go-bridge.md). No secret values in logs,
-  errors, or crash reports; naming a file or a key is fine, printing a value
-  is not.
+  [ADR 0001](docs/adr/0001-in-process-go-bridge.md) and
+  [ADR 0004](docs/adr/0004-never-read-sops-age-key-from-the-environment.md). No
+  secret values in logs, errors, or crash reports; naming a file or a key is
+  fine, printing a value is not.
+- **Hardened runtime with no exceptions, and no sandbox.**
 
 ## Quick start
 
@@ -77,10 +93,14 @@ xcodebuild -project SopsGUI.xcodeproj -scheme SopsGUI -configuration Release bui
 | `PROPOSAL.md` | The spec. Single source of truth for scope and decisions. |
 | `docs/GUIDE.md` | The user-facing walkthrough. Images are `docs/images/`, regenerated by `Scripts/guide-snapshots.sh`. |
 | `docs/adr/` | Architecture decisions, numbered. Read before re-litigating anything. |
-| `docs/superpowers/plans/` | Implementation plans. |
 | `Engine/` | The Go SOPS bridge (cgo `c-archive` → xcframework). See `Engine/README.md`. |
-| `Packages/SopsGUIKit/` | All app logic, split into `SopsEngine` (Swift wrapper over the C API), `SopsHealth` (the onboarding/health-check model), and `SopsUI` (SwiftUI views). `swift test` here is the fast loop. |
+| `Packages/SopsGUIKit/` | All app logic: `SopsEngine` (Swift wrapper over the C API), `SopsHealth` (health checks and `.sops.yaml` inspection), `SopsProjects` (project store, key store, file writing), `SopsUI` (SwiftUI views), plus `SnapshotTool`, a dev-only headless renderer. |
 | `App/` | Thin Xcode app target — `SopsGUIApp.swift` wires the shell, onboarding sheet, and Settings scene; exists for archiving and notarization. |
+| `Scripts/` | `test.sh` (the suite), `snapshots.sh` / `guide-snapshots.sh` (headless renders), `bootstrap.sh`, `clean-test-temp.sh`. |
+
+Implementation plans, specs and per-ticket documents live **outside this
+repository**, in `_ai-memory/projects/sops-macos-gui/tickets/`. What stays here
+is what the code needs: the proposal, the ADRs, the guide.
 
 The SOPS/age engine (upstream `getsops/sops` + `filippo.io/age`, compiled as a
 static `c-archive`) runs **in-process** — the app never shells out to a `sops` or
@@ -92,28 +112,35 @@ hand-rolled parser, for reasons recorded in
 
 ## Running the test suites
 
-Three independent suites, all expected green on a clean checkout:
-
 ```bash
+# Swift package — use this, not bare `swift test`
+./Scripts/test.sh
+
 # Go engine
 cd Engine && go vet ./... && go test ./...
-
-# Swift package (SopsEngine, SopsHealth, SopsUI)
-cd Packages/SopsGUIKit && swift test
 
 # Network-denial check for the health check's one network call
 # (GitHubReleaseSource, consent-gated engine-freshness lookup)
 ./Scripts/test-network-denied.sh
 ```
 
-For a fully clean run (as CI or a fresh clone would see it):
+⚠️ **Do not run bare `swift test`.** SwiftPM's default build system copies
+`Localizable.xcstrings` uncompiled, so every localized string resolves to its own
+raw key: the two localization guards skip silently and one UI test fails for a
+reason unrelated to the code under test. `./Scripts/test.sh` passes
+`--build-system swiftbuild`, builds the xcframework if it is missing, and prints
+any skipped tests at the end. Extra arguments go straight through
+(`./Scripts/test.sh --filter SomeSuite`). The UI suite wants `--no-parallel`.
+
+This machine has more than one Swift toolchain, and they disagree. "The suite is
+green" is only meaningful with the compiler named — see `CLAUDE.md`.
+
+Test fixtures build scratch trees in `$TMPDIR`, which macOS does not reap while
+you are logged in. After a run:
 
 ```bash
-rm -rf Engine/build Packages/SopsGUIKit/.build SopsGUI.xcodeproj
-./Scripts/bootstrap.sh
-cd Engine && go vet ./... && go test ./...
-cd ../Packages/SopsGUIKit && swift test
-cd ../.. && xcodebuild -project SopsGUI.xcodeproj -scheme SopsGUI -configuration Release build
+./Scripts/clean-test-temp.sh            # dry run: count + reclaimable size
+./Scripts/clean-test-temp.sh --apply
 ```
 
 ## License
