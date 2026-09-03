@@ -166,6 +166,51 @@ $(git diff --name-only "$previous_tag".."$release_head" | sed 's/^/         /')
     fi
 fi
 
+# ── 3. Entitlements with $(AppIdentifierPrefix) already expanded ─────────────
+#
+# ⚠️ The release driver signs the app ITSELF, after xcodebuild, with the file
+# named by ENTITLEMENTS in release.conf. `codesign` does NOT expand
+# `$(AppIdentifierPrefix)` — only Xcode does, from the provisioning profile.
+# Measured 2026-09-03: a signature carrying the literal string is treated as an
+# unauthorised entitlement and the binary is killed by AMFI at launch.
+#
+# So the driver gets a resolved copy, generated here from the profile itself
+# rather than from a team identifier written down in the repository. It lands
+# in the gitignored build/ directory, which is where the driver already puts
+# its derived data.
+#
+# Failing here is deliberate: signing with the unresolved file produces a
+# release that installs, passes Gatekeeper, and does not open.
+profile="${SOPS_GUI_PROVISIONING_PROFILE:-$HOME/Development/_apple-developer-id/mac_studio/SopsGUI.provisionprofile}"
+source_entitlements="App/SopsGUI.entitlements"
+resolved_entitlements="build/SopsGUI.resolved.entitlements"
+
+if [[ ! -f "$profile" ]]; then
+    fail "provisioning profil nenalezen: $profile — bez něj by se vydal build, který se nespustí"
+fi
+
+# `TeamIdentifier.0`, ne `Entitlements.com.apple.developer.team-identifier`:
+# `plutil -extract` bere tečku jako oddělovač cesty a nemá jak ji v názvu klíče
+# odescapovat, takže druhý tvar vrací prázdno — tiše, s návratovým kódem 0.
+team="$(security cms -D -i "$profile" 2>/dev/null \
+    | plutil -extract TeamIdentifier.0 raw -o - - 2>/dev/null || true)"
+if [[ -z "$team" ]]; then
+    fail "z profilu $profile nešlo přečíst team identifier"
+fi
+
+mkdir -p "$(dirname "$resolved_entitlements")"
+sed "s/\$(AppIdentifierPrefix)/$team./g" "$source_entitlements" > "$resolved_entitlements"
+
+# Kanárek: kdyby se substituce nechytila, tichý průchod by znamenal přesně tu
+# vadu, kterou tenhle krok existuje odvrátit.
+if command grep -q 'AppIdentifierPrefix' "$resolved_entitlements"; then
+    fail "v $resolved_entitlements zůstala nerozvinutá substituce"
+fi
+if ! command grep -q "$team\." "$resolved_entitlements"; then
+    fail "$resolved_entitlements neobsahuje team prefix — substituce neproběhla"
+fi
+note "entitlements rozvinuté do $resolved_entitlements"
+
 # ── the engine build this hook has always done ───────────────────────────────
 # SKIP_ENGINE_BUILD exists for Scripts/test-release-prebuild.sh, which is about
 # the refusals above and has no use for a several-minute build. Unset in every
