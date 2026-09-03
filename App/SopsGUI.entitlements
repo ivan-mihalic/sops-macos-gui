@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	SOPS-46 / ADR 0006. The data-protection keychain gates access by keychain
+	access group, and without one `SecItemAdd` returns errSecMissingEntitlement
+	(-34018) — measured on this machine with a signed probe binary.
+
+	⚠️ THIS FILE IS NOT WIRED INTO THE BUILD YET, ON PURPOSE. See project.yml.
+	`keychain-access-groups` is a restricted entitlement: a binary carrying it
+	without a provisioning profile that authorises it is killed by AMFI at
+	launch (SIGKILL, no message). Measured, not assumed — a Developer ID-signed,
+	hardened-runtime probe with exactly this entitlement and a real team prefix
+	died with exit 137 before executing a line. Shipping this without the
+	embedded profile would mean shipping an app that cannot start.
+	-->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)cz.mihalic.SopsGUI</string>
+	</array>
+</dict>
+</plist>
