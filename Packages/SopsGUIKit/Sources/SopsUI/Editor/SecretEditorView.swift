@@ -545,6 +545,26 @@ public struct SecretEditorView: View {
                     title: .editorNeedsKeyTitle,
                     body: .editorNeedsKeyBody)
             }
+        case .needsUnlock:
+            // The one status view in this file with a control in it, and
+            // deliberately: every other one describes a situation the user has
+            // to go elsewhere to resolve, while this one is a single press away
+            // from being resolved right here. Sending someone to Settings › Key
+            // to unlock a key the editor already knows about would be busywork
+            // the app invented for itself.
+            centered {
+                VStack(spacing: 12) {
+                    statusView(
+                        systemImage: "lock.fill",
+                        title: .editorNeedsUnlockTitle,
+                        body: .editorNeedsUnlockBody)
+                    Button {
+                        Task { await viewModel.unlockAndReload() }
+                    } label: {
+                        Text(.editorUnlockButton)
+                    }
+                }
+            }
         case .failed(let message):
             centered {
                 VStack(spacing: 8) {

@@ -659,7 +659,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Make a brand-new age key here. Nothing is installed and nothing is written until you save or copy it — this app never puts a key into your key store."
+            "value": "Make a brand-new age key here. Nothing is installed, and nothing is written or remembered until you save or copy it — generating a key does not import it into this app, add it to any file, or put it in your Keychain."
           }
         }
       }
@@ -2150,6 +2150,39 @@
         }
       }
     },
+    "editor.needs-unlock.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your age key is in the Keychain. Unlock it to open this file."
+          }
+        }
+      }
+    },
+    "editor.needs-unlock.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your key is locked"
+          }
+        }
+      }
+    },
+    "editor.unlock-button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unlock with Touch ID"
+          }
+        }
+      }
+    },
     "editor.needs-key.title": {
       "extractionState": "manual",
       "localizations": {
@@ -2774,7 +2807,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Imported for this session. That file is still sitting on disk unprotected — this app can't import it out of harm's way, but you can narrow who can read it:"
+            "value": "Imported. That file is still sitting on disk unprotected — this app can't import it out of harm's way, but you can narrow who can read it:"
           }
         }
       }
@@ -2796,7 +2829,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Don't have one? Run age-keygen in a terminal. It prints a public age1… line to share, and a secret AGE-SECRET-KEY-1… line to paste above. Keep your own copy of the secret line somewhere safe — the only place this app can put it is your Keychain, and only if you ask it to."
+            "value": "Don't have one? This app can make you one: open any project's Access page, press Add named key, and choose Generate new key. It shows a public age1… line to share and a secret AGE-SECRET-KEY-1… line to paste above — copy the secret line before closing that sheet, because it is shown once. Or run age-keygen in a terminal, which prints the same two lines. Either way, keep your own copy of the secret line somewhere safe, such as a password manager."
           }
         }
       }

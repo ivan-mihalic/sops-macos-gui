@@ -341,6 +341,11 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case editorNoFileSelected = "editor.no-file-selected"
     case editorNeedsKeyTitle = "editor.needs-key.title"
     case editorNeedsKeyBody = "editor.needs-key.body"
+    // SOPS-46/48: a locked key is not a missing key, and the editor must not
+    // offer an import to somebody who is holding one.
+    case editorNeedsUnlockTitle = "editor.needs-unlock.title"
+    case editorNeedsUnlockBody = "editor.needs-unlock.body"
+    case editorUnlockButton = "editor.unlock-button"
     case editorLoadFailedTitle = "editor.load-failed.title"
     case editorLoadFailedWrongKey = "editor.load-failed.wrong-key"
     // Deliberately distinct from `.editorLoadFailedTitle`: a `.loaded`

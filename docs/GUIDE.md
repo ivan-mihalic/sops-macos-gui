@@ -303,6 +303,15 @@ configured — Add your age private key in Settings › Key to open this file."*
 It is not an error, and it deliberately does not read like one. You have not
 given the app a key yet; step 16 is where you do.
 
+There is a second version of this screen. If you have ticked **Remember this
+key in my Keychain** at some point, then after a relaunch — or after this Mac
+sleeps — the app has a key but has not unlocked it, and the file shows *"Your
+key is locked — Your age key is in the Keychain. Unlock it to open this file."*
+with an **Unlock with Touch ID** button underneath. One press opens the file;
+there is nothing to paste and nowhere else to go. The app distinguishes the two
+deliberately: telling somebody to import a key they are already holding is the
+app failing to know its own state.
+
 ### Step 14 · Adding a row
 
 ![Add row](images/guide-14-add-row.png)

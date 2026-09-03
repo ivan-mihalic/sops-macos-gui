@@ -267,9 +267,23 @@ public struct SecurityPostureCheck: HealthCheck {
                           // manager matches what this app actually does with
                           // a key: holds it for the session and forgets it.
                           remediation: Remediation(
+                              // SOPS-48: this used to open with `age-keygen` and
+                              // nothing else, which was true when it was written
+                              // and stopped being true the day SOPS-44 shipped an
+                              // in-app generator. A report that sends someone to a
+                              // terminal for something the app does two clicks away
+                              // is worse than one that says nothing: it teaches the
+                              // reader that the app cannot do it.
+                              //
+                              // The command stays, and stays last. It is the only
+                              // route for someone who has no project added yet —
+                              // the generator lives on a project's Access page —
+                              // and this finding is `.problem` on exactly that
+                              // empty first install.
                               explanation: "Import an existing age key in Settings › Key — paste it directly, or import it from a key file this app finds on disk. "
-                                         + "No key yet? Run age-keygen below. It prints two lines: a public age1… line to share with anyone whose files you want to read, "
-                                         + "and a secret AGE-SECRET-KEY-1… line to paste into Settings › Key. "
+                                         + "No key yet? This app can make one: on any project's Access page, press Add named key and choose Generate new key. "
+                                         + "It shows a public age1… line to share with anyone whose files you want to read, and a secret AGE-SECRET-KEY-1… line to paste into Settings › Key — "
+                                         + "copy that secret line before closing the sheet, because it is shown once. With no project added yet, age-keygen below prints the same two lines. "
                                          + "Keep your own copy of the secret line somewhere safe, such as a password manager — this app holds it for the session, and writes it down only if you ask it to remember it in your Keychain.",
                               command: "age-keygen"))
         case .unavailable(let reason):
