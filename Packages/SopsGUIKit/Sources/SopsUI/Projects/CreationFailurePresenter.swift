@@ -459,10 +459,21 @@ public enum CreationFailurePresenter {
                 detail: "No key is unlocked for this session, so this app cannot verify that a new file "
                     + "could be decrypted again once created. Import a key to continue.",
                 recovery: nil)
+        case .locked:
+            // SOPS-46. A different sentence from `.empty` because it asks for
+            // a different action: this user already has a key and telling
+            // them to import one sends them looking for something they are
+            // holding. The wizard is blocked either way — `SecretFileCreator`
+            // needs a live identity to prove the file it just wrote can be
+            // read back — but the way out is one Touch ID, not a paste.
+            return CreationFailureMessage(
+                title: .creationFailureTitle,
+                detail: "Your age key is in the Keychain but has not been unlocked in this session, so this app "
+                    + "cannot verify that a new file could be decrypted again once created. Unlock it to continue.",
+                recovery: nil)
         case .unavailable(let reason):
-            // Not reachable through `SessionKeyStore` today — its `state` is
-            // only ever `.configured` or `.empty` (M2; Keychain storage is
-            // M3) — but `KeyStoreState` is a shared `SopsHealth` type this
+            // Not reachable through `SessionKeyStore` today — `KeyStoreState`
+            // is a shared `SopsHealth` type this
             // presenter does not own, so this switch has no `default` for
             // the same reason none of the switches above do: a case this
             // presenter has not been taught to word must fail the build,

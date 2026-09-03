@@ -3,6 +3,15 @@ import Foundation
 public enum KeyStoreState: Equatable, Sendable {
     case configured
     case empty
+    /// A key is stored durably (SOPS-46: in the Keychain, behind a
+    /// user-presence check) but has not been unlocked in this run of the app,
+    /// so nothing can be decrypted with it yet.
+    ///
+    /// A third case rather than folding into `.empty`, because the two demand
+    /// opposite things of the user: `.empty` needs an import, `.locked` needs
+    /// a Touch ID. Every UI that offers "import a key" to someone who already
+    /// has one stored is telling them to redo work they have done.
+    case locked
     /// The store itself is not available yet — e.g. the feature has not shipped.
     case unavailable(reason: String)
 }
@@ -188,6 +197,13 @@ public struct SecurityPostureCheck: HealthCheck {
             // in the Keychain — that's M3. Say what is actually true now.
             HealthFinding(id: "security.keystore", title: "Your age key", status: .ok,
                           detail: "An age key is imported for this session.")
+        case .locked:
+            // `.ok`, not a warning: a locked key is the *intended* resting
+            // state of this app between launches, and the way out of it is one
+            // Touch ID at the moment it is first needed. Calling that a
+            // problem would train the user to read this whole report as noise.
+            HealthFinding(id: "security.keystore", title: "Your age key", status: .ok,
+                          detail: "An age key is stored in your Keychain. It is unlocked with Touch ID the first time you open a file, and cleared from memory again when this Mac sleeps.")
         case .empty:
             // Scoped to this app, deliberately. "nothing can be decrypted" is
             // a claim about the whole machine, and the app has no basis for

@@ -164,9 +164,21 @@ public final class SessionKeyStore {
     /// "read live" discipline `UpdateCheckConsent` already follows elsewhere
     /// in this app. Defaults to the shipped policy, `SessionTTLPreference`.
     private let ttlMinutes: () -> Int
+    /// SOPS-46. Durable storage behind a user-presence check, or `nil` for the
+    /// pre-SOPS-46 behaviour: memory only, and a relaunch costs a re-import.
+    ///
+    /// Optional rather than defaulted to a real Keychain vault, because three
+    /// test targets, the snapshot catalog and every SwiftUI preview construct
+    /// this type, and none of them can survive a Touch ID prompt. The shipped
+    /// app is the one place that passes a real vault
+    /// (`App/SopsGUIApp.swift`); everything else gets exactly what it got
+    /// before this ticket.
+    private let vault: (any AgeKeyVault)?
 
-    public init(now: @escaping () -> Date = Date.init,
+    public init(vault: (any AgeKeyVault)? = nil,
+                now: @escaping () -> Date = Date.init,
                 ttlMinutes: @escaping () -> Int = { SessionTTLPreference.minutes() }) {
+        self.vault = vault
         self.now = now
         self.ttlMinutes = ttlMinutes
     }
@@ -201,9 +213,53 @@ public final class SessionKeyStore {
         self.expiresAt = nil
     }
 
+    /// `.configured` while a key is in memory and unexpired; `.locked` when
+    /// one is only in the vault; `.empty` when there is neither.
+    ///
+    /// The vault is consulted on every read rather than cached at `init`,
+    /// because the answer changes underneath this type: `forgetPermanently()`
+    /// empties it, an import with `remember` fills it, and — the case a cache
+    /// would get wrong for the rest of the run — the very first read happens
+    /// before the user has done either. `hasStoredKey()` is documented never
+    /// to authenticate, so this stays a cheap, silent question.
     public var state: KeyStoreState {
         expireIfNeeded()
-        return key == nil ? .empty : .configured
+        if key != nil { return .configured }
+        return vault?.hasStoredKey() == true ? .locked : .empty
+    }
+
+    /// Restores the key from the vault, authenticating the user.
+    ///
+    /// Returns immediately, without authenticating, when a key is already in
+    /// memory — "unlock once per launch" is the whole decision behind this
+    /// ticket, and a second prompt for a key the app already holds is exactly
+    /// what it was chosen to avoid. `SessionKeyStoreVaultTests`'
+    /// `unlockIsIdempotentWhileConfigured` pins that with a call counter,
+    /// since it is invisible from the store's own surface.
+    ///
+    /// Throws `AgeKeyVaultError` for the vault's own failures (cancelled
+    /// prompt, nothing stored, missing entitlement) and this type's
+    /// `Error.notAnAgeKey` when what came back is not an age identity — the
+    /// same refusal a bad paste gets, because "the vault handed me something
+    /// unusable" is a fact about the key, not about the vault. A refused key
+    /// is left in the vault: deleting a user's stored item because this app
+    /// could not parse it would be a mutation nobody asked for, and the app
+    /// never mutates what it did not put there.
+    ///
+    /// The work happens off the main actor: `loadKey()` blocks on a Touch ID
+    /// prompt, which is seconds of wall clock with a human in the loop.
+    public func unlock() async throws {
+        expireIfNeeded()
+        if key != nil { return }
+        guard let vault else { throw AgeKeyVaultError.noStoredKey }
+
+        let loaded = try await Task.detached { try vault.loadKey() }.value
+        // Routed through `importKey` rather than assigning `key` directly, so
+        // an identity coming out of the vault passes every check a pasted one
+        // does — shape, prefix, single line — and starts its TTL the same way.
+        // `remember: false`: it is already stored, and re-storing it here
+        // would rewrite a Keychain item on every unlock for no reason.
+        try importKey(loaded)
     }
 
     /// The session's own age public key ("age1…"), derived once at import
@@ -236,7 +292,20 @@ public final class SessionKeyStore {
     /// deliberate, not redundant. Failing here gives a message that belongs
     /// to this app's own import flow rather than an internal bridge error,
     /// and it keeps a bad key from crossing the Swift/Go boundary at all.
-    public func importKey(_ text: String) throws {
+    /// SOPS-46 adds `remember`. When true, the accepted key is also written
+    /// to the vault, so the next launch finds `.locked` rather than `.empty`.
+    ///
+    /// A **failure to save is not a failure to import**, and that is why this
+    /// returns a warning instead of throwing one: by the time the vault is
+    /// written the key has already been validated and installed in memory,
+    /// and throwing would report a total failure for a session that is in
+    /// fact fully working. The caller shows the returned error as "your key
+    /// is ready, but it could not be saved for next time" — a sentence with a
+    /// different meaning and a different next step from "your key was
+    /// rejected". Discardable so the many existing call sites that never ask
+    /// to remember anything stay as they were.
+    @discardableResult
+    public func importKey(_ text: String, remember: Bool = false) throws -> AgeKeyVaultError? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw Error.empty }
 
@@ -284,6 +353,21 @@ public final class SessionKeyStore {
         // the user changes in Settings between imports takes effect on the
         // next one — see the property's own doc comment.
         expiresAt = now().addingTimeInterval(TimeInterval(ttlMinutes()) * 60)
+
+        guard remember, let vault else { return nil }
+        do {
+            try vault.store(trimmed)
+            return nil
+        } catch let error as AgeKeyVaultError {
+            return error
+        } catch {
+            // A vault that throws something outside its own error type is a
+            // bug in that vault, not a state this store can describe. It is
+            // still not allowed to lose the import, so it collapses into the
+            // one case that says "the platform said no" without inventing a
+            // status code.
+            return .unavailable(reason: "This key could not be saved to the Keychain.")
+        }
     }
 
     /// Whether `candidate` has the length and alphabet `age-keygen` produces.
@@ -380,7 +464,13 @@ public final class SessionKeyStore {
         try importFromKeysFileContents(contents)
     }
 
-    /// Returns the store to empty.
+    /// Drops the key from memory.
+    ///
+    /// SOPS-46: this no longer necessarily means `.empty`. With a vault
+    /// holding the key, the store lands on `.locked` and the way back is one
+    /// Touch ID — which is exactly what the sleep observer in
+    /// `App/SopsGUIApp.swift` and the TTL both want. `forgetPermanently()` is
+    /// the one that takes the key away for good.
     ///
     /// The previous key is dropped — not zeroed, see the type's doc comment
     /// for why that is not a promise this type can make — and becomes
@@ -391,6 +481,21 @@ public final class SessionKeyStore {
         key = nil
         publicKey = nil
         expiresAt = nil
+    }
+
+    /// Drops the key from memory **and** deletes it from the vault.
+    ///
+    /// Separate from `forget()` on purpose: `forget()` is called by machinery
+    /// (sleep, TTL) many times a day and must never destroy anything, while
+    /// this one is a deliberate user gesture with no undo. Fusing them would
+    /// mean closing the lid deleted your key.
+    ///
+    /// Throws only what the vault's deletion throws; the in-memory half is
+    /// cleared first and unconditionally, so a vault that refuses to delete
+    /// still leaves nothing lent out by this store.
+    public func forgetPermanently() throws {
+        forget()
+        try vault?.removeStoredKey()
     }
 
     /// Lends the key to `body` for the duration of the call, and only for
