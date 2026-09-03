@@ -443,6 +443,22 @@ func sops_age_public_key(agePrivateKey *C.char, out **C.char) C.int {
 	return result(out, payload, err)
 }
 
+// sops_generate_age_key mints a brand-new age identity and returns it as
+// JSON — {"privateKey":"AGE-SECRET-KEY-1…","publicKey":"age1…"} — SOPS-44.
+//
+// Nothing is written and nothing is installed: the key exists only in the
+// string handed back, and what becomes of it is a decision the user makes on
+// the screen that asked for it. The private half is never logged and never
+// appears in an error; a failure here names the operation, not the value.
+//
+//export sops_generate_age_key
+func sops_generate_age_key(out **C.char) C.int {
+	payload, err := gobridge.Guard(gobridge.OpGeneratingKey, func() ([]byte, error) {
+		return gobridge.GenerateAgeKey()
+	})
+	return result(out, payload, err)
+}
+
 // sops_free releases a string one of the entry points above returned.
 //
 // # The guard here protects nothing, and saying so is the point

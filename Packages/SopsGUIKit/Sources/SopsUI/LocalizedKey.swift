@@ -340,6 +340,9 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case editorSaveButton = "editor.save-button"
     case editorSaveErrorTitle = "editor.save-error.title"
     case editorRevealValue = "editor.reveal-value"
+    // SOPS-44: the value cell is itself the copy control — see
+    // `SecretTableView.valueCell`.
+    case editorCopyValueHelp = "editor.copy-value-help"
     case editorHideValue = "editor.hide-value"
     /// The toolbar eye (SOPS-40): every value at once, and back.
     case editorRevealAllValues = "editor.reveal-all-values"
@@ -597,6 +600,20 @@ public enum LocalizedKey: String, CaseIterable, Sendable {
     case accessAddNamedRefusalInvalidKey = "access.add-named.refusal.invalid-key"
     case accessAddNamedRefusalPrivateKey = "access.add-named.refusal.private-key"
     case accessAddNamedRefusalKeyDeclared = "access.add-named.refusal.key-declared"
+    // SOPS-44: a third mode — mint the key here — and the Named keys
+    // section's own way in, which declares a key without joining it to a
+    // rule.
+    case accessAddNamedModeGenerate = "access.add-named.mode.generate"
+    case accessKeysAddButton = "access.keys.add-button"
+    case accessGenerateIntro = "access.generate.intro"
+    case accessGenerateButton = "access.generate.button"
+    case accessGenerateOnceWarning = "access.generate.once-warning"
+    case accessGeneratePublicKey = "access.generate.public-key"
+    case accessGeneratePrivateKey = "access.generate.private-key"
+    case accessGenerateContinue = "access.generate.continue"
+    case accessGenerateSaveButton = "access.generate.save-button"
+    case accessGenerateSaveFailed = "access.generate.save-failed"
+    case accessGenerateFailed = "access.generate.failed"
     case accessUngovernedHint = "access.ungoverned.hint"
     // The one edit an anchored rule supports (SOPS-39 task 9): appending an
     // alias of a key the config already declares. Offered next to the

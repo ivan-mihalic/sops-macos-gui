@@ -97,6 +97,9 @@ struct AccessRuleCard: View {
             AddNamedKeySheet(
                 keys: addableKeys,
                 existingKeys: inventory.keys,
+                // Opened from a rule, so the rule can also be handed a key
+                // the config already declares — see `AddNamedKeySheet`.
+                offersExisting: true,
                 onPick: { anchor in
                     choosingNamedKey = false
                     onAddNamedKey(anchor)
@@ -126,18 +129,25 @@ struct AccessRuleCard: View {
     }
 
     /// The files this rule governs, by name — what a reader actually wants
-    /// to know — with the `path_regex` underneath as the caption it is.
-    /// The pattern used to *be* the header (SOPS-40 review): a regex is what
-    /// sops matches on, not what a person recognises a file by.
+    /// to know. The `path_regex` used to *be* the header (SOPS-40 review),
+    /// then sat underneath as a caption; SOPS-44 dropped it from a card that
+    /// already names the files, because a pattern next to the list it
+    /// produced is a restatement, not information.
+    ///
+    /// The one case it survives is the card that governs **nothing**: with no
+    /// file names, the pattern is the only thing identifying which rule this
+    /// is, and a card reading only "Matches no files" could be any of them.
     private var header: some View {
         HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 3) {
                 governedFiles
-                Text(verbatim: rule.pathRegex)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .help(LocalizedKey.accessRulesRegexHelp.text)
+                if governed.isEmpty {
+                    Text(verbatim: rule.pathRegex)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .help(LocalizedKey.accessRulesRegexHelp.text)
+                }
             }
             Spacer()
             if drifted.isEmpty {
@@ -323,168 +333,5 @@ struct AccessLabelledRow<Content: View>: View {
             content
             Spacer(minLength: 0)
         }
-    }
-}
-
-/// Adds a named key to an anchored rule: either one of the config's own
-/// `keys:` the rule does not name yet, or a **new** one — name, public key,
-/// optional label — declared under `keys:` and aliased into the rule in one
-/// write (SOPS-42).
-///
-/// The note under both modes says the part users get wrong: a config edit
-/// decides who *new* files are encrypted for and re-encrypts nothing that
-/// already exists.
-struct AddNamedKeySheet: View {
-    /// Existing keys the rule does not already name — the Existing mode.
-    let keys: [ConfigRules.NamedKey]
-    /// Every key the config declares — what a new name and key are checked
-    /// against before the bridge is asked.
-    let existingKeys: [ConfigRules.NamedKey]
-    let onPick: (String) -> Void
-    let onCreate: (_ name: String, _ recipient: String, _ label: String?) -> Void
-    let onCancel: () -> Void
-
-    enum Mode: Hashable { case existing, new }
-
-    @State private var mode: Mode
-    @State private var name = ""
-    @State private var recipient = ""
-    @State private var label = ""
-
-    init(
-        keys: [ConfigRules.NamedKey], existingKeys: [ConfigRules.NamedKey],
-        onPick: @escaping (String) -> Void,
-        onCreate: @escaping (_ name: String, _ recipient: String, _ label: String?) -> Void,
-        onCancel: @escaping () -> Void
-    ) {
-        self.keys = keys
-        self.existingKeys = existingKeys
-        self.onPick = onPick
-        self.onCreate = onCreate
-        self.onCancel = onCancel
-        // Nothing left to pick from → straight to the New form.
-        self._mode = State(initialValue: keys.isEmpty ? .new : .existing)
-    }
-
-    /// Why a new key cannot be created as typed, or `nil` when it can.
-    enum NewKeyRefusal: Equatable {
-        case emptyName, invalidAnchor, nameTaken, invalidRecipient, privateIdentity, recipientDeclared
-    }
-
-    /// The same rules the bridge applies (`gobridge.AddNamedKey`), answered
-    /// here so the Create button is dead before a refusal rather than after.
-    nonisolated static func validateNewKey(name: String, recipient: String, existing: [ConfigRules.NamedKey]) -> NewKeyRefusal? {
-        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty else { return .emptyName }
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_-"))
-        guard trimmedName.unicodeScalars.allSatisfy({ $0.isASCII && allowed.contains($0) }) else { return .invalidAnchor }
-        guard !existing.contains(where: { $0.name == trimmedName }) else { return .nameTaken }
-        let trimmedKey = recipient.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedKey.isEmpty else { return .invalidRecipient }
-        if trimmedKey.uppercased().hasPrefix("AGE-SECRET-KEY-") { return .privateIdentity }
-        guard RecipientRegistry.refusal(forAgeRecipient: trimmedKey) == nil else { return .invalidRecipient }
-        guard !existing.contains(where: { $0.recipient == trimmedKey }) else { return .recipientDeclared }
-        return nil
-    }
-
-    nonisolated static func explanation(for refusal: NewKeyRefusal) -> LocalizedKey? {
-        switch refusal {
-        case .emptyName: nil
-        case .invalidAnchor: .accessAddNamedRefusalInvalidAnchor
-        case .nameTaken: .accessAddNamedRefusalNameTaken
-        case .invalidRecipient: .accessAddNamedRefusalInvalidKey
-        case .privateIdentity: .accessAddNamedRefusalPrivateKey
-        case .recipientDeclared: .accessAddNamedRefusalKeyDeclared
-        }
-    }
-
-    private var refusal: NewKeyRefusal? {
-        Self.validateNewKey(name: name, recipient: recipient, existing: existingKeys)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(.accessRulesAddNamed).font(.headline)
-
-            Picker("", selection: $mode) {
-                Text(.accessAddNamedModeExisting).tag(Mode.existing)
-                Text(.accessAddNamedModeNew).tag(Mode.new)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-
-            switch mode {
-            case .existing: existingList
-            case .new: newForm
-            }
-
-            Text(.accessRulesAddNamedNote).font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack {
-                Spacer()
-                Button(LocalizedKey.actionCancel.text, action: onCancel)
-                    .keyboardShortcut(.cancelAction)
-                if mode == .new {
-                    Button(LocalizedKey.accessAddNamedCreate.text) {
-                        let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
-                        onCreate(
-                            name.trimmingCharacters(in: .whitespacesAndNewlines),
-                            recipient.trimmingCharacters(in: .whitespacesAndNewlines),
-                            trimmedLabel.isEmpty ? nil : trimmedLabel)
-                    }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(refusal != nil)
-                }
-            }
-        }
-        .padding(16)
-        .frame(width: 440)
-    }
-
-    @ViewBuilder
-    private var existingList: some View {
-        if keys.isEmpty {
-            Text(.accessRulesAddNamedNone).font(.callout).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        } else {
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(keys) { key in
-                    Button { onPick(key.name) } label: {
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(ProjectAccessPage.colour(for: key.recipient))
-                                .frame(width: 8, height: 8)
-                            // The anchor is the name the team already
-                            // uses, and it is what lands in the file —
-                            // so it is what the choice is labelled by.
-                            Text(verbatim: key.name)
-                                .font(.system(.body, design: .monospaced))
-                            Text(verbatim: ProjectAccessPage.short(key.recipient))
-                                .font(.system(.caption, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                            Spacer(minLength: 0)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .help(key.recipient)
-                }
-            }
-        }
-    }
-
-    private var newForm: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            TextField(LocalizedKey.accessAddNamedFieldName.text, text: $name)
-                .font(.system(.body, design: .monospaced))
-            TextField(LocalizedKey.accessAddNamedFieldKey.text, text: $recipient)
-                .font(.system(.body, design: .monospaced))
-            TextField(LocalizedKey.accessAddNamedFieldLabel.text, text: $label)
-            if let refusal, let explanation = Self.explanation(for: refusal) {
-                Text(explanation).font(.caption).foregroundStyle(.red)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .textFieldStyle(.roundedBorder)
     }
 }

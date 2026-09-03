@@ -72,6 +72,10 @@ const (
 	// comparing public keys — never by decrypting. See
 	// AgePublicKey (recipients.go's neighbour, agepublickey.go).
 	OpDerivingPublicKey = "deriving your public key"
+	// SOPS-44: minting a new age identity on the Access page. Named for what
+	// the user asked for, and deliberately generic — a fault message must
+	// never be able to carry any part of the key it was making.
+	OpGeneratingKey = "generating a new key"
 )
 
 // Guard runs fn and converts any panic escaping it into an ordinary error.

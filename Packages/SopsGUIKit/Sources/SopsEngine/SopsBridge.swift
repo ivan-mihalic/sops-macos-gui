@@ -188,6 +188,22 @@ public struct ConfigRules: Decodable, Equatable, Sendable {
 /// What the `.sops.yaml` creation rule governing a file would look like with a
 /// different age recipient list — a *proposal*, never something that happened.
 /// See `SopsBridge.updateConfigRecipients(configPath:targetFilePath:to:candidateFilePaths:)`.
+/// A freshly generated age identity: the private line to keep, the public
+/// recipient to share. See `SopsBridge.generateAgeKey()`.
+///
+/// Deliberately not `CustomStringConvertible` and deliberately never
+/// `Codable` for output: the only way this leaves the app is through a place
+/// that says what it is showing.
+public struct GeneratedAgeKey: Decodable, Equatable, Sendable {
+    public let privateKey: String
+    public let publicKey: String
+
+    public init(privateKey: String, publicKey: String) {
+        self.privateKey = privateKey
+        self.publicKey = publicKey
+    }
+}
+
 public struct ConfigRecipientUpdate: Decodable, Equatable, Sendable {
     /// Whether the governing rule is a flat, age-only rule this app fully
     /// understands, so `config` may be written over the existing file. False
@@ -372,6 +388,34 @@ public enum SopsBridge {
             privateKey.withGoString { keyPtr in
                 sops_age_public_key(keyPtr, out)
             }
+        }
+    }
+
+    /// Mints a brand-new age identity and hands back both halves.
+    ///
+    /// SOPS-44. The private line is real key material and this is the only
+    /// call in the app that produces any, so what it does *not* do is part of
+    /// the contract: nothing is written to disk, nothing is added to a
+    /// `.sops.yaml`, and nothing is imported into the session's key store.
+    /// The caller receives the pair once and decides — with the user — what
+    /// becomes of it.
+    ///
+    /// Never log `privateKey`, never put it in an error, and never hand it to
+    /// anything that might (CLAUDE.md: no secret values in logs, errors or
+    /// crash reports). The public half is not a secret and may be shown,
+    /// copied and saved freely.
+    public static func generateAgeKey() throws -> GeneratedAgeKey {
+        let json = try call { out in sops_generate_age_key(out) }
+        guard let data = json.data(using: .utf8) else {
+            throw SopsBridgeError(description: "bridge returned non-UTF8 JSON for a generated key")
+        }
+        do {
+            return try JSONDecoder().decode(GeneratedAgeKey.self, from: data)
+        } catch {
+            // Fixed text, `error` deliberately unused: a decoding failure here
+            // is about a payload carrying a private key, and the thrown
+            // message must not be able to quote any part of it.
+            throw SopsBridgeError(description: "could not decode the generated key")
         }
     }
 

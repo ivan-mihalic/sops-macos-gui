@@ -147,6 +147,26 @@ struct SecretTableView: View {
         .scrollOverflowFade()
     }
 
+    /// The value column. A row whose value can be copied *is* the copy
+    /// control — click the cell, the value is on the pasteboard (SOPS-44).
+    ///
+    /// This is the affordance every password manager has, and it is the one
+    /// this app was missing: the value is masked, so the only way to get it
+    /// out used to be the narrow glyph at the far right of the row, or
+    /// revealing the secret on screen first. Copying has never required
+    /// revealing here (`RowCopyButton`), and now it does not require aiming
+    /// either.
+    ///
+    /// The confirmation replaces the cell rather than sitting beside it: at
+    /// this width there is no room for both, and "Copied" where the value
+    /// was is unambiguous about *which* value went to the pasteboard. It is
+    /// the same shared `CopyFeedback` the row's own button and the inspector
+    /// use, so one copy lights up one row, everywhere it is shown.
+    ///
+    /// A revealed value gives up `textSelection` to become clickable — the
+    /// two cannot both own a click. Selecting text is still available where
+    /// a value is genuinely being read rather than moved: the inspector's
+    /// editor.
     @ViewBuilder
     private func valueCell(_ row: SecretRow) -> some View {
         if !row.kind.isEditable {
@@ -155,12 +175,45 @@ struct SecretTableView: View {
             Text(SecretRowViewLogic.kindLabel(row.kind).text)
                 .font(.system(.body, design: .monospaced))
                 .foregroundStyle(.secondary)
-        } else if revealed.contains(row.id, in: generation) {
+        } else if SecretRowViewLogic.isMergeKeyRow(row) {
+            // No copy on a merge key, for the same reason it gets no eye and
+            // no copy button — see this type's doc comment.
+            maskedOrRevealedValue(row)
+        } else if copyFeedback.label(for: row.id) == .actionCopied {
+            HStack(spacing: 4) {
+                Image(systemName: "checkmark")
+                Text(.actionCopied)
+            }
+            .font(.system(.body, design: .monospaced))
+            .foregroundStyle(.green)
+        } else {
+            Button {
+                ClipboardClearing.copy(row.value)
+                copyFeedback.confirmCopy(of: row.id)
+            } label: {
+                maskedOrRevealedValue(row)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            // `.help`, never `.accessibilityLabel`: a label on this button
+            // would *replace* the cell's own text in the accessibility tree,
+            // and that text is the mask — the one thing a masked row is
+            // required to announce (`AccessibilityTreeTests`, which caught
+            // exactly this). The action reaches an assistive client as the
+            // help string instead, and which secret it is about comes from
+            // the row's key column.
+            .help(LocalizedKey.editorCopyValueHelp.text)
+        }
+    }
+
+    @ViewBuilder
+    private func maskedOrRevealedValue(_ row: SecretRow) -> some View {
+        if revealed.contains(row.id, in: generation) {
             Text(row.value)
                 .font(.system(.body, design: .monospaced))
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .textSelection(.enabled)
         } else {
             Text(SecretRowViewLogic.maskedValue(for: row.value))
                 .font(.system(.body, design: .monospaced))
